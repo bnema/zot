@@ -802,6 +802,16 @@ func (v *View) renderMessage(m provider.Message, width int, turnOpen bool) []str
 	return lines
 }
 
+// RenderToolCall renders one live or completed tool call using the same
+// presentation as tool calls in the main transcript. Dialogs with isolated
+// agent loops use this to avoid maintaining a second tool renderer.
+func (v *View) RenderToolCall(tc ToolCallView, width int) []string {
+	if v.liveBodyHigh == nil {
+		v.liveBodyHigh = make(map[string]int)
+	}
+	return v.renderToolCall(tc, width)
+}
+
 func (v *View) renderToolCall(tc ToolCallView, width int) []string {
 	var lines []string
 

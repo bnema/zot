@@ -295,7 +295,7 @@ Jumping is non-destructive. The transcript is untouched, the viewport just scrol
 
 Opens a side-chat overlay with the full main session as frozen context, so you can ask quick clarifying questions ("does asyncio.gather() catch exceptions?", "btw the bundle budget is 10MB", "what's the default fetch timeout?") without bloating the main thread.
 
-Each question fires a one-off model call against `system + main transcript + side-chat history so far`. Responses render in the overlay and stay there. When you press `esc` to close, **nothing** has been added to the main session and subsequent main-thread turns don't re-read any of the side-chat exchanges, keeping the running context window lean.
+Each question runs an isolated agent turn against `system + main transcript + side-chat history so far`. The side chat has the same tools and guards as the main chat, including per-tool confirmation when `--no-yolo` is active. Responses, tool calls, and tool results stay in the overlay. When you press `esc` to close, **nothing** has been added to the main session and subsequent main-thread turns don't re-read any of the side-chat exchanges, keeping the running context window lean.
 
 ```
 /btw                              # open the overlay, type questions interactively

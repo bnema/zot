@@ -14,10 +14,19 @@ import (
 
 func TestConfirmToolCallAttachesDiffBeforeDecision(t *testing.T) {
 	dialog := newConfirmDialog()
+	btw := &btwDialog{
+		active:   true,
+		toolView: &tui.View{Theme: tui.Dark},
+		turns: []btwTurn{{Tools: []tui.ToolCallView{{
+			ID: "call-1", Name: "edit",
+		}}}},
+		editor: tui.NewEditor(""),
+	}
 	i := &Interactive{
 		toolCalls: map[string]*tui.ToolCallView{
 			"call-1": {ID: "call-1", Name: "edit"},
 		},
+		btwDialog:     btw,
 		confirmDialog: dialog,
 		dirty:         make(chan struct{}, 1),
 	}
@@ -43,6 +52,18 @@ func TestConfirmToolCallAttachesDiffBeforeDecision(t *testing.T) {
 	i.mu.Unlock()
 	if preview != "-old\n+new\n" {
 		t.Fatalf("tool preview = %q", preview)
+	}
+	btw.mu.Lock()
+	btwPreview := btw.turns[0].Tools[0].Preview
+	btw.mu.Unlock()
+	if btwPreview != "-old\n+new\n" {
+		t.Fatalf("/btw tool preview = %q", btwPreview)
+	}
+	combined := strings.Join(renderBtwConfirmation(tui.Dark, 80, btw, dialog), "\n")
+	for _, want := range []string{"btw - side chat", "old", "new", "confirm tool call"} {
+		if !strings.Contains(combined, want) {
+			t.Fatalf("combined /btw confirmation missing %q:\n%s", want, combined)
+		}
 	}
 
 	dialog.HandleKey(tui.Key{Kind: tui.KeyEnter})

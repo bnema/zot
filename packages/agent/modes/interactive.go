@@ -1145,14 +1145,21 @@ func (i *Interactive) redraw() {
 		dialog = i.swarmDialog.Render(i.cfg.Theme, cols)
 	case i.jumpDialog.Active():
 		dialog = i.jumpDialog.Render(i.cfg.Theme, cols)
+	case i.confirmDialog.Active():
+		if i.btwDialog.Active() {
+			// Keep the side-chat transcript and its live tool preview visible
+			// above confirmation, matching how the main transcript remains
+			// visible while --no-yolo waits for a decision.
+			dialog = renderBtwConfirmation(i.cfg.Theme, cols, i.btwDialog, i.confirmDialog)
+		} else {
+			dialog = i.confirmDialog.Render(i.cfg.Theme, cols)
+		}
 	case i.btwDialog.Active():
 		dialog = i.btwDialog.Render(i.cfg.Theme, cols)
 	case i.skillsDialog.Active():
 		dialog = i.skillsDialog.Render(i.cfg.Theme, cols)
 	case i.changelogDialog.Active():
 		dialog = i.changelogDialog.Render(i.cfg.Theme, cols)
-	case i.confirmDialog.Active():
-		dialog = i.confirmDialog.Render(i.cfg.Theme, cols)
 	case i.logoutDialog.Active():
 		dialog = i.logoutDialog.Render(i.cfg.Theme, cols)
 	case i.telegramDialog.Active():
@@ -1849,6 +1856,16 @@ func (i *Interactive) toggleToolExpansion() {
 	i.setToolExpansion(expanded)
 }
 
+func (i *Interactive) toggleBtwToolExpansion() {
+	i.btwDialog.ToggleToolExpansion()
+	i.mu.Lock()
+	if i.rend != nil {
+		i.rend.Clear()
+	}
+	i.mu.Unlock()
+	i.invalidate()
+}
+
 func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 	// Any key that isn't ctrl+c invalidates an armed ctrl+c-exit, so
 	// pressing ctrl+c then typing then ctrl+c much later doesn't quit
@@ -1872,7 +1889,11 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 	// user can expand or collapse a tool preview before deciding.
 	if i.confirmDialog.Active() {
 		if k.Kind == tui.KeyCtrlO {
-			i.toggleToolExpansion()
+			if i.btwDialog != nil && i.btwDialog.Active() {
+				i.toggleBtwToolExpansion()
+			} else {
+				i.toggleToolExpansion()
+			}
 			return false
 		}
 		i.confirmDialog.HandleKey(k)
@@ -2084,6 +2105,10 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 		if k.Kind == tui.KeyCtrlC {
 			i.btwDialog.Close()
 			i.invalidate()
+			return false
+		}
+		if k.Kind == tui.KeyCtrlO {
+			i.toggleBtwToolExpansion()
 			return false
 		}
 		i.btwDialog.HandleKey(k, i.invalidate)
@@ -4495,7 +4520,7 @@ func (i *Interactive) openBtwDialog(args []string) {
 		return
 	}
 	seed := strings.TrimSpace(strings.Join(args, " "))
-	i.btwDialog.Open(i.cfg.Theme, i.agent, i.agent.System, i.cfg.Model, i.cfg.CWD, seed, i.compactModeEnabled(), tui.NormalizeInputStyle(i.cfg.TUIInputStyle) == tui.InputStyleLines, i.invalidate)
+	i.btwDialog.Open(i.cfg.Theme, i.agent, i.agent.System, i.cfg.Model, i.cfg.CWD, seed, i.compactModeEnabled(), i.cfg.FlatTools, tui.NormalizeInputStyle(i.cfg.TUIInputStyle) == tui.InputStyleLines, i.invalidate)
 	i.invalidate()
 }
 
@@ -5628,6 +5653,9 @@ func (i *Interactive) ConfirmToolCall(call core.ToolCallConfirmation) core.Confi
 			tc.Preview = call.Content
 		}
 		i.mu.Unlock()
+		if i.btwDialog != nil && i.btwDialog.Active() {
+			i.btwDialog.SetToolPreview(call.ID, call.Summary, call.Content)
+		}
 	}
 	i.confirmDialog.Enqueue(&confirmRequest{
 		toolName: call.Name,

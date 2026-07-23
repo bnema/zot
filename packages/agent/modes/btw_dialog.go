@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"strings"
 	"sync"
-	"time"
 
 	"github.com/patriceckhart/zot/packages/core"
 	"github.com/patriceckhart/zot/packages/provider"
@@ -18,11 +17,12 @@ import (
 type btwTurn struct {
 	User      string
 	Assistant string
+	Tools     []tui.ToolCallView
 	Err       string
 }
 
 // btwDialog is the side-chat overlay opened by /btw. It shows the
-// user's question, runs a one-off model call against the live
+// user's question, runs an isolated agent turn against the live
 // snapshot of the main session plus any prior side-chat turns,
 // renders the assistant reply through the markdown pipeline, and
 // keeps the main transcript completely untouched.
@@ -46,19 +46,15 @@ type btwDialog struct {
 	// completed main turn).
 	spin *spinner
 
-	// Frozen at Open() time so the side-chat keeps a stable view of
-	// the main thread even if a turn happens to land on the main
-	// agent while the dialog is open (rare but possible).
-	frozenSystem string
-	frozenMsgs   []provider.Message
+	// sideAgent owns an isolated transcript seeded from the main
+	// conversation. It uses the same tools and runtime hooks as the
+	// main agent, but has no persistence callbacks.
+	sideAgent *core.Agent
 
-	// Provider details captured at open time; used by send() to
-	// build the request without going back through the agent.
-	client provider.Client
-	model  string
-
-	// Theme cached so render() doesn't need it threaded through.
-	theme tui.Theme
+	// Theme and toolView are cached so render() uses the same tool-call
+	// presentation and collapse behavior as the main transcript.
+	theme    tui.Theme
+	toolView *tui.View
 
 	// cwd is the working directory used to resolve relative paths
 	// when the user presses Tab on a path-like token in the side-
@@ -96,18 +92,48 @@ func (d *btwDialog) Loading() bool {
 	return d.active && d.loading
 }
 
+// SetToolPreview attaches the side-effect-free confirmation preview to the
+// matching side-chat tool box before execution begins.
+func (d *btwDialog) SetToolPreview(id, summary, content string) {
+	if d == nil || id == "" {
+		return
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	for turnIdx := range d.turns {
+		if tool := findBtwTool(&d.turns[turnIdx], id); tool != nil {
+			tool.Args = summary
+			tool.Preview = content
+			return
+		}
+	}
+}
+
+// ToggleToolExpansion expands or collapses long tool results in the side chat.
+func (d *btwDialog) ToggleToolExpansion() {
+	if d == nil {
+		return
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.toolView != nil {
+		d.toolView.ExpandAll = !d.toolView.ExpandAll
+	}
+}
+
 // Open enters the side chat. agent supplies the live transcript and
 // system prompt, plus the underlying provider client to use for the
 // one-off completion. seed is an optional first question that gets
 // auto-submitted (so /btw <text> starts a conversation right away).
 // invalidate, if non-nil, is called after each state change so the
 // host redraw loop can pick up the update without polling.
-func (d *btwDialog) Open(th tui.Theme, agent *core.Agent, system, model, cwd, seed string, compactMode bool, lineInput bool, invalidate func()) {
+func (d *btwDialog) Open(th tui.Theme, agent *core.Agent, system, model, cwd, seed string, compactMode, flatTools bool, lineInput bool, invalidate func()) {
 	d.mu.Lock()
 	d.active = true
 	d.theme = th
 	d.compactMode = compactMode
 	d.lineInput = lineInput
+	d.toolView = &tui.View{Theme: th, CompactMode: compactMode, FlatTools: flatTools}
 	d.turns = nil
 	d.loading = false
 	d.cancel = nil
@@ -116,10 +142,7 @@ func (d *btwDialog) Open(th tui.Theme, agent *core.Agent, system, model, cwd, se
 		prompt = ""
 	}
 	d.editor = tui.NewEditor(prompt)
-	d.frozenSystem = system
-	d.frozenMsgs = agent.Messages()
-	d.client = agent.Client
-	d.model = model
+	d.sideAgent = newBtwAgent(agent, system, model)
 	d.cwd = cwd
 	d.mu.Unlock()
 
@@ -138,8 +161,8 @@ func (d *btwDialog) Close() {
 	d.loading = false
 	cancel := d.cancel
 	d.cancel = nil
-	d.frozenMsgs = nil
-	d.client = nil
+	d.sideAgent = nil
+	d.toolView = nil
 	d.mu.Unlock()
 	if cancel != nil {
 		cancel()
@@ -224,89 +247,125 @@ func (d *btwDialog) submit(invalidate func()) {
 	d.turns = append(d.turns, btwTurn{User: question})
 	turnIdx := len(d.turns) - 1
 
-	// Build the request: system + frozen main transcript + every
-	// prior side-chat turn (user + assistant) + this question.
-	msgs := append([]provider.Message(nil), d.frozenMsgs...)
-	for i, t := range d.turns {
-		msgs = append(msgs, provider.Message{
-			Role: provider.RoleUser,
-			Content: []provider.Content{
-				provider.TextBlock{Text: t.User},
-			},
-			Time: time.Now(),
-		})
-		// Only completed turns contribute an assistant reply; the
-		// in-flight one (turnIdx) hasn't got one yet.
-		if i < turnIdx && t.Assistant != "" {
-			msgs = append(msgs, provider.Message{
-				Role: provider.RoleAssistant,
-				Content: []provider.Content{
-					provider.TextBlock{Text: t.Assistant},
-				},
-				Time: time.Now(),
-			})
-		}
-	}
-
 	ctx, cancel := context.WithCancel(context.Background())
 	d.cancel = cancel
-	client := d.client
-	model := d.model
-	system := d.frozenSystem
+	agent := d.sideAgent
 	d.mu.Unlock()
 
 	go func() {
-		req := provider.Request{
-			Model:    model,
-			System:   system,
-			Messages: msgs,
-			// No tools: side chat is conversational, not agentic.
-		}
-		stream, err := client.Stream(ctx, req)
-		if err != nil {
-			d.completeTurn(turnIdx, "", err.Error())
+		err := agent.Prompt(ctx, question, nil, func(ev core.AgentEvent) {
+			d.handleAgentEvent(turnIdx, ev)
 			if invalidate != nil {
 				invalidate()
 			}
-			return
-		}
-
-		var reply strings.Builder
-		var finalErr error
-		for ev := range stream {
-			switch e := ev.(type) {
-			case provider.EventTextDelta:
-				reply.WriteString(e.Delta)
-			case provider.EventDone:
-				if e.Err != nil {
-					finalErr = e.Err
-				}
-			}
-		}
-
+		})
 		errMsg := ""
-		if finalErr != nil && ctx.Err() == nil {
-			errMsg = finalErr.Error()
+		if err != nil && ctx.Err() == nil {
+			errMsg = err.Error()
 		}
-		d.completeTurn(turnIdx, reply.String(), errMsg)
+		d.completeTurn(turnIdx, errMsg)
 		if invalidate != nil {
 			invalidate()
 		}
 	}()
 }
 
-// completeTurn fills in the assistant text or error for the turn at
-// idx and clears the loading state.
-func (d *btwDialog) completeTurn(idx int, assistant, errMsg string) {
+func newBtwAgent(main *core.Agent, system, model string) *core.Agent {
+	agent := core.NewAgent(main.Client, model, system, main.Tools)
+	agent.MaxSteps = main.MaxSteps
+	agent.Reasoning = main.Reasoning
+	agent.Temperature = main.Temperature
+	agent.MaxTokens = main.MaxTokens
+	agent.BeforeToolExecute = main.BeforeToolExecute
+	agent.BeforeTurn = main.BeforeTurn
+	agent.BeforeAssistantMessage = main.BeforeAssistantMessage
+	agent.MaxRetries = main.MaxRetries
+	agent.RetryBaseDelay = main.RetryBaseDelay
+	agent.OnEvent = main.OnEvent
+	agent.SetMessages(main.Messages())
+	return agent
+}
+
+func (d *btwDialog) handleAgentEvent(turnIdx int, ev core.AgentEvent) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if turnIdx < 0 || turnIdx >= len(d.turns) {
+		return
+	}
+	turn := &d.turns[turnIdx]
+	switch e := ev.(type) {
+	case core.EvTextDelta:
+		turn.Assistant += e.Delta
+	case core.EvToolUseStart:
+		turn.Tools = append(turn.Tools, tui.ToolCallView{ID: e.ID, Name: e.Name, Streaming: true})
+	case core.EvToolUseArgs:
+		if tool := findBtwTool(turn, e.ID); tool != nil {
+			tool.RawJSONBuf += e.Delta
+			if path, ok, _ := tui.ExtractPartialStringField(tool.RawJSONBuf, "path"); ok {
+				tool.LivePath = path
+			} else if path, ok, _ := tui.ExtractPartialStringField(tool.RawJSONBuf, "file_path"); ok {
+				tool.LivePath = path
+			}
+		}
+	case core.EvToolUseEnd:
+		if tool := findBtwTool(turn, e.ID); tool != nil {
+			tool.Streaming = false
+		}
+	case core.EvToolCall:
+		tool := findBtwTool(turn, e.ID)
+		if tool == nil {
+			turn.Tools = append(turn.Tools, tui.ToolCallView{ID: e.ID, Name: e.Name})
+			tool = &turn.Tools[len(turn.Tools)-1]
+		}
+		tool.Name = e.Name
+		tool.Args = tui.ShortArgs(e.Name, e.Args)
+		if tool.RawJSONBuf == "" {
+			tool.RawJSONBuf = string(e.Args)
+		}
+		tool.Streaming = false
+	case core.EvToolResult:
+		if tool := findBtwTool(turn, e.ID); tool != nil {
+			tool.Done = true
+			tool.Error = e.Result.IsError
+			var text strings.Builder
+			for _, content := range e.Result.Content {
+				if block, ok := content.(provider.TextBlock); ok {
+					if text.Len() > 0 {
+						text.WriteString("\n")
+					}
+					text.WriteString(block.Text)
+				}
+			}
+			tool.Result = text.String()
+		}
+	}
+}
+
+func findBtwTool(turn *btwTurn, id string) *tui.ToolCallView {
+	for j := range turn.Tools {
+		if turn.Tools[j].ID == id {
+			return &turn.Tools[j]
+		}
+	}
+	return nil
+}
+
+// completeTurn records an error, if any, and clears the loading state.
+func (d *btwDialog) completeTurn(idx int, errMsg string) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if idx < 0 || idx >= len(d.turns) {
 		return
 	}
-	d.turns[idx].Assistant = assistant
 	d.turns[idx].Err = errMsg
 	d.loading = false
 	d.cancel = nil
+}
+
+func renderBtwConfirmation(th tui.Theme, width int, btw *btwDialog, confirm *confirmDialog) []string {
+	rows := padDialogFrame(btw.Render(th, width))
+	rows = append(rows, "")
+	return append(rows, padDialogFrame(confirm.Render(th, width))...)
 }
 
 // Render returns the side-chat panel lines. Called every frame
@@ -328,6 +387,14 @@ func (d *btwDialog) Render(th tui.Theme, width int) []string {
 	for _, t := range d.turns {
 		out = append(out, "")
 		out = append(out, btwUserBubbleRows(th, t.User, width-2, d.compactMode)...)
+		if len(t.Tools) > 0 {
+			// Match the main transcript's inter-message separator between
+			// the user bubble and the first tool box.
+			out = append(out, "")
+		}
+		for _, tool := range t.Tools {
+			out = append(out, d.toolView.RenderToolCall(tool, width)...)
+		}
 		if t.Assistant != "" {
 			out = append(out, "")
 			out = append(out, renderDialogMarkdownRows(t.Assistant, th, width)...)
@@ -397,6 +464,12 @@ func (d *btwDialog) CursorPos(width int) (row, col int) {
 	for _, t := range d.turns {
 		editorOffset++ // blank
 		editorOffset += len(btwUserBubbleRows(d.theme, t.User, width-2, d.compactMode))
+		if len(t.Tools) > 0 {
+			editorOffset++ // main transcript's user-to-tool separator
+		}
+		for _, tool := range t.Tools {
+			editorOffset += len(d.toolView.RenderToolCall(tool, width))
+		}
 		if t.Assistant != "" {
 			editorOffset++ // blank
 			editorOffset += len(renderDialogMarkdownRows(t.Assistant, d.theme, width))
