@@ -249,6 +249,12 @@ func looksLikePath(s string) bool {
 }
 
 func (s *Sandbox) checkCommandPath(path string) error {
+	// The platform null device is safe for shell input/output redirection even
+	// though it lives outside the sandbox root. Keep this allowlist exact so
+	// other device paths and lookalike descendants still fail closed.
+	if path == os.DevNull {
+		return nil
+	}
 	rootAbs, err := canonical(s.Root)
 	if err != nil {
 		return fmt.Errorf("sandbox root: %w", err)

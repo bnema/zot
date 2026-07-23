@@ -75,6 +75,29 @@ func TestBashToolRejectsOutsidePathWhenLocked(t *testing.T) {
 	}
 }
 
+func TestSandboxAllowsNullDeviceRedirectionWhenLocked(t *testing.T) {
+	sb := NewSandbox(t.TempDir())
+	sb.Lock()
+
+	allowed := []string{
+		"command -v go >" + os.DevNull + " 2>&1",
+		"cat <" + os.DevNull,
+		"cat \"" + os.DevNull + "\"",
+	}
+	for _, command := range allowed {
+		if err := sb.CheckCommand(command); err != nil {
+			t.Errorf("expected %q to be allowed: %v", command, err)
+		}
+	}
+
+	blocked := []string{"cat /dev/zero", "cat /dev/null/child"}
+	for _, command := range blocked {
+		if err := sb.CheckCommand(command); err == nil {
+			t.Errorf("expected null-device lookalike %q to be blocked", command)
+		}
+	}
+}
+
 // TestSandboxAllowsCDIntoSubdir is the regression for issue #39: a `cd`
 // into a subdirectory of the sandbox root, spelled as an absolute path,
 // must be allowed. The old guard rejected any `cd /...` outright, which
