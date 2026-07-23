@@ -1012,6 +1012,8 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 		Agent:                      ag,
 		InitialInput:               args.Prompt,
 		AuthManager:                mgr,
+		LlamaCPPConfig:             ResolveLlamaCPPConfig,
+		RefreshLlamaCPPModels:      RefreshLlamaCPPModels,
 		BuildAgent:                 buildAgent,
 		SetKimiCLIFallbackDisabled: SetKimiCLIFallbackDisabled,
 		BuildAgentFor:              buildAgentFor,

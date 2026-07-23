@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	providerpkg "github.com/patriceckhart/zot/packages/provider"
 	"github.com/patriceckhart/zot/packages/provider/auth"
 )
 
@@ -216,6 +217,29 @@ func SaveConfig(c Config) error {
 // AuthStoreFor returns the auth.Store backed by AuthPath().
 func AuthStoreFor() *auth.Store { return auth.NewStore(AuthPath()) }
 
+// ResolveLlamaCPPConfig resolves the router URL and optional API key. The
+// environment overrides the credential stored through /login.
+func ResolveLlamaCPPConfig() (baseURL, apiKey string, err error) {
+	baseURL = strings.TrimSpace(os.Getenv("LLAMA_BASE_URL"))
+	apiKey = strings.TrimSpace(os.Getenv("LLAMA_API_KEY"))
+	if baseURL == "" {
+		var storedKey string
+		var loadErr error
+		baseURL, storedKey, loadErr = AuthStoreFor().EndpointCredential(providerpkg.LlamaCPPProviderID)
+		if loadErr != nil {
+			return "", "", loadErr
+		}
+		if apiKey == "" {
+			apiKey = storedKey
+		}
+	}
+	if baseURL == "" {
+		return "", apiKey, nil
+	}
+	baseURL, err = providerpkg.NormalizeLlamaCPPURL(baseURL)
+	return baseURL, apiKey, err
+}
+
 // ResolveCredential returns the credential (api key or oauth access
 // token), the method ("apikey"/"oauth"), and an error when no
 // credential is available.
@@ -282,6 +306,14 @@ func ResolveCredentialFull(provider, explicit string) (cred, method, accountID s
 	case "deepseek":
 		if v := os.Getenv("DEEPSEEK_API_KEY"); v != "" {
 			return v, "apikey", "", nil
+		}
+	case "llama.cpp":
+		baseURL, apiKey, resolveErr := ResolveLlamaCPPConfig()
+		if resolveErr != nil {
+			return "", "", "", resolveErr
+		}
+		if baseURL != "" {
+			return firstNonEmpty(apiKey, "local"), "apikey", "", nil
 		}
 	case "moonshotai", "moonshotai-cn":
 		// Moonshot direct API (separate from kimi-coding, which is the

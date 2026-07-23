@@ -247,6 +247,7 @@ Type `/` in the TUI to open the autocomplete popup. Available commands:
 | `/login` | Log in via API key or subscription (opens a dialog). |
 | `/logout [provider]` | Clear credentials for any logged-in provider, or all when omitted. `/logout openai-codex` clears ChatGPT/Codex subscription auth while preserving a public OpenAI API key; `/logout kimi` also disables fallback to the official Kimi Code CLI token until you log in to Kimi through zot again. |
 | `/model` | Pick a model from a list (or `/model <id>` to set directly). |
+| `/llama` | Connect to the configured llama.cpp router, load, unload, or remove cached models, and search/download GGUF models from Hugging Face with live progress. Shown after llama.cpp login is configured. |
 | `/sessions` | Resume a previous session for this directory. |
 | `/session` | Four ops on the current session: `export` to a portable `.zotsession` file, `import` one back in, `fork` from a past user message into a new branch, `tree` to switch between branches. Opens a picker without an argument; direct forms: `/session export [path]`, `/session import <path>`, `/session fork`, `/session tree`. Default export destination is `~/Downloads`. |
 | `/jump` | Scroll the chat to a previous turn (or `/jump <text>` to filter). |
@@ -389,9 +390,9 @@ zot's built-in provider catalog includes:
 - **Subscription-capable**: Anthropic Claude Pro/Max (`anthropic`), OpenAI Codex / ChatGPT Plus/Pro (`openai-codex`), Kimi Code (`kimi`), SuperGrok/X Premium (`xai`), GitHub Copilot (`github-copilot`).
 - **Direct API providers**: Anthropic, OpenAI Chat Completions, OpenAI Responses, DeepSeek, Google Gemini, Kimi/Moonshot, Moonshot CN, Groq, Cerebras, xAI, Together AI, Hugging Face Router, OpenRouter, Mistral, Z.AI, Xiaomi/MiMo token-plan regions, MiniMax global/CN, Fireworks, Vercel AI Gateway, OpenCode/OpenCode Go.
 - **Cloud/platform providers**: Amazon Bedrock, Google Vertex AI, Azure OpenAI, Cloudflare Workers AI, Cloudflare AI Gateway.
-- **Local/compatible**: Ollama and OpenAI-compatible local endpoints via `--base-url`.
+- **Local/compatible**: Ollama, llama.cpp router mode, and OpenAI-compatible local endpoints via `--base-url`.
 
-Use `/login` to store API keys or subscription credentials. `/model` only shows models from providers that are currently available from env vars, `auth.json`, Kimi CLI fallback, or local Ollama.
+Use `/login` to store API keys or subscription credentials. `/model` only shows models from providers that are currently available from env vars, `auth.json`, Kimi CLI fallback, local Ollama, or a configured llama.cpp router.
 
 ## Models
 
@@ -632,6 +633,69 @@ You can also add models to your `models.json` so you don't need flags every time
 ```
 
 The `ollama` provider uses the OpenAI chat completions protocol internally, so it also works with any OpenAI-compatible server (vLLM, LM Studio, LocalAI, etc.).
+
+### Local models with llama.cpp router mode
+
+zot can connect to a recent [llama.cpp](https://github.com/ggml-org/llama.cpp) router, manage its GGUF files, and use loaded models through the router's OpenAI-compatible inference API. This is separate from Ollama. An Ollama server normally listens on port `11434` and should use zot's `ollama` provider instead.
+
+Install or update llama.cpp. On macOS with Homebrew:
+
+```bash
+brew install llama.cpp
+# or, when already installed
+brew upgrade llama.cpp
+```
+
+Create a directory for GGUF files and start `llama-server` without `--model`, `-m`, or `-hf`. Supplying one of those options starts a single model rather than the router API zot needs.
+
+```bash
+mkdir -p ~/llama-models
+
+llama-server \
+  --models-dir ~/llama-models \
+  --no-models-autoload \
+  --jinja \
+  --host 127.0.0.1 \
+  --port 8080 \
+  -ngl 999 \
+  -c 32768
+```
+
+`--no-models-autoload` leaves load decisions to `/llama`. `--jinja` enables model chat templates and improves tool-call compatibility. `-ngl 999` requests maximum GPU offload, while `-c 32768` limits each loaded model to a 32K context. Adjust these values for your hardware.
+
+Confirm that router mode is active before configuring zot:
+
+```bash
+curl http://127.0.0.1:8080/health
+curl http://127.0.0.1:8080/models
+```
+
+The models request must return JSON with a `data` array. A 404 usually means the server is outdated, running on a different port, or was started in single-model mode.
+
+In zot, run `/login`, choose **api key**, and select **llama.cpp**. Enter `http://127.0.0.1:8080` as the router URL and leave the API key empty for a local-only server. Do not enter `/v1`; zot derives the inference URL itself. The saved URL and optional key live in `$ZOT_HOME/auth.json`.
+
+You can configure the same connection through environment variables:
+
+```bash
+export LLAMA_BASE_URL=http://127.0.0.1:8080
+export LLAMA_API_KEY=optional-secret
+```
+
+When using a key, launch the server with the matching `--api-key` value. Keep `--host 127.0.0.1` unless remote clients must reach the router.
+
+Run `/llama` to:
+
+- inspect the router's current model states
+- search Hugging Face for GGUF repositories
+- choose a quantization and download it with byte progress
+- explicitly load or unload a model
+- press `d` to ask the router to remove a downloaded cache model after confirmation
+
+Models discovered through `--models-dir` or a preset cannot be removed by zot. Delete those files from their configured source instead. The router removes the selected GGUF from its Hugging Face cache, but some llama.cpp versions retain shared repository artifacts such as `mmproj` files. Remove the repository's cache directory manually if those artifacts are no longer needed. Hugging Face search uses `HF_TOKEN` when available. Gated repositories require prior access approval, and the `llama-server` process also needs an authorized `HF_TOKEN` because the server performs the download.
+
+Opening `/model` refreshes the router and lists every loaded model under provider `llama.cpp`. Unloaded models are intentionally omitted because they cannot answer inference requests. Load them through `/llama` first, then select them through `/model`.
+
+A model installed through Ollama is kept in Ollama's internal storage and is not automatically available as a llama.cpp GGUF file. Download a GGUF copy through `/llama` or place GGUF files in `~/llama-models`, then restart the router so it discovers files added manually.
 
 ## Inline images
 

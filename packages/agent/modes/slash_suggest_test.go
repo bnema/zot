@@ -21,6 +21,17 @@ func TestSlashSuggesterHidesUnjailUntilJailed(t *testing.T) {
 	}
 }
 
+func TestSlashSuggesterShowsLlamaOnlyWhenConfigured(t *testing.T) {
+	s := newSlashSuggester()
+	if got := commandNames(s.matches("/llama")); contains(got, "/llama") {
+		t.Fatalf("/llama visible without login: %v", got)
+	}
+	s.SetLlamaConfigured(true)
+	if got := commandNames(s.matches("/llama")); !contains(got, "/llama") {
+		t.Fatalf("/llama missing with login: %v", got)
+	}
+}
+
 func TestSlashSuggesterHasSwarm(t *testing.T) {
 	s := newSlashSuggester()
 	if got := commandNames(s.matches("/sw")); !contains(got, "/swarm") {

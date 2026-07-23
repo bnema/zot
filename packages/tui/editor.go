@@ -25,6 +25,10 @@ type Editor struct {
 	Prompt   string
 	MaxWidth int
 
+	// Mask replaces rendered input runes with asterisks while preserving the
+	// real buffer for submission. It is intended for secrets such as API keys.
+	Mask bool
+
 	// lastRenderWidth is the column count passed to the most recent
 	// Render() call. Up/Down key handling needs this to walk the
 	// same visual layout the user sees: a logical line that wraps to
@@ -766,13 +770,17 @@ func (e *Editor) Render(width int) (lines []string, visualRow, visualCol int) {
 	indent := strings.Repeat(" ", promptLen)
 
 	for r, line := range e.Lines {
+		renderedLine := line
+		if e.Mask {
+			renderedLine = strings.Repeat("*", len([]rune(line)))
+		}
 		var prefix string
 		if r == 0 {
 			prefix = plainPrompt
 		} else {
 			prefix = indent
 		}
-		wrapped := wrapLine(prefix+line, width, indent)
+		wrapped := wrapLine(prefix+renderedLine, width, indent)
 		if r == e.CursorR {
 			// Compute where CursorC lands inside the wrapped rows by
 			// walking the wrapped output character-by-character and
@@ -781,7 +789,7 @@ func (e *Editor) Render(width int) (lines []string, visualRow, visualCol int) {
 			// answer under word-wrap, where a simple (promptLen+col)/width
 			// formula overshoots when wrapLine broke on a space.
 			targetRunes := e.CursorC
-			row, col := locateCursor(wrapped, prefix, line, targetRunes, indent)
+			row, col := locateCursor(wrapped, prefix, renderedLine, targetRunes, indent)
 			visualRow = len(lines) + row
 			visualCol = col
 		}

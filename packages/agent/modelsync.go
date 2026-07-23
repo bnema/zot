@@ -114,7 +114,7 @@ func ValidateAndRepairConfig() {
 					cfg.Model, m.Provider, cfg.Provider, fix)
 				cfg.Model = fix
 				changed = true
-			} else if cfg.Provider != "ollama" {
+			} else if cfg.Provider != "ollama" && cfg.Provider != provider.LlamaCPPProviderID {
 				// Model id not in any catalog. Reset to provider's default.
 				fix := defaultModelForProvider(cfg.Provider)
 				fmt.Fprintf(os.Stderr,
@@ -141,6 +141,31 @@ func ValidateAndRepairConfig() {
 // the baked-in catalog if this fails.
 func RefreshModelsAsync() {
 	go refreshModels()
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		_ = RefreshLlamaCPPModels(ctx)
+	}()
+}
+
+// RefreshLlamaCPPModels adds the router's currently loaded models to the
+// active catalog. Unloaded models remain in the management UI and cannot be
+// selected for inference until they are loaded.
+func RefreshLlamaCPPModels(ctx context.Context) error {
+	baseURL, apiKey, err := ResolveLlamaCPPConfig()
+	if err != nil || baseURL == "" {
+		return err
+	}
+	client, err := provider.NewLlamaCPPClient(baseURL, apiKey)
+	if err != nil {
+		return err
+	}
+	models, err := client.List(ctx, false)
+	if err != nil {
+		return err
+	}
+	provider.SetManagedModels(provider.LlamaCPPModels(models, client.ServerURL))
+	return nil
 }
 
 func refreshModels() {

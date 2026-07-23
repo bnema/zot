@@ -73,6 +73,8 @@ func ProviderLabel(id string) string {
 		return "Cloudflare AI Gateway"
 	case "ollama":
 		return "Ollama"
+	case LlamaCPPProviderID:
+		return "llama.cpp"
 	}
 	return titleProviderID(id)
 }

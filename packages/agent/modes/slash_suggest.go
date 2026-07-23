@@ -25,7 +25,7 @@ type slashCommand struct {
 // the streaming response without trouble.
 func slashCancelsTurn(head string) bool {
 	switch head {
-	case "/clear", "/compact", "/logout", "/login", "/model", "/reload-ext", "/cd":
+	case "/clear", "/compact", "/logout", "/login", "/model", "/llama", "/reload-ext", "/cd":
 		return true
 	}
 	return false
@@ -38,6 +38,7 @@ var slashCatalog = []slashCommand{
 	{Name: "/login", Desc: "log in via api key or subscription"},
 	{Name: "/logout", Desc: "clear a provider's credentials"},
 	{Name: "/model", Desc: "pick a model (or /model <id>)"},
+	{Name: "/llama", Desc: "manage llama.cpp router models"},
 	{Name: "/sessions", Desc: "resume a previous session for this directory"},
 	{Name: "/session", Desc: "export the current session to a .zotsession file, or import one"},
 	{Name: "/jump", Desc: "scroll the chat to a previous turn (or /jump <text>)"},
@@ -62,9 +63,9 @@ const slashSuggestPageSize = 8
 type slashSuggester struct {
 	cursor int
 
-	// jailed tracks whether the sandbox is currently locked. It is used
-	// to hide state-dependent commands from the autocomplete popup.
-	jailed bool
+	// jailed and llamaConfigured drive state-dependent command visibility.
+	jailed          bool
+	llamaConfigured bool
 
 	// extra are commands contributed by extensions, refreshed each
 	// frame from the extension manager. Empty when no extensions
@@ -92,6 +93,10 @@ func (s *slashSuggester) SetExtra(cmds []slashCommand) {
 // SetJailed updates the current sandbox state. Called once per render
 // so state-dependent commands can appear/disappear immediately.
 func (s *slashSuggester) SetJailed(jailed bool) { s.jailed = jailed }
+
+// SetLlamaConfigured shows the management command only when a router login is
+// available.
+func (s *slashSuggester) SetLlamaConfigured(configured bool) { s.llamaConfigured = configured }
 
 // allCatalog returns slashCatalog plus the current extra commands
 // (extension-registered) with a header divider between the two
@@ -133,7 +138,7 @@ func (s *slashSuggester) baseCatalog() []slashCommand {
 	}
 	out := make([]slashCommand, 0, len(slashCatalog)-1)
 	for _, c := range slashCatalog {
-		if c.Name == hide {
+		if c.Name == hide || (c.Name == "/llama" && !s.llamaConfigured) {
 			continue
 		}
 		out = append(out, c)

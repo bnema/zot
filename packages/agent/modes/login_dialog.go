@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"sort"
+	"strings"
 
 	"github.com/patriceckhart/zot/packages/provider"
 	"github.com/patriceckhart/zot/packages/provider/auth"
@@ -20,6 +21,8 @@ const (
 	loginStepClosed    loginStep = iota
 	loginStepMethod              // pick apikey vs subscription
 	loginStepProvider            // pick anthropic vs openai vs kimi
+	loginStepLlamaURL            // enter and validate llama.cpp router URL
+	loginStepLlamaKey            // enter optional llama.cpp API key
 	loginStepWaiting             // browser open, waiting for callback
 	loginStepPasteCode           // user pastes the auth code here
 	loginStepInfo                // informational setup guidance
@@ -31,16 +34,19 @@ const loginProviderPageSize = 8
 // loginDialog is a tiny inline dialog rendered above the editor while
 // the user picks their login method and provider.
 type loginDialog struct {
-	step      loginStep
-	method    string // "apikey" | "oauth"
-	provider  string // "anthropic" | "openai" | "openai-codex" | "kimi" | "google"
-	message   string
-	success   bool
-	url       string
-	cursor    int
-	codeEd    *tui.Editor
-	infoTitle string
-	infoLines []string
+	step          loginStep
+	method        string // "apikey" | "oauth"
+	provider      string // "anthropic" | "openai" | "openai-codex" | "kimi" | "google"
+	message       string
+	success       bool
+	url           string
+	cursor        int
+	providerQuery string
+	codeEd        *tui.Editor
+	llamaEd       *tui.Editor
+	llamaURL      string
+	infoTitle     string
+	infoLines     []string
 
 	// status is a snapshot of the current login state for each
 	// provider, captured when Open() runs. Rendered above the
@@ -72,6 +78,9 @@ func (d *loginDialog) Open(zotHome string) {
 	d.success = false
 	d.url = ""
 	d.cursor = 0
+	d.providerQuery = ""
+	d.llamaEd = nil
+	d.llamaURL = ""
 	d.infoTitle = ""
 	d.infoLines = nil
 	d.status = map[string]string{}
@@ -139,12 +148,19 @@ func (d *loginDialog) Render(th tui.Theme, width int) []string {
 		}
 		lines = append(lines, frameRule(th, width))
 	case loginStepProvider:
-		opts := providersForMethod(d.method)
+		opts := d.providerOptions()
 		lines = append(lines, frameHeader(th, "login - "+d.method, width))
 		for _, l := range d.renderStatusLines(th) {
 			lines = append(lines, l)
 		}
-		lines = append(lines, th.FG256(th.Muted, "pick a provider (↑/↓, enter, esc to cancel)"))
+		hint := "pick a provider (↑/↓, enter, esc to cancel) - type to filter"
+		if d.providerQuery != "" {
+			hint = fmt.Sprintf("filter: %s (%d match)", d.providerQuery, len(opts))
+			if len(opts) != 1 {
+				hint = fmt.Sprintf("filter: %s (%d matches)", d.providerQuery, len(opts))
+			}
+		}
+		lines = append(lines, th.FG256(th.Muted, hint))
 		start, end := d.providerPage(len(opts))
 		for i := start; i < end; i++ {
 			o := opts[i]
@@ -161,10 +177,34 @@ func (d *loginDialog) Render(th tui.Theme, width int) []string {
 				lines = append(lines, th.FG256(th.Muted, label)+th.FG256(th.Accent, tag))
 			}
 		}
-		if len(opts) > loginProviderPageSize {
+		if len(opts) == 0 {
+			lines = append(lines, th.FG256(th.Muted, "  no providers match "+fmt.Sprintf("%q", d.providerQuery)))
+		} else if len(opts) > loginProviderPageSize {
 			lines = append(lines, th.FG256(th.Muted, fmt.Sprintf("  (%d/%d)", d.cursor+1, len(opts))))
 		}
 		lines = append(lines, frameRule(th, width))
+	case loginStepLlamaURL:
+		lines = append(lines, frameHeader(th, "login - api key - llama.cpp", width))
+		lines = append(lines, th.FG256(th.Muted, "llama.cpp router URL:"))
+		if d.llamaEd == nil {
+			d.llamaEd = tui.NewEditor(th.AccentBar(th.Accent))
+		}
+		edLines, _, _ := d.llamaEd.Render(width - 2)
+		lines = append(lines, edLines...)
+		if d.message != "" {
+			lines = append(lines, th.FG256(th.Error, d.message))
+		}
+		lines = append(lines, "", th.FG256(th.Muted, "enter continues - esc cancels"), frameRule(th, width))
+	case loginStepLlamaKey:
+		lines = append(lines, frameHeader(th, "login - api key - llama.cpp", width))
+		lines = append(lines, th.FG256(th.Muted, "router: "+d.llamaURL), "", th.FG256(th.Muted, "API key (optional):"))
+		if d.llamaEd == nil {
+			d.llamaEd = tui.NewEditor(th.AccentBar(th.Accent))
+		}
+		d.llamaEd.Mask = true
+		edLines, _, _ := d.llamaEd.Render(width - 2)
+		lines = append(lines, edLines...)
+		lines = append(lines, "", th.FG256(th.Muted, "enter saves - esc cancels"), frameRule(th, width))
 	case loginStepWaiting:
 		lines = append(lines, frameHeader(th, "login - "+d.method+" - "+providerLabel(d.provider), width))
 		lines = append(lines, th.FG256(th.Muted, "open this URL in a browser:"))
@@ -276,6 +316,21 @@ func providersForMethod(method string) []string {
 // providerLabel returns the user-facing label for a provider id.
 func providerLabel(id string) string { return provider.ProviderLabel(id) }
 
+func (d *loginDialog) providerOptions() []string {
+	providers := providersForMethod(d.method)
+	needle := normalizeModelQuery(d.providerQuery)
+	if needle == "" {
+		return providers
+	}
+	filtered := make([]string, 0, len(providers))
+	for _, id := range providers {
+		if strings.Contains(normalizeModelQuery(id+" "+providerLabel(id)), needle) {
+			filtered = append(filtered, id)
+		}
+	}
+	return filtered
+}
+
 func providerPickerTag(method, status string) string {
 	switch method {
 	case "apikey":
@@ -377,7 +432,10 @@ type loginDialogAction struct {
 	StartAPIKey bool
 	StartOAuth  bool
 	StartManual bool
+	SaveLlama   bool
 	Provider    string
+	LlamaURL    string
+	LlamaAPIKey string
 	Close       bool
 	SubmitCode  string
 }
@@ -389,6 +447,8 @@ func (d *loginDialog) HandleKey(k tui.Key) loginDialogAction {
 		return d.handleMethodKey(k)
 	case loginStepProvider:
 		return d.handleProviderKey(k)
+	case loginStepLlamaURL, loginStepLlamaKey:
+		return d.handleLlamaKey(k)
 	case loginStepWaiting:
 		return d.handleWaitingKey(k)
 	case loginStepPasteCode:
@@ -425,6 +485,7 @@ func (d *loginDialog) handleMethodKey(k tui.Key) loginDialogAction {
 		}
 		d.step = loginStepProvider
 		d.cursor = 0
+		d.providerQuery = ""
 	}
 	return loginDialogAction{}
 }
@@ -436,7 +497,7 @@ func (d *loginDialog) handleProviderKey(k tui.Key) loginDialogAction {
 			d.cursor--
 		}
 	case tui.KeyDown:
-		providers := providersForMethod(d.method)
+		providers := d.providerOptions()
 		if d.cursor < len(providers)-1 {
 			d.cursor++
 		}
@@ -446,20 +507,39 @@ func (d *loginDialog) handleProviderKey(k tui.Key) loginDialogAction {
 			d.cursor = 0
 		}
 	case tui.KeyPageDown:
-		providers := providersForMethod(d.method)
-		d.cursor += loginProviderPageSize
-		if d.cursor >= len(providers) {
-			d.cursor = len(providers) - 1
+		providers := d.providerOptions()
+		if len(providers) > 0 {
+			d.cursor += loginProviderPageSize
+			if d.cursor >= len(providers) {
+				d.cursor = len(providers) - 1
+			}
+		}
+	case tui.KeyBackspace:
+		if len(d.providerQuery) > 0 {
+			runes := []rune(d.providerQuery)
+			d.providerQuery = string(runes[:len(runes)-1])
+			d.cursor = 0
+		}
+	case tui.KeyRune:
+		if !k.Alt && !k.Ctrl && k.Rune >= 0x20 && k.Rune < 0x7f {
+			d.providerQuery += string(k.Rune)
+			d.cursor = 0
 		}
 	case tui.KeyEsc:
 		d.Close()
 		return loginDialogAction{Close: true}
 	case tui.KeyEnter:
-		providers := providersForMethod(d.method)
+		providers := d.providerOptions()
 		if d.cursor < 0 || d.cursor >= len(providers) {
 			return loginDialogAction{}
 		}
 		d.provider = providers[d.cursor]
+		if d.method == "apikey" && d.provider == provider.LlamaCPPProviderID {
+			d.step = loginStepLlamaURL
+			d.llamaEd = nil
+			d.message = ""
+			return loginDialogAction{}
+		}
 		d.step = loginStepWaiting
 		if d.method == "apikey" {
 			return loginDialogAction{StartAPIKey: true, Provider: d.provider}
@@ -467,6 +547,37 @@ func (d *loginDialog) handleProviderKey(k tui.Key) loginDialogAction {
 		return loginDialogAction{StartOAuth: true, Provider: d.provider}
 	}
 	return loginDialogAction{}
+}
+
+func (d *loginDialog) handleLlamaKey(k tui.Key) loginDialogAction {
+	if k.Kind == tui.KeyEsc {
+		d.Close()
+		return loginDialogAction{Close: true}
+	}
+	if d.llamaEd == nil {
+		d.llamaEd = tui.NewEditor("")
+	}
+	if !d.llamaEd.HandleKey(k) {
+		return loginDialogAction{}
+	}
+	value := strings.TrimSpace(d.llamaEd.SubmitValue())
+	d.llamaEd.Clear()
+	if d.step == loginStepLlamaURL {
+		normalized, err := provider.NormalizeLlamaCPPURL(value)
+		if err != nil {
+			d.message = err.Error()
+			return loginDialogAction{}
+		}
+		d.llamaURL = normalized
+		d.message = ""
+		d.llamaEd.Mask = true
+		d.step = loginStepLlamaKey
+		return loginDialogAction{}
+	}
+	return loginDialogAction{
+		SaveLlama: true, Provider: provider.LlamaCPPProviderID,
+		LlamaURL: d.llamaURL, LlamaAPIKey: value,
+	}
 }
 
 // ShowWaiting transitions to the waiting state with the given URL.
@@ -534,10 +645,21 @@ func (d *loginDialog) handlePasteCodeKey(k tui.Key) loginDialogAction {
 }
 
 // CursorPos returns the absolute row/col inside the dialog where the
-// terminal cursor should sit (paste-code step). Returns -1, -1 if the
-// dialog is not in an input-expecting state. The host uses this to
-// place the real blinking cursor on the code input.
+// terminal cursor should sit for code, URL, and API-key input. Returns -1,
+// -1 if the dialog is not in an input-expecting state. The host uses this to
+// place the real blinking cursor on the active input.
 func (d *loginDialog) CursorPos(width int) (row, col int) {
+	if d.step == loginStepLlamaURL || d.step == loginStepLlamaKey {
+		if d.llamaEd == nil {
+			return -1, -1
+		}
+		_, eRow, eCol := d.llamaEd.Render(width - 2)
+		baseOffset := 1 /*frameHeader*/ + 1 /*padDialogFrame blank*/ + 1 /*prompt*/
+		if d.step == loginStepLlamaKey {
+			baseOffset += 2 // router line + blank
+		}
+		return baseOffset + eRow, eCol
+	}
 	if d.codeEd == nil {
 		return -1, -1
 	}

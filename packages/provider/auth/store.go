@@ -29,8 +29,9 @@ type Credentials struct {
 // use either APIKey or OAuth; OpenAI may store both so the public API
 // route and ChatGPT/Codex subscription route can coexist.
 type ProviderCreds struct {
-	APIKey string      `json:"api_key,omitempty"`
-	OAuth  *OAuthToken `json:"oauth,omitempty"`
+	APIKey  string      `json:"api_key,omitempty"`
+	BaseURL string      `json:"base_url,omitempty"`
+	OAuth   *OAuthToken `json:"oauth,omitempty"`
 }
 
 // OAuthToken is an OAuth 2 token set with refresh support.
@@ -62,7 +63,7 @@ func (t *OAuthToken) Expired() bool {
 // Has reports whether at least one credential is present for provider.
 func (c *Credentials) Has(provider string) bool {
 	p := c.get(provider)
-	return p != nil && (p.APIKey != "" || p.OAuth != nil)
+	return p != nil && (p.APIKey != "" || p.BaseURL != "" || p.OAuth != nil)
 }
 
 // Method returns "apikey", "oauth", or "" for the given provider.
@@ -71,7 +72,7 @@ func (c *Credentials) Method(provider string) string {
 	if p == nil {
 		return ""
 	}
-	if p.APIKey != "" {
+	if p.APIKey != "" || p.BaseURL != "" {
 		return "apikey"
 	}
 	if p.OAuth != nil {
@@ -107,7 +108,7 @@ func (c *Credentials) setAdditional(provider string, p ProviderCreds) {
 	if c.AdditionalAPIKeyCreds == nil {
 		c.AdditionalAPIKeyCreds = map[string]ProviderCreds{}
 	}
-	if p.APIKey == "" && p.OAuth == nil {
+	if p.APIKey == "" && p.BaseURL == "" && p.OAuth == nil {
 		delete(c.AdditionalAPIKeyCreds, provider)
 		if len(c.AdditionalAPIKeyCreds) == 0 {
 			c.AdditionalAPIKeyCreds = nil
@@ -173,6 +174,32 @@ func (s *Store) SetAPIKey(provider, key string) error {
 		p.OAuth = nil
 	}
 	return s.saveLocked(c)
+}
+
+// SetEndpointCredential stores a base URL and optional API key for a
+// self-hosted provider.
+func (s *Store) SetEndpointCredential(provider, baseURL, key string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	c, err := s.loadLocked()
+	if err != nil {
+		return err
+	}
+	c.setAdditional(provider, ProviderCreds{APIKey: key, BaseURL: baseURL})
+	return s.saveLocked(c)
+}
+
+// EndpointCredential returns a stored base URL and optional API key.
+func (s *Store) EndpointCredential(provider string) (baseURL, key string, err error) {
+	c, err := s.Load()
+	if err != nil {
+		return "", "", err
+	}
+	p := c.get(provider)
+	if p == nil {
+		return "", "", nil
+	}
+	return p.BaseURL, p.APIKey, nil
 }
 
 // SetOAuth replaces the OAuth token for provider and saves to disk.

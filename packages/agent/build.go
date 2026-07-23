@@ -155,7 +155,7 @@ func defaultModelForProvider(prov string) string {
 		return "deepseek-v4-pro"
 	case "google":
 		return "gemini-2.5-pro"
-	case "ollama":
+	case "ollama", provider.LlamaCPPProviderID:
 		return ""
 	case "moonshotai", "moonshotai-cn":
 		return "kimi-k2.6"
@@ -210,7 +210,7 @@ func defaultModelForProvider(prov string) string {
 // auto-fallback logic that picks any logged-in provider when the user's
 // preferred one has no credentials.
 var knownProviders = []string{
-	"anthropic", "openai", "openai-codex", "openai-responses", "kimi", "deepseek", "google", "ollama",
+	"anthropic", "openai", "openai-codex", "openai-responses", "kimi", "deepseek", "google", "ollama", provider.LlamaCPPProviderID,
 	"moonshotai", "moonshotai-cn",
 	"cerebras", "groq", "xai", "together", "huggingface", "openrouter",
 	"mistral", "zai",
@@ -271,6 +271,8 @@ var providerAliases = map[string]string{
 	"cloudflare":   "cloudflare-workers-ai",
 	"workers-ai":   "cloudflare-workers-ai",
 	"hf":           "huggingface",
+	"llama":        provider.LlamaCPPProviderID,
+	"llamacpp":     provider.LlamaCPPProviderID,
 }
 
 // canonicalProvider normalises a user-supplied provider name: trims
@@ -379,10 +381,11 @@ func Resolve(args Args, requireCred bool) (Resolved, error) {
 		// amazon-bedrock setup (AWS_BEARER_TOKEN_BEDROCK / AWS_PROFILE /
 		// IAM keys) when no config.json pins the provider, such as after
 		// pointing ZOT_HOME at a fresh home dir. Iteration order of
-		// knownProviders defines fallback priority. ollama is skipped:
-		// it has no credential and would always "match".
+		// knownProviders defines fallback priority. Local providers without a
+		// default model are skipped because selecting either one here would
+		// fail before the user can choose a model.
 		for _, other := range knownProviders {
-			if other == provName || other == "ollama" {
+			if other == provName || other == "ollama" || other == provider.LlamaCPPProviderID {
 				continue
 			}
 			if c, m, a, err := ResolveCredentialFull(other, args.APIKey); err == nil {
@@ -395,8 +398,8 @@ func Resolve(args Args, requireCred bool) (Resolved, error) {
 
 	model := firstNonEmpty(args.Model, cfg.Model)
 	if model == "" {
-		if provName == "ollama" {
-			return Resolved{}, fmt.Errorf("ollama requires --model (e.g. --model llama3)")
+		if provName == "ollama" || provName == provider.LlamaCPPProviderID {
+			return Resolved{}, fmt.Errorf("%s requires --model or a model selected from its manager", provName)
 		}
 		model = defaultModelForProvider(provName)
 	}
@@ -412,18 +415,17 @@ func Resolve(args Args, requireCred bool) (Resolved, error) {
 		}
 	}
 	resolvedModel, err := provider.FindModel(provName, model)
-	if err != nil && provName == "ollama" {
-		// ollama is intentionally open-catalogue: any model id the
-		// local server understands is valid, even if not in the
-		// baked-in catalog.
+	if err != nil && (provName == "ollama" || provName == provider.LlamaCPPProviderID) {
+		// Local providers are intentionally open-catalogue: any model id the
+		// configured server understands is valid, even if it is not cached.
 		resolvedModel = provider.Model{
-			Provider:      "ollama",
+			Provider:      provName,
 			ID:            model,
 			DisplayName:   model,
-			ContextWindow: 32768,
-			MaxOutput:     8192,
+			ContextWindow: 128000,
+			MaxOutput:     16384,
 			BaseURL:       args.BaseURL,
-			Source:        "ollama",
+			Source:        provName,
 		}
 		err = nil
 	}
@@ -511,6 +513,17 @@ func Resolve(args Args, requireCred bool) (Resolved, error) {
 	}
 	if args.BaseURL == "" && provName == "ollama" {
 		args.BaseURL = "http://localhost:11434"
+	}
+	if args.BaseURL == "" && provName == provider.LlamaCPPProviderID {
+		managementURL, _, configErr := ResolveLlamaCPPConfig()
+		if configErr != nil {
+			return Resolved{}, configErr
+		}
+		var baseErr error
+		args.BaseURL, baseErr = provider.LlamaCPPInferenceURL(managementURL)
+		if baseErr != nil {
+			return Resolved{}, baseErr
+		}
 	}
 
 	// Insecure TLS is intentionally scoped to explicit custom endpoints.
@@ -743,6 +756,12 @@ func (r Resolved) NewClient() provider.Client {
 	switch r.Provider {
 	case "ollama":
 		return wrap(provider.NewOpenAI(r.Credential, r.BaseURL))
+	case provider.LlamaCPPProviderID:
+		credential := r.Credential
+		if credential == "local" {
+			credential = ""
+		}
+		return wrap(provider.NewOpenAI(credential, r.BaseURL))
 	case "kimi":
 		// kimi-coding speaks anthropic-messages on api.kimi.com/coding.
 		// Subscription OAuth (refreshed) wraps the same Anthropic-shaped client.
@@ -1013,6 +1032,8 @@ func envVarName(provider string) string {
 		return "GEMINI"
 	case "ollama":
 		return "OLLAMA"
+	case "llama.cpp":
+		return "LLAMA"
 	case "moonshotai", "moonshotai-cn":
 		return "MOONSHOT"
 	case "groq":

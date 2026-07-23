@@ -393,9 +393,10 @@ var DefaultModel = Catalog[0] // claude-sonnet-4-5
 // models loaded via SetLiveModels.
 
 var (
-	activeMu  sync.RWMutex
-	active    []Model // live overlay merged in via SetLiveModels; nil = none yet
-	activeSet bool    // true once SetLiveModels has run (even with empty live)
+	activeMu      sync.RWMutex
+	active        []Model // live overlay merged in via SetLiveModels; nil = none yet
+	activeSet     bool    // true once SetLiveModels has run (even with empty live)
+	managedModels []Model // ephemeral models exposed by local model managers
 )
 
 // SetLiveModels replaces the "live" overlay used by the active catalog.
@@ -431,7 +432,32 @@ func Active() []Model {
 	}
 	out := make([]Model, len(src))
 	copy(out, src)
+	if len(managedModels) == 0 {
+		return out
+	}
+	index := make(map[string]int, len(out))
+	for i, model := range out {
+		index[model.Provider+"\x00"+model.ID] = i
+	}
+	for _, model := range managedModels {
+		key := model.Provider + "\x00" + model.ID
+		if i, ok := index[key]; ok {
+			out[i] = model
+			continue
+		}
+		index[key] = len(out)
+		out = append(out, model)
+	}
 	return out
+}
+
+// SetManagedModels replaces the ephemeral catalog entries supplied by local
+// model managers. Unlike SetLiveModels, this does not disturb provider model
+// discovery or its on-disk cache.
+func SetManagedModels(models []Model) {
+	activeMu.Lock()
+	defer activeMu.Unlock()
+	managedModels = append([]Model(nil), models...)
 }
 
 // FindModel returns a Model by id, optionally constrained by provider.

@@ -114,6 +114,15 @@ type InteractiveConfig struct {
 	// Auth is required. When the user runs /login, Interactive talks to
 	// AuthManager to open a browser and wait for the callback.
 	AuthManager *auth.Manager
+
+	// LlamaCPPConfig resolves the router URL and optional API key from env or
+	// the credential saved by /login.
+	LlamaCPPConfig func() (baseURL, apiKey string, err error)
+
+	// RefreshLlamaCPPModels synchronizes currently loaded router models into
+	// the catalog before /model opens.
+	RefreshLlamaCPPModels func(context.Context) error
+
 	// BuildAgent is called after a successful login to (re)construct the
 	// agent with the fresh credential. It returns the new agent and
 	// the concrete provider/model in use.
@@ -253,6 +262,8 @@ type ChangelogPayload struct {
 	URL     string
 }
 
+type modelRefreshResult struct{ err error }
+
 // Interactive is the TUI chat loop.
 type chatCacheKey struct {
 	cols            int
@@ -340,6 +351,7 @@ type Interactive struct {
 	lastCtxInput     int // input_tokens of the most recent turn — approximates current context size
 	busy             bool
 	dirty            chan struct{}
+	modelRefresh     chan modelRefreshResult
 	cancelTurn       context.CancelFunc
 	scrollOffset     int // rows from the bottom; 0 = pinned to latest
 	prevScrollOffset int // last value redraw snapped against; tracks intent
@@ -391,6 +403,7 @@ type Interactive struct {
 
 	dialog            *loginDialog
 	modelDialog       *modelDialog
+	llamaDialog       *llamaDialog
 	rescueDialog      *rescueDialog
 	sessionDialog     *sessionDialog
 	swarmDialog       *swarmDialog
@@ -407,6 +420,7 @@ type Interactive struct {
 	sessionOpsDialog  *sessionOpsDialog
 	sessionTreeDialog *sessionTreeDialog
 	extPanel          *extPanelDialog
+	llamaConfigured   bool
 
 	// swarmWatch tracks auto-swarm sub-agents the main agent spawned
 	// via swarm_spawn. Each entry holds the agent + the task text;
@@ -520,8 +534,10 @@ func NewInteractive(cfg InteractiveConfig) *Interactive {
 		toolCalls:         map[string]*tui.ToolCallView{},
 		toolGate:          map[string]int{},
 		dirty:             make(chan struct{}, 8),
+		modelRefresh:      make(chan modelRefreshResult, 1),
 		dialog:            newLoginDialog(),
 		modelDialog:       newModelDialog(),
+		llamaDialog:       newLlamaDialog(),
 		rescueDialog:      newRescueDialog(),
 		sessionDialog:     newSessionDialog(),
 		swarmDialog:       newSwarmDialog(),
@@ -543,6 +559,10 @@ func NewInteractive(cfg InteractiveConfig) *Interactive {
 	}
 	i.fileSuggest.SetRecursive(cfg.RecursiveFileSuggest != nil && *cfg.RecursiveFileSuggest)
 	i.fileSuggest.SetRespectGitignore(cfg.RespectGitignore == nil || *cfg.RespectGitignore)
+	if cfg.LlamaCPPConfig != nil {
+		baseURL, _, err := cfg.LlamaCPPConfig()
+		i.llamaConfigured = err == nil && baseURL != ""
+	}
 	if cfg.Agent != nil {
 		i.agent = cfg.Agent
 		i.view.Messages = cfg.Agent.Messages()
@@ -767,6 +787,9 @@ func (i *Interactive) Run(ctx context.Context) error {
 			i.invalidate()
 		case ev := <-authEvents:
 			i.handleAuthEvent(ev)
+			i.invalidate()
+		case result := <-i.modelRefresh:
+			i.openModelPickerAfterRefresh(result.err)
 			i.invalidate()
 		case info, ok := <-updates:
 			if ok && info.Available {
@@ -1102,6 +1125,8 @@ func (i *Interactive) redraw() {
 		dialog = i.dialog.Render(i.cfg.Theme, cols)
 	case i.modelDialog.Active():
 		dialog = i.modelDialog.Render(i.cfg.Theme, cols)
+	case i.llamaDialog.Active():
+		dialog = i.llamaDialog.Render(i.cfg.Theme, cols)
 	case i.rescueDialog.Active():
 		dialog = i.rescueDialog.Render(i.cfg.Theme, cols)
 	case i.sessionDialog.Active():
@@ -1150,6 +1175,7 @@ func (i *Interactive) redraw() {
 	// Feed extension-registered commands into the suggester first so
 	// they show up in tab-complete + the popup alongside the built-ins.
 	i.suggest.SetJailed(i.cfg.Sandbox.Locked())
+	i.suggest.SetLlamaConfigured(i.llamaConfigured)
 	if i.cfg.Extensions != nil {
 		catalog := i.cfg.Extensions.Commands()
 		extra := make([]slashCommand, 0, len(catalog))
@@ -1531,6 +1557,15 @@ func (i *Interactive) redraw() {
 			cursorCol = c
 		}
 	}
+	if i.llamaDialog.Active() {
+		if r, c := i.llamaDialog.CursorPos(); r >= 0 {
+			cursorRow = dialogLead + r
+			cursorCol = c
+		} else {
+			cursorRow = -1
+			cursorCol = 0
+		}
+	}
 	if i.sessionDialog.Active() {
 		if r, c := i.sessionDialog.CursorPos(); r >= 0 {
 			cursorRow = dialogLead + r
@@ -1865,6 +1900,9 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 		if act.SubmitCode != "" {
 			i.submitManualOAuthCode(act.SubmitCode)
 		}
+		if act.SaveLlama {
+			i.saveLlamaCPPLogin(act.LlamaURL, act.LlamaAPIKey)
+		}
 		return false
 	}
 	if i.modelDialog.Active() {
@@ -1885,6 +1923,11 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 				i.applyModelSelection(act.Provider, act.Model)
 			}
 		}
+		return false
+	}
+	if i.llamaDialog.Active() {
+		i.llamaDialog.HandleKey(k)
+		i.invalidate()
 		return false
 	}
 	if i.rescueDialog.Active() {
@@ -3857,7 +3900,7 @@ func (i *Interactive) runSlash(ctx context.Context, cmd string) (done bool) {
 		i.mu.Unlock()
 	case "/help":
 		i.mu.Lock()
-		i.helpBlock = renderHelpBlock(i.cfg.Theme, i.lastCols())
+		i.helpBlock = renderHelpBlock(i.cfg.Theme, i.lastCols(), i.llamaConfigured)
 		i.statusErr = ""
 		i.statusOK = ""
 		// Pin the viewport to the newest content so the help block,
@@ -3880,12 +3923,36 @@ func (i *Interactive) runSlash(ctx context.Context, cmd string) (done bool) {
 	case "/model":
 		if len(parts) >= 2 {
 			i.applyModelSelection("", parts[1])
+		} else if i.llamaConfigured && i.cfg.RefreshLlamaCPPModels != nil {
+			i.mu.Lock()
+			i.statusOK = "refreshing models"
+			i.statusErr = ""
+			i.mu.Unlock()
+			go func() {
+				refreshCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+				defer cancel()
+				i.modelRefresh <- modelRefreshResult{err: i.cfg.RefreshLlamaCPPModels(refreshCtx)}
+			}()
 		} else {
-			var loggedIn []string
-			if i.cfg.LoggedInProviders != nil {
-				loggedIn = i.cfg.LoggedInProviders()
-			}
-			i.modelDialog.Open(i.cfg.Model, loggedIn)
+			i.openModelPickerAfterRefresh(nil)
+		}
+	case "/llama":
+		if i.cfg.LlamaCPPConfig == nil {
+			i.mu.Lock()
+			i.statusErr = "llama.cpp configuration is unavailable"
+			i.statusOK = ""
+			i.mu.Unlock()
+			break
+		}
+		baseURL, apiKey, configErr := i.cfg.LlamaCPPConfig()
+		if configErr == nil {
+			configErr = i.llamaDialog.Open(baseURL, apiKey, i.invalidate)
+		}
+		if configErr != nil {
+			i.mu.Lock()
+			i.statusErr = configErr.Error()
+			i.statusOK = ""
+			i.mu.Unlock()
 		}
 	case "/settings":
 		i.openSettingsDialog()
@@ -4040,6 +4107,22 @@ func (i *Interactive) runSlash(ctx context.Context, cmd string) (done bool) {
 	return false
 }
 
+func (i *Interactive) openModelPickerAfterRefresh(refreshErr error) {
+	var loggedIn []string
+	if i.cfg.LoggedInProviders != nil {
+		loggedIn = i.cfg.LoggedInProviders()
+	}
+	i.modelDialog.Open(i.cfg.Model, loggedIn)
+	i.mu.Lock()
+	if refreshErr != nil {
+		i.statusErr = "llama.cpp model refresh: " + refreshErr.Error()
+		i.statusOK = ""
+	} else if i.statusOK == "refreshing models" {
+		i.statusOK = ""
+	}
+	i.mu.Unlock()
+}
+
 // openLogoutDialog shows the provider picker for `/logout` with no
 // argument. Only providers the user is currently logged into are
 // listed, plus an "all" entry when more than one is present. If
@@ -4091,7 +4174,7 @@ func (i *Interactive) openLogoutDialog() {
 		items = append(items, logoutItem{label: providerLabel("openai-codex"), target: "openai-codex", method: "subscription"})
 	}
 	for p, c := range creds.AdditionalAPIKeyCreds {
-		if c.APIKey != "" {
+		if c.APIKey != "" || c.BaseURL != "" {
 			items = append(items, logoutItem{label: providerLabel(p), target: p, method: "api key"})
 		}
 	}
@@ -4182,8 +4265,15 @@ func (i *Interactive) doLogout(target string) {
 		}
 	}
 
+	llamaConfigured := i.llamaConfigured
+	if i.cfg.LlamaCPPConfig != nil {
+		baseURL, _, err := i.cfg.LlamaCPPConfig()
+		llamaConfigured = err == nil && baseURL != ""
+	}
+
 	i.mu.Lock()
 	defer i.mu.Unlock()
+	i.llamaConfigured = llamaConfigured
 	if len(errs) > 0 {
 		i.statusErr = "logout errors: " + strings.Join(errs, "; ")
 		return
@@ -4266,6 +4356,23 @@ func providerSetupInfo(provider string) (string, []string, bool) {
 	default:
 		return "", nil, false
 	}
+}
+
+func (i *Interactive) saveLlamaCPPLogin(baseURL, apiKey string) {
+	if i.cfg.AuthManager == nil || i.cfg.AuthManager.Store() == nil {
+		i.dialog.ShowResult(false, "auth store is unavailable")
+		return
+	}
+	if err := i.cfg.AuthManager.Store().SetEndpointCredential(provider.LlamaCPPProviderID, baseURL, apiKey); err != nil {
+		i.dialog.ShowResult(false, err.Error())
+		return
+	}
+	i.mu.Lock()
+	i.llamaConfigured = true
+	i.statusErr = ""
+	i.statusOK = "configured llama.cpp router"
+	i.mu.Unlock()
+	i.dialog.ShowResult(true, "")
 }
 
 func (i *Interactive) startAPIKeyFlow(provider string) {

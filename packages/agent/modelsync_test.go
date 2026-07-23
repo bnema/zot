@@ -1,11 +1,50 @@
 package agent
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/patriceckhart/zot/packages/provider"
 )
+
+func TestRefreshLlamaCPPModelsAddsOnlyLoadedModels(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/models" {
+			http.NotFound(w, r)
+			return
+		}
+		fmt.Fprint(w, `{"data":[{"id":"loaded","status":{"value":"loaded"},"meta":{"n_ctx":32768}},{"id":"offline","status":{"value":"unloaded"}}]}`)
+	}))
+	defer server.Close()
+
+	t.Setenv("ZOT_HOME", t.TempDir())
+	t.Setenv("LLAMA_BASE_URL", "")
+	if err := AuthStoreFor().SetEndpointCredential(provider.LlamaCPPProviderID, server.URL, ""); err != nil {
+		t.Fatal(err)
+	}
+	provider.SetManagedModels(nil)
+	t.Cleanup(func() { provider.SetManagedModels(nil) })
+
+	if err := RefreshLlamaCPPModels(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := provider.FindModel(provider.LlamaCPPProviderID, "loaded")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.ContextWindow != 32768 || loaded.BaseURL != server.URL+"/v1" {
+		t.Fatalf("loaded model = %+v", loaded)
+	}
+	if _, err := provider.FindModel(provider.LlamaCPPProviderID, "offline"); err == nil {
+		t.Fatal("unloaded model must not be selectable")
+	}
+}
 
 // TestValidateAndRepairConfig_MismatchedPair simulates the bug from a
 // stale /model switch: provider=anthropic but model=kimi-for-coding

@@ -6,7 +6,7 @@ with `/model`, list them with `zot --list-models`, and add private models in
 
 ## Login methods
 
-Use `/login` in interactive mode.
+Use `/login` in interactive mode. Type in either provider picker to filter the list by provider ID or display name.
 
 - `api key`: stores an API key in `$ZOT_HOME/auth.json` when the provider uses a normal key.
 - `subscription`: stores OAuth credentials for subscription-backed providers.
@@ -86,6 +86,58 @@ Example:
 export OPENROUTER_API_KEY=...
 zot --provider openrouter
 ```
+
+## Local llama.cpp router
+
+The `llama.cpp` provider connects to a multi-model router and is separate from the `ollama` provider. Ollama normally uses `http://localhost:11434`; entering that URL for llama.cpp management produces a 404 because Ollama does not implement the router endpoints.
+
+Install a current llama.cpp build. On macOS:
+
+```bash
+brew install llama.cpp
+# use `brew upgrade llama.cpp` for an existing installation
+```
+
+Start `llama-server` without `--model`, `-m`, or `-hf`. Those flags select one model and disable the router behavior zot expects.
+
+```bash
+mkdir -p ~/llama-models
+
+llama-server \
+  --models-dir ~/llama-models \
+  --no-models-autoload \
+  --jinja \
+  --host 127.0.0.1 \
+  --port 8080 \
+  -ngl 999 \
+  -c 32768
+```
+
+This configuration discovers GGUF files below `~/llama-models`, leaves model loading under explicit user control, enables chat templates, requests GPU offload, and sets a 32K context. Tune the GPU layers and context size for the available memory.
+
+Check the management API before opening zot:
+
+```bash
+curl http://127.0.0.1:8080/health
+curl http://127.0.0.1:8080/models
+```
+
+`/models` must return JSON with a `data` array. A 404 indicates the wrong URL, an older server build, or single-model mode.
+
+To save the connection, run `/login`, choose `api key`, and select `llama.cpp`. Enter `http://127.0.0.1:8080`, without `/v1`, followed by an optional bearer key. zot validates the URL and stores both values in `$ZOT_HOME/auth.json`. Environment variables override the saved connection:
+
+```bash
+export LLAMA_BASE_URL=http://127.0.0.1:8080
+export LLAMA_API_KEY=optional-secret
+```
+
+If a key is configured, start the router with the same `--api-key` value. A server bound only to `127.0.0.1` normally does not need authentication.
+
+After login, `/llama` becomes visible. It shows model state, searches Hugging Face for GGUF repositories, offers available quantizations, reports download and load progress, and explicitly loads or unloads models. Press `d` on a router-downloaded cache model to ask the router to remove it after confirmation. Models discovered through `--models-dir` or a preset are not removable through the router API and must be deleted from their configured source. Some llama.cpp versions retain shared Hugging Face repository artifacts such as `mmproj` files after removing the selected GGUF; remove that repository's cache directory manually if those artifacts are no longer needed. `HF_TOKEN` raises Hugging Face API limits and may be required for repository metadata. For gated files, approve access first and provide the authorized token to the `llama-server` process because the router performs the download.
+
+Opening `/model` refreshes the router and displays its loaded models under provider `llama.cpp`. Unloaded models cannot handle inference and therefore remain exclusive to `/llama` until loaded. Inference is sent to the router's derived `/v1` endpoint.
+
+Ollama downloads are stored in Ollama's internal layout and do not automatically become llama.cpp models. Obtain a GGUF copy through `/llama` or place GGUF files under `~/llama-models`, then restart the router after adding files manually.
 
 ## Cloud providers
 

@@ -90,7 +90,7 @@ func (d *logoutDialog) Render(th tui.Theme, width int) []string {
 	for i, it := range d.items {
 		plain := "  " + it.label
 		if it.method != "" {
-			plain += "  " + th.FG256(th.Muted, "("+it.method+")")
+			plain += "  (" + it.method + ")"
 		}
 		if i == d.cursor {
 			lines = append(lines, th.PadHighlight(plain, width))

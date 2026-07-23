@@ -237,6 +237,45 @@ func TestResolveOllamaUsesModelBaseURLBeforeDefault(t *testing.T) {
 	}
 }
 
+func TestResolveLlamaCPPUsesRouterInferenceURL(t *testing.T) {
+	t.Setenv("ZOT_HOME", t.TempDir())
+	t.Setenv("LLAMA_BASE_URL", "http://127.0.0.1:8080/v1/")
+	t.Setenv("LLAMA_API_KEY", "")
+	provider.SetManagedModels(nil)
+	t.Cleanup(func() { provider.SetManagedModels(nil) })
+
+	r, err := Resolve(Args{Provider: "llama.cpp", Model: "local-model"}, true)
+	if err != nil {
+		t.Fatalf("Resolve failed: %v", err)
+	}
+	if r.BaseURL != "http://127.0.0.1:8080/v1" {
+		t.Fatalf("BaseURL = %q", r.BaseURL)
+	}
+	if r.Credential != "local" || !r.HasCredential() {
+		t.Fatalf("credential = %q", r.Credential)
+	}
+	if got := r.NewClient().Name(); got != "openai" {
+		t.Fatalf("client name = %q", got)
+	}
+}
+
+func TestResolveLlamaCPPUsesStoredLogin(t *testing.T) {
+	t.Setenv("ZOT_HOME", t.TempDir())
+	t.Setenv("LLAMA_BASE_URL", "")
+	t.Setenv("LLAMA_API_KEY", "")
+	if err := AuthStoreFor().SetEndpointCredential("llama.cpp", "http://localhost:9090", "stored-key"); err != nil {
+		t.Fatal(err)
+	}
+
+	r, err := Resolve(Args{Provider: "llama.cpp", Model: "stored-model"}, true)
+	if err != nil {
+		t.Fatalf("Resolve failed: %v", err)
+	}
+	if r.BaseURL != "http://localhost:9090/v1" || r.Credential != "stored-key" {
+		t.Fatalf("resolved = base %q credential %q", r.BaseURL, r.Credential)
+	}
+}
+
 func TestResolveCustomProviderModelBaseURLBeatsProviderBaseURL(t *testing.T) {
 	t.Setenv("ZOT_HOME", t.TempDir())
 	t.Setenv("MY_COMPANY_API_KEY", "test-key")
