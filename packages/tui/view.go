@@ -1549,15 +1549,15 @@ func (v *View) renderToolText(text string, width, defaultColor int, sourcePath s
 		if inDiff && len(l) > 0 {
 			switch l[0] {
 			case '+':
-				out = append(out, v.renderDiffRow(l, width, v.Theme.Tool, newLine, '+', sourcePath))
+				out = append(out, v.renderDiffRow(l, width, v.Theme.Tool, newLine, '+', sourcePath)...)
 				newLine++
 				continue
 			case '-':
-				out = append(out, v.renderDiffRow(l, width, v.Theme.Error, oldLine, '-', sourcePath))
+				out = append(out, v.renderDiffRow(l, width, v.Theme.Error, oldLine, '-', sourcePath)...)
 				oldLine++
 				continue
 			case ' ':
-				out = append(out, v.renderDiffRow(l, width, v.Theme.Muted, newLine, ' ', sourcePath))
+				out = append(out, v.renderDiffRow(l, width, v.Theme.Muted, newLine, ' ', sourcePath)...)
 				oldLine++
 				newLine++
 				continue
@@ -1613,33 +1613,16 @@ func parseHunkHeader(l string) (oldStart, newStart int, ok bool) {
 	return o, n, true
 }
 
-// renderDiffRow renders one unified-diff line with a read-style gutter
-// (6-cell right-aligned line number, muted) followed by the +/-/space
-// marker and the code. Code is syntax-highlighted if sourcePath hints
-// at a known language; falls back to the plain diff color otherwise.
-func (v *View) renderDiffRow(line string, width, color int, lineNo int, mark byte, sourcePath string) string {
+// renderDiffRow renders one unified-diff source line as one or more visual
+// rows. The first row carries the read-style line-number gutter; continuation
+// rows use a blank gutter so wrapped content cannot be mistaken for another
+// source line. Code is syntax-highlighted if sourcePath hints at a known
+// language and otherwise uses the diff color.
+func (v *View) renderDiffRow(line string, width, color int, lineNo int, mark byte, sourcePath string) []string {
 	if len(line) == 0 {
-		return ""
+		return []string{""}
 	}
 	code := expandTabs(line[1:]) // strip the leading marker; expand tabs
-
-	// Syntax-highlight the code half when we know the language. Use
-	// the same HighlightCode pipeline as renderNumberedFile so the
-	// palette matches.
-	lang := LanguageFromPath(sourcePath)
-	var codeRendered string
-	if lang != "" {
-		if h := v.Theme.HighlightCode(code, lang); len(h) == 1 {
-			codeRendered = h[0]
-		}
-	}
-	if codeRendered == "" {
-		if mark == ' ' {
-			codeRendered = v.Theme.FG256(v.Theme.Muted, code)
-		} else {
-			codeRendered = v.Theme.FG256(color, code)
-		}
-	}
 
 	// Gutter shape: sign + number share a color so they read as one
 	// visual token ("+123") instead of a neutral line number next to
@@ -1655,39 +1638,79 @@ func (v *View) renderDiffRow(line string, width, color int, lineNo int, mark byt
 	default:
 		gutterText = fmt.Sprintf(" %3d ", lineNo)
 	}
-	var gutter string
+	gutterColor := color
 	if mark == ' ' {
-		gutter = v.Theme.FG256(v.Theme.Muted, gutterText)
-	} else {
-		gutter = v.Theme.FG256(color, gutterText)
+		gutterColor = v.Theme.Muted
 	}
-	row := "    " + gutter + codeRendered
 
-	// Cheap width clamp: truncate visible text if the raw code is too
-	// long. We work on the pre-ANSI code string because measuring ansi
-	// output is unreliable.
-	maxCode := width - 4 /* indent */ - 7 /* gutter (sign+5 digits+tab) */
-	if maxCode > 0 && len(code) > maxCode {
-		trunc := strings.Repeat(".", maxCode)
-		if maxCode > 3 {
-			trunc = code[:maxCode-3] + "..."
-		}
-		if lang != "" {
-			if h := v.Theme.HighlightCode(trunc, lang); len(h) == 1 {
-				codeRendered = h[0]
-			} else if mark == ' ' {
-				codeRendered = v.Theme.FG256(v.Theme.Muted, trunc)
-			} else {
-				codeRendered = v.Theme.FG256(color, trunc)
-			}
-		} else if mark == ' ' {
-			codeRendered = v.Theme.FG256(v.Theme.Muted, trunc)
-		} else {
-			codeRendered = v.Theme.FG256(color, trunc)
-		}
-		row = "    " + gutter + codeRendered
+	maxCode := width - visibleWidth("    "+gutterText)
+	if maxCode < 1 {
+		maxCode = 1
 	}
-	return row
+	chunks := wrapCodeLine(code, maxCode)
+	lang := LanguageFromPath(sourcePath)
+	out := make([]string, 0, len(chunks))
+	for i, chunk := range chunks {
+		rowGutter := gutterText
+		if i > 0 {
+			rowGutter = strings.Repeat(" ", visibleWidth(gutterText))
+		}
+		codeRendered := ""
+		if lang != "" {
+			if h := v.Theme.HighlightCode(chunk, lang); len(h) == 1 {
+				codeRendered = h[0]
+			}
+		}
+		if codeRendered == "" {
+			codeColor := color
+			if mark == ' ' {
+				codeColor = v.Theme.Muted
+			}
+			codeRendered = v.Theme.FG256(codeColor, chunk)
+		}
+		out = append(out, "    "+v.Theme.FG256(gutterColor, rowGutter)+codeRendered)
+	}
+	return out
+}
+
+// wrapCodeLine splits code to a terminal cell width without dropping any
+// characters. It prefers breaking after whitespace, then falls back to a hard
+// rune boundary for long tokens. Keeping the whitespace on the preceding row
+// means joining the returned chunks reconstructs the expanded source exactly.
+func wrapCodeLine(line string, width int) []string {
+	if width < 1 || visibleWidth(line) <= width {
+		return []string{line}
+	}
+	runes := []rune(line)
+	var out []string
+	for start := 0; start < len(runes); {
+		cells := 0
+		end := start
+		lastBreak := -1
+		for end < len(runes) {
+			runeWidth := runewidth.RuneWidth(runes[end])
+			if cells+runeWidth > width && end > start {
+				break
+			}
+			cells += runeWidth
+			end++
+			if runes[end-1] == ' ' || runes[end-1] == '\t' {
+				lastBreak = end
+			}
+			if cells >= width {
+				break
+			}
+		}
+		if end == start { // A rune wider than the requested width.
+			end++
+		}
+		if end < len(runes) && lastBreak > start {
+			end = lastBreak
+		}
+		out = append(out, string(runes[start:end]))
+		start = end
+	}
+	return out
 }
 
 // renderImageBlock returns the lines for one image, inline if possible.
@@ -2048,13 +2071,13 @@ func (v *View) renderUnifiedDiff(text string, width int, sourcePath string) []st
 		}
 		switch l[0] {
 		case '+':
-			out = append(out, v.renderDiffRow(l, width, v.Theme.Tool, newLine, '+', sourcePath))
+			out = append(out, v.renderDiffRow(l, width, v.Theme.Tool, newLine, '+', sourcePath)...)
 			newLine++
 		case '-':
-			out = append(out, v.renderDiffRow(l, width, v.Theme.Error, oldLine, '-', sourcePath))
+			out = append(out, v.renderDiffRow(l, width, v.Theme.Error, oldLine, '-', sourcePath)...)
 			oldLine++
 		case ' ':
-			out = append(out, v.renderDiffRow(l, width, v.Theme.Muted, newLine, ' ', sourcePath))
+			out = append(out, v.renderDiffRow(l, width, v.Theme.Muted, newLine, ' ', sourcePath)...)
 			oldLine++
 			newLine++
 		default:
