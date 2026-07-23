@@ -703,10 +703,12 @@ When a tool returns an image (for example `read` on a PNG), zot renders it inlin
 
 | Value | Effect |
 |---|---|
-| unset (default) | Auto-detect based on `TERM_PROGRAM`. |
+| unset (default) | Auto-detect based on `TERM_PROGRAM`; use the text placeholder inside VS Code and Herdr. |
 | `iterm`, `iterm2` | Force the iTerm2 OSC 1337 protocol. |
 | `kitty` | Force the Kitty graphics protocol. |
 | `off`, `none` | Always use the text placeholder. |
+
+Herdr's Kitty graphics support is currently experimental, so zot does not enable inline images there automatically. After enabling `experimental.kitty_graphics` in Herdr, set `ZOT_INLINE_IMAGES=kitty` to opt in.
 
 Frames containing images are full-repainted (no differential diff) to prevent stale image pixels from lingering through scroll. That costs one terminal flash per image-containing frame; set `ZOT_INLINE_IMAGES=off` if that bothers you.
 

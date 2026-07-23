@@ -55,11 +55,11 @@ func detectImageProtocolAuto() ImageProtocol {
 	term := os.Getenv("TERM")
 	kittyWindow := os.Getenv("KITTY_WINDOW_ID")
 
-	// VS Code's integrated terminal exposes several protocol-ish env
-	// combinations depending on the underlying shell/pty, but its image
-	// layer is inconsistent enough that auto-enable is more annoying than
-	// useful. Users can still force a protocol via ZOT_INLINE_IMAGES.
-	if strings.EqualFold(termProgram, "vscode") {
+	// VS Code's integrated terminal and Herdr panes can inherit protocol
+	// indicators from their host terminal without reliably rendering the
+	// corresponding image escapes. Default to the text fallback in these
+	// intermediaries. Users can still force a protocol via ZOT_INLINE_IMAGES.
+	if strings.EqualFold(termProgram, "vscode") || os.Getenv("HERDR_ENV") != "" {
 		return ImageProtocolNone
 	}
 

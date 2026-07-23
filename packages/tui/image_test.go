@@ -112,17 +112,24 @@ func TestRowsForInlineImageCellAspectOverride(t *testing.T) {
 	}
 }
 
-func TestDetectImageProtocolPlaceholderAndVSCode(t *testing.T) {
+func TestDetectImageProtocolPlaceholderAndIntermediaries(t *testing.T) {
 	t.Setenv("ZOT_INLINE_IMAGES", "placeholder")
 	if got := DetectImageProtocol(); got != ImageProtocolNone {
 		t.Fatalf("placeholder protocol = %v, want none", got)
 	}
 
 	t.Setenv("ZOT_INLINE_IMAGES", "")
+	t.Setenv("HERDR_ENV", "")
 	t.Setenv("TERM_PROGRAM", "vscode")
 	t.Setenv("KITTY_WINDOW_ID", "1")
 	if got := DetectImageProtocol(); got != ImageProtocolNone {
 		t.Fatalf("vscode auto protocol = %v, want none", got)
+	}
+
+	t.Setenv("TERM_PROGRAM", "ghostty")
+	t.Setenv("HERDR_ENV", "1")
+	if got := DetectImageProtocol(); got != ImageProtocolNone {
+		t.Fatalf("Herdr auto protocol = %v, want none", got)
 	}
 
 	t.Setenv("ZOT_INLINE_IMAGES", "kitty")
