@@ -359,6 +359,7 @@ type Interactive struct {
 	toolGate         map[string]int
 	statusErr        string
 	statusOK         string
+	reloadStatusSeq  uint64
 	liveBlock        []string // live streaming/tool progress rendered outside scrollback
 	helpBlock        []string // rendered above the chat when /help was typed
 	cumUsage         provider.Usage
@@ -5726,7 +5727,7 @@ var _ = fmt.Sprintf
 // runReloadExt triggers a live reload of every extension (discovered
 // + explicit). Runs on a goroutine so the TUI stays responsive; the
 // Manager.Reload takes a couple of hundred ms to shut down subprocs
-// and respawn them. Shows a status line throughout.
+// and respawn them. Shows a temporary status line throughout.
 func (i *Interactive) runReloadExt(ctx context.Context) {
 	if i.cfg.Extensions == nil {
 		i.mu.Lock()
@@ -5743,15 +5744,10 @@ func (i *Interactive) runReloadExt(ctx context.Context) {
 
 	go func() {
 		stats := i.cfg.Extensions.Reload(ctx, 2*time.Second)
-		msg := fmt.Sprintf("reloaded: %d stopped, %d loaded (%d ready)", stats.Stopped, stats.Loaded, stats.Ready)
-		if len(stats.Errors) > 0 {
-			msg += fmt.Sprintf(", %d error(s)", len(stats.Errors))
-		}
-		i.mu.Lock()
-		i.statusOK = msg
-		i.statusErr = ""
-		i.mu.Unlock()
+		msg, failed := formatReloadStatus(stats)
+		seq := i.setReloadStatus(msg, failed)
 		i.invalidate()
+		go i.dismissReloadStatus(ctx, seq, msg, failed)
 	}()
 }
 

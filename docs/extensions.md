@@ -640,7 +640,9 @@ The agent's tool registry is rebuilt automatically, so freshly-
 registered extension tools become callable without restarting zot.
 Useful while developing an extension: edit, save, `/reload-ext`,
 done. Explicit `--ext` paths are remembered and reloaded alongside
-discovered extensions.
+discovered extensions. The temporary reload status reports each load
+error in red, including its message, and dismisses itself after five
+seconds.
 
 ### TypeScript / Python
 

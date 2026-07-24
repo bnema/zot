@@ -1,0 +1,85 @@
+package modes
+
+import (
+	"errors"
+	"strings"
+	"testing"
+
+	"github.com/patriceckhart/zot/packages/agent/extensions"
+)
+
+func TestFormatReloadStatusIncludesErrorDetails(t *testing.T) {
+	msg, failed := formatReloadStatus(extensions.ReloadStats{
+		Stopped: 2,
+		Loaded:  1,
+		Ready:   1,
+		Errors: []error{
+			errors.New("broken manifest"),
+			errors.New("spawn worker: executable not found"),
+		},
+	})
+	if !failed {
+		t.Fatal("reload with errors was not marked failed")
+	}
+	for _, want := range []string{
+		"2 stopped, 1 loaded (1 ready)",
+		"2 error(s)",
+		"broken manifest",
+		"spawn worker: executable not found",
+	} {
+		if !strings.Contains(msg, want) {
+			t.Fatalf("reload status missing %q: %s", want, msg)
+		}
+	}
+}
+
+func TestFormatReloadStatusSuccess(t *testing.T) {
+	msg, failed := formatReloadStatus(extensions.ReloadStats{Stopped: 2, Loaded: 3, Ready: 3})
+	if failed {
+		t.Fatal("successful reload was marked failed")
+	}
+	if want := "reloaded: 2 stopped, 3 loaded (3 ready)"; msg != want {
+		t.Fatalf("reload status = %q, want %q", msg, want)
+	}
+}
+
+func TestSetReloadStatusUsesErrorChannelForFailures(t *testing.T) {
+	i := &Interactive{}
+	i.setReloadStatus("broken extension", true)
+	if i.statusErr != "broken extension" || i.statusOK != "" {
+		t.Fatalf("failed reload status used wrong channel: err=%q ok=%q", i.statusErr, i.statusOK)
+	}
+	i.setReloadStatus("reload complete", false)
+	if i.statusOK != "reload complete" || i.statusErr != "" {
+		t.Fatalf("successful reload status used wrong channel: err=%q ok=%q", i.statusErr, i.statusOK)
+	}
+}
+
+func TestClearReloadStatusDoesNotClearNewerStatus(t *testing.T) {
+	i := &Interactive{statusErr: "newer error", statusOK: "newer success"}
+	if i.clearReloadStatus(0, "old error", true) {
+		t.Fatal("stale error dismissal reported a clear")
+	}
+	if i.clearReloadStatus(0, "old success", false) {
+		t.Fatal("stale success dismissal reported a clear")
+	}
+	if i.statusErr != "newer error" || i.statusOK != "newer success" {
+		t.Fatalf("stale dismissal changed status: err=%q ok=%q", i.statusErr, i.statusOK)
+	}
+
+	if !i.clearReloadStatus(0, "newer error", true) || i.statusErr != "" {
+		t.Fatalf("matching error status was not cleared: %q", i.statusErr)
+	}
+	if !i.clearReloadStatus(0, "newer success", false) || i.statusOK != "" {
+		t.Fatalf("matching success status was not cleared: %q", i.statusOK)
+	}
+
+	first := i.setReloadStatus("same result", false)
+	second := i.setReloadStatus("same result", false)
+	if first == second {
+		t.Fatal("reload status generation did not advance")
+	}
+	if i.clearReloadStatus(first, "same result", false) {
+		t.Fatal("older identical reload status cleared the newer result")
+	}
+}
