@@ -1145,6 +1145,8 @@ func (i *Interactive) redraw() {
 		dialog = i.swarmDialog.Render(i.cfg.Theme, cols)
 	case i.jumpDialog.Active():
 		dialog = i.jumpDialog.Render(i.cfg.Theme, cols)
+	case i.extPanel.Active() && (!i.confirmDialog.Active() || !i.confirmDialog.Focused()):
+		dialog = i.extPanel.Render(i.cfg.Theme, cols)
 	case i.confirmDialog.Active():
 		if i.btwDialog.Active() {
 			// Keep the side-chat transcript and its live tool preview visible
@@ -1170,8 +1172,6 @@ func (i *Interactive) redraw() {
 		dialog = i.sessionOpsDialog.Render(i.cfg.Theme, cols)
 	case i.sessionTreeDialog.Active():
 		dialog = i.sessionTreeDialog.Render(i.cfg.Theme, cols)
-	case i.extPanel.Active():
-		dialog = i.extPanel.Render(i.cfg.Theme, cols)
 	}
 	if len(dialog) > 0 {
 		dialog = padDialogFrame(dialog)
@@ -1211,9 +1211,10 @@ func (i *Interactive) redraw() {
 	// in runSlash already handles the busy case per-command: safe
 	// ones run immediately, destructive ones cancel the turn first.
 	i.fileSuggest.SetCWD(i.cfg.CWD)
-	if len(dialog) == 0 && i.suggest.Active(currentInput) {
+	mainInputFocused := len(dialog) == 0 || (i.confirmDialog.Active() && !i.confirmDialog.Focused() && !i.confirmChildActive())
+	if mainInputFocused && i.suggest.Active(currentInput) {
 		suggest = i.suggest.Render(currentInput, i.cfg.Theme, cols)
-	} else if len(dialog) == 0 && i.fileSuggest.Active(currentInput) {
+	} else if mainInputFocused && i.fileSuggest.Active(currentInput) {
 		suggest = i.fileSuggest.Render(currentInput, i.cfg.Theme, cols)
 	}
 
@@ -1866,7 +1867,46 @@ func (i *Interactive) toggleBtwToolExpansion() {
 	i.invalidate()
 }
 
+// confirmChildActive reports whether an interaction opened from slash input
+// currently owns the keyboard while a tool confirmation remains pending.
+func (i *Interactive) confirmChildActive() bool {
+	return len(i.helpBlock) > 0 ||
+		len(i.extNotes) > 0 ||
+		i.dialog.Active() ||
+		i.modelDialog.Active() ||
+		i.llamaDialog.Active() ||
+		i.rescueDialog.Active() ||
+		i.sessionDialog.Active() ||
+		i.swarmDialog.Active() ||
+		i.jumpDialog.Active() ||
+		i.btwDialog.Active() ||
+		i.skillsDialog.Active() ||
+		i.changelogDialog.Active() ||
+		i.logoutDialog.Active() ||
+		i.telegramDialog.Active() ||
+		i.settingsDialog.Active() ||
+		i.sessionOpsDialog.Active() ||
+		i.sessionTreeDialog.Active() ||
+		i.extPanel.Active()
+}
+
+// restoreConfirmFocus returns input to confirmation after slash input is
+// cleared or a child interaction closes. A non-empty editor keeps command
+// input focused, and an active child continues to own its keys.
+func (i *Interactive) restoreConfirmFocus() {
+	if !i.confirmDialog.Active() || i.confirmDialog.Focused() {
+		return
+	}
+	if !i.ed.IsEmpty() || i.confirmChildActive() {
+		return
+	}
+	i.confirmDialog.Focus()
+	i.invalidate()
+}
+
 func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
+	defer i.restoreConfirmFocus()
+
 	// Any key that isn't ctrl+c invalidates an armed ctrl+c-exit, so
 	// pressing ctrl+c then typing then ctrl+c much later doesn't quit
 	// unexpectedly. The hint message also goes stale; clear it.
@@ -1883,11 +1923,17 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 
 	// Dialogs consume keys while open (except ctrl+c, which always closes them).
 
-	// Confirm dialog has highest priority: the agent goroutine is
-	// blocked waiting for an answer, so we must not let keys leak
-	// anywhere else while it's up. Ctrl+O remains available so the
-	// user can expand or collapse a tool preview before deciding.
-	if i.confirmDialog.Active() {
+	// Confirmation owns input by default. Pressing / deliberately moves
+	// focus to the main editor without answering the pending request, so
+	// slash commands and the dialogs they open can run first.
+	if i.confirmDialog.Focused() {
+		if k.Kind == tui.KeyRune && k.Rune == '/' {
+			i.confirmDialog.Blur()
+			i.ed.Insert("/")
+			i.suggest.Reset()
+			i.invalidate()
+			return false
+		}
 		if k.Kind == tui.KeyCtrlO {
 			if i.btwDialog != nil && i.btwDialog.Active() {
 				i.toggleBtwToolExpansion()
@@ -1897,6 +1943,14 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 			return false
 		}
 		i.confirmDialog.HandleKey(k)
+		i.invalidate()
+		return false
+	}
+	if i.confirmDialog.Active() && !i.confirmChildActive() && k.Kind == tui.KeyEsc {
+		i.ed.Clear()
+		i.suggest.Reset()
+		i.fileSuggest.Reset()
+		i.confirmDialog.Focus()
 		i.invalidate()
 		return false
 	}
@@ -2727,6 +2781,10 @@ func (i *Interactive) appendExtensionNote(extName, msg, level string) {
 		i.statusErr = ""
 		i.extNotes = append(i.extNotes, prefix+i.cfg.Theme.FG256(color, line))
 	}
+	// Extension slash commands complete asynchronously. If their result is
+	// displayed while confirmation is waiting, keep Esc assigned to the note
+	// until it is dismissed rather than letting it answer the tool call.
+	i.confirmDialog.Blur()
 }
 
 // HostHooks implementation for the extension manager. The manager
@@ -2911,6 +2969,7 @@ func (i *Interactive) OpenPanel(extName string, spec extproto.PanelSpec) {
 	i.mu.Lock()
 	defer i.mu.Unlock()
 	i.extPanel.Open(extName, spec.ID, spec.Title, spec.Lines, spec.Footer)
+	i.confirmDialog.Blur()
 	if i.cfg.Extensions != nil {
 		cols, rows := i.cfg.Terminal.Size()
 		_ = cols
@@ -4496,6 +4555,9 @@ func (i *Interactive) cancelAndWaitForIdle() {
 	if cancel != nil {
 		cancel()
 	}
+	// ConfirmToolCall waits on its response channel rather than the turn
+	// context, so cancellation must also resolve every pending prompt.
+	i.confirmDialog.CancelAll("turn cancelled")
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
 		i.mu.Lock()
@@ -5646,6 +5708,7 @@ func (i *Interactive) Confirm(toolName string, preview string) core.ConfirmDecis
 // tool panel, then blocks until the user approves or refuses the call.
 func (i *Interactive) ConfirmToolCall(call core.ToolCallConfirmation) core.ConfirmDecision {
 	resp := make(chan core.ConfirmDecision, 1)
+	returnToChild := false
 	if call.ID != "" {
 		i.mu.Lock()
 		if tc, ok := i.toolCalls[call.ID]; ok {
@@ -5654,13 +5717,14 @@ func (i *Interactive) ConfirmToolCall(call core.ToolCallConfirmation) core.Confi
 		}
 		i.mu.Unlock()
 		if i.btwDialog != nil && i.btwDialog.Active() {
-			i.btwDialog.SetToolPreview(call.ID, call.Summary, call.Content)
+			returnToChild = i.btwDialog.SetToolPreview(call.ID, call.Summary, call.Content)
 		}
 	}
 	i.confirmDialog.Enqueue(&confirmRequest{
-		toolName: call.Name,
-		preview:  call.Summary,
-		resp:     resp,
+		toolName:      call.Name,
+		preview:       call.Summary,
+		resp:          resp,
+		returnToChild: returnToChild,
 	})
 	i.invalidate()
 	return <-resp

@@ -14,9 +14,10 @@ import (
 // writes it onto the interactive's queue, the TUI renders the
 // dialog, and the user's answer goes back through `resp`.
 type confirmRequest struct {
-	toolName string
-	preview  string
-	resp     chan core.ConfirmDecision
+	toolName      string
+	preview       string
+	resp          chan core.ConfirmDecision
+	returnToChild bool
 }
 
 // confirmDialog is the inline prompt shown before every tool call
@@ -26,6 +27,7 @@ type confirmDialog struct {
 	mu      sync.Mutex
 	pending []*confirmRequest
 	cursor  int
+	focused bool
 	// activeSince timestamps when the current request started
 	// showing. Used only for debug/future UX (e.g. flashing the
 	// dialog border after N seconds of no answer).
@@ -40,9 +42,23 @@ func newConfirmDialog() *confirmDialog { return &confirmDialog{} }
 func (d *confirmDialog) Enqueue(req *confirmRequest) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	d.pending = append(d.pending, req)
-	if len(d.pending) == 1 {
+	wasEmpty := len(d.pending) == 0
+	if req.returnToChild && !wasEmpty {
+		// A side-chat tool must be decidable without first resolving the
+		// main-thread call the side chat was opened to investigate.
+		idx := 0
+		for idx < len(d.pending) && d.pending[idx].returnToChild {
+			idx++
+		}
+		d.pending = append(d.pending, nil)
+		copy(d.pending[idx+1:], d.pending[idx:])
+		d.pending[idx] = req
+	} else {
+		d.pending = append(d.pending, req)
+	}
+	if wasEmpty || req.returnToChild {
 		d.cursor = 0
+		d.focused = true
 		d.activeSince = time.Now()
 	}
 }
@@ -58,6 +74,36 @@ func (d *confirmDialog) Active() bool {
 	return len(d.pending) > 0
 }
 
+// Focused reports whether confirmation currently owns keyboard input.
+func (d *confirmDialog) Focused() bool {
+	if d == nil {
+		return false
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return len(d.pending) > 0 && d.focused
+}
+
+// Focus returns keyboard input to the pending confirmation.
+func (d *confirmDialog) Focus() {
+	if d == nil {
+		return
+	}
+	d.mu.Lock()
+	d.focused = len(d.pending) > 0
+	d.mu.Unlock()
+}
+
+// Blur leaves the confirmation pending while another interaction uses input.
+func (d *confirmDialog) Blur() {
+	if d == nil {
+		return
+	}
+	d.mu.Lock()
+	d.focused = false
+	d.mu.Unlock()
+}
+
 // CancelAll refuses every pending request (used when the user
 // cancels the active turn or closes the session while the dialog
 // is open). Safe to call when idle.
@@ -65,6 +111,7 @@ func (d *confirmDialog) CancelAll(reason string) {
 	d.mu.Lock()
 	pending := d.pending
 	d.pending = nil
+	d.focused = false
 	d.mu.Unlock()
 	for _, req := range pending {
 		select {
@@ -81,6 +128,7 @@ func (d *confirmDialog) AllowAllPending() {
 	d.mu.Lock()
 	pending := d.pending
 	d.pending = nil
+	d.focused = false
 	d.mu.Unlock()
 	for _, req := range pending {
 		select {
@@ -114,6 +162,20 @@ var confirmOptions = []struct {
 	},
 }
 
+// advanceLocked removes the current request and chooses whether confirmation
+// or the child interaction behind it receives input next.
+func (d *confirmDialog) advanceLocked(req *confirmRequest) {
+	d.pending = d.pending[1:]
+	d.focused = len(d.pending) > 0
+	if req.returnToChild && (len(d.pending) == 0 || !d.pending[0].returnToChild) {
+		d.focused = false
+	}
+	if d.focused {
+		d.cursor = 0
+		d.activeSince = time.Now()
+	}
+}
+
 // HandleKey advances the selection or resolves the dialog. Returns
 // true when a decision was sent back to the agent (the dialog may
 // remain Active if there are more queued requests behind it).
@@ -143,21 +205,13 @@ func (d *confirmDialog) HandleKey(k tui.Key) bool {
 		// active turn can separately be cancelled by the outer esc
 		// handler, but for the dialog itself, we must always answer
 		// so the agent goroutine unblocks.
-		d.pending = d.pending[1:]
-		if len(d.pending) > 0 {
-			d.cursor = 0
-			d.activeSince = time.Now()
-		}
+		d.advanceLocked(req)
 		d.mu.Unlock()
 		req.resp <- core.ConfirmDecision{Allow: false, Reason: "user cancelled"}
 		return true
 	case tui.KeyEnter:
 		selected := confirmOptions[d.cursor].decision
-		d.pending = d.pending[1:]
-		if len(d.pending) > 0 {
-			d.cursor = 0
-			d.activeSince = time.Now()
-		}
+		d.advanceLocked(req)
 		d.mu.Unlock()
 		req.resp <- selected
 		return true
@@ -168,11 +222,7 @@ func (d *confirmDialog) HandleKey(k tui.Key) bool {
 		idx := int(k.Rune - '1')
 		if idx >= 0 && idx < len(confirmOptions) {
 			selected := confirmOptions[idx].decision
-			d.pending = d.pending[1:]
-			if len(d.pending) > 0 {
-				d.cursor = 0
-				d.activeSince = time.Now()
-			}
+			d.advanceLocked(req)
 			d.mu.Unlock()
 			req.resp <- selected
 			return true
@@ -207,7 +257,11 @@ func (d *confirmDialog) Render(th tui.Theme, width int) []string {
 	}
 	lines = append(lines, toolLine)
 	lines = append(lines, "")
-	lines = append(lines, th.FG256(th.Muted, "choose (\u2191/\u2193 or 1-4, enter to pick, esc to refuse):"))
+	hint := "choose (\u2191/\u2193 or 1-4, enter to pick, esc to refuse, / for commands):"
+	if !d.focused {
+		hint = "confirmation paused (finish or esc the command to return):"
+	}
+	lines = append(lines, th.FG256(th.Muted, hint))
 
 	for i, opt := range confirmOptions {
 		label := opt.label

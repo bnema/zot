@@ -94,9 +94,9 @@ func (d *btwDialog) Loading() bool {
 
 // SetToolPreview attaches the side-effect-free confirmation preview to the
 // matching side-chat tool box before execution begins.
-func (d *btwDialog) SetToolPreview(id, summary, content string) {
+func (d *btwDialog) SetToolPreview(id, summary, content string) bool {
 	if d == nil || id == "" {
-		return
+		return false
 	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -104,9 +104,10 @@ func (d *btwDialog) SetToolPreview(id, summary, content string) {
 		if tool := findBtwTool(&d.turns[turnIdx], id); tool != nil {
 			tool.Args = summary
 			tool.Preview = content
-			return
+			return true
 		}
 	}
+	return false
 }
 
 // ToggleToolExpansion expands or collapses long tool results in the side chat.

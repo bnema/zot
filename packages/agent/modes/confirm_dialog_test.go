@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/patriceckhart/zot/packages/agent/extproto"
+	"github.com/patriceckhart/zot/packages/agent/tools"
 	"github.com/patriceckhart/zot/packages/core"
 	"github.com/patriceckhart/zot/packages/tui"
 )
@@ -74,6 +76,234 @@ func TestConfirmToolCallAttachesDiffBeforeDecision(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("confirmation did not return")
+	}
+}
+
+func newConfirmationInputInteractive() *Interactive {
+	agent := core.NewAgent(nil, "test-model", "test system", nil)
+	return NewInteractive(InteractiveConfig{
+		Theme:    tui.Dark,
+		Terminal: tui.NewProcTerm(),
+		Agent:    agent,
+		Sandbox:  tools.NewSandbox("."),
+	})
+}
+
+func enqueueConfirmation(i *Interactive) <-chan core.ConfirmDecision {
+	resp := make(chan core.ConfirmDecision, 1)
+	i.confirmDialog.Enqueue(&confirmRequest{toolName: "bash", preview: "pwd", resp: resp})
+	return resp
+}
+
+func TestConfirmDialogSlashOpensBtwBeforeDecision(t *testing.T) {
+	i := newConfirmationInputInteractive()
+	resp := enqueueConfirmation(i)
+
+	i.handleKey(context.Background(), tui.Key{Kind: tui.KeyRune, Rune: '/'})
+	if got := i.ed.Value(); got != "/" {
+		t.Fatalf("editor = %q, want slash command input", got)
+	}
+	if i.confirmDialog.Focused() {
+		t.Fatal("confirmation retained focus after slash")
+	}
+
+	i.ed.SetValue("/btw")
+	i.handleKey(context.Background(), tui.Key{Kind: tui.KeyEnter})
+	if !i.btwDialog.Active() {
+		t.Fatal("/btw did not open while confirmation was pending")
+	}
+	if i.confirmDialog.Focused() {
+		t.Fatal("confirmation stole focus from /btw")
+	}
+	select {
+	case decision := <-resp:
+		t.Fatalf("/btw unexpectedly answered confirmation: %+v", decision)
+	default:
+	}
+
+	i.handleKey(context.Background(), tui.Key{Kind: tui.KeyRune, Rune: 'x'})
+	i.btwDialog.mu.Lock()
+	btwInput := i.btwDialog.editor.Value()
+	i.btwDialog.mu.Unlock()
+	if btwInput != "x" {
+		t.Fatalf("/btw editor = %q, want %q", btwInput, "x")
+	}
+
+	i.handleKey(context.Background(), tui.Key{Kind: tui.KeyEsc})
+	if i.btwDialog.Active() {
+		t.Fatal("esc did not close /btw")
+	}
+	if !i.confirmDialog.Focused() {
+		t.Fatal("closing /btw did not restore confirmation focus")
+	}
+}
+
+func TestConfirmDialogPrioritizesSideChatToolAndReturnsToSideChat(t *testing.T) {
+	dialog := newConfirmDialog()
+	mainResp := make(chan core.ConfirmDecision, 1)
+	sideResp := make(chan core.ConfirmDecision, 1)
+	dialog.Enqueue(&confirmRequest{toolName: "main", resp: mainResp})
+	dialog.Blur()
+	dialog.Enqueue(&confirmRequest{toolName: "side", resp: sideResp, returnToChild: true})
+
+	dialog.mu.Lock()
+	first := dialog.pending[0].toolName
+	dialog.mu.Unlock()
+	if first != "side" {
+		t.Fatalf("first confirmation = %q, want side-chat tool", first)
+	}
+	if !dialog.Focused() {
+		t.Fatal("side-chat tool confirmation did not take focus")
+	}
+
+	dialog.HandleKey(tui.Key{Kind: tui.KeyEnter})
+	select {
+	case decision := <-sideResp:
+		if !decision.Allow {
+			t.Fatalf("side-chat decision = %+v", decision)
+		}
+	default:
+		t.Fatal("side-chat confirmation was not resolved")
+	}
+	if !dialog.Active() {
+		t.Fatal("main confirmation was lost")
+	}
+	if dialog.Focused() {
+		t.Fatal("main confirmation stole focus after side-chat tool decision")
+	}
+	select {
+	case decision := <-mainResp:
+		t.Fatalf("main confirmation was unexpectedly resolved: %+v", decision)
+	default:
+	}
+}
+
+func TestConfirmDialogEscCancelsSlashInputOnly(t *testing.T) {
+	i := newConfirmationInputInteractive()
+	resp := enqueueConfirmation(i)
+
+	i.handleKey(context.Background(), tui.Key{Kind: tui.KeyRune, Rune: '/'})
+	i.handleKey(context.Background(), tui.Key{Kind: tui.KeyRune, Rune: 'h'})
+	i.handleKey(context.Background(), tui.Key{Kind: tui.KeyEsc})
+
+	if !i.ed.IsEmpty() {
+		t.Fatalf("editor was not cleared: %q", i.ed.Value())
+	}
+	if !i.confirmDialog.Focused() {
+		t.Fatal("esc did not return focus to confirmation")
+	}
+	select {
+	case decision := <-resp:
+		t.Fatalf("esc from slash input answered confirmation: %+v", decision)
+	default:
+	}
+}
+
+func TestConfirmDialogHelpEscDismissesHelpOnly(t *testing.T) {
+	i := newConfirmationInputInteractive()
+	resp := enqueueConfirmation(i)
+
+	i.handleKey(context.Background(), tui.Key{Kind: tui.KeyRune, Rune: '/'})
+	i.ed.SetValue("/help")
+	i.handleKey(context.Background(), tui.Key{Kind: tui.KeyEnter})
+
+	if len(i.helpBlock) == 0 {
+		t.Fatal("/help did not open while confirmation was pending")
+	}
+	if i.confirmDialog.Focused() {
+		t.Fatal("confirmation stole focus from /help")
+	}
+
+	i.handleKey(context.Background(), tui.Key{Kind: tui.KeyEsc})
+
+	if len(i.helpBlock) != 0 {
+		t.Fatal("esc did not dismiss /help")
+	}
+	if !i.confirmDialog.Focused() {
+		t.Fatal("dismissing /help did not restore confirmation focus")
+	}
+	select {
+	case decision := <-resp:
+		t.Fatalf("esc from /help answered confirmation: %+v", decision)
+	default:
+	}
+}
+
+func TestConfirmDialogExtensionNoteEscDismissesNoteOnly(t *testing.T) {
+	i := newConfirmationInputInteractive()
+	resp := enqueueConfirmation(i)
+
+	i.Display("example", "command output")
+	if len(i.extNotes) == 0 {
+		t.Fatal("extension note was not displayed")
+	}
+	if i.confirmDialog.Focused() {
+		t.Fatal("confirmation retained focus over extension note")
+	}
+
+	i.handleKey(context.Background(), tui.Key{Kind: tui.KeyEsc})
+
+	if len(i.extNotes) != 0 {
+		t.Fatal("esc did not dismiss extension note")
+	}
+	if !i.confirmDialog.Focused() {
+		t.Fatal("dismissing extension note did not restore confirmation focus")
+	}
+	select {
+	case decision := <-resp:
+		t.Fatalf("esc from extension note answered confirmation: %+v", decision)
+	default:
+	}
+}
+
+func TestConfirmDialogExtensionPanelTakesAndReturnsFocus(t *testing.T) {
+	i := newConfirmationInputInteractive()
+	resp := enqueueConfirmation(i)
+
+	i.OpenPanel("todo", extproto.PanelSpec{ID: "todos", Title: "Todos", Lines: []string{"one"}})
+	if !i.extPanel.Active() {
+		t.Fatal("extension panel did not open")
+	}
+	if i.confirmDialog.Focused() {
+		t.Fatal("confirmation retained focus over extension panel")
+	}
+
+	i.handleKey(context.Background(), tui.Key{Kind: tui.KeyEsc})
+	if i.extPanel.Active() {
+		t.Fatal("esc did not close extension panel")
+	}
+	if !i.confirmDialog.Focused() {
+		t.Fatal("closing extension panel did not restore confirmation focus")
+	}
+	select {
+	case decision := <-resp:
+		t.Fatalf("extension panel answered confirmation: %+v", decision)
+	default:
+	}
+}
+
+func TestCancelAndWaitDrainsPendingConfirmation(t *testing.T) {
+	i := newConfirmationInputInteractive()
+	resp := enqueueConfirmation(i)
+	i.busy = true
+	i.cancelTurn = func() {
+		i.mu.Lock()
+		i.busy = false
+		i.mu.Unlock()
+	}
+
+	i.cancelAndWaitForIdle()
+
+	if i.confirmDialog.Active() {
+		t.Fatal("confirmation remained active after turn cancellation")
+	}
+	select {
+	case decision := <-resp:
+		if decision.Allow || decision.Reason != "turn cancelled" {
+			t.Fatalf("cancellation decision = %+v", decision)
+		}
+	default:
+		t.Fatal("pending confirmation was not resolved")
 	}
 }
 

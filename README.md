@@ -197,7 +197,7 @@ zot --help
 | `-e`, `--ext <path>` | Load an extension from `<path>` for this run (repeatable; wins against installed extensions of the same name). |
 | `--no-ext` | Skip extension discovery for this run. `--ext` still works on top, so `--no-ext --ext ./x` runs only `x`. |
 | `--no-skill` | Disable all skills, including built-ins. No `skill` tool is registered and the system prompt has no skill manifest. |
-| `--no-yolo` | Confirm every tool call before it runs (interactive TUI only). A dialog shows the tool name and a one-line preview of its args, while edit calls show the proposed diff in the tool panel, with four choices: yes, yes-always-this-tool-this-session, yes-always-this-session, no. Ignored with a stderr warning in print / json / rpc modes, where tools still run freely so scripts and automation keep working. |
+| `--no-yolo` | Confirm every tool call before it runs (interactive TUI only). A dialog shows the tool name and a one-line preview of its args, while edit calls show the proposed diff in the tool panel, with four choices: yes, yes-always-this-tool-this-session, yes-always-this-session, no. Press `/` while the dialog is focused to run a slash command first; closing its input or child dialog returns to the pending confirmation. Ignored with a stderr warning in print / json / rpc modes, where tools still run freely so scripts and automation keep working. |
 
 ## Tools
 
