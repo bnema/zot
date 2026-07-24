@@ -29,9 +29,10 @@ type Credentials struct {
 // use either APIKey or OAuth; OpenAI may store both so the public API
 // route and ChatGPT/Codex subscription route can coexist.
 type ProviderCreds struct {
-	APIKey  string      `json:"api_key,omitempty"`
-	BaseURL string      `json:"base_url,omitempty"`
-	OAuth   *OAuthToken `json:"oauth,omitempty"`
+	APIKey        string         `json:"api_key,omitempty"`
+	APIKeyCommand *APIKeyCommand `json:"api_key_command,omitempty"`
+	BaseURL       string         `json:"base_url,omitempty"`
+	OAuth         *OAuthToken    `json:"oauth,omitempty"`
 }
 
 // OAuthToken is an OAuth 2 token set with refresh support.
@@ -63,7 +64,7 @@ func (t *OAuthToken) Expired() bool {
 // Has reports whether at least one credential is present for provider.
 func (c *Credentials) Has(provider string) bool {
 	p := c.get(provider)
-	return p != nil && (p.APIKey != "" || p.BaseURL != "" || p.OAuth != nil)
+	return p != nil && (p.APIKey != "" || p.APIKeyCommand != nil || p.BaseURL != "" || p.OAuth != nil)
 }
 
 // Method returns "apikey", "oauth", or "" for the given provider.
@@ -72,7 +73,7 @@ func (c *Credentials) Method(provider string) string {
 	if p == nil {
 		return ""
 	}
-	if p.APIKey != "" || p.BaseURL != "" {
+	if p.APIKey != "" || p.APIKeyCommand != nil || p.BaseURL != "" {
 		return "apikey"
 	}
 	if p.OAuth != nil {
@@ -108,7 +109,7 @@ func (c *Credentials) setAdditional(provider string, p ProviderCreds) {
 	if c.AdditionalAPIKeyCreds == nil {
 		c.AdditionalAPIKeyCreds = map[string]ProviderCreds{}
 	}
-	if p.APIKey == "" && p.BaseURL == "" && p.OAuth == nil {
+	if p.APIKey == "" && p.APIKeyCommand == nil && p.BaseURL == "" && p.OAuth == nil {
 		delete(c.AdditionalAPIKeyCreds, provider)
 		if len(c.AdditionalAPIKeyCreds) == 0 {
 			c.AdditionalAPIKeyCreds = nil
@@ -160,6 +161,7 @@ func (s *Store) SetAPIKey(provider, key string) error {
 	}
 	if cur, ok := c.AdditionalAPIKeyCreds[provider]; ok {
 		cur.APIKey = key
+		cur.APIKeyCommand = nil
 		cur.OAuth = nil
 		c.setAdditional(provider, cur)
 		return s.saveLocked(c)
@@ -170,6 +172,7 @@ func (s *Store) SetAPIKey(provider, key string) error {
 		return s.saveLocked(c)
 	}
 	p.APIKey = key
+	p.APIKeyCommand = nil
 	if provider != "openai" {
 		p.OAuth = nil
 	}
@@ -212,6 +215,7 @@ func (s *Store) SetOAuth(provider string, tok OAuthToken) error {
 	}
 	if cur, ok := c.AdditionalAPIKeyCreds[provider]; ok {
 		cur.APIKey = ""
+		cur.APIKeyCommand = nil
 		cur.OAuth = &tok
 		c.setAdditional(provider, cur)
 		return s.saveLocked(c)
@@ -223,6 +227,7 @@ func (s *Store) SetOAuth(provider string, tok OAuthToken) error {
 	}
 	if provider != "openai" {
 		p.APIKey = ""
+		p.APIKeyCommand = nil
 	}
 	p.OAuth = &tok
 	return s.saveLocked(c)
@@ -259,6 +264,7 @@ func (s *Store) ClearAPIKey(provider string) error {
 	}
 	if cur, ok := c.AdditionalAPIKeyCreds[provider]; ok {
 		cur.APIKey = ""
+		cur.APIKeyCommand = nil
 		c.setAdditional(provider, cur)
 		return s.saveLocked(c)
 	}
@@ -267,6 +273,7 @@ func (s *Store) ClearAPIKey(provider string) error {
 		return nil
 	}
 	p.APIKey = ""
+	p.APIKeyCommand = nil
 	return s.saveLocked(c)
 }
 

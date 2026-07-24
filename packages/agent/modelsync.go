@@ -144,7 +144,7 @@ func RefreshModelsAsync() {
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		defer cancel()
-		_ = RefreshLlamaCPPModels(ctx)
+		_ = refreshLlamaCPPModels(ctx, apiKeyCommandSkip)
 	}()
 }
 
@@ -152,7 +152,11 @@ func RefreshModelsAsync() {
 // active catalog. Unloaded models remain in the management UI and cannot be
 // selected for inference until they are loaded.
 func RefreshLlamaCPPModels(ctx context.Context) error {
-	baseURL, apiKey, err := ResolveLlamaCPPConfig()
+	return refreshLlamaCPPModels(ctx, apiKeyCommandExecute)
+}
+
+func refreshLlamaCPPModels(ctx context.Context, commandMode apiKeyCommandMode) error {
+	baseURL, apiKey, err := resolveLlamaCPPConfig(ctx, commandMode)
 	if err != nil || baseURL == "" {
 		return err
 	}
@@ -179,7 +183,7 @@ func refreshModels() {
 
 	var all []provider.Model
 
-	if cred, method, err := ResolveCredential("anthropic", ""); err == nil && method == "apikey" {
+	if cred, method, err := resolveCredentialForBackground(ctx, "anthropic"); err == nil && method == "apikey" {
 		// /v1/models on Anthropic is API-key only; OAuth tokens can
 		// also list models via the bearer header, but we skip OAuth
 		// here to avoid surprise rate-limit hits on subscription keys.
@@ -187,12 +191,12 @@ func refreshModels() {
 			all = append(all, live...)
 		}
 	}
-	if cred, method, err := ResolveCredential("openai", ""); err == nil && method == "apikey" {
+	if cred, method, err := resolveCredentialForBackground(ctx, "openai"); err == nil && method == "apikey" {
 		if live, err := provider.DiscoverOpenAI(ctx, cred, ""); err == nil {
 			all = append(all, live...)
 		}
 	}
-	if cred, method, err := ResolveCredential("kimi", ""); err == nil && method == "apikey" {
+	if cred, method, err := resolveCredentialForBackground(ctx, "kimi"); err == nil && method == "apikey" {
 		if live, err := provider.DiscoverOpenAI(ctx, cred, "https://api.kimi.com/coding/v1"); err == nil {
 			for i := range live {
 				live[i].Provider = "kimi"
@@ -201,12 +205,12 @@ func refreshModels() {
 			all = append(all, live...)
 		}
 	}
-	if cred, method, err := ResolveCredential("google", ""); err == nil && method == "apikey" {
+	if cred, method, err := resolveCredentialForBackground(ctx, "google"); err == nil && method == "apikey" {
 		if live, err := provider.DiscoverGoogle(ctx, cred, ""); err == nil {
 			all = append(all, live...)
 		}
 	}
-	if _, _, err := ResolveCredential("openrouter", ""); err == nil {
+	if _, _, err := resolveCredentialForBackground(ctx, "openrouter"); err == nil {
 		// /models is public; gate on a credential so the picker only
 		// fills with OpenRouter's hundreds of routes for users who use it.
 		if live, err := provider.DiscoverOpenRouter(ctx, ""); err == nil {

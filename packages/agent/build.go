@@ -324,19 +324,19 @@ func Resolve(args Args, requireCred bool) (Resolved, error) {
 		// by isKnownProvider, so we only reach here for truly unknown
 		// names.
 		provName = "anthropic"
-		if _, _, _, err := ResolveCredentialFull("openai", ""); err == nil {
+		if CredentialAvailable("openai") {
 			provName = "openai"
 		}
-		if _, _, _, err := ResolveCredentialFull("openai-codex", ""); err == nil {
+		if CredentialAvailable("openai-codex") {
 			provName = "openai-codex"
 		}
-		if _, _, _, err := ResolveCredentialFull("kimi", ""); err == nil {
+		if CredentialAvailable("kimi") {
 			provName = "kimi"
 		}
-		if _, _, _, err := ResolveCredentialFull("deepseek", ""); err == nil {
+		if CredentialAvailable("deepseek") {
 			provName = "deepseek"
 		}
-		if _, _, _, err := ResolveCredentialFull("anthropic", ""); err == nil {
+		if CredentialAvailable("anthropic") {
 			provName = "anthropic"
 		}
 		// Reset the saved config so this doesn't keep happening.
@@ -400,11 +400,13 @@ func Resolve(args Args, requireCred bool) (Resolved, error) {
 			if other == provName || other == "ollama" || other == provider.LlamaCPPProviderID {
 				continue
 			}
-			if c, m, a, err := ResolveCredentialFull(other, args.APIKey); err == nil {
-				provName = other
-				cred, method, accountID, credErr = c, m, a, err
-				break
+			if !CredentialAvailable(other) {
+				continue
 			}
+			c, m, a, err := ResolveCredentialFull(other, args.APIKey)
+			provName = other
+			cred, method, accountID, credErr = c, m, a, err
+			break
 		}
 	}
 

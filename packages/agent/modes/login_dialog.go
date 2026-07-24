@@ -98,7 +98,7 @@ func (d *loginDialog) Open(zotHome string) {
 	if creds, err := auth.NewStore(path).Load(); err == nil {
 		d.status["anthropic"] = creds.Method("anthropic")
 		d.status["openai"] = ""
-		if creds.OpenAI.APIKey != "" {
+		if creds.OpenAI.APIKey != "" || creds.OpenAI.APIKeyCommand != nil {
 			d.status["openai"] = "apikey"
 		}
 		d.status["openai-codex"] = ""

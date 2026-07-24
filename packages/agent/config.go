@@ -225,17 +225,30 @@ func AuthStoreFor() *auth.Store { return auth.NewStore(AuthPath()) }
 // ResolveLlamaCPPConfig resolves the router URL and optional API key. The
 // environment overrides the credential stored through /login.
 func ResolveLlamaCPPConfig() (baseURL, apiKey string, err error) {
+	return resolveLlamaCPPConfig(context.Background(), apiKeyCommandExecute)
+}
+
+func resolveLlamaCPPConfig(ctx context.Context, commandMode apiKeyCommandMode) (baseURL, apiKey string, err error) {
 	baseURL = strings.TrimSpace(os.Getenv("LLAMA_BASE_URL"))
 	apiKey = strings.TrimSpace(os.Getenv("LLAMA_API_KEY"))
 	if baseURL == "" {
-		var storedKey string
-		var loadErr error
-		baseURL, storedKey, loadErr = AuthStoreFor().EndpointCredential(providerpkg.LlamaCPPProviderID)
+		creds, loadErr := AuthStoreFor().Load()
 		if loadErr != nil {
 			return "", "", loadErr
 		}
-		if apiKey == "" {
-			apiKey = storedKey
+		if stored, ok := creds.AdditionalAPIKeyCreds[providerpkg.LlamaCPPProviderID]; ok {
+			baseURL = stored.BaseURL
+			if apiKey == "" {
+				if stored.APIKeyCommand != nil && commandMode == apiKeyCommandSkip {
+					return "", "", nil
+				}
+				if key, found, commandErr := resolveStoredAPIKey(ctx, providerpkg.LlamaCPPProviderID, stored, commandMode); found || commandErr != nil {
+					if commandErr != nil {
+						return "", "", commandErr
+					}
+					apiKey = key
+				}
+			}
 		}
 	}
 	if baseURL == "" {
@@ -258,11 +271,34 @@ func ResolveCredential(provider, explicit string) (cred, method string, err erro
 	return cred, method, err
 }
 
+// ResolveCredentialContext is ResolveCredential with caller cancellation.
+func ResolveCredentialContext(ctx context.Context, provider, explicit string) (cred, method string, err error) {
+	cred, method, _, err = ResolveCredentialFullContext(ctx, provider, explicit)
+	return cred, method, err
+}
+
 // ResolveCredentialFull is like ResolveCredential but also returns a
 // provider-specific accountID when the credential is an OpenAI OAuth
 // token (the ChatGPT account id extracted from the stored id_token).
 // accountID is "" for API-key auth and for anthropic.
 func ResolveCredentialFull(provider, explicit string) (cred, method, accountID string, err error) {
+	return ResolveCredentialFullContext(context.Background(), provider, explicit)
+}
+
+// ResolveCredentialFullContext is ResolveCredentialFull with caller cancellation.
+func ResolveCredentialFullContext(ctx context.Context, provider, explicit string) (cred, method, accountID string, err error) {
+	return resolveCredentialFull(ctx, provider, explicit, apiKeyCommandExecute)
+}
+
+type apiKeyCommandMode uint8
+
+const (
+	apiKeyCommandExecute apiKeyCommandMode = iota
+	apiKeyCommandAvailable
+	apiKeyCommandSkip
+)
+
+func resolveCredentialFull(ctx context.Context, provider, explicit string, commandMode apiKeyCommandMode) (cred, method, accountID string, err error) {
 	if explicit != "" {
 		return explicit, "apikey", "", nil
 	}
@@ -313,7 +349,7 @@ func ResolveCredentialFull(provider, explicit string) (cred, method, accountID s
 			return v, "apikey", "", nil
 		}
 	case "llama.cpp":
-		baseURL, apiKey, resolveErr := ResolveLlamaCPPConfig()
+		baseURL, apiKey, resolveErr := resolveLlamaCPPConfig(ctx, commandMode)
 		if resolveErr != nil {
 			return "", "", "", resolveErr
 		}
@@ -444,9 +480,12 @@ func ResolveCredentialFull(provider, explicit string) (cred, method, accountID s
 	if err != nil {
 		return "", "", "", err
 	}
-	if pc, ok := c.AdditionalAPIKeyCreds[provider]; ok {
-		if pc.APIKey != "" {
-			return pc.APIKey, "apikey", "", nil
+	if pc, ok := storedProviderCreds(c, provider); ok {
+		if key, found, commandErr := resolveStoredAPIKey(ctx, provider, pc, commandMode); found || commandErr != nil {
+			if commandErr != nil {
+				return "", "", "", commandErr
+			}
+			return key, "apikey", "", nil
 		}
 		if provider == "xai" && pc.OAuth != nil && pc.OAuth.AccessToken != "" {
 			tok, _ := refreshIfExpired(provider, pc.OAuth)
@@ -455,16 +494,9 @@ func ResolveCredentialFull(provider, explicit string) (cred, method, accountID s
 	}
 	switch provider {
 	case "anthropic":
-		if c.Anthropic.APIKey != "" {
-			return c.Anthropic.APIKey, "apikey", "", nil
-		}
 		if c.Anthropic.OAuth != nil && c.Anthropic.OAuth.AccessToken != "" {
 			tok, _ := refreshIfExpired("anthropic", c.Anthropic.OAuth)
 			return tok.AccessToken, "oauth", "", nil
-		}
-	case "openai":
-		if c.OpenAI.APIKey != "" {
-			return c.OpenAI.APIKey, "apikey", "", nil
 		}
 	case "openai-codex":
 		if c.OpenAI.OAuth != nil && c.OpenAI.OAuth.AccessToken != "" {
@@ -472,9 +504,6 @@ func ResolveCredentialFull(provider, explicit string) (cred, method, accountID s
 			return tok.AccessToken, "oauth", tok.AccountID, nil
 		}
 	case "kimi":
-		if c.Kimi.APIKey != "" {
-			return c.Kimi.APIKey, "apikey", "", nil
-		}
 		if c.Kimi.OAuth != nil && c.Kimi.OAuth.AccessToken != "" {
 			tok, _ := refreshIfExpired("kimi", c.Kimi.OAuth)
 			return tok.AccessToken, "oauth", "", nil
@@ -486,26 +515,67 @@ func ResolveCredentialFull(provider, explicit string) (cred, method, accountID s
 			tok, _ = refreshIfExpired("kimi", tok)
 			return tok.AccessToken, "oauth", "", nil
 		}
-	case "deepseek":
-		if c.DeepSeek.APIKey != "" {
-			return c.DeepSeek.APIKey, "apikey", "", nil
-		}
-	case "google":
-		// Google is API-key only — no OAuth path. We still load
-		// auth.json so /login api-key flows work without exporting
-		// an env var.
-		if c.Google.APIKey != "" {
-			return c.Google.APIKey, "apikey", "", nil
-		}
 	case "github-copilot":
-		if c.GithubCopilot.APIKey != "" {
-			return c.GithubCopilot.APIKey, "apikey", "", nil
-		}
 		if c.GithubCopilot.OAuth != nil && c.GithubCopilot.OAuth.AccessToken != "" {
 			return c.GithubCopilot.OAuth.AccessToken, "oauth", "", nil
 		}
 	}
 	return "", "", "", fmt.Errorf("no credential for %s", provider)
+}
+
+// CredentialAvailable reports whether a provider has a configured credential
+// without executing an api_key_command.
+func CredentialAvailable(provider string) bool {
+	_, _, _, err := resolveCredentialFull(context.Background(), provider, "", apiKeyCommandAvailable)
+	return err == nil
+}
+
+func resolveCredentialForBackground(ctx context.Context, provider string) (cred, method string, err error) {
+	cred, method, _, err = resolveCredentialFull(ctx, provider, "", apiKeyCommandSkip)
+	return cred, method, err
+}
+
+func storedProviderCreds(c auth.Credentials, provider string) (auth.ProviderCreds, bool) {
+	if pc, ok := c.AdditionalAPIKeyCreds[provider]; ok {
+		return pc, true
+	}
+	switch provider {
+	case "anthropic":
+		return c.Anthropic, true
+	case "openai":
+		return c.OpenAI, true
+	case "kimi":
+		return c.Kimi, true
+	case "google":
+		return c.Google, true
+	case "deepseek":
+		return c.DeepSeek, true
+	case "github-copilot":
+		return c.GithubCopilot, true
+	default:
+		return auth.ProviderCreds{}, false
+	}
+}
+
+func resolveStoredAPIKey(ctx context.Context, provider string, creds auth.ProviderCreds, mode apiKeyCommandMode) (key string, found bool, err error) {
+	if creds.APIKey != "" {
+		return creds.APIKey, true, nil
+	}
+	if creds.APIKeyCommand == nil {
+		return "", false, nil
+	}
+	switch mode {
+	case apiKeyCommandAvailable:
+		return "<api-key-command>", true, nil
+	case apiKeyCommandSkip:
+		return "", false, nil
+	default:
+		key, err := auth.ResolveAPIKeyCommand(ctx, *creds.APIKeyCommand)
+		if err != nil {
+			return "", true, fmt.Errorf("resolve api key for %s: %w", provider, err)
+		}
+		return key, true, nil
+	}
 }
 
 func kimiCLIFallbackDisabled() bool {

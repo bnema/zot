@@ -87,6 +87,28 @@ The easiest way is to just run `zot` and type `/login`. The TUI opens even witho
 - Linux fallback: `~/.local/state/zot`
 - Windows fallback: `%LOCALAPPDATA%\zot`
 
+### API keys from commands
+
+To keep an API key in a password manager instead of `auth.json`, configure an `api_key_command` for the provider:
+
+```json
+{
+  "anthropic": {
+    "api_key_command": {
+      "program": "op",
+      "args": ["read", "op://Work/Anthropic/credential"],
+      "timeout_ms": 120000
+    }
+  }
+}
+```
+
+For a provider added through `models.json`, put the same credential object under `additional_api_key_creds` using its provider ID. `program` is executed directly, without a shell, so each argument must be a separate `args` entry. `timeout_ms` is optional and defaults to 120 seconds.
+
+zot runs the command only when that provider is selected, not while checking login status or refreshing model catalogs in the background. Successful output is cached in memory for the rest of the zot process and is never written to disk. The command must print one non-empty line to stdout; zot removes trailing CR/LF characters, limits output to 64 KiB, and does not include command output in errors. Saving a normal key through `/login` replaces the command configuration, and `/logout` removes it.
+
+Treat `auth.json` as executable configuration: anyone who can modify it can cause zot to run a program under your user account. zot does not interpret `!` prefixes or execute command strings through a shell.
+
 ### `/login` flow
 
 Run `zot` and type `/login`. Pick one of two methods:

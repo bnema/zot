@@ -18,6 +18,41 @@ Some providers need more than a single pasted key. For those providers,
 This avoids broken browser flows in SSH, containers, and `kubectl exec`
 sessions.
 
+### Command-backed API keys
+
+A provider can obtain its API key from a password manager or another local program. Configure this directly in `$ZOT_HOME/auth.json`:
+
+```json
+{
+  "openai": {
+    "api_key_command": {
+      "program": "op",
+      "args": ["read", "op://Work/OpenAI/credential"],
+      "timeout_ms": 120000
+    }
+  }
+}
+```
+
+Custom provider credentials use the same object under `additional_api_key_creds`:
+
+```json
+{
+  "additional_api_key_creds": {
+    "my-company": {
+      "api_key_command": {
+        "program": "secret-tool",
+        "args": ["read", "my-company-api-key"]
+      }
+    }
+  }
+}
+```
+
+The program is started directly rather than through a shell. The timeout defaults to 120 seconds. It must write one non-empty line to stdout, with no more than 64 KiB of output. Trailing CR/LF characters are removed. Successful results stay only in process memory and are reused until zot exits.
+
+Command-backed credentials count as logged in without being executed. zot materializes one only when selecting that provider; background model discovery skips it. `/login` with a normal key replaces the command, while `/logout` clears it. Because `auth.json` can cause program execution, keep it user-writable only and do not use files from untrusted sources.
+
 Setup-instruction providers:
 
 - Amazon Bedrock

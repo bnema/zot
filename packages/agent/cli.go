@@ -1032,14 +1032,14 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 			var out []string
 			seen := map[string]bool{}
 			for _, p := range knownProviders {
-				if _, _, err := ResolveCredential(p, ""); err == nil && !seen[p] {
+				if CredentialAvailable(p) && !seen[p] {
 					out = append(out, p)
 					seen[p] = true
 				}
 			}
 			// Include custom providers that have credentials stored.
 			for p := range provider.CustomProviders() {
-				if _, _, err := ResolveCredential(p, ""); err == nil && !seen[p] {
+				if CredentialAvailable(p) && !seen[p] {
 					out = append(out, p)
 					seen[p] = true
 				}

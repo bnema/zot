@@ -4315,14 +4315,14 @@ func (i *Interactive) openLogoutDialog() {
 			})
 		}
 	}
-	if creds.OpenAI.APIKey != "" {
+	if creds.OpenAI.APIKey != "" || creds.OpenAI.APIKeyCommand != nil {
 		items = append(items, logoutItem{label: providerLabel("openai"), target: "openai", method: "api key"})
 	}
 	if creds.OpenAI.OAuth != nil {
 		items = append(items, logoutItem{label: providerLabel("openai-codex"), target: "openai-codex", method: "subscription"})
 	}
 	for p, c := range creds.AdditionalAPIKeyCreds {
-		if c.APIKey != "" || c.BaseURL != "" {
+		if c.APIKey != "" || c.APIKeyCommand != nil || c.BaseURL != "" {
 			items = append(items, logoutItem{label: providerLabel(p), target: p, method: "api key"})
 		}
 	}

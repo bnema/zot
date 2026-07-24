@@ -534,6 +534,13 @@ func (m *Manager) RefreshIfNeeded(ctx context.Context, provider string) (string,
 	if p.APIKey != "" {
 		return p.APIKey, "apikey", nil
 	}
+	if p.APIKeyCommand != nil {
+		key, err := ResolveAPIKeyCommand(ctx, *p.APIKeyCommand)
+		if err != nil {
+			return "", "", fmt.Errorf("resolve api key for %s: %w", provider, err)
+		}
+		return key, "apikey", nil
+	}
 	if p.OAuth == nil {
 		return "", "", fmt.Errorf("no credentials for %s", provider)
 	}
