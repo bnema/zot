@@ -2,6 +2,27 @@ package agent
 
 import "testing"
 
+func TestConfigSettingsStorePersistsShowInstructionsAtStartup(t *testing.T) {
+	t.Setenv("ZOT_HOME", t.TempDir())
+	if err := SaveConfig(Config{Theme: "dark"}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := (configSettingsStore{}).SetShowInstructionsAtStartup(true); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.ShowInstructionsAtStartup == nil || !*cfg.ShowInstructionsAtStartup {
+		t.Fatal("show_instructions_at_startup was not persisted as enabled")
+	}
+	if cfg.Theme != "dark" {
+		t.Fatalf("unrelated config changed: theme = %q, want dark", cfg.Theme)
+	}
+}
+
 func TestConfigSettingsStorePersistsJailByDefault(t *testing.T) {
 	t.Setenv("ZOT_HOME", t.TempDir())
 	if err := SaveConfig(Config{Theme: "dark"}); err != nil {

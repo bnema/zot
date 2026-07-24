@@ -15,6 +15,12 @@ import (
 	"github.com/patriceckhart/zot/packages/provider"
 )
 
+// ContextFile is an instruction file loaded into the system prompt.
+type ContextFile struct {
+	Path    string
+	Content string
+}
+
 // Resolved is the effective configuration after merging CLI, config, defaults.
 type Resolved struct {
 	Provider    string
@@ -45,6 +51,12 @@ type Resolved struct {
 	// agent's tool registry, or nil if no SKILL.md files were
 	// discovered. Exposed so the tui can list / preview skills.
 	SkillTool *skills.Tool
+
+	// ContextFiles records the AGENTS.md files appended to SystemPrompt,
+	// in effective load order. Interactive mode uses this metadata to make
+	// otherwise invisible startup context inspectable without adding fake
+	// messages to the provider transcript.
+	ContextFiles []ContextFile
 
 	// Bookkeeping for MergeExtensionTools. Captured at Resolve time
 	// so the system prompt can be rebuilt later without re-running
@@ -581,8 +593,9 @@ func Resolve(args Args, requireCred bool) (Resolved, error) {
 
 	summaries := toolSummaries(reg, args)
 
+	contextFiles := loadAgentsContext(args.CWD, ZotHome())
 	append_ := append([]string(nil), args.AppendSystemPrompt...)
-	if agentsAddendum := readAgentsContext(args.CWD, ZotHome()); agentsAddendum != "" {
+	if agentsAddendum := formatAgentsContext(contextFiles); agentsAddendum != "" {
 		append_ = append(append_, agentsAddendum)
 	}
 	if skillAddendum != "" {
@@ -635,6 +648,7 @@ func Resolve(args Args, requireCred bool) (Resolved, error) {
 		MaxOutput:        resolvedModel.MaxOutput,
 		Sandbox:          sandbox,
 		SkillTool:        skillTool,
+		ContextFiles:     contextFiles,
 		systemAppend:     append_,
 		systemCustom:     custom,
 		toolDescriptions: descMapFromSummaries(summaries),
@@ -658,16 +672,12 @@ func readUserSystemPrompt(zotHome string) string {
 	return strings.TrimSpace(string(raw))
 }
 
-// readAgentsContext loads optional AGENTS.md instruction files. No
+// loadAgentsContext loads optional AGENTS.md instruction files. No
 // default file is created or required: zot only includes files that
 // already exist. Global instructions ($ZOT_HOME/AGENTS.md) come first,
-// followed by project instructions from the top-most parent down to cwd.
-func readAgentsContext(cwd, zotHome string) string {
-	type contextFile struct {
-		path    string
-		content string
-	}
-	var files []contextFile
+// followed by project instructions from the filesystem root down to cwd.
+func loadAgentsContext(cwd, zotHome string) []ContextFile {
+	var files []ContextFile
 	seen := map[string]bool{}
 	add := func(path string) {
 		if path == "" {
@@ -689,7 +699,7 @@ func readAgentsContext(cwd, zotHome string) string {
 			return
 		}
 		seen[path] = true
-		files = append(files, contextFile{path: path, content: content})
+		files = append(files, ContextFile{Path: path, Content: content})
 	}
 	addFirstFromDir := func(dir string) {
 		if dir == "" {
@@ -724,13 +734,17 @@ func readAgentsContext(cwd, zotHome string) string {
 		}
 	}
 
+	return files
+}
+
+func formatAgentsContext(files []ContextFile) string {
 	if len(files) == 0 {
 		return ""
 	}
 	var sb strings.Builder
 	sb.WriteString("Project context instructions loaded from AGENTS.md files. Follow them when working in this repository. Later files are more specific and may override earlier ones.\n")
 	for _, f := range files {
-		fmt.Fprintf(&sb, "\n## %s\n\n%s\n", f.path, f.content)
+		fmt.Fprintf(&sb, "\n## %s\n\n%s\n", f.Path, f.Content)
 	}
 	return strings.TrimSpace(sb.String())
 }

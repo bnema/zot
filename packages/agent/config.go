@@ -81,6 +81,11 @@ type Config struct {
 	// default; nil/missing means disabled. Toggle from /settings.
 	CompactMode *bool `json:"compact_mode,omitempty"`
 
+	// ShowInstructionsAtStartup lists loaded AGENTS.md file paths above
+	// the transcript. Off by default; nil/missing means disabled.
+	// Toggle from /settings.
+	ShowInstructionsAtStartup *bool `json:"show_instructions_at_startup,omitempty"`
+
 	// TUIInputStyle controls the main input rendering. Supported values:
 	// "plain" (default), "lines", and "block".
 	TUIInputStyle string `json:"tui_input_style,omitempty"`

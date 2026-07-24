@@ -38,6 +38,14 @@ type InteractiveConfig struct {
 	MaxSteps     int
 	CWD          string
 
+	// StartupContextPaths are loaded instruction file paths available to show
+	// before the transcript. They are never sent to the provider or persisted.
+	StartupContextPaths []string
+
+	// ShowInstructionsAtStartup controls whether StartupContextPaths are visible.
+	// nil means the default, off.
+	ShowInstructionsAtStartup *bool
+
 	// InlineImagesEnabled overrides terminal image rendering. nil means
 	// auto-detect and render when supported; false disables; true uses
 	// the detected protocol when available.
@@ -304,6 +312,10 @@ type SettingsStore interface {
 	SetTheme(name string) error
 }
 
+type showInstructionsSettingsStore interface {
+	SetShowInstructionsAtStartup(enabled bool) error
+}
+
 type Interactive struct {
 	cfg  InteractiveConfig
 	view *tui.View
@@ -517,14 +529,19 @@ const resumeTailExpandStep = 80
 func NewInteractive(cfg InteractiveConfig) *Interactive {
 	renderer := tui.NewRenderer(cfg.Terminal)
 	renderer.SetTheme(cfg.Theme)
+	startupContextPaths := []string(nil)
+	if cfg.ShowInstructionsAtStartup != nil && *cfg.ShowInstructionsAtStartup {
+		startupContextPaths = append(startupContextPaths, cfg.StartupContextPaths...)
+	}
 	i := &Interactive{
 		cfg: cfg,
 		view: &tui.View{
-			Theme:       cfg.Theme,
-			ImageProto:  effectiveImageProtocol(cfg.InlineImagesEnabled),
-			FlatTools:   cfg.FlatTools,
-			CompactUser: cfg.CompactUser,
-			CompactMode: cfg.CompactMode != nil && *cfg.CompactMode,
+			Theme:               cfg.Theme,
+			ImageProto:          effectiveImageProtocol(cfg.InlineImagesEnabled),
+			FlatTools:           cfg.FlatTools,
+			CompactUser:         cfg.CompactUser,
+			CompactMode:         cfg.CompactMode != nil && *cfg.CompactMode,
+			StartupContextPaths: startupContextPaths,
 		},
 		// Prompt is the standard half-block accent bar used by chat
 		// speaker labels too, so the input gutter matches the rest
@@ -2836,19 +2853,27 @@ func (i *Interactive) Submit(text string) {
 	i.startTurn(i.runCtx, text)
 }
 
-// ApplyChangedCWD is called by the host after a successful /cd hook.
-// The host has already rebuilt the agent and opened a fresh session
-// in the new cwd; this method swaps the fresh agent into the running
-// TUI, updates the displayed cwd, clears the transcript display
-// caches, and points the file picker at the new directory.
-//
-// The fresh agent's transcript is empty (new session) so the chat
-// view starts blank, matching what relaunching `zot --cwd <path>`
-// would show. Cost meters reset.
+// ApplyChangedCWD is called by hosts after a successful /cd hook that do
+// not provide startup context metadata.
 func (i *Interactive) ApplyChangedCWD(ag *core.Agent, provider, model, cwd string) {
+	i.applyChangedCWD(ag, provider, model, cwd, nil)
+}
+
+// ApplyChangedCWDWithStartupContext swaps a rebuilt agent and its display-only
+// startup context into the running TUI after a successful /cd hook.
+func (i *Interactive) ApplyChangedCWDWithStartupContext(ag *core.Agent, provider, model, cwd string, startupContextPaths []string) {
+	i.applyChangedCWD(ag, provider, model, cwd, startupContextPaths)
+}
+
+func (i *Interactive) applyChangedCWD(ag *core.Agent, provider, model, cwd string, startupContextPaths []string) {
 	i.mu.Lock()
 	i.agent = ag
 	i.cfg.CWD = cwd
+	i.cfg.StartupContextPaths = append([]string(nil), startupContextPaths...)
+	i.view.StartupContextPaths = nil
+	if i.cfg.ShowInstructionsAtStartup != nil && *i.cfg.ShowInstructionsAtStartup {
+		i.view.StartupContextPaths = append(i.view.StartupContextPaths, startupContextPaths...)
+	}
 	// Re-report the working directory to the terminal so "new tab here"
 	// tracks the /cd change (OSC 7, see issue #38).
 	if i.cfg.Terminal != nil {
@@ -3062,6 +3087,7 @@ func (i *Interactive) openSettingsDialog() {
 	recursiveFiles := i.cfg.RecursiveFileSuggest != nil && *i.cfg.RecursiveFileSuggest
 	respectGitignore := i.cfg.RespectGitignore == nil || *i.cfg.RespectGitignore
 	compactMode := i.compactModeEnabled()
+	showInstructions := i.cfg.ShowInstructionsAtStartup != nil && *i.cfg.ShowInstructionsAtStartup
 	inputStyle := tui.NormalizeInputStyle(i.cfg.TUIInputStyle)
 	statusPosition := tui.NormalizeStatusPosition(i.cfg.TUIStatusPosition)
 	workingPosition := tui.NormalizeWorkingPosition(i.cfg.TUIWorkingPosition)
@@ -3190,6 +3216,12 @@ func (i *Interactive) openSettingsDialog() {
 			label: "compact transcript rendering",
 			desc:  "reduce visual chrome by rendering tool calls without boxes and sent messages without padded bubbles",
 			value: compactMode,
+		},
+		{
+			key:   "show_instructions_at_startup",
+			label: "show loaded instructions at startup",
+			desc:  "list loaded AGENTS.md file paths above the transcript",
+			value: showInstructions,
 		},
 		{
 			key:   "tui_settings",
@@ -3555,6 +3587,25 @@ func (i *Interactive) applySettingToggle(key string, value bool) {
 		i.view.CompactMode = value
 		i.view.InvalidateRenderCache()
 		i.statusOK = "compact transcript rendering " + onOff(value)
+		i.statusErr = ""
+		i.mu.Unlock()
+	case "show_instructions_at_startup":
+		val := value
+		i.cfg.ShowInstructionsAtStartup = &val
+		if store, ok := i.cfg.SettingsStore.(showInstructionsSettingsStore); ok {
+			if err := store.SetShowInstructionsAtStartup(value); err != nil {
+				i.mu.Lock()
+				i.statusErr = "settings: " + err.Error()
+				i.mu.Unlock()
+				return
+			}
+		}
+		i.mu.Lock()
+		i.view.StartupContextPaths = nil
+		if value {
+			i.view.StartupContextPaths = append(i.view.StartupContextPaths, i.cfg.StartupContextPaths...)
+		}
+		i.statusOK = "show loaded instructions at startup " + onOff(value)
 		i.statusErr = ""
 		i.mu.Unlock()
 	}

@@ -31,10 +31,25 @@ func TestReadAgentsContextLoadsGlobalAndAncestors(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	got := readAgentsContext(nested, zotHome)
+	files := loadAgentsContext(nested, zotHome)
+	if len(files) != 3 {
+		t.Fatalf("loaded %d context files, want 3: %#v", len(files), files)
+	}
+	wantPaths := []string{
+		filepath.Join(zotHome, "AGENTS.md"),
+		filepath.Join(project, "AGENTS.md"),
+		filepath.Join(nested, "AGENTS.md"),
+	}
+	for idx, want := range wantPaths {
+		if files[idx].Path != want {
+			t.Fatalf("context file %d path = %q, want %q", idx, files[idx].Path, want)
+		}
+	}
+
+	got := formatAgentsContext(files)
 	for _, want := range []string{"global rule", "repo rule", "app rule"} {
 		if !strings.Contains(got, want) {
-			t.Fatalf("readAgentsContext missing %q in:\n%s", want, got)
+			t.Fatalf("formatAgentsContext missing %q in:\n%s", want, got)
 		}
 	}
 	if strings.Index(got, "global rule") > strings.Index(got, "repo rule") || strings.Index(got, "repo rule") > strings.Index(got, "app rule") {
@@ -43,8 +58,11 @@ func TestReadAgentsContextLoadsGlobalAndAncestors(t *testing.T) {
 }
 
 func TestReadAgentsContextMissingFilesIsEmpty(t *testing.T) {
-	got := readAgentsContext(t.TempDir(), t.TempDir())
-	if got != "" {
+	files := loadAgentsContext(t.TempDir(), t.TempDir())
+	if len(files) != 0 {
+		t.Fatalf("expected no context files, got %#v", files)
+	}
+	if got := formatAgentsContext(files); got != "" {
 		t.Fatalf("expected no context, got %q", got)
 	}
 }

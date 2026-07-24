@@ -890,7 +890,8 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 
 		// Push the new state into the running Interactive.
 		if iv != nil {
-			iv.ApplyChangedCWD(newAg, newProvider, newModel, absPath)
+			startupPaths := instructionContextPaths(loadAgentsContext(absPath, ZotHome()))
+			iv.ApplyChangedCWDWithStartupContext(newAg, newProvider, newModel, absPath, startupPaths)
 		}
 
 		// Re-scope the swarm dashboard to the new session.
@@ -1005,6 +1006,8 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 		Tools:                      r.ToolRegistry,
 		MaxSteps:                   r.MaxSteps,
 		CWD:                        r.CWD,
+		StartupContextPaths:        instructionContextPaths(r.ContextFiles),
+		ShowInstructionsAtStartup:  initialCfg.ShowInstructionsAtStartup,
 		ZotHome:                    ZotHome(),
 		Version:                    version,
 		UpdateInfoChan:             updateCh,

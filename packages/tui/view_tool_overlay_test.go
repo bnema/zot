@@ -8,6 +8,28 @@ import (
 	"github.com/patriceckhart/zot/packages/provider"
 )
 
+func TestStartupContextRendersOnlyLoadedPaths(t *testing.T) {
+	v := View{
+		Theme: Dark,
+		StartupContextPaths: []string{
+			"/home/user/AGENTS.md",
+			"/repo/AGENTS.md",
+		},
+	}
+
+	plain := stripANSI(strings.Join(v.Build(80), "\n"))
+	if !strings.Contains(plain, "[Context]") ||
+		!strings.Contains(plain, "/home/user/AGENTS.md, /repo/AGENTS.md") {
+		t.Fatalf("startup instruction paths were not rendered:\n%s", plain)
+	}
+	if strings.ContainsAny(plain, boxGlyphs) || strings.Contains(plain, "read ") {
+		t.Fatalf("startup instruction paths rendered as a tool call:\n%s", plain)
+	}
+	if len(v.Messages) != 0 {
+		t.Fatalf("startup context added %d transcript messages", len(v.Messages))
+	}
+}
+
 func TestLiveToolOverlayRemainsAfterAssistantToolUse(t *testing.T) {
 	args := json.RawMessage(`{"command":"sleep 1"}`)
 	v := View{

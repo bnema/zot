@@ -122,8 +122,12 @@ type View struct {
 	Streaming       string // current assistant text delta
 	StreamingActive bool
 	ToolCalls       []ToolCallView // tool calls in flight or completed
-	StatusLine      string
-	Err             string
+
+	// StartupContextPaths lists host-loaded instruction files before the
+	// transcript without creating provider messages or persisted entries.
+	StartupContextPaths []string
+	StatusLine          string
+	Err                 string
 
 	// liveBodyHigh tracks the tallest live-preview body height seen
 	// per tool-call id, so a streaming edit/write/bash box never
@@ -323,6 +327,21 @@ func (v *View) renderErr(width int) []string {
 	return out
 }
 
+func (v *View) renderStartupContext(width int) []string {
+	if len(v.StartupContextPaths) == 0 {
+		return nil
+	}
+	bodyWidth := width - 2
+	if bodyWidth < 8 {
+		bodyWidth = 8
+	}
+	out := []string{v.Theme.FG256(v.Theme.Accent, "[Context]")}
+	for _, line := range wrapLine(strings.Join(v.StartupContextPaths, ", "), bodyWidth, "") {
+		out = append(out, v.Theme.FG256(v.Theme.Muted, "  "+line))
+	}
+	return append(out, "")
+}
+
 // BuildWithAnchors is like Build but additionally reports the first
 // row occupied by each message in v.Messages. Callers that need to
 // scroll to a specific turn (the /jump dialog) use the anchor slice
@@ -396,6 +415,7 @@ func (v *View) BuildWithAnchors(width int) ([]string, []MessageAnchor) {
 	}
 
 	out := make([]string, 0, total+16)
+	out = append(out, v.renderStartupContext(width)...)
 	anchors := make([]MessageAnchor, 0, len(v.Messages))
 	for idx := range v.Messages {
 		anchors = append(anchors, MessageAnchor{MessageIdx: idx, Row: len(out)})
