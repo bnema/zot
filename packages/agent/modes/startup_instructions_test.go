@@ -2,29 +2,38 @@ package modes
 
 import "testing"
 
-func TestStartupInstructionsAreOptIn(t *testing.T) {
-	paths := []string{"/repo/AGENTS.md"}
+func TestStartupResourcesAreOptIn(t *testing.T) {
+	cfg := InteractiveConfig{
+		StartupContextPaths:   []string{"/repo/AGENTS.md"},
+		StartupExtensionNames: []string{"workspaces"},
+		StartupSkillNames:     []string{"review"},
+	}
 
-	disabled := NewInteractive(InteractiveConfig{StartupContextPaths: paths})
+	disabled := NewInteractive(cfg)
 	disabled.rend = nil
-	if len(disabled.view.StartupContextPaths) != 0 {
-		t.Fatalf("default startup rendered %d instruction paths", len(disabled.view.StartupContextPaths))
-	}
+	assertStartupResourceCounts(t, disabled, 0)
+
 	disabled.applySettingToggle("show_instructions_at_startup", true)
-	if len(disabled.view.StartupContextPaths) != 1 {
-		t.Fatalf("live toggle rendered %d instruction paths, want 1", len(disabled.view.StartupContextPaths))
-	}
+	assertStartupResourceCounts(t, disabled, 1)
+
 	disabled.applySettingToggle("show_instructions_at_startup", false)
-	if len(disabled.view.StartupContextPaths) != 0 {
-		t.Fatalf("disabled live toggle left %d instruction paths", len(disabled.view.StartupContextPaths))
-	}
+	assertStartupResourceCounts(t, disabled, 0)
 
 	enabledValue := true
-	enabled := NewInteractive(InteractiveConfig{
-		StartupContextPaths:       paths,
-		ShowInstructionsAtStartup: &enabledValue,
-	})
-	if len(enabled.view.StartupContextPaths) != 1 {
-		t.Fatalf("enabled startup rendered %d instruction paths, want 1", len(enabled.view.StartupContextPaths))
+	cfg.ShowInstructionsAtStartup = &enabledValue
+	enabled := NewInteractive(cfg)
+	assertStartupResourceCounts(t, enabled, 1)
+}
+
+func assertStartupResourceCounts(t *testing.T, i *Interactive, want int) {
+	t.Helper()
+	if got := len(i.view.StartupContextPaths); got != want {
+		t.Fatalf("startup context count = %d, want %d", got, want)
+	}
+	if got := len(i.view.StartupExtensionNames); got != want {
+		t.Fatalf("startup extension count = %d, want %d", got, want)
+	}
+	if got := len(i.view.StartupSkillNames); got != want {
+		t.Fatalf("startup skill count = %d, want %d", got, want)
 	}
 }

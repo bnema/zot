@@ -123,11 +123,13 @@ type View struct {
 	StreamingActive bool
 	ToolCalls       []ToolCallView // tool calls in flight or completed
 
-	// StartupContextPaths lists host-loaded instruction files before the
-	// transcript without creating provider messages or persisted entries.
-	StartupContextPaths []string
-	StatusLine          string
-	Err                 string
+	// Startup resource fields list host-loaded inputs before the transcript
+	// without creating provider messages or persisted entries.
+	StartupContextPaths   []string
+	StartupExtensionNames []string
+	StartupSkillNames     []string
+	StatusLine            string
+	Err                   string
 
 	// liveBodyHigh tracks the tallest live-preview body height seen
 	// per tool-call id, so a streaming edit/write/bash box never
@@ -327,19 +329,26 @@ func (v *View) renderErr(width int) []string {
 	return out
 }
 
-func (v *View) renderStartupContext(width int) []string {
-	if len(v.StartupContextPaths) == 0 {
-		return nil
-	}
+func (v *View) renderStartupResources(width int) []string {
 	bodyWidth := width - 2
 	if bodyWidth < 8 {
 		bodyWidth = 8
 	}
-	out := []string{v.Theme.FG256(v.Theme.Accent, "[Context]")}
-	for _, line := range wrapLine(strings.Join(v.StartupContextPaths, ", "), bodyWidth, "") {
-		out = append(out, v.Theme.FG256(v.Theme.Muted, "  "+line))
+	var out []string
+	appendSection := func(label string, items []string) {
+		if len(items) == 0 {
+			return
+		}
+		out = append(out, v.Theme.FG256(v.Theme.Accent, "["+label+"]"))
+		for _, line := range wrapLine(strings.Join(items, ", "), bodyWidth, "") {
+			out = append(out, v.Theme.FG256(v.Theme.Muted, "  "+line))
+		}
+		out = append(out, "")
 	}
-	return append(out, "")
+	appendSection("Context", v.StartupContextPaths)
+	appendSection("Extensions", v.StartupExtensionNames)
+	appendSection("Skills", v.StartupSkillNames)
+	return out
 }
 
 // BuildWithAnchors is like Build but additionally reports the first
@@ -415,7 +424,7 @@ func (v *View) BuildWithAnchors(width int) ([]string, []MessageAnchor) {
 	}
 
 	out := make([]string, 0, total+16)
-	out = append(out, v.renderStartupContext(width)...)
+	out = append(out, v.renderStartupResources(width)...)
 	anchors := make([]MessageAnchor, 0, len(v.Messages))
 	for idx := range v.Messages {
 		anchors = append(anchors, MessageAnchor{MessageIdx: idx, Row: len(out)})

@@ -978,6 +978,11 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 	// agents so they don't outlive their parent zot.
 	defer swarmMgr.StopAll()
 
+	var startupSkills []*skills.Skill
+	if r.SkillTool != nil {
+		startupSkills = r.SkillTool.Skills()
+	}
+
 	iv = modes.NewInteractive(modes.InteractiveConfig{
 		Terminal:                   term,
 		Theme:                      theme,
@@ -1007,6 +1012,8 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 		MaxSteps:                   r.MaxSteps,
 		CWD:                        r.CWD,
 		StartupContextPaths:        instructionContextPaths(r.ContextFiles),
+		StartupExtensionNames:      startupExtensionNames(extMgr.All()),
+		StartupSkillNames:          startupSkillNames(startupSkills),
 		ShowInstructionsAtStartup:  initialCfg.ShowInstructionsAtStartup,
 		ZotHome:                    ZotHome(),
 		Version:                    version,

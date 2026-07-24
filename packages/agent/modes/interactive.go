@@ -38,11 +38,13 @@ type InteractiveConfig struct {
 	MaxSteps     int
 	CWD          string
 
-	// StartupContextPaths are loaded instruction file paths available to show
-	// before the transcript. They are never sent to the provider or persisted.
-	StartupContextPaths []string
+	// Startup resource fields are loaded inputs available to list before the
+	// transcript. They are never sent to the provider or persisted by the view.
+	StartupContextPaths   []string
+	StartupExtensionNames []string
+	StartupSkillNames     []string
 
-	// ShowInstructionsAtStartup controls whether StartupContextPaths are visible.
+	// ShowInstructionsAtStartup controls whether startup resources are visible.
 	// nil means the default, off.
 	ShowInstructionsAtStartup *bool
 
@@ -530,18 +532,24 @@ func NewInteractive(cfg InteractiveConfig) *Interactive {
 	renderer := tui.NewRenderer(cfg.Terminal)
 	renderer.SetTheme(cfg.Theme)
 	startupContextPaths := []string(nil)
+	startupExtensionNames := []string(nil)
+	startupSkillNames := []string(nil)
 	if cfg.ShowInstructionsAtStartup != nil && *cfg.ShowInstructionsAtStartup {
 		startupContextPaths = append(startupContextPaths, cfg.StartupContextPaths...)
+		startupExtensionNames = append(startupExtensionNames, cfg.StartupExtensionNames...)
+		startupSkillNames = append(startupSkillNames, cfg.StartupSkillNames...)
 	}
 	i := &Interactive{
 		cfg: cfg,
 		view: &tui.View{
-			Theme:               cfg.Theme,
-			ImageProto:          effectiveImageProtocol(cfg.InlineImagesEnabled),
-			FlatTools:           cfg.FlatTools,
-			CompactUser:         cfg.CompactUser,
-			CompactMode:         cfg.CompactMode != nil && *cfg.CompactMode,
-			StartupContextPaths: startupContextPaths,
+			Theme:                 cfg.Theme,
+			ImageProto:            effectiveImageProtocol(cfg.InlineImagesEnabled),
+			FlatTools:             cfg.FlatTools,
+			CompactUser:           cfg.CompactUser,
+			CompactMode:           cfg.CompactMode != nil && *cfg.CompactMode,
+			StartupContextPaths:   startupContextPaths,
+			StartupExtensionNames: startupExtensionNames,
+			StartupSkillNames:     startupSkillNames,
 		},
 		// Prompt is the standard half-block accent bar used by chat
 		// speaker labels too, so the input gutter matches the rest
@@ -3219,8 +3227,8 @@ func (i *Interactive) openSettingsDialog() {
 		},
 		{
 			key:   "show_instructions_at_startup",
-			label: "show loaded instructions at startup",
-			desc:  "list loaded AGENTS.md file paths above the transcript",
+			label: "show loaded resources at startup",
+			desc:  "list loaded context files, extensions, and user-installed skills above the transcript",
 			value: showInstructions,
 		},
 		{
@@ -3602,10 +3610,14 @@ func (i *Interactive) applySettingToggle(key string, value bool) {
 		}
 		i.mu.Lock()
 		i.view.StartupContextPaths = nil
+		i.view.StartupExtensionNames = nil
+		i.view.StartupSkillNames = nil
 		if value {
 			i.view.StartupContextPaths = append(i.view.StartupContextPaths, i.cfg.StartupContextPaths...)
+			i.view.StartupExtensionNames = append(i.view.StartupExtensionNames, i.cfg.StartupExtensionNames...)
+			i.view.StartupSkillNames = append(i.view.StartupSkillNames, i.cfg.StartupSkillNames...)
 		}
-		i.statusOK = "show loaded instructions at startup " + onOff(value)
+		i.statusOK = "show loaded resources at startup " + onOff(value)
 		i.statusErr = ""
 		i.mu.Unlock()
 	}
