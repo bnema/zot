@@ -36,7 +36,7 @@ type UserModelsFile struct {
 // UserProvider groups models under a provider key.
 type UserProvider struct {
 	BaseURL string      `json:"baseUrl,omitempty"`
-	API     string      `json:"api,omitempty"` // "openai" (default) or "anthropic"
+	API     string      `json:"api,omitempty"` // "openai" (default), "openai-responses", or "anthropic"
 	Models  []UserModel `json:"models"`
 }
 
@@ -44,7 +44,7 @@ type UserProvider struct {
 // that isn't part of the built-in catalog.
 type CustomProviderConfig struct {
 	BaseURL string
-	API     string // "openai" or "anthropic"
+	API     string // "openai", "openai-responses", or "anthropic"
 }
 
 var customProviders = map[string]CustomProviderConfig{}
@@ -138,6 +138,8 @@ func LoadUserModelsWithWarnings(path string) ([]Model, []string) {
 			switch api {
 			case "openai-completions", "openai-chat", "chat", "openai":
 				api = "openai"
+			case "openai-responses", "responses":
+				api = APIResponses
 			case "anthropic-messages", "messages", "anthropic":
 				api = "anthropic"
 			default:

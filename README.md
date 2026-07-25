@@ -469,7 +469,7 @@ User-defined models show `source: user` in `--list-models` and take precedence o
 
 #### Custom providers
 
-A top-level provider key that is not a built-in id defines a custom provider. Give it a provider-level `baseUrl` and an `api` wire format (`openai` for OpenAI-compatible chat completions, the default, or `anthropic` for the Anthropic messages API). A model-level `baseUrl` overrides the provider-level one for that model; an unknown `api` value falls back to `openai` with a warning.
+A top-level provider key that is not a built-in id defines a custom provider. Give it a provider-level `baseUrl` and an `api` wire format (`openai` for OpenAI-compatible Chat Completions, the default, `openai-responses` for the OpenAI Responses API, or `anthropic` for the Anthropic Messages API). A model-level `baseUrl` overrides the provider-level one for that model; an unknown `api` value falls back to `openai` with a warning.
 
 ```json
 {

@@ -1,7 +1,9 @@
 package agent
 
 import (
+	"context"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -325,6 +327,54 @@ func TestResolveCustomProviderModelBaseURLBeatsProviderBaseURL(t *testing.T) {
 	}
 	if r.BaseURL != "https://model.example.com/v1" {
 		t.Fatalf("BaseURL = %q, want model-level baseUrl", r.BaseURL)
+	}
+}
+
+func TestCustomProviderUsesOpenAIResponsesAPI(t *testing.T) {
+	requestPath := make(chan string, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestPath <- r.URL.Path
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(srv.Close)
+
+	path := filepath.Join(t.TempDir(), "models.json")
+	if err := os.WriteFile(path, []byte(`{
+		"providers": {
+			"company-responses": {
+				"baseUrl": "`+srv.URL+`/v1",
+				"api": "openai-responses",
+				"models": [{"id": "reasoning-model", "reasoning": true}]
+			}
+		}
+	}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	models, warnings := provider.LoadUserModelsWithWarnings(path)
+	if len(warnings) != 0 {
+		t.Fatalf("warnings = %v", warnings)
+	}
+	provider.SetLiveModels(nil)
+	provider.SetUserModels(models)
+	t.Cleanup(func() { provider.SetLiveModels(nil) })
+
+	r := Resolved{
+		Provider:   "company-responses",
+		Credential: "test-key",
+		BaseURL:    srv.URL + "/v1",
+	}
+	events, err := r.NewClient().Stream(context.Background(), provider.Request{
+		Model:    "reasoning-model",
+		Messages: []provider.Message{{Role: provider.RoleUser, Content: []provider.Content{provider.TextBlock{Text: "hello"}}}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range events {
+	}
+	if got := <-requestPath; got != "/v1/responses" {
+		t.Fatalf("request path = %q, want /v1/responses", got)
 	}
 }
 

@@ -864,6 +864,8 @@ func (r Resolved) NewClient() provider.Client {
 		// Custom providers: choose wire format from the models.json api field.
 		if cfg, ok := provider.CustomProviders()[r.Provider]; ok {
 			switch cfg.API {
+			case provider.APIResponses:
+				return wrap(provider.NewOpenAIResponsesNamed(r.Credential, r.BaseURL, r.Provider))
 			case "anthropic":
 				return wrap(provider.NewAnthropicCompat(r.Provider, r.Credential, r.BaseURL))
 			default: // "openai"

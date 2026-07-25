@@ -57,6 +57,30 @@ func TestLoadUserModelsRegistersModelLevelBaseURLCustomProvider(t *testing.T) {
 	}
 }
 
+func TestLoadUserModelsAcceptsOpenAIResponsesAPI(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "models.json")
+	if err := os.WriteFile(path, []byte(`{
+		"providers": {
+			"company-proxy": {
+				"baseUrl": "https://llm.example.com/v1",
+				"api": "openai-responses",
+				"models": [{"id": "reasoning-model"}]
+			}
+		}
+	}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, warnings := LoadUserModelsWithWarnings(path)
+	if len(warnings) != 0 {
+		t.Fatalf("warnings = %v, want none", warnings)
+	}
+	if cfg := CustomProviders()["company-proxy"]; cfg.API != APIResponses {
+		t.Fatalf("api = %q, want %q", cfg.API, APIResponses)
+	}
+}
+
 func TestLoadUserModelsWarnsOnUnknownAPI(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "models.json")
