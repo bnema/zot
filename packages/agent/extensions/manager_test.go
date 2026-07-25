@@ -82,12 +82,19 @@ func writeMockExtension(t *testing.T, root string) {
 	// the manager to send command_invoked.
 	script := `#!/bin/sh
 printf '%s\n' '{"type":"hello","name":"mock","version":"0.0.1","capabilities":["commands"]}'
-printf '%s\n' '{"type":"register_command","name":"ping","description":"ping/pong"}'
+printf '%s\n' '{"type":"register_command","name":"Ping","description":"ping/pong"}'
 while IFS= read -r line; do
   case "$line" in
     *'"type":"command_invoked"'*)
       id=$(printf '%s' "$line" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p')
-      printf '%s\n' "{\"type\":\"command_response\",\"id\":\"$id\",\"action\":\"display\",\"display\":\"pong\"}"
+      case "$line" in
+        *'"name":"Ping"'*)
+          printf '%s\n' "{\"type\":\"command_response\",\"id\":\"$id\",\"action\":\"display\",\"display\":\"pong\"}"
+          ;;
+        *)
+          printf '%s\n' "{\"type\":\"command_response\",\"id\":\"$id\",\"error\":\"non-canonical command name\"}"
+          ;;
+      esac
       ;;
     *'"type":"shutdown"'*)
       printf '%s\n' '{"type":"shutdown_ack"}'
@@ -168,19 +175,22 @@ func TestManagerSpawnAndInvoke(t *testing.T) {
 	cmds := mgr.Commands()
 	found := false
 	for _, c := range cmds {
-		if c.Name == "ping" {
+		if c.Name == "Ping" {
 			found = true
 			break
 		}
 	}
 	if !found {
-		t.Fatalf("expected command 'ping', got %#v", cmds)
+		t.Fatalf("expected canonical command 'Ping', got %#v", cmds)
 	}
-	if !mgr.HasCommand("ping") {
-		t.Fatal("HasCommand(\"ping\") = false")
+	if !mgr.HasCommand("PING") {
+		t.Fatal("HasCommand(\"PING\") = false")
+	}
+	if owner := mgr.CommandOwner("pInG"); owner != "mock" {
+		t.Fatalf("CommandOwner(\"pInG\") = %q, want mock", owner)
 	}
 
-	resp, err := mgr.Invoke(context.Background(), "ping", "", 2*time.Second)
+	resp, err := mgr.Invoke(context.Background(), "PING", "", 2*time.Second)
 	if err != nil {
 		t.Fatalf("invoke: %v", err)
 	}
@@ -215,7 +225,8 @@ func TestDiagnosticsReportMalformedFramesAndConflicts(t *testing.T) {
 	}
 
 	writeDiagExtension("a-first", `#!/bin/sh
-printf '%s\n' '{"type":"hello","name":"a-first","version":"0.1","capabilities":["tools"]}'
+printf '%s\n' '{"type":"hello","name":"a-first","version":"0.1","capabilities":["commands","tools"]}'
+printf '%s\n' '{"type":"register_command","name":"CaseTest","description":"first"}'
 printf '%s\n' '{"type":"register_tool","name":"shared","description":"first","schema":{"type":"object"}}'
 printf '%s\n' '{"type":"register_tool","name":"broken","description":"bad","schema":'
 printf '%s\n' '{"type":"ready"}'
@@ -226,7 +237,8 @@ while IFS= read -r line; do
 done
 `)
 	writeDiagExtension("b-second", `#!/bin/sh
-printf '%s\n' '{"type":"hello","name":"b-second","version":"0.1","capabilities":["tools"]}'
+printf '%s\n' '{"type":"hello","name":"b-second","version":"0.1","capabilities":["commands","tools"]}'
+printf '%s\n' '{"type":"register_command","name":"casetest","description":"second"}'
 printf '%s\n' '{"type":"register_tool","name":"shared","description":"second","schema":{"type":"object"}}'
 printf '%s\n' '{"type":"ready"}'
 while IFS= read -r line; do
@@ -255,6 +267,7 @@ done
 	}
 
 	var shadowedTool bool
+	var activeCommands, shadowedCommands int
 	var conflictMessage bool
 	for _, d := range diags {
 		if strings.Contains(strings.Join(d.Messages, "\n"), "conflicts with another extension") {
@@ -265,9 +278,22 @@ done
 				shadowedTool = true
 			}
 		}
+		for _, command := range d.Commands {
+			if !strings.EqualFold(command.Name, "casetest") {
+				continue
+			}
+			if command.Active {
+				activeCommands++
+			} else {
+				shadowedCommands++
+			}
+		}
 	}
 	if !shadowedTool {
 		t.Fatalf("expected one shared tool registration to be inactive, got %#v", diags)
+	}
+	if activeCommands != 1 || shadowedCommands != 1 {
+		t.Fatalf("case-only command registrations: active=%d shadowed=%d; diagnostics=%#v", activeCommands, shadowedCommands, diags)
 	}
 	if !conflictMessage {
 		t.Fatalf("expected conflict diagnostic, got %#v", diags)

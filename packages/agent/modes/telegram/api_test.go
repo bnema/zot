@@ -75,6 +75,27 @@ func TestClientDeleteWebhookRejectsAPIFailure(t *testing.T) {
 	}
 }
 
+func TestAdapterCommandsAreCaseInsensitive(t *testing.T) {
+	cfg := Config{AllowedUserID: 42}
+	adapter := NewAdapter(nil, &cfg, func(Config) error { return nil })
+	var got bot.Command
+	var called bool
+	adapter.handleUpdate(context.Background(), Update{Message: &Message{
+		MessageID: 1,
+		From:      &User{ID: 42},
+		Chat:      Chat{ID: 7, Type: "private"},
+		Text:      "/STOP",
+	}}, func(bot.InboundMessage) {
+		t.Fatal("uppercase slash command was forwarded as a prompt")
+	}, func(command bot.Command, _ bot.InboundMessage) {
+		got = command
+		called = true
+	})
+	if !called || got != bot.CmdStop {
+		t.Fatalf("command = %v, called = %v, want CmdStop", got, called)
+	}
+}
+
 func TestAdapterRunDeletesWebhookBeforePolling(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

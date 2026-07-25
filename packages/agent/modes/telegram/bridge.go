@@ -349,13 +349,14 @@ func (b *Bridge) handleUpdate(ctx context.Context, u Update) {
 	}
 
 	text := strings.TrimSpace(msg.Text)
+	command, isCommand := bot.ParseCommand(text)
 
 	// Pairing: first user who sends /start claims the bridge.
 	b.mu.Lock()
 	paired := b.Config.AllowedUserID
 	b.mu.Unlock()
 	if paired == 0 {
-		if strings.HasPrefix(text, "/start") {
+		if isCommand && command == bot.CmdStart {
 			b.mu.Lock()
 			b.Config.AllowedUserID = msg.From.ID
 			b.chatID = msg.Chat.ID
@@ -387,20 +388,20 @@ func (b *Bridge) handleUpdate(ctx context.Context, u Update) {
 	b.mu.Unlock()
 
 	// Built-in commands that bypass the agent.
-	switch text {
-	case "/start", "/help":
-		_ = b.Client.SendMessage(ctx, msg.Chat.ID,
-			"mirror is active. send me a message and it'll be forwarded to the zot tui. commands: /status, /stop, or plain stop.",
-			msg.MessageID)
-		return
-	case "/status":
-		_ = b.Client.SendMessage(ctx, msg.Chat.ID, b.Host.Status(), msg.MessageID)
-		return
-	case "/stop":
-		b.Host.CancelTurn()
-		b.stopWorking()
-		_ = b.Client.SendMessage(ctx, msg.Chat.ID,
-			"cancelled the current turn.", msg.MessageID)
+	if isCommand {
+		switch command {
+		case bot.CmdStart, bot.CmdHelp:
+			_ = b.Client.SendMessage(ctx, msg.Chat.ID,
+				"mirror is active. send me a message and it'll be forwarded to the zot tui. commands: /status, /stop, or plain stop.",
+				msg.MessageID)
+		case bot.CmdStatus:
+			_ = b.Client.SendMessage(ctx, msg.Chat.ID, b.Host.Status(), msg.MessageID)
+		case bot.CmdStop:
+			b.Host.CancelTurn()
+			b.stopWorking()
+			_ = b.Client.SendMessage(ctx, msg.Chat.ID,
+				"cancelled the current turn.", msg.MessageID)
+		}
 		return
 	}
 	if isStopCommand(text) {

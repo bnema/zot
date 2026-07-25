@@ -185,6 +185,8 @@ other stdout frame before `hello`.
  "description":"current weather for a city"}
 ```
 
+Command names are matched case-insensitively. zot sends `command_invoked.name` using the canonical spelling registered here. Registrations that differ only by case conflict, and the first registration remains active.
+
 #### `register_tool`
 
 Registers a tool the LLM can call. `schema` is a JSON Schema object

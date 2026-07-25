@@ -132,6 +132,11 @@ type HostHooks interface {
 	ClosePanel(extName, panelID string)
 }
 
+type commandRegistration struct {
+	ext  *Extension
+	name string
+}
+
 // Manager owns every extension subprocess for the lifetime of zot.
 type Manager struct {
 	zotHome    string
@@ -144,11 +149,10 @@ type Manager struct {
 	mu  sync.RWMutex
 	ext map[string]*Extension // keyed by manifest name
 
-	// commandIndex maps a slash-command name (without the leading /)
-	// to the extension that registered it. First-come-first-served:
-	// later registrations of the same command are dropped with a
-	// warning.
-	commandIndex map[string]*Extension
+	// commandIndex maps a lower-cased slash-command name (without the
+	// leading /) to its canonical registration. First-come-first-served:
+	// later registrations that differ only by case are dropped with a warning.
+	commandIndex map[string]commandRegistration
 
 	// toolIndex maps an extension-defined tool name to its owning
 	// extension. Same first-come-first-served rule as commandIndex.
@@ -175,7 +179,7 @@ func New(zotHome, cwd, zotVersion, provider, model string, hooks HostHooks) *Man
 		model:        model,
 		hooks:        hooks,
 		ext:          map[string]*Extension{},
-		commandIndex: map[string]*Extension{},
+		commandIndex: map[string]commandRegistration{},
 		toolIndex:    map[string]*Extension{},
 	}
 }
@@ -418,7 +422,7 @@ func (m *Manager) Reload(ctx context.Context, grace time.Duration) ReloadStats {
 	explicit := append([]string(nil), m.explicitPaths...)
 	stats.Stopped = len(old)
 	m.ext = map[string]*Extension{}
-	m.commandIndex = map[string]*Extension{}
+	m.commandIndex = map[string]commandRegistration{}
 	m.toolIndex = map[string]*Extension{}
 	m.explicitPaths = nil
 	callback := m.onReload
@@ -654,8 +658,8 @@ func (m *Manager) readLoop(ext *Extension, scanner *bufio.Scanner) {
 		// future invocations don't dangle. The subprocess is gone; we
 		// won't hear back about its commands or tool calls anymore.
 		m.mu.Lock()
-		for name, owner := range m.commandIndex {
-			if owner == ext {
+		for name, registration := range m.commandIndex {
+			if registration.ext == ext {
 				delete(m.commandIndex, name)
 			}
 		}
@@ -690,9 +694,10 @@ func (m *Manager) readLoop(ext *Extension, scanner *bufio.Scanner) {
 				// keep the race detector happy.
 				m.mu.Lock()
 				ext.commands = append(ext.commands, rc)
-				_, shadowed := m.commandIndex[rc.Name]
+				key := strings.ToLower(rc.Name)
+				_, shadowed := m.commandIndex[key]
 				if !shadowed {
-					m.commandIndex[rc.Name] = ext
+					m.commandIndex[key] = commandRegistration{ext: ext, name: rc.Name}
 				}
 				m.mu.Unlock()
 				if shadowed {
@@ -915,10 +920,11 @@ func (m *Manager) Diagnostics() []ExtensionDiagnostic {
 		default:
 		}
 		for _, c := range ext.commands {
+			registration, ok := m.commandIndex[strings.ToLower(c.Name)]
 			diag.Commands = append(diag.Commands, RegisteredCommandDiagnostic{
 				Name:        c.Name,
 				Description: c.Description,
-				Active:      m.commandIndex[c.Name] == ext,
+				Active:      ok && registration.ext == ext && registration.name == c.Name,
 			})
 		}
 		for _, t := range ext.tools {
@@ -941,6 +947,10 @@ func (m *Manager) Commands() []CommandInfo {
 	var out []CommandInfo
 	for _, ext := range m.ext {
 		for _, c := range ext.commands {
+			registration, ok := m.commandIndex[strings.ToLower(c.Name)]
+			if !ok || registration.ext != ext || registration.name != c.Name {
+				continue
+			}
 			out = append(out, CommandInfo{
 				Extension:   ext.Manifest.Name,
 				Name:        c.Name,
@@ -1048,15 +1058,15 @@ func (m *Manager) InvokeTool(ctx context.Context, name string, args json.RawMess
 func (m *Manager) HasCommand(name string) bool {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	_, ok := m.commandIndex[name]
+	_, ok := m.commandIndex[strings.ToLower(name)]
 	return ok
 }
 
 func (m *Manager) CommandOwner(name string) string {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	if ext, ok := m.commandIndex[name]; ok && ext != nil {
-		return ext.Manifest.Name
+	if registration, ok := m.commandIndex[strings.ToLower(name)]; ok && registration.ext != nil {
+		return registration.ext.Manifest.Name
 	}
 	return ""
 }
@@ -1067,11 +1077,13 @@ func (m *Manager) CommandOwner(name string) string {
 // (prompt / insert / display).
 func (m *Manager) Invoke(ctx context.Context, name, args string, timeout time.Duration) (extproto.CommandResponseFromExt, error) {
 	m.mu.RLock()
-	ext, ok := m.commandIndex[name]
+	registration, ok := m.commandIndex[strings.ToLower(name)]
 	m.mu.RUnlock()
 	if !ok {
 		return extproto.CommandResponseFromExt{}, fmt.Errorf("no extension registered for /%s", name)
 	}
+	ext := registration.ext
+	name = registration.name
 
 	id := newCorrelationID()
 	ch := make(chan extproto.CommandResponseFromExt, 1)

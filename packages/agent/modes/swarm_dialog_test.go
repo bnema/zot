@@ -1029,6 +1029,7 @@ func TestStripSlashModelLine(t *testing.T) {
 		{"/model\nfoo", "foo"},
 		{"foo\n/model\nbar", "foo\nbar"},
 		{"/model gpt-5", ""},
+		{"/MODEL GPT-5", ""},
 		{"a /model in prose", "a /model in prose"}, // not first non-blank token → keep
 		{"", ""},
 		{"plain task", "plain task"},

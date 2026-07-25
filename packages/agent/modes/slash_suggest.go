@@ -24,7 +24,7 @@ type slashCommand struct {
 // or rebuild the agent) need a quiet state; the rest run alongside
 // the streaming response without trouble.
 func slashCancelsTurn(head string) bool {
-	switch head {
+	switch strings.ToLower(head) {
 	case "/clear", "/compact", "/logout", "/login", "/model", "/llama", "/reload-ext", "/cd":
 		return true
 	}
@@ -86,7 +86,13 @@ type slashSuggester struct {
 // randomises).
 func (s *slashSuggester) SetExtra(cmds []slashCommand) {
 	sorted := append([]slashCommand(nil), cmds...)
-	sort.Slice(sorted, func(i, j int) bool { return sorted[i].Name < sorted[j].Name })
+	sort.Slice(sorted, func(i, j int) bool {
+		left, right := strings.ToLower(sorted[i].Name), strings.ToLower(sorted[j].Name)
+		if left == right {
+			return sorted[i].Name < sorted[j].Name
+		}
+		return left < right
+	})
 	s.extra = sorted
 }
 
@@ -113,7 +119,7 @@ func (s *slashSuggester) allCatalog() []slashCommand {
 	for _, c := range s.extra {
 		dup := false
 		for _, b := range base {
-			if b.Name == c.Name {
+			if strings.EqualFold(b.Name, c.Name) {
 				dup = true
 				break
 			}
@@ -189,12 +195,12 @@ func isKnownSlashCommand(text string) bool {
 		head = text[:i]
 	}
 	for _, c := range slashCatalog {
-		if c.Name == head {
+		if strings.EqualFold(c.Name, head) {
 			return true
 		}
 	}
 	for _, h := range hiddenSlashCommands {
-		if h == head {
+		if strings.EqualFold(h, head) {
 			return true
 		}
 	}
@@ -222,6 +228,7 @@ func (s *slashSuggester) matches(input string) []slashCommand {
 	if idx := strings.IndexByte(input, ' '); idx >= 0 {
 		return nil
 	}
+	matchPrefix := strings.ToLower(input)
 	var out []slashCommand
 	for _, c := range s.allCatalog() {
 		if c.Header {
@@ -231,7 +238,7 @@ func (s *slashSuggester) matches(input string) []slashCommand {
 			out = append(out, c)
 			continue
 		}
-		if strings.HasPrefix(c.Name, input) {
+		if strings.HasPrefix(strings.ToLower(c.Name), matchPrefix) {
 			out = append(out, c)
 		}
 	}

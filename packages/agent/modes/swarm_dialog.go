@@ -699,8 +699,7 @@ func (d *swarmDialog) handleModelPickerKey(k tui.Key) (closed bool, msg, errMsg 
 // vs. as a task description.
 func containsSlashModelLine(buf string) bool {
 	for _, ln := range strings.Split(buf, "\n") {
-		t := strings.TrimSpace(ln)
-		if t == "/model" || strings.HasPrefix(t, "/model ") {
+		if isSlashModelLine(ln) {
 			return true
 		}
 	}
@@ -713,12 +712,16 @@ func containsSlashModelLine(buf string) bool {
 // is always exactly one full line in practice — the user typed
 // /model<Enter> — but we tolerate inline placement at the start of
 // a line just in case.
+func isSlashModelLine(line string) bool {
+	fields := strings.Fields(strings.TrimSpace(line))
+	return len(fields) > 0 && strings.EqualFold(fields[0], "/model")
+}
+
 func stripSlashModelLine(buf string) string {
 	lines := strings.Split(buf, "\n")
 	out := lines[:0]
 	for _, ln := range lines {
-		t := strings.TrimSpace(ln)
-		if t == "/model" || strings.HasPrefix(t, "/model ") {
+		if isSlashModelLine(ln) {
 			continue
 		}
 		out = append(out, ln)

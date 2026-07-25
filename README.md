@@ -261,7 +261,7 @@ Both interfaces share the same event schema, so transcripts captured by one can 
 
 ## Slash commands
 
-Type `/` in the TUI to open the autocomplete popup. Available commands:
+Slash command names are case-insensitive in the TUI and messaging backends; arguments keep their original case. Type `/` in the TUI to open the autocomplete popup. Available commands:
 
 | Command | Description |
 |---|---|
@@ -978,7 +978,7 @@ Setup flow:
 3. Run `zot telegram-bot run` in the directory you want the agent to operate in.
 4. Open your bot on telegram, send `/start`. The first user to do this claims the bridge (stored as `allowed_user_id`); every other user is rejected.
 
-From then on, any DM you send is forwarded to the agent as a user prompt. Attached photos or `image/*` documents are downloaded and passed to vision-capable models. In-bot telegram commands: `/help`, `/status`, `/stop` (cancel the current turn). Config lives in `$ZOT_HOME/bot.json` (mode 0600).
+From then on, any DM you send is forwarded to the agent as a user prompt. Attached photos or `image/*` documents are downloaded and passed to vision-capable models. In-bot telegram commands are case-insensitive: `/help`, `/status`, `/stop` (cancel the current turn). Config lives in `$ZOT_HOME/bot.json` (mode 0600).
 
 Starting either Telegram bridge removes any webhook configured for that bot before long polling begins, while preserving pending updates. Telegram does not allow webhooks and `getUpdates` polling at the same time, so do not share the bot token with another service that expects to keep a webhook active.
 

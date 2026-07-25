@@ -39,6 +39,28 @@ func TestSlashSuggesterHasSwarm(t *testing.T) {
 	}
 }
 
+func TestSlashCommandsAreCaseInsensitive(t *testing.T) {
+	s := newSlashSuggester()
+	if got := commandNames(s.matches("/EX")); !contains(got, "/exit") {
+		t.Fatalf("/EX did not suggest /exit: %v", got)
+	}
+	if !isKnownSlashCommand("/Exit") {
+		t.Fatal("/Exit was not recognized as a built-in command")
+	}
+	if !slashCancelsTurn("/CLEAR") {
+		t.Fatal("/CLEAR did not retain /clear cancellation semantics")
+	}
+}
+
+func TestSlashSuggesterBuiltinsShadowExtensionsCaseInsensitively(t *testing.T) {
+	s := newSlashSuggester()
+	s.SetExtra([]slashCommand{{Name: "/EXIT", Desc: "extension exit"}})
+	matches := commandNames(s.matches("/exit"))
+	if len(matches) != 1 || matches[0] != "/exit" {
+		t.Fatalf("matches = %v, want only built-in /exit", matches)
+	}
+}
+
 func commandNames(cmds []slashCommand) []string {
 	out := make([]string, 0, len(cmds))
 	for _, c := range cmds {

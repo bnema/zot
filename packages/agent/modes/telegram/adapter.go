@@ -115,8 +115,9 @@ func (a *Adapter) handleUpdate(ctx context.Context, u Update,
 
 	// Pairing: first user who sends /start claims the bridge.
 	text := strings.TrimSpace(msg.Text)
+	command, isCommand := bot.ParseCommand(text)
 	if a.Cfg.AllowedUserID == 0 {
-		if strings.HasPrefix(text, "/start") {
+		if isCommand && command == bot.CmdStart {
 			a.Cfg.AllowedUserID = msg.From.ID
 			_ = a.Save(*a.Cfg)
 			_ = a.Client.SendMessage(ctx, msg.Chat.ID,
@@ -144,18 +145,8 @@ func (a *Adapter) handleUpdate(ctx context.Context, u Update,
 	}
 
 	// Built-in commands that bypass the agent.
-	switch text {
-	case "/start":
-		commandHandler(bot.CmdStart, inbound)
-		return
-	case "/help":
-		commandHandler(bot.CmdHelp, inbound)
-		return
-	case "/status":
-		commandHandler(bot.CmdStatus, inbound)
-		return
-	case "/stop":
-		commandHandler(bot.CmdStop, inbound)
+	if isCommand {
+		commandHandler(command, inbound)
 		return
 	}
 	if bot.IsStopCommand(text) {

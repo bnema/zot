@@ -4059,7 +4059,7 @@ func longestCommonPrefix(ss []string) string {
 
 func (i *Interactive) runSlash(ctx context.Context, cmd string) (done bool) {
 	parts := strings.Fields(cmd)
-	switch parts[0] {
+	switch strings.ToLower(parts[0]) {
 	case "/exit":
 		return true
 	case "/clear":
