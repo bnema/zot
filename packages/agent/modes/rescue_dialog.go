@@ -191,6 +191,9 @@ func (d *rescueDialog) HandleKey(k tui.Key) rescueDialogAction {
 			d.query = string(r[:len(r)-1])
 			d.refilter()
 		}
+	case tui.KeyPaste:
+		d.query += singleLinePaste(k.Paste)
+		d.refilter()
 	case tui.KeyRune:
 		if k.Alt || k.Ctrl {
 			break

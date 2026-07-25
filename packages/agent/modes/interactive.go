@@ -1933,6 +1933,28 @@ func (i *Interactive) restoreConfirmFocus() {
 func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 	defer i.restoreConfirmFocus()
 
+	// Dialogs route keys before the main clipboard handler below. Resolve text
+	// here when a child interaction owns input so every editor and filter sees
+	// the same KeyPaste event as terminal-native bracketed paste. Main chat is
+	// left image-first to preserve macOS clipboard image attachments.
+	if k.Kind == tui.KeyPasteClipboard && i.confirmChildActive() {
+		resolved, pastedText, err := resolveClipboardText(k, tui.ReadClipboardText)
+		if err != nil {
+			i.mu.Lock()
+			i.statusErr = "clipboard paste failed: " + err.Error()
+			i.statusOK = ""
+			i.mu.Unlock()
+			return false
+		}
+		if pastedText {
+			k = resolved
+			i.mu.Lock()
+			i.statusErr = ""
+			i.statusOK = ""
+			i.mu.Unlock()
+		}
+	}
+
 	// Any key that isn't ctrl+c invalidates an armed ctrl+c-exit, so
 	// pressing ctrl+c then typing then ctrl+c much later doesn't quit
 	// unexpectedly. The hint message also goes stale; clear it.
@@ -2645,10 +2667,22 @@ func (i *Interactive) pasteClipboard() {
 		i.mu.Unlock()
 		return
 	}
+	key, pastedText, err := resolveClipboardText(tui.Key{Kind: tui.KeyPasteClipboard}, tui.ReadClipboardText)
 	i.mu.Lock()
-	i.statusErr = "clipboard does not contain an image"
+	defer i.mu.Unlock()
+	if err != nil {
+		i.statusErr = "clipboard paste failed: " + err.Error()
+		i.statusOK = ""
+		return
+	}
+	if pastedText {
+		i.ed.HandleKey(key)
+		i.statusErr = ""
+		i.statusOK = ""
+		return
+	}
+	i.statusErr = "clipboard does not contain text or an image"
 	i.statusOK = ""
-	i.mu.Unlock()
 }
 
 func (i *Interactive) handleInputHistoryKey(k tui.Key) bool {

@@ -520,6 +520,9 @@ func (d *loginDialog) handleProviderKey(k tui.Key) loginDialogAction {
 			d.providerQuery = string(runes[:len(runes)-1])
 			d.cursor = 0
 		}
+	case tui.KeyPaste:
+		d.providerQuery += singleLinePaste(k.Paste)
+		d.cursor = 0
 	case tui.KeyRune:
 		if !k.Alt && !k.Ctrl && k.Rune >= 0x20 && k.Rune < 0x7f {
 			d.providerQuery += string(k.Rune)

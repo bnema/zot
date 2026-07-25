@@ -216,6 +216,9 @@ func (d *jumpDialog) HandleKey(k tui.Key) jumpDialogAction {
 			d.filter = string(runes[:len(runes)-1])
 			d.applyFilter()
 		}
+	case tui.KeyPaste:
+		d.filter += singleLinePaste(k.Paste)
+		d.applyFilter()
 	case tui.KeyRune:
 		// Any printable rune extends the filter.
 		d.filter += string(k.Rune)

@@ -284,6 +284,9 @@ func (d *modelDialog) HandleKey(k tui.Key) modelDialogAction {
 			d.query = string(r[:len(r)-1])
 			d.refilter()
 		}
+	case tui.KeyPaste:
+		d.query += singleLinePaste(k.Paste)
+		d.refilter()
 	case tui.KeyRune:
 		if k.Alt || k.Ctrl {
 			break
