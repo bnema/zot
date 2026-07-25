@@ -487,6 +487,28 @@ A top-level provider key that is not a built-in id defines a custom provider. Gi
 
 Custom providers are first-class: they appear in `--list-models`, `/model`, and `/login`. `models.json` never stores secrets. Supply the key through `/login`, `--api-key`, or a derived environment variable in upper snake case (so `my-company` reads `MY_COMPANY_API_KEY`). Because many self-hosted gateways do not expose a model-list endpoint, custom provider keys are accepted and stored without a verification probe; an invalid key surfaces on the first model call.
 
+To retrieve this custom provider's key from a password manager, add a matching entry to `$ZOT_HOME/auth.json`:
+
+```json
+{
+  "additional_api_key_creds": {
+    "my-company": {
+      "api_key_command": {
+        "program": "op",
+        "args": ["read", "op://Work/OpenAI/credential"],
+        "timeout_ms": 120000
+      }
+    }
+  }
+}
+```
+
+The provider IDs in `models.json` and `auth.json` must match. Then select the custom model directly:
+
+```bash
+zot --provider my-company --model company-llm-v2
+```
+
 ### Kimi Code
 
 zot has built-in Kimi support through the Kimi Coding endpoint and Moonshot's OpenAI-compatible chat API.

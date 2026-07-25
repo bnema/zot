@@ -322,6 +322,30 @@ Custom providers are first-class: they appear in `--list-models`, `/model`, and
 not expose a model-list endpoint, custom provider keys are accepted and stored
 without a verification probe; an invalid key surfaces on the first model call.
 
+To retrieve this custom provider's key from a password manager, add a matching
+entry to `$ZOT_HOME/auth.json`:
+
+```json
+{
+  "additional_api_key_creds": {
+    "my-company": {
+      "api_key_command": {
+        "program": "op",
+        "args": ["read", "op://Work/OpenAI/credential"],
+        "timeout_ms": 120000
+      }
+    }
+  }
+}
+```
+
+The provider IDs in `models.json` and `auth.json` must match. Then select the
+custom model directly:
+
+```sh
+zot --provider my-company --model company-llm-v2
+```
+
 ## Credential resolution
 
 For each request, zot checks credentials in this order:
