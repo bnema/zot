@@ -189,7 +189,7 @@ type anthRequest struct {
 }
 
 // usesAdaptiveThinking reports whether a model only supports the
-// adaptive thinking mode (Opus 4.7 and later). These models reject
+// adaptive thinking mode (Opus 4.7 and later, including Opus 5). These models reject
 // explicit thinking budgets and non-default sampling parameters. The
 // catalog flag is authoritative; the id-substring fallback catches
 // the same family when reached through an Anthropic-Messages-
@@ -199,7 +199,7 @@ func usesAdaptiveThinking(m Model) bool {
 		return true
 	}
 	id := strings.ToLower(m.ID)
-	for _, marker := range []string{"opus-4-7", "opus-4.7", "opus-4-8", "opus-4.8", "sonnet-5", "fable-5"} {
+	for _, marker := range []string{"opus-4-7", "opus-4.7", "opus-4-8", "opus-4.8", "opus-5", "opus.5", "sonnet-5", "fable-5"} {
 		if strings.Contains(id, marker) {
 			return true
 		}

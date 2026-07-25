@@ -94,9 +94,9 @@ func TestAnthropicAdaptiveThinking(t *testing.T) {
 	c := NewAnthropic("x", "").(*anthropicClient)
 	temp := float32(0.7)
 
-	// Opus 4.8 -> adaptive thinking, effort set, no budget, no temperature.
+	// Opus 5 -> adaptive thinking, effort set, no budget, no temperature.
 	wire, err := c.buildRequest(Request{
-		Model:       "claude-opus-4-8",
+		Model:       "claude-opus-5",
 		Reasoning:   "high",
 		Temperature: &temp,
 		Messages:    []Message{{Role: RoleUser, Content: []Content{TextBlock{Text: "hi"}}}},
@@ -119,7 +119,7 @@ func TestAnthropicAdaptiveThinking(t *testing.T) {
 
 	// maximum -> xhigh effort.
 	wire, err = c.buildRequest(Request{
-		Model:     "claude-opus-4-8",
+		Model:     "claude-opus-5",
 		Reasoning: "maximum",
 		Messages:  []Message{{Role: RoleUser, Content: []Content{TextBlock{Text: "hi"}}}},
 	})
@@ -132,7 +132,7 @@ func TestAnthropicAdaptiveThinking(t *testing.T) {
 
 	// max is a separate native tier above xhigh on adaptive models.
 	wire, err = c.buildRequest(Request{
-		Model:     "claude-opus-4-8",
+		Model:     "claude-opus-5",
 		Reasoning: "max",
 		Messages:  []Message{{Role: RoleUser, Content: []Content{TextBlock{Text: "hi"}}}},
 	})
@@ -261,6 +261,19 @@ func TestAnthropicStreamHappyPath(t *testing.T) {
 	}
 	if done.Stop != StopEnd {
 		t.Fatalf("stop=%v", done.Stop)
+	}
+}
+
+func TestClaudeOpus5Catalog(t *testing.T) {
+	m, err := FindModel("anthropic", "claude-opus-5")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m.DisplayName != "Claude Opus 5" || m.ContextWindow != 1000000 || m.MaxOutput != 128000 || !m.Reasoning || !m.AdaptiveThinking || m.Speculative {
+		t.Fatalf("unexpected Opus 5 model: %+v", m)
+	}
+	if m.PriceInput != 5 || m.PriceOutput != 25 || m.PriceCacheRead != 0.5 || m.PriceCacheWrite != 6.25 {
+		t.Fatalf("unexpected Opus 5 pricing: %+v", m)
 	}
 }
 

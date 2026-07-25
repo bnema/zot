@@ -213,9 +213,10 @@ type bedrockToolSpec struct {
 }
 
 type bedrockRequest struct {
-	Messages        []bedrockMessage         `json:"messages"`
-	System          []map[string]interface{} `json:"system,omitempty"`
-	InferenceConfig struct {
+	Messages                     []bedrockMessage         `json:"messages"`
+	System                       []map[string]interface{} `json:"system,omitempty"`
+	AdditionalModelRequestFields map[string]interface{}   `json:"additionalModelRequestFields,omitempty"`
+	InferenceConfig              struct {
 		MaxTokens   int      `json:"maxTokens,omitempty"`
 		Temperature *float32 `json:"temperature,omitempty"`
 	} `json:"inferenceConfig,omitempty"`
@@ -325,6 +326,11 @@ func (c *bedrockClient) buildRequest(req Request) (*bedrockRequest, error) {
 	// check operates on the same ID used for FindModel.
 	resolvedModel := resolveBedrockInferenceProfileID(req.Model, c.region)
 	caching := bedrockModelSupportsCaching(resolvedModel)
+	model := Model{ID: resolvedModel}
+	if catalogModel, err := FindModel("amazon-bedrock", resolvedModel); err == nil {
+		model = catalogModel
+	}
+	adaptive := usesAdaptiveThinking(model)
 
 	if req.System != "" {
 		sysBlock := map[string]interface{}{"text": req.System}
@@ -336,7 +342,15 @@ func (c *bedrockClient) buildRequest(req Request) (*bedrockRequest, error) {
 			out.System = []map[string]interface{}{sysBlock}
 		}
 	}
-	out.InferenceConfig.Temperature = req.Temperature
+	if !adaptive {
+		out.InferenceConfig.Temperature = req.Temperature
+	}
+	if adaptive && req.Reasoning != "" {
+		out.AdditionalModelRequestFields = map[string]interface{}{
+			"thinking":      map[string]interface{}{"type": "adaptive"},
+			"output_config": map[string]interface{}{"effort": AnthropicAdaptiveEffort(req.Reasoning)},
+		}
+	}
 	out.InferenceConfig.MaxTokens = req.MaxTokens
 	if out.InferenceConfig.MaxTokens == 0 {
 		out.InferenceConfig.MaxTokens = 4096
@@ -488,6 +502,11 @@ func resolveBedrockInferenceProfileID(modelID, region string) string {
 	// Already geo-prefixed (us. / eu. / apac. / ap. / us-gov. / global.)?
 	if bedrockHasGeoPrefix(modelID) {
 		return modelID
+	}
+	// Opus 5 is exposed for on-demand throughput through the global
+	// inference profile rather than a region-specific profile.
+	if modelID == "anthropic.claude-opus-5" {
+		return "global." + modelID
 	}
 	if !bedrockRequiresInferenceProfile(modelID) {
 		return modelID

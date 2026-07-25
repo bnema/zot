@@ -163,6 +163,36 @@ func TestBedrockModelSupportsCaching(t *testing.T) {
 	}
 }
 
+func TestBedrockBuildRequestClaudeOpus5AdaptiveThinking(t *testing.T) {
+	client := &bedrockClient{region: "us-east-1"}
+	temperature := float32(0.7)
+	req, err := client.buildRequest(Request{
+		Model:       "global.anthropic.claude-opus-5",
+		Reasoning:   "max",
+		Temperature: &temperature,
+		Messages: []Message{
+			{Role: RoleUser, Content: []Content{TextBlock{Text: "hello"}}},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if req.InferenceConfig.Temperature != nil {
+		t.Fatalf("adaptive thinking must omit temperature, got %v", *req.InferenceConfig.Temperature)
+	}
+	if req.AdditionalModelRequestFields == nil {
+		t.Fatal("missing additionalModelRequestFields")
+	}
+	thinking, ok := req.AdditionalModelRequestFields["thinking"].(map[string]interface{})
+	if !ok || thinking["type"] != "adaptive" {
+		t.Fatalf("unexpected thinking config: %#v", req.AdditionalModelRequestFields["thinking"])
+	}
+	output, ok := req.AdditionalModelRequestFields["output_config"].(map[string]interface{})
+	if !ok || output["effort"] != "max" {
+		t.Fatalf("unexpected output config: %#v", req.AdditionalModelRequestFields["output_config"])
+	}
+}
+
 func TestBedrockBuildRequestMaxTokens(t *testing.T) {
 	client := &bedrockClient{region: "us-east-1"}
 
@@ -642,7 +672,10 @@ func TestResolveBedrockInferenceProfileID(t *testing.T) {
 		region string
 		want   string
 	}{
-		// Bare Anthropic foundation IDs get the region-matched prefix.
+		// Opus 5 is available through its global inference profile only.
+		{"anthropic.claude-opus-5", "us-east-1", "global.anthropic.claude-opus-5"},
+		{"anthropic.claude-opus-5", "eu-central-1", "global.anthropic.claude-opus-5"},
+		// Other bare Anthropic foundation IDs get the region-matched prefix.
 		{"anthropic.claude-sonnet-4-5-20250929-v1:0", "us-east-1", "us.anthropic.claude-sonnet-4-5-20250929-v1:0"},
 		{"anthropic.claude-sonnet-4-5-20250929-v1:0", "eu-central-1", "eu.anthropic.claude-sonnet-4-5-20250929-v1:0"},
 		{"anthropic.claude-opus-4-6-v1", "ap-southeast-2", "apac.anthropic.claude-opus-4-6-v1"},
@@ -664,5 +697,18 @@ func TestResolveBedrockInferenceProfileID(t *testing.T) {
 		if got := resolveBedrockInferenceProfileID(c.model, c.region); got != c.want {
 			t.Errorf("resolveBedrockInferenceProfileID(%q, %q) = %q; want %q", c.model, c.region, got, c.want)
 		}
+	}
+}
+
+func TestClaudeOpus5BedrockCatalog(t *testing.T) {
+	m, err := FindModel("amazon-bedrock", "global.anthropic.claude-opus-5")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m.ContextWindow != 1000000 || m.MaxOutput != 128000 || !m.Reasoning || !m.AdaptiveThinking {
+		t.Fatalf("unexpected Bedrock Opus 5 model: %+v", m)
+	}
+	if _, err := FindModel("amazon-bedrock", "anthropic.claude-opus-5"); err == nil {
+		t.Fatal("bare Bedrock Opus 5 ID must not be exposed in the catalog")
 	}
 }
