@@ -38,7 +38,7 @@ type bashArgs struct {
 const bashSchema = `{"type":"object","properties":{"command":{"type":"string"},"timeout":{"type":"integer"}},"required":["command"]}`
 
 func (t *BashTool) Name() string            { return "bash" }
-func (t *BashTool) Description() string     { return "Run a shell command. stdout+stderr merged." }
+func (t *BashTool) Description() string     { return shellDescription(currentShell()) }
 func (t *BashTool) Schema() json.RawMessage { return json.RawMessage(bashSchema) }
 
 func (t *BashTool) Execute(ctx context.Context, raw json.RawMessage, progress func(string)) (core.ToolResult, error) {
@@ -231,9 +231,45 @@ func writeFullOutput(s string) string {
 	return name
 }
 
-func newShellCmd(ctx context.Context, command string) *exec.Cmd {
-	if runtime.GOOS == "windows" {
-		return exec.CommandContext(ctx, "cmd", "/C", command)
+type shellCommand struct {
+	path   string
+	flag   string
+	isBash bool
+}
+
+func currentShell() shellCommand {
+	return resolveShell(runtime.GOOS, isExecutableFile, exec.LookPath)
+}
+
+func resolveShell(goos string, executable func(string) bool, lookPath func(string) (string, error)) shellCommand {
+	if goos == "windows" {
+		return shellCommand{path: "cmd", flag: "/C"}
 	}
-	return exec.CommandContext(ctx, "/bin/sh", "-c", command)
+	if executable("/bin/bash") {
+		return shellCommand{path: "/bin/bash", flag: "-c", isBash: true}
+	}
+	if path, err := lookPath("bash"); err == nil {
+		return shellCommand{path: path, flag: "-c", isBash: true}
+	}
+	return shellCommand{path: "/bin/sh", flag: "-c"}
+}
+
+func isExecutableFile(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && !info.IsDir() && info.Mode().Perm()&0o111 != 0
+}
+
+func shellDescription(shell shellCommand) string {
+	if shell.flag == "/C" {
+		return "Run a Windows Command Prompt command via cmd /C. stdout+stderr merged."
+	}
+	if shell.isBash {
+		return fmt.Sprintf("Run a Bash command via %s -c. stdout+stderr merged.", shell.path)
+	}
+	return "Bash is unavailable; run a POSIX sh command via /bin/sh -c. stdout+stderr merged."
+}
+
+func newShellCmd(ctx context.Context, command string) *exec.Cmd {
+	shell := currentShell()
+	return exec.CommandContext(ctx, shell.path, shell.flag, command)
 }

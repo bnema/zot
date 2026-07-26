@@ -3,6 +3,7 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -257,6 +258,85 @@ func TestEditPreservesCRLF(t *testing.T) {
 	}
 }
 
+func TestResolveShell(t *testing.T) {
+	notFound := errors.New("not found")
+	tests := []struct {
+		name     string
+		goos     string
+		binBash  bool
+		pathBash string
+		pathErr  error
+		want     shellCommand
+	}{
+		{
+			name: "prefers /bin/bash",
+			goos: "linux", binBash: true, pathBash: "/usr/local/bin/bash",
+			want: shellCommand{path: "/bin/bash", flag: "-c", isBash: true},
+		},
+		{
+			name: "uses bash from PATH",
+			goos: "linux", pathBash: "/usr/local/bin/bash",
+			want: shellCommand{path: "/usr/local/bin/bash", flag: "-c", isBash: true},
+		},
+		{
+			name: "falls back to POSIX sh",
+			goos: "linux", pathErr: notFound,
+			want: shellCommand{path: "/bin/sh", flag: "-c"},
+		},
+		{
+			name: "uses Command Prompt on Windows",
+			goos: "windows", binBash: true, pathBash: "/usr/local/bin/bash",
+			want: shellCommand{path: "cmd", flag: "/C"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := resolveShell(tt.goos, func(path string) bool {
+				return path == "/bin/bash" && tt.binBash
+			}, func(name string) (string, error) {
+				if name != "bash" {
+					t.Fatalf("unexpected PATH lookup for %q", name)
+				}
+				return tt.pathBash, tt.pathErr
+			})
+			if got != tt.want {
+				t.Fatalf("resolveShell() = %+v, want %+v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestShellDescription(t *testing.T) {
+	tests := []struct {
+		name  string
+		shell shellCommand
+		want  string
+	}{
+		{
+			name:  "bash",
+			shell: shellCommand{path: "/opt/bin/bash", flag: "-c", isBash: true},
+			want:  "Run a Bash command via /opt/bin/bash -c. stdout+stderr merged.",
+		},
+		{
+			name:  "POSIX fallback",
+			shell: shellCommand{path: "/bin/sh", flag: "-c"},
+			want:  "Bash is unavailable; run a POSIX sh command via /bin/sh -c. stdout+stderr merged.",
+		},
+		{
+			name:  "Windows",
+			shell: shellCommand{path: "cmd", flag: "/C"},
+			want:  "Run a Windows Command Prompt command via cmd /C. stdout+stderr merged.",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := shellDescription(tt.shell); got != tt.want {
+				t.Fatalf("shellDescription() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestBashSuccess(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("posix shell only")
@@ -272,6 +352,26 @@ func TestBashSuccess(t *testing.T) {
 	}
 	if res.IsError {
 		t.Fatal("unexpected error flag")
+	}
+}
+
+func TestBashSyntax(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("bash syntax is not used on Windows")
+	}
+	if !currentShell().isBash {
+		t.Skip("bash is unavailable")
+	}
+	tool := &BashTool{CWD: t.TempDir()}
+	res, err := tool.Execute(context.Background(), mustJSON(t, map[string]any{
+		"command": `items=(one two); [[ ${#items[@]} -eq 2 ]] && printf 'bash syntax works\n'`,
+	}), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := res.Content[0].(provider.TextBlock).Text
+	if res.IsError || !strings.Contains(got, "bash syntax works") {
+		t.Fatalf("got %q", got)
 	}
 }
 
