@@ -226,7 +226,7 @@ zot --help
 - `read`: read text files, or inline images (PNG, JPEG, GIF, WebP).
 - `write`: create or overwrite files, making parent directories as needed.
 - `edit`: one or more exact-match replacements in an existing file.
-- `bash`: run a shell command in the session cwd, with merged stdout/stderr and a timeout.
+- `bash`: run a command in the session cwd with merged stdout/stderr and a timeout. On Unix, zot uses `/bin/bash -c` when available, then `bash -c` from `PATH`, and falls back to POSIX `/bin/sh -c` when Bash is unavailable. On Windows, it uses `cmd /C`. macOS ships Bash 3.2 by default, so newer Bash features may be unavailable.
 
 When the sandbox is on (see `/jail`), all four tools refuse paths outside the session cwd.
 
@@ -290,7 +290,7 @@ Extension-registered commands appear under a divider at the bottom of the popup,
 
 ### Shell escape (`!command`)
 
-Type `!` followed by a command to run it directly without going through the model. Everything after the `!` is passed to the same shell the `bash` tool uses (`/bin/sh -c` on Unix, `cmd /C` on Windows), runs in the session working directory, and honors the `/jail` sandbox. The output is appended below the transcript as a terminal-log block (command echo, output, exit code), styled by success or failure. It stays on screen until you send your next prompt (or run `/clear`), so it doesn't bleed into the model conversation. A running `!command` shares the busy state with the agent: `esc` cancels it, and you cannot start one while a turn (or another shell escape) is in flight.
+Type `!` followed by a command to run it directly without going through the model. Everything after the `!` is passed to the same shell the `bash` tool uses (`/bin/bash -c` when available on Unix, then `bash -c` from `PATH`, with POSIX `/bin/sh -c` as a fallback; `cmd /C` on Windows), runs in the session working directory, and honors the `/jail` sandbox. The output is appended below the transcript as a terminal-log block (command echo, output, exit code), styled by success or failure. It stays on screen until you send your next prompt (or run `/clear`), so it doesn't bleed into the model conversation. A running `!command` shares the busy state with the agent: `esc` cancels it, and you cannot start one while a turn (or another shell escape) is in flight.
 
 ### `/sessions`
 
