@@ -44,6 +44,10 @@ type InteractiveConfig struct {
 	StartupExtensionNames []string
 	StartupSkillNames     []string
 
+	// StartupExtensionErrors are non-fatal extension load failures collected
+	// before the TUI starts. They are display-only and never enter the transcript.
+	StartupExtensionErrors []string
+
 	// ShowInstructionsAtStartup controls whether startup resources are visible.
 	// nil means the default, off.
 	ShowInstructionsAtStartup *bool
@@ -282,6 +286,7 @@ type chatCacheKey struct {
 	statusErr       string
 	help            string
 	extNotes        string
+	reloadErrors    string
 	updateAvailable bool
 	updateCurrent   string
 	updateLatest    string
@@ -486,6 +491,10 @@ type Interactive struct {
 	// transcript) until cleared by /clear or another reset.
 	extNotes []string
 
+	// reloadErrors are host-only extension reload failures. They stay in
+	// the scrolling chat until /clear without entering the agent transcript.
+	reloadErrors []string
+
 	// shellRunning is true while a !command is executing. It shares
 	// i.busy/i.cancelTurn so esc cancels it and no turn or other shell
 	// escape can start while one is in flight.
@@ -582,6 +591,7 @@ func NewInteractive(cfg InteractiveConfig) *Interactive {
 		fileSuggest:       newFileSuggester(),
 		spin:              newSpinner(cfg.Theme),
 		inputHistoryIndex: -1,
+		reloadErrors:      append([]string(nil), cfg.StartupExtensionErrors...),
 	}
 	i.fileSuggest.SetRecursive(cfg.RecursiveFileSuggest != nil && *cfg.RecursiveFileSuggest)
 	i.fileSuggest.SetRespectGitignore(cfg.RespectGitignore == nil || *cfg.RespectGitignore)
@@ -906,6 +916,7 @@ func (i *Interactive) chatCacheKeyLocked(cols int) (chatCacheKey, bool) {
 		statusErr:       i.statusErr,
 		help:            strings.Join(i.helpBlock, "\n"),
 		extNotes:        strings.Join(i.extNotes, "\n"),
+		reloadErrors:    strings.Join(i.reloadErrors, "\n"),
 		updateAvailable: i.updateInfo.Available,
 		updateCurrent:   i.updateInfo.Current,
 		updateLatest:    i.updateInfo.Latest,
@@ -1029,6 +1040,19 @@ func (i *Interactive) buildChatLocked(cols int) []string {
 	// transcript, above the dialog/editor band. Cleared by /clear.
 	if len(i.extNotes) > 0 {
 		chat = append(chat, i.extNotes...)
+		chat = append(chat, "")
+	}
+
+	// Reload failures remain in the scrolling chat until /clear. They are
+	// host-only display state, not provider messages or persisted context.
+	// While the latest failure is still the temporary status error, hide its
+	// stored copy to avoid painting the same message twice.
+	reloadErrors := i.reloadErrors
+	if n := len(reloadErrors); n > 0 && reloadErrors[n-1] == i.statusErr {
+		reloadErrors = reloadErrors[:n-1]
+	}
+	if len(reloadErrors) > 0 {
+		chat = append(chat, renderReloadErrors(i.cfg.Theme, reloadErrors, cols)...)
 		chat = append(chat, "")
 	}
 
@@ -4068,6 +4092,7 @@ func (i *Interactive) runSlash(ctx context.Context, cmd string) (done bool) {
 		i.parkedTotal = 0
 		i.scrollOffset = 0
 		i.extNotes = nil
+		i.reloadErrors = nil
 		i.view.InvalidateRenderCache()
 		i.mu.Unlock()
 	case "/help":

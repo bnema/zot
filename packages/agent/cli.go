@@ -401,17 +401,18 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 	var iv *modes.Interactive
 	extHooks := &interactiveExtHooks{ivPtr: &iv}
 	extMgr := extensions.New(ZotHome(), r.CWD, version, r.Provider, r.Model, extHooks)
+	var startupExtensionErrors []string
 	// --ext paths first so they win against installed extensions of
 	// the same name (loadOne's first-write-wins semantics).
 	for _, e := range extMgr.LoadExplicit(ctx, args.Exts) {
-		fmt.Fprintln(os.Stderr, "extension load:", e)
+		startupExtensionErrors = append(startupExtensionErrors, e.Error())
 	}
 	// --no-ext skips the global + project-local discovery scan;
 	// explicit --ext paths above are still honoured so you can run
 	// "only this extension" with --no-ext --ext ./x.
 	if !args.NoExt {
 		for _, e := range extMgr.Discover(ctx) {
-			fmt.Fprintln(os.Stderr, "extension load:", e)
+			startupExtensionErrors = append(startupExtensionErrors, e.Error())
 		}
 	}
 	// Wait briefly for extensions to flush their initial register_tool
@@ -1013,6 +1014,7 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 		CWD:                        r.CWD,
 		StartupContextPaths:        instructionContextPaths(r.ContextFiles),
 		StartupExtensionNames:      startupExtensionNames(extMgr.All()),
+		StartupExtensionErrors:     startupExtensionErrors,
 		StartupSkillNames:          startupSkillNames(startupSkills),
 		ShowInstructionsAtStartup:  initialCfg.ShowInstructionsAtStartup,
 		ZotHome:                    ZotHome(),

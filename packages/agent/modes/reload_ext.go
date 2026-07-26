@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/patriceckhart/zot/packages/agent/extensions"
+	"github.com/patriceckhart/zot/packages/tui"
 )
 
 const reloadStatusDuration = 5 * time.Second
@@ -36,11 +37,36 @@ func (i *Interactive) setReloadStatus(msg string, failed bool) uint64 {
 	if failed {
 		i.statusOK = ""
 		i.statusErr = msg
+		i.reloadErrors = append(i.reloadErrors, msg)
 		return i.reloadStatusSeq
 	}
 	i.statusOK = msg
 	i.statusErr = ""
 	return i.reloadStatusSeq
+}
+
+func renderReloadErrors(theme tui.Theme, errors []string, width int) []string {
+	const marker = "✖ "
+	const indent = "  "
+	wrapWidth := width - len([]rune(marker))
+	if wrapWidth < 8 {
+		wrapWidth = 8
+	}
+	var out []string
+	for _, msg := range errors {
+		wrapped := tui.WrapANSILine(msg, wrapWidth)
+		if len(wrapped) == 0 {
+			wrapped = []string{""}
+		}
+		for idx, line := range wrapped {
+			prefix := marker
+			if idx > 0 {
+				prefix = indent
+			}
+			out = append(out, theme.FG256(theme.Error, prefix+line))
+		}
+	}
+	return out
 }
 
 func (i *Interactive) clearReloadStatus(seq uint64, msg string, failed bool) bool {

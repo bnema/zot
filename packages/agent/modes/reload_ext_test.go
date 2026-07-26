@@ -6,6 +6,8 @@ import (
 	"testing"
 
 	"github.com/patriceckhart/zot/packages/agent/extensions"
+	"github.com/patriceckhart/zot/packages/core"
+	"github.com/patriceckhart/zot/packages/tui"
 )
 
 func TestFormatReloadStatusIncludesErrorDetails(t *testing.T) {
@@ -49,9 +51,49 @@ func TestSetReloadStatusUsesErrorChannelForFailures(t *testing.T) {
 	if i.statusErr != "broken extension" || i.statusOK != "" {
 		t.Fatalf("failed reload status used wrong channel: err=%q ok=%q", i.statusErr, i.statusOK)
 	}
+	if len(i.reloadErrors) != 1 || i.reloadErrors[0] != "broken extension" {
+		t.Fatalf("reload errors = %q, want persistent failure", i.reloadErrors)
+	}
 	i.setReloadStatus("reload complete", false)
 	if i.statusOK != "reload complete" || i.statusErr != "" {
 		t.Fatalf("successful reload status used wrong channel: err=%q ok=%q", i.statusErr, i.statusOK)
+	}
+}
+
+func TestStartupExtensionFailureAppearsInChatWithoutEnteringContext(t *testing.T) {
+	agent := core.NewAgent(nil, "", "", nil)
+	i := NewInteractive(InteractiveConfig{
+		Agent:                  agent,
+		Theme:                  tui.Theme{Error: 1},
+		StartupExtensionErrors: []string{"startup failed: stderr log: /tmp/startup.log"},
+	})
+
+	chat := strings.Join(i.buildChatLocked(30), "\n")
+	if !strings.Contains(chat, "startup failed") || !strings.Contains(chat, "/tmp/startup.log") {
+		t.Fatalf("chat does not contain startup extension failure: %q", chat)
+	}
+	if got := len(agent.Messages()); got != 0 {
+		t.Fatalf("agent context contains %d startup error message(s), want none", got)
+	}
+}
+
+func TestReloadFailureRemainsInChatWithoutEnteringContext(t *testing.T) {
+	agent := core.NewAgent(nil, "", "", nil)
+	i := NewInteractive(InteractiveConfig{
+		Agent: agent,
+		Theme: tui.Theme{Error: 1},
+	})
+	seq := i.setReloadStatus("broken extension: stderr log: /tmp/ext.log", true)
+	if !i.clearReloadStatus(seq, i.statusErr, true) {
+		t.Fatal("temporary reload status was not cleared")
+	}
+
+	chat := strings.Join(i.buildChatLocked(30), "\n")
+	if !strings.Contains(chat, "broken extension") || !strings.Contains(chat, "/tmp/ext.log") {
+		t.Fatalf("chat does not contain persistent reload failure: %q", chat)
+	}
+	if got := len(agent.Messages()); got != 0 {
+		t.Fatalf("agent context contains %d reload error message(s), want none", got)
 	}
 }
 
