@@ -406,6 +406,11 @@ type Interactive struct {
 	// pre-turn fraction guard. Cleared by runCompact once shown.
 	pendingPostCompactNote string
 
+	// compacting is true for both manual and automatic compaction. Prompts
+	// submitted while it is set stay in the host queue because Compact does
+	// not run the agent loop that drains the agent-owned queue.
+	compacting bool
+
 	// autoCompacting is true while a model-triggered compaction is in
 	// flight. Surfaced in the status bar so the user can tell a
 	// condense pass from a regular assistant turn.
@@ -2602,6 +2607,7 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 		// boundary instead of waiting for the whole run to finish.
 		i.mu.Lock()
 		busy := i.busy
+		compacting := i.compacting
 		ag := i.agent
 		i.mu.Unlock()
 		if busy {
@@ -2612,7 +2618,7 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 				i.invalidate()
 				return false
 			}
-			if ag != nil {
+			if ag != nil && !compacting {
 				ag.QueueMessage(text)
 			} else {
 				i.mu.Lock()
@@ -2963,10 +2969,13 @@ func (i *Interactive) SubmitOrQueue(text string, images []provider.ImageBlock) {
 		return
 	}
 	if i.busy {
-		// Queue text only; images are dropped for queued prompts.
+		// Queue text only; images are dropped for queued prompts. Compaction
+		// uses the host queue because it has no active agent loop to drain
+		// Agent.QueueMessage entries.
 		ag := i.agent
+		compacting := i.compacting
 		i.mu.Unlock()
-		if ag != nil {
+		if ag != nil && !compacting {
 			ag.QueueMessage(text)
 		} else {
 			i.mu.Lock()
@@ -4143,10 +4152,11 @@ func (i *Interactive) runSlash(ctx context.Context, cmd string) (done bool) {
 		studyPrompt := buildStudyPrompt(strings.TrimSpace(strings.TrimPrefix(cmd, parts[0])), i.cfg.CWD)
 		i.mu.Lock()
 		busy := i.busy
+		compacting := i.compacting
 		ag := i.agent
 		i.mu.Unlock()
 		if busy {
-			if ag != nil {
+			if ag != nil && !compacting {
 				ag.QueueMessage(studyPrompt)
 			} else {
 				i.mu.Lock()
@@ -5061,6 +5071,7 @@ func (i *Interactive) runCompact(parent context.Context, auto bool) {
 	ctx, cancel := context.WithCancel(parent)
 	i.mu.Lock()
 	i.busy = true
+	i.compacting = true
 	if auto {
 		i.spin.StartFixed("condensing history")
 		i.autoCompacting = true
@@ -5085,6 +5096,7 @@ func (i *Interactive) runCompact(parent context.Context, auto bool) {
 		_ = summary
 		i.mu.Lock()
 		i.busy = false
+		i.compacting = false
 		i.resetStreamingStateLocked()
 		i.cancelTurn = nil
 		i.autoCompacting = false
