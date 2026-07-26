@@ -1,11 +1,45 @@
 package modes
 
 import (
+	"context"
+	"runtime"
 	"strings"
 	"testing"
+	"time"
 
-	"github.com/patriceckhart/zot/packages/tui"
+	"github.com/patriceckhart/zot/packages/core"
 )
+
+func TestShellEscapeAddsOutputToAgentContext(t *testing.T) {
+	agent := core.NewAgent(nil, "", "", nil)
+	i := NewInteractive(InteractiveConfig{Agent: agent, CWD: t.TempDir()})
+	cmd := "printf zot-shell-context"
+	if runtime.GOOS == "windows" {
+		cmd = "echo zot-shell-context"
+	}
+
+	i.startShellEscape(context.Background(), cmd)
+
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		messages := agent.Messages()
+		i.mu.Lock()
+		running := i.shellRunning
+		i.mu.Unlock()
+		if len(messages) == 1 && !running {
+			text := userMessageText(messages[0])
+			if !strings.Contains(text, "zot-shell-context") {
+				t.Fatalf("shell context = %q, want command output", text)
+			}
+			if messages[0].Meta[shellEscapeMetaKey] != "true" {
+				t.Fatalf("shell context metadata = %v", messages[0].Meta)
+			}
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("shell output was not appended to agent context")
+}
 
 func TestShellEscapeCommand(t *testing.T) {
 	cases := []struct {
@@ -28,25 +62,5 @@ func TestShellEscapeCommand(t *testing.T) {
 			t.Errorf("shellEscapeCommand(%q) = (%q,%v); want (%q,%v)",
 				c.in, cmd, ok, c.wantCmd, c.wantOK)
 		}
-	}
-}
-
-func TestRenderShellBlockStylesFooterDimmed(t *testing.T) {
-	i := &Interactive{}
-	i.cfg.Theme = tui.Theme{Tool: 2, Error: 1, Muted: 8}
-
-	ok := i.renderShellBlock("$ echo hi\n\nhi\n\n[exit 0]  Took 0.1s", false)
-	if len(ok) == 0 {
-		t.Fatal("expected non-empty block")
-	}
-	// The success body uses the Tool color; the footer uses Muted.
-	body := strings.Join(ok, "\n")
-	if !strings.Contains(body, "echo hi") || !strings.Contains(body, "[exit 0]") {
-		t.Fatalf("block missing expected content: %q", body)
-	}
-
-	fail := i.renderShellBlock("$ false\n\n[exit 1]  Took 0.0s", true)
-	if len(fail) == 0 {
-		t.Fatal("expected non-empty failure block")
 	}
 }

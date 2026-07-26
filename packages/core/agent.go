@@ -238,6 +238,23 @@ func (a *Agent) SetMessages(msgs []provider.Message) {
 	a.rev++
 }
 
+// AppendUserContext adds a user-role message to the transcript without
+// starting a model turn. Hosts use it for context gathered outside the agent
+// loop, such as the output of an explicitly invoked shell command.
+func (a *Agent) AppendUserContext(text string, meta map[string]string) {
+	msg := provider.Message{
+		Role:    provider.RoleUser,
+		Content: []provider.Content{provider.TextBlock{Text: text}},
+		Time:    time.Now(),
+		Meta:    meta,
+	}
+	a.mu.Lock()
+	a.messages = append(a.messages, msg)
+	a.rev++
+	a.mu.Unlock()
+	a.fireMessageAppended(msg)
+}
+
 // Cost returns the cumulative usage.
 func (a *Agent) Cost() provider.Usage {
 	a.mu.Lock()

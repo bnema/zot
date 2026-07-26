@@ -282,7 +282,6 @@ type chatCacheKey struct {
 	statusErr       string
 	help            string
 	extNotes        string
-	shellBlock      string
 	updateAvailable bool
 	updateCurrent   string
 	updateLatest    string
@@ -482,13 +481,9 @@ type Interactive struct {
 	// transcript) until cleared by /clear or another reset.
 	extNotes []string
 
-	// shellBlock holds the rendered terminal-log lines of the most
-	// recent !command shell escape. It lives below the transcript
-	// (under extNotes) until the user sends their next prompt or runs
-	// /clear. shellRunning is true while a !command is executing; it
-	// shares i.busy/i.cancelTurn so esc cancels it and no turn or
-	// other shell escape can start while one is in flight.
-	shellBlock   []string
+	// shellRunning is true while a !command is executing. It shares
+	// i.busy/i.cancelTurn so esc cancels it and no turn or other shell
+	// escape can start while one is in flight.
 	shellRunning bool
 
 	// sessionLoading is true while a /sessions selection is being read
@@ -906,7 +901,6 @@ func (i *Interactive) chatCacheKeyLocked(cols int) (chatCacheKey, bool) {
 		statusErr:       i.statusErr,
 		help:            strings.Join(i.helpBlock, "\n"),
 		extNotes:        strings.Join(i.extNotes, "\n"),
-		shellBlock:      strings.Join(i.shellBlock, "\n"),
 		updateAvailable: i.updateInfo.Available,
 		updateCurrent:   i.updateInfo.Current,
 		updateLatest:    i.updateInfo.Latest,
@@ -1030,14 +1024,6 @@ func (i *Interactive) buildChatLocked(cols int) []string {
 	// transcript, above the dialog/editor band. Cleared by /clear.
 	if len(i.extNotes) > 0 {
 		chat = append(chat, i.extNotes...)
-		chat = append(chat, "")
-	}
-
-	// Shell-escape terminal-log block (!command). Rendered below the
-	// transcript and extension notes; cleared when the next prompt is
-	// sent or on /clear so it never leaks into the model conversation.
-	if len(i.shellBlock) > 0 {
-		chat = append(chat, i.shellBlock...)
 		chat = append(chat, "")
 	}
 
@@ -1662,7 +1648,10 @@ func snapViewportStartToImageBlock(chat []string, start int) int {
 	return start
 }
 
-const hiddenOpenAIImageMirrorPrefix = "Tool output included the following image content:"
+const (
+	hiddenOpenAIImageMirrorPrefix = "Tool output included the following image content:"
+	shellEscapeMetaKey            = "shell_escape"
+)
 
 func filterHiddenTranscriptMessages(msgs []provider.Message) []provider.Message {
 	if len(msgs) == 0 {
@@ -2319,21 +2308,14 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 		i.mu.Lock()
 		hadHelp := len(i.helpBlock) > 0
 		hadNotes := len(i.extNotes) > 0
-		// Only dismiss a parked shell-escape log on esc when nothing is
-		// running; if a !command is in flight, esc must fall through to
-		// the cancel path below instead of just hiding the (empty) block.
-		hadShell := len(i.shellBlock) > 0 && !i.shellRunning
 		if hadHelp {
 			i.helpBlock = nil
 		}
 		if hadNotes {
 			i.extNotes = nil
 		}
-		if hadShell {
-			i.shellBlock = nil
-		}
 		i.mu.Unlock()
-		if hadHelp || hadNotes || hadShell {
+		if hadHelp || hadNotes {
 			i.invalidate()
 			return false
 		}
@@ -2738,7 +2720,7 @@ func (i *Interactive) inputHistory() []string {
 	msgs := i.agent.Messages()
 	hist := make([]string, 0, len(msgs))
 	for _, m := range msgs {
-		if m.Role != provider.RoleUser || isHiddenTranscriptMessage(m) {
+		if m.Role != provider.RoleUser || isHiddenTranscriptMessage(m) || m.Meta[shellEscapeMetaKey] == "true" {
 			continue
 		}
 		text := userMessageText(m)
@@ -4077,7 +4059,6 @@ func (i *Interactive) runSlash(ctx context.Context, cmd string) (done bool) {
 		i.parkedTotal = 0
 		i.scrollOffset = 0
 		i.extNotes = nil
-		i.shellBlock = nil
 		i.view.InvalidateRenderCache()
 		i.mu.Unlock()
 	case "/help":
@@ -5195,9 +5176,8 @@ func shellEscapeCommand(text string) (string, bool) {
 // uses, in the session working directory, honoring the /jail sandbox.
 // It shares the busy/cancel state with the agent: esc cancels it, and
 // it refuses to start while a turn or another shell escape is already
-// in flight. The terminal-log output is parked in i.shellBlock below
-// the transcript until the next prompt or /clear, so it never enters
-// the model conversation.
+// in flight. Its terminal-log output is appended to the transcript as
+// user context without automatically starting a model turn.
 func (i *Interactive) startShellEscape(parent context.Context, cmd string) {
 	i.mu.Lock()
 	if i.busy || i.shellRunning {
@@ -5220,10 +5200,9 @@ func (i *Interactive) startShellEscape(parent context.Context, cmd string) {
 	i.statusErr = ""
 	i.statusOK = ""
 	i.spin.StartFixed("running shell command")
-	// A new shell escape replaces the previous block; clear stale
-	// extension notes the same way a new turn would so the screen
-	// doesn't accumulate transient state.
-	i.shellBlock = nil
+	// Clear stale extension notes the same way a new turn would so the
+	// screen doesn't accumulate transient state.
+	i.extNotes = nil
 	i.scrollOffset = 0
 	i.parkedTurn = 0
 	i.parkedTotal = 0
@@ -5255,13 +5234,12 @@ func (i *Interactive) startShellEscape(parent context.Context, cmd string) {
 			out += "\n\n[cancelled]"
 		}
 
-		block := i.renderShellBlock(out, failed)
+		i.agent.AppendUserContext(out, map[string]string{shellEscapeMetaKey: "true"})
 
 		i.mu.Lock()
 		i.shellRunning = false
 		i.busy = false
 		i.cancelTurn = nil
-		i.shellBlock = block
 		if failed {
 			if cancelled {
 				i.statusErr = "shell command cancelled"
@@ -5276,30 +5254,6 @@ func (i *Interactive) startShellEscape(parent context.Context, cmd string) {
 		i.mu.Unlock()
 		i.invalidate()
 	}()
-}
-
-// renderShellBlock turns merged bash output into a styled terminal-log
-// block: each line colored by overall success (tool/green) or failure
-// (error/red), with the [exit ...] / [error] footer dimmed via the
-// muted color so it reads as metadata.
-func (i *Interactive) renderShellBlock(out string, failed bool) []string {
-	th := i.cfg.Theme
-	base := th.Tool
-	if failed {
-		base = th.Error
-	}
-	out = strings.TrimRight(out, "\n")
-	lines := strings.Split(out, "\n")
-	styled := make([]string, 0, len(lines))
-	for _, line := range lines {
-		color := base
-		trimmed := strings.TrimSpace(line)
-		if strings.HasPrefix(trimmed, "[exit ") || strings.HasPrefix(trimmed, "[error]") || strings.HasPrefix(trimmed, "[cancelled]") {
-			color = th.Muted
-		}
-		styled = append(styled, th.FG256(color, line))
-	}
-	return styled
 }
 
 func (i *Interactive) startTurn(parent context.Context, prompt string) {
@@ -5343,7 +5297,6 @@ func (i *Interactive) startTurnWithImages(parent context.Context, prompt string,
 	i.toolCalls = map[string]*tui.ToolCallView{}
 	i.toolOrder = nil
 	i.toolGate = map[string]int{}
-	i.shellBlock = nil // sending a prompt clears any parked shell-escape log
 	i.extNotes = nil   // ext notes are one-shot; a new prompt clears them
 	i.scrollOffset = 0 // jump back to the bottom on new turn
 	// Lift the resume tail cap once the user starts interacting. The

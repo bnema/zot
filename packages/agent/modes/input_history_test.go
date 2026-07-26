@@ -50,6 +50,20 @@ func TestInputHistoryUsesUpDown(t *testing.T) {
 	}
 }
 
+func TestInputHistorySkipsShellEscapeContext(t *testing.T) {
+	ag := core.NewAgent(nil, "", "", nil)
+	ag.SetMessages([]provider.Message{
+		{Role: provider.RoleUser, Content: []provider.Content{provider.TextBlock{Text: "prompt"}}},
+		{Role: provider.RoleUser, Content: []provider.Content{provider.TextBlock{Text: "$ pwd\n\n/tmp\n\n[exit 0]"}}, Meta: map[string]string{shellEscapeMetaKey: "true"}},
+	})
+	i := &Interactive{agent: ag}
+
+	history := i.inputHistory()
+	if len(history) != 1 || history[0] != "prompt" {
+		t.Fatalf("inputHistory() = %q, want [prompt]", history)
+	}
+}
+
 func TestInputHistoryNoLongerUsesLeftRight(t *testing.T) {
 	ag := core.NewAgent(nil, "", "", nil)
 	ag.SetMessages([]provider.Message{
