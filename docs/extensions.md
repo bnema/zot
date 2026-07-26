@@ -644,7 +644,8 @@ Useful while developing an extension: edit, save, `/reload-ext`,
 done. Explicit `--ext` paths are remembered and reloaded alongside
 discovered extensions. The temporary reload status reports each load
 error in red, including its message, and dismisses itself after five
-seconds.
+seconds. Subprocess startup and handshake errors include the exact stderr
+log path for the failed extension.
 
 ### TypeScript / Python
 

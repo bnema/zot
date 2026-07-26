@@ -553,17 +553,39 @@ func (m *Manager) spawn(ctx context.Context, ext *Extension) error {
 	cmd.Stderr = logFile
 	isolateExtensionProcess(cmd)
 
-	stdin, err := cmd.StdinPipe()
+	var stdin io.WriteCloser
+	var stdout io.ReadCloser
+	started := false
+	cleanup := true
+	defer func() {
+		if !cleanup {
+			return
+		}
+		if stdin != nil {
+			_ = stdin.Close()
+		}
+		if stdout != nil {
+			_ = stdout.Close()
+		}
+		if started {
+			_ = cmd.Process.Kill()
+			_ = cmd.Wait()
+		}
+		_ = logFile.Close()
+	}()
+
+	stdin, err = cmd.StdinPipe()
 	if err != nil {
-		return err
+		return fmt.Errorf("stdin pipe (stderr log: %s): %w", logPath, err)
 	}
-	stdout, err := cmd.StdoutPipe()
+	stdout, err = cmd.StdoutPipe()
 	if err != nil {
-		return err
+		return fmt.Errorf("stdout pipe (stderr log: %s): %w", logPath, err)
 	}
 	if err := cmd.Start(); err != nil {
-		return fmt.Errorf("spawn: %w", err)
+		return fmt.Errorf("spawn (stderr log: %s): %w", logPath, err)
 	}
+	started = true
 	ext.cmd = cmd
 	ext.stdin = stdin
 	ext.stdout = stdout
@@ -574,14 +596,17 @@ func (m *Manager) spawn(ctx context.Context, ext *Extension) error {
 	scanner := bufio.NewScanner(stdout)
 	scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
 	if !scanner.Scan() {
-		return fmt.Errorf("extension exited before hello: %w", scanner.Err())
+		if err := scanner.Err(); err != nil {
+			return fmt.Errorf("read hello (stderr log: %s): %w", logPath, err)
+		}
+		return fmt.Errorf("extension exited before hello (stderr log: %s)", logPath)
 	}
 	var hello extproto.HelloFromExt
 	if err := json.Unmarshal(scanner.Bytes(), &hello); err != nil {
-		return fmt.Errorf("parse hello: %w", err)
+		return fmt.Errorf("parse hello (stderr log: %s): %w", logPath, err)
 	}
 	if hello.Type != "hello" || hello.Name == "" {
-		return fmt.Errorf("first frame must be hello (got %q)", hello.Type)
+		return fmt.Errorf("first frame must be hello (got %q; stderr log: %s)", hello.Type, logPath)
 	}
 	// Trust the manifest's name; ignore mismatch from the hello.
 	ext.helloAck = true
@@ -597,8 +622,10 @@ func (m *Manager) spawn(ctx context.Context, ext *Extension) error {
 		DataDir:         ext.Dir,
 	})
 	if _, err := stdin.Write(ack); err != nil {
-		return fmt.Errorf("send hello_ack: %w", err)
+		return fmt.Errorf("send hello_ack (stderr log: %s): %w", logPath, err)
 	}
+
+	cleanup = false
 
 	// Spin up the read loop now that the handshake is done.
 	go m.readLoop(ext, scanner)

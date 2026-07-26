@@ -119,6 +119,76 @@ done
 	}
 }
 
+func TestDiscoverReportsLogWhenExtensionExitsBeforeHello(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("mock extension uses /bin/sh; skip on windows")
+	}
+
+	tmp := t.TempDir()
+	extDir := filepath.Join(tmp, "extensions", "broken")
+	if err := os.MkdirAll(extDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	script := "#!/bin/sh\nprintf '%s\\n' 'compile failed' >&2\nexit 1\n"
+	if err := os.WriteFile(filepath.Join(extDir, "run.sh"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(extDir, "extension.json"), []byte(`{"name":"broken","exec":"./run.sh"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	mgr := New(tmp, "", "0.0.0-test", "", "", nil)
+	errs := mgr.Discover(context.Background())
+	if len(errs) != 1 {
+		t.Fatalf("discover errors = %v, want one", errs)
+	}
+	logPath := filepath.Join(tmp, "logs", "ext-broken.log")
+	got := errs[0].Error()
+	if strings.Contains(got, "%!w") {
+		t.Fatalf("error contains formatting artifact: %s", got)
+	}
+	if !strings.Contains(got, "extension exited before hello") || !strings.Contains(got, logPath) {
+		t.Fatalf("error does not explain failure and identify stderr log: %s", got)
+	}
+	logData, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("read extension log: %v", err)
+	}
+	if !strings.Contains(string(logData), "compile failed") {
+		t.Fatalf("extension stderr missing from log: %s", logData)
+	}
+}
+
+func TestSpawnCleansUpProcessAfterInvalidHello(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("mock extension uses /bin/sh; skip on windows")
+	}
+
+	tmp := t.TempDir()
+	extDir := filepath.Join(tmp, "broken")
+	if err := os.MkdirAll(extDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	scriptPath := filepath.Join(extDir, "run.sh")
+	script := "#!/bin/sh\nprintf '%s\\n' 'not-json'\nwhile IFS= read -r line; do :; done\n"
+	if err := os.WriteFile(scriptPath, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	ext := &Extension{Manifest: Manifest{Name: "broken", Exec: "./run.sh"}, Dir: extDir}
+	mgr := New(tmp, "", "0.0.0-test", "", "", nil)
+	err := mgr.spawn(context.Background(), ext)
+	if err == nil || !strings.Contains(err.Error(), "parse hello") {
+		t.Fatalf("spawn error = %v, want parse hello failure", err)
+	}
+	if ext.cmd == nil || ext.cmd.ProcessState == nil {
+		t.Fatal("failed handshake process was not reaped")
+	}
+	if _, err := ext.logFile.WriteString("after cleanup"); err == nil {
+		t.Fatal("failed handshake log file was not closed")
+	}
+}
+
 func TestDiscoverLoadsThemeOnlyExtension(t *testing.T) {
 	tmp := t.TempDir()
 	extDir := filepath.Join(tmp, "extensions", "theme-only")
