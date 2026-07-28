@@ -62,6 +62,11 @@ type InteractiveConfig struct {
 	// re-reading config.json on every open.
 	AutoSwarmEnabled *bool
 
+	// AutoCompactThreshold is the context-window percentage that triggers
+	// automatic compaction. nil means 85; zero disables percentage-based
+	// triggers while preserving payload-too-large recovery.
+	AutoCompactThreshold *int
+
 	// JailByDefault mirrors the persisted jail_by_default preference.
 	// The current sandbox may differ after a session-scoped /jail or /unjail.
 	JailByDefault *bool
@@ -320,6 +325,10 @@ type SettingsStore interface {
 
 type showInstructionsSettingsStore interface {
 	SetShowInstructionsAtStartup(enabled bool) error
+}
+
+type autoCompactThresholdSettingsStore interface {
+	SetAutoCompactThreshold(percent int) error
 }
 
 type Interactive struct {
@@ -3151,6 +3160,22 @@ func (i *Interactive) openSettingsDialog() {
 	workingPosition := tui.NormalizeWorkingPosition(i.cfg.TUIWorkingPosition)
 	quickItems := i.quickModelSettingItems()
 
+	autoCompactOptions := []settingsOption{
+		{value: "0", label: "off", desc: "disable context-percentage triggers; payload-too-large recovery stays enabled"},
+		{value: "70", label: "70%", desc: "compact earlier to keep more context headroom"},
+		{value: "80", label: "80%", desc: "compact with moderate context headroom"},
+		{value: "85", label: "85%", desc: "default balance between history and headroom"},
+		{value: "90", label: "90%", desc: "retain more history before compacting"},
+	}
+	autoCompactThreshold := normalizeAutoCompactThreshold(i.cfg.AutoCompactThreshold)
+	autoCompactChoice := 0
+	for idx, opt := range autoCompactOptions {
+		if opt.value == strconv.Itoa(autoCompactThreshold) {
+			autoCompactChoice = idx
+			break
+		}
+	}
+
 	reasoningOptions := []settingsOption{
 		{value: "", label: "off", desc: "no reasoning"},
 		{value: "minimum", label: "minimum", desc: "very brief (~1k tokens)"},
@@ -3252,6 +3277,13 @@ func (i *Interactive) openSettingsDialog() {
 			hint:     autoSwarmHint,
 		},
 		{
+			key:     "auto_compact_threshold",
+			label:   "auto-compact threshold",
+			desc:    "choose how full the model context can get before zot condenses conversation history",
+			options: autoCompactOptions,
+			choice:  autoCompactChoice,
+		},
+		{
 			key:   "jail_by_default",
 			label: "jail new sessions by default",
 			desc:  "confine tools to the session working directory unless /unjail is used",
@@ -3344,6 +3376,8 @@ func (i *Interactive) applySettingChange(act settingsAction) {
 		i.applyReasoningSetting(act.StringValue)
 	case act.Key == "theme":
 		i.applyThemeSetting(act.StringValue)
+	case act.Key == "auto_compact_threshold":
+		i.applyAutoCompactThresholdSetting(act.StringValue)
 	case act.Key == "tui_input_style":
 		i.applyTUIInputStyleSetting(act.StringValue)
 	case act.Key == "tui_status_position":
@@ -3353,6 +3387,32 @@ func (i *Interactive) applySettingChange(act settingsAction) {
 	default:
 		i.applySettingToggle(act.Key, act.Value)
 	}
+}
+
+func (i *Interactive) applyAutoCompactThresholdSetting(value string) {
+	threshold, err := strconv.Atoi(value)
+	if err != nil {
+		return
+	}
+	threshold = normalizeAutoCompactThreshold(&threshold)
+	i.cfg.AutoCompactThreshold = &threshold
+	if store, ok := i.cfg.SettingsStore.(autoCompactThresholdSettingsStore); ok {
+		if err := store.SetAutoCompactThreshold(threshold); err != nil {
+			i.mu.Lock()
+			i.statusErr = "settings: " + err.Error()
+			i.mu.Unlock()
+			return
+		}
+	}
+	i.mu.Lock()
+	if threshold == 0 {
+		i.statusOK = "auto-compact threshold off"
+	} else {
+		i.statusOK = fmt.Sprintf("auto-compact threshold %d%%", threshold)
+	}
+	i.statusErr = ""
+	i.mu.Unlock()
+	i.invalidate()
 }
 
 func (i *Interactive) quickModelSettingItems() []settingsItem {
@@ -5561,11 +5621,26 @@ func isPayloadTooLargeError(err error) bool {
 	return strings.Contains(msg, "http 413") || strings.Contains(msg, " 413") || strings.HasPrefix(msg, "413 ") || strings.Contains(msg, "payload too large") || strings.Contains(msg, "request entity too large")
 }
 
-// autoCompactThreshold is the context-window fraction at which the
-// agent will auto-compact after a turn ends. 0.85 leaves enough
-// headroom for one more user prompt + response before we bump the
-// hard limit.
-const autoCompactThreshold = 0.85
+const defaultAutoCompactThreshold = 85
+
+func normalizeAutoCompactThreshold(threshold *int) int {
+	if threshold == nil {
+		return defaultAutoCompactThreshold
+	}
+	switch *threshold {
+	case 0, 70, 80, 85, 90:
+		return *threshold
+	default:
+		return defaultAutoCompactThreshold
+	}
+}
+
+func shouldAutoCompact(inputTokens, contextWindow, thresholdPercent int) bool {
+	if inputTokens <= 0 || contextWindow <= 0 || thresholdPercent <= 0 {
+		return false
+	}
+	return float64(inputTokens)/float64(contextWindow) >= float64(thresholdPercent)/100
+}
 
 // shouldAutoCompactLocked reports whether the last turn pushed context
 // usage past the auto-compact threshold. Must be called with i.mu
@@ -5581,10 +5656,8 @@ func (i *Interactive) shouldAutoCompactLocked() bool {
 	if err != nil || m.ContextWindow <= 0 {
 		return false
 	}
-	if i.lastCtxInput <= 0 {
-		return false
-	}
-	return float64(i.lastCtxInput)/float64(m.ContextWindow) >= autoCompactThreshold
+	threshold := normalizeAutoCompactThreshold(i.cfg.AutoCompactThreshold)
+	return shouldAutoCompact(i.lastCtxInput, m.ContextWindow, threshold)
 }
 
 func (i *Interactive) handleEvent(ev core.AgentEvent) {

@@ -58,6 +58,11 @@ type Config struct {
 	// default; nil/missing means disabled. Toggle from /settings.
 	AutoSwarmEnabled *bool `json:"auto_swarm_enabled,omitempty"`
 
+	// AutoCompactThreshold is the percentage of the model context window
+	// that triggers automatic transcript compaction in interactive mode.
+	// nil/missing means 85; zero disables percentage-based triggers.
+	AutoCompactThreshold *int `json:"auto_compact_threshold,omitempty"`
+
 	// JailByDefault confines tools to the session working directory when
 	// a new agent starts. Off by default; nil/missing means disabled.
 	// The live session can still override this with /jail or /unjail.

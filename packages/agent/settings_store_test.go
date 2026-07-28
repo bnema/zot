@@ -43,3 +43,24 @@ func TestConfigSettingsStorePersistsJailByDefault(t *testing.T) {
 		t.Fatalf("unrelated config changed: theme = %q, want dark", cfg.Theme)
 	}
 }
+
+func TestConfigSettingsStorePersistsAutoCompactThreshold(t *testing.T) {
+	t.Setenv("ZOT_HOME", t.TempDir())
+	if err := SaveConfig(Config{Theme: "dark"}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := (configSettingsStore{}).SetAutoCompactThreshold(70); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.AutoCompactThreshold == nil || *cfg.AutoCompactThreshold != 70 {
+		t.Fatalf("auto_compact_threshold = %v, want 70", cfg.AutoCompactThreshold)
+	}
+	if cfg.Theme != "dark" {
+		t.Fatalf("unrelated config changed: theme = %q, want dark", cfg.Theme)
+	}
+}
