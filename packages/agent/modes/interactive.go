@@ -3395,7 +3395,6 @@ func (i *Interactive) applyAutoCompactThresholdSetting(value string) {
 		return
 	}
 	threshold = normalizeAutoCompactThreshold(&threshold)
-	i.cfg.AutoCompactThreshold = &threshold
 	if store, ok := i.cfg.SettingsStore.(autoCompactThresholdSettingsStore); ok {
 		if err := store.SetAutoCompactThreshold(threshold); err != nil {
 			i.mu.Lock()
@@ -3405,6 +3404,7 @@ func (i *Interactive) applyAutoCompactThresholdSetting(value string) {
 		}
 	}
 	i.mu.Lock()
+	i.cfg.AutoCompactThreshold = &threshold
 	if threshold == 0 {
 		i.statusOK = "auto-compact threshold off"
 	} else {

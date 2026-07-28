@@ -85,6 +85,65 @@ func TestSettingsDialogOffersAutoCompactThresholdPresets(t *testing.T) {
 	}
 }
 
+func TestApplyAutoCompactThresholdSynchronizesLiveUpdate(t *testing.T) {
+	initialThreshold := 85
+	releaseStore := make(chan struct{})
+	store := &blockingAutoCompactSettingsStore{
+		entered: make(chan int, 1),
+		release: releaseStore,
+	}
+	interactive := NewInteractive(InteractiveConfig{
+		AutoCompactThreshold: &initialThreshold,
+		SettingsStore:        store,
+	})
+
+	interactive.mu.Lock()
+	locked := true
+	released := false
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		interactive.applyAutoCompactThresholdSetting("70")
+	}()
+	defer func() {
+		if !released {
+			close(releaseStore)
+		}
+		if locked {
+			interactive.mu.Unlock()
+		}
+		<-done
+	}()
+
+	if got := <-store.entered; got != 70 {
+		t.Fatalf("persisted threshold = %d, want 70", got)
+	}
+	if got := *interactive.cfg.AutoCompactThreshold; got != 85 {
+		t.Fatalf("threshold changed without holding Interactive.mu: got %d, want 85", got)
+	}
+
+	close(releaseStore)
+	released = true
+	interactive.mu.Unlock()
+	locked = false
+	<-done
+	if got := *interactive.cfg.AutoCompactThreshold; got != 70 {
+		t.Fatalf("threshold after setting completes = %d, want 70", got)
+	}
+}
+
+type blockingAutoCompactSettingsStore struct {
+	SettingsStore
+	entered chan int
+	release <-chan struct{}
+}
+
+func (s *blockingAutoCompactSettingsStore) SetAutoCompactThreshold(percent int) error {
+	s.entered <- percent
+	<-s.release
+	return nil
+}
+
 func autoCompactIntPtr(value int) *int {
 	return &value
 }
