@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -344,6 +345,9 @@ func TestResumeRestartsRunnerOnSameSession(t *testing.T) {
 }
 
 func TestResumeRecalculatesLegacyStateInboxPath(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("swarm inbox runtime relocation applies to Unix sockets")
+	}
 	root := t.TempDir()
 	f := New(Config{
 		Root: root, RepoRoot: root,

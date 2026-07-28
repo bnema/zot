@@ -33,7 +33,10 @@ const maxUnixSocketPath = 100
 // stable path across parent and child processes and across Resume calls.
 func inboxSocketPath(root, agentID string) (string, error) {
 	if runtime.GOOS == "windows" {
-		return "", fmt.Errorf("swarm inbox: unix sockets are not supported on %s", runtime.GOOS)
+		// Keep swarm construction usable for callers with custom runners.
+		// The production listener still reports that its unix transport is
+		// unavailable, as it did before runtime-directory probing was added.
+		return filepath.Join(root, "agents", agentID, "in.sock"), nil
 	}
 
 	var bases []string
