@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -339,6 +340,35 @@ func TestResumeRestartsRunnerOnSameSession(t *testing.T) {
 	}
 	if got := len(f.SnapshotAll()); got != 1 {
 		t.Errorf("snapshot len = %d; want 1 (in-place replace)", got)
+	}
+}
+
+func TestResumeRecalculatesLegacyStateInboxPath(t *testing.T) {
+	root := t.TempDir()
+	f := New(Config{
+		Root: root, RepoRoot: root,
+		NewRunner: func(*Agent) Runner {
+			return RunnerFunc(func(context.Context, Sink) error { return nil })
+		},
+	})
+	a, err := f.Spawn(context.Background(), "legacy inbox")
+	if err != nil {
+		t.Fatal(err)
+	}
+	a.Wait()
+
+	legacyPath := filepath.Join(root, "agents", a.ID, "in.sock")
+	a.InboxPath = legacyPath
+	a2, err := f.Resume(context.Background(), a.ID)
+	if err != nil {
+		t.Fatalf("resume: %v", err)
+	}
+	a2.Wait()
+	if a2.InboxPath == legacyPath {
+		t.Fatalf("resume kept legacy state-directory inbox path %q", legacyPath)
+	}
+	if strings.HasPrefix(a2.InboxPath, root+string(filepath.Separator)) {
+		t.Fatalf("resumed inbox %q remains below state root %q", a2.InboxPath, root)
 	}
 }
 

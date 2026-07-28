@@ -151,9 +151,11 @@ func (f *Swarm) ActiveSession() string {
 //
 //	<root>/agents/<id>/
 //	  events.jsonl   durable event log (runner-owned)
-//	  in.sock        unix socket inbox  (child-owned)
 //	  session.json   persistent agent session (child-owned)
 //	  meta.json      static metadata (id, task)
+//
+// The transient unix socket inbox lives in a probed runtime directory,
+// which may be on a different filesystem from this durable state.
 func (f *Swarm) agentStateDir(id string) string {
 	return filepath.Join(f.cfg.Root, "agents", id)
 }
@@ -200,12 +202,9 @@ func (f *Swarm) SpawnReq(ctx context.Context, req SpawnRequest) (*Agent, error) 
 	}
 	logPath := filepath.Join(stateDir, "events.jsonl")
 	sessionPath := filepath.Join(stateDir, "session.json")
-	// Unix sockets have a hard 104-byte path limit on darwin and 108
-	// on linux. Long ZOT_HOME paths plus an agent slug blow that cap
-	// quickly. Pick the shortest path that still keeps sockets
-	// per-swarm-root so two zot instances on the same machine don't
-	// collide. inboxSocketPath falls back from $TMPDIR to /tmp if
-	// neither is short enough.
+	// Keep the transient unix socket outside the durable state root.
+	// ZOT_HOME may live on a shared or network filesystem that supports
+	// regular state files but cannot host unix socket nodes.
 	inboxPath, err := inboxSocketPath(f.cfg.Root, id)
 	if err != nil {
 		return nil, fmt.Errorf("swarm inbox path: %w", err)
@@ -400,8 +399,8 @@ func (f *Swarm) Remove(id string) error {
 		return fmt.Errorf("agent %s still %s", a.ID, st)
 	}
 	// Best-effort cleanup of the per-agent state directory
-	// (meta.json, events.jsonl, session.json, in.sock if it's
-	// local). Failing here would leave the user with no recourse,
+	// (meta.json, events.jsonl, session.json). Failing here would leave
+	// the user with no recourse,
 	// so swallow the error.
 	_ = os.RemoveAll(f.agentStateDir(a.ID))
 	f.mu.Lock()

@@ -3,7 +3,9 @@ package swarm
 import (
 	"crypto/sha1"
 	"encoding/hex"
+	"errors"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -15,52 +17,98 @@ import (
 // tail stays under both caps with a safety margin.
 const maxUnixSocketPath = 100
 
-// inboxSocketPath returns a per-agent unix-socket path that's short
-// enough to actually work (see maxUnixSocketPath) and unique per
-// swarm root so two zot instances on the same machine don't collide.
+// inboxSocketPath returns a per-agent unix-socket path in a transient
+// runtime directory. Durable swarm state can live on filesystems such as
+// NFS, 9p, or shared VM mounts that support regular files but reject unix
+// socket nodes, so the socket must not be placed below root.
 //
-// Strategy:
+// Candidate directories are tried in this order:
 //
-//  1. Try <root>/agents/<id>/in.sock. This is the obvious place and
-//     puts everything next to the durable state; on most setups it
-//     fits.
-//  2. If that's too long, fall back to <tmp>/zot-swarm-<roothash>/<id>.sock.
-//     We hash root rather than embedding it so the tmp directory name
-//     stays short. SHA-1's first 8 hex chars is plenty: collisions
-//     only matter within a single user's tmp dir and we already
-//     create a dedicated subdir.
-//  3. If even /tmp is somehow too long (chroots, containers), give
-//     up with a clear error so the caller surfaces it instead of
-//     leaving the user wondering why follow-ups don't work.
+//  1. $XDG_RUNTIME_DIR, when absolute;
+//  2. the platform temporary directory; and
+//  3. /tmp as a Unix fallback.
+//
+// Each candidate is probed with a real unix listener before it is selected.
+// The root hash keeps separate zot homes from colliding while preserving a
+// stable path across parent and child processes and across Resume calls.
 func inboxSocketPath(root, agentID string) (string, error) {
-	primary := filepath.Join(root, "agents", agentID, "in.sock")
-	if len(primary) <= maxUnixSocketPath {
-		return primary, nil
+	if runtime.GOOS == "windows" {
+		return "", fmt.Errorf("swarm inbox: unix sockets are not supported on %s", runtime.GOOS)
 	}
-	tmp := os.TempDir()
-	dir := filepath.Join(tmp, "zot-swarm-"+rootTag(root))
+
+	var bases []string
+	if runtimeDir := os.Getenv("XDG_RUNTIME_DIR"); filepath.IsAbs(runtimeDir) {
+		bases = append(bases, runtimeDir)
+	}
+	bases = append(bases, os.TempDir(), "/tmp")
+
+	seen := make(map[string]bool)
+	var candidateErrs []error
+	for _, base := range bases {
+		base = filepath.Clean(base)
+		if base == "." || seen[base] {
+			continue
+		}
+		seen[base] = true
+
+		path, err := socketPathInBase(base, root, agentID)
+		if err != nil {
+			candidateErrs = append(candidateErrs, err)
+			continue
+		}
+		return path, nil
+	}
+	return "", fmt.Errorf("no usable unix socket directory: %w", errors.Join(candidateErrs...))
+}
+
+func socketPathInBase(base, root, agentID string) (string, error) {
+	dir := filepath.Join(base, "zot-swarm-"+rootTag(root))
 	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return "", fmt.Errorf("socket tmp dir: %w", err)
+		return "", fmt.Errorf("socket dir %s: %w", dir, err)
 	}
+
 	candidate := filepath.Join(dir, agentID+".sock")
-	if len(candidate) <= maxUnixSocketPath {
-		return candidate, nil
+	if len(candidate) > maxUnixSocketPath {
+		candidate = filepath.Join(dir, shortHash(agentID)+".sock")
 	}
-	// Last-resort: use just the short hash of the id so even very long
-	// task slugs fit. We surface the original id in the meta.json /
-	// events log; the socket path is purely transport.
-	short := shortHash(agentID)
-	candidate = filepath.Join(dir, short+".sock")
-	if len(candidate) <= maxUnixSocketPath {
-		return candidate, nil
+	if len(candidate) > maxUnixSocketPath {
+		return "", fmt.Errorf("unix socket path too long (%s, %d > %d)", candidate, len(candidate), maxUnixSocketPath)
 	}
-	return "", fmt.Errorf("unix socket path too long even after shortening (%s, %d > %d, GOOS=%s)",
-		candidate, len(candidate), maxUnixSocketPath, runtime.GOOS)
+	if err := probeUnixSocket(dir); err != nil {
+		return "", fmt.Errorf("unix sockets unavailable in %s: %w", dir, err)
+	}
+	return candidate, nil
+}
+
+func probeUnixSocket(dir string) error {
+	probe, err := os.CreateTemp(dir, ".socket-probe-")
+	if err != nil {
+		return err
+	}
+	path := probe.Name()
+	if err := probe.Close(); err != nil {
+		_ = os.Remove(path)
+		return err
+	}
+	if err := os.Remove(path); err != nil {
+		return err
+	}
+
+	ln, err := net.Listen("unix", path)
+	if err != nil {
+		return err
+	}
+	closeErr := ln.Close()
+	removeErr := os.Remove(path)
+	if os.IsNotExist(removeErr) {
+		removeErr = nil
+	}
+	return errors.Join(closeErr, removeErr)
 }
 
 // rootTag returns a stable 8-hex-char tag for the swarm root. Used
-// in the tmp-dir name so two parallel zot instances with different
-// roots don't share sockets.
+// in the runtime-directory name so two parallel zot instances with
+// different roots don't share sockets.
 func rootTag(root string) string { return shortHash(root) }
 
 func shortHash(s string) string {

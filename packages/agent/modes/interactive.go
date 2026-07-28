@@ -5990,13 +5990,14 @@ func (a telegramSenderAdapter) Active() bool {
 	return a.bridge != nil && a.bridge.Active()
 }
 
-// swarmWatchEntry is one tracked auto-swarm sub-agent. Filled in at
-// spawn time and finalised in trackSwarmAgent's waiter goroutine.
+// swarmWatchEntry is one tracked auto-swarm sub-agent. It records the
+// delegated turn's outcome separately from the long-lived daemon status.
 type swarmWatchEntry struct {
-	agent *swarm.Agent
-	task  string
-	done  bool
-	err   string
+	agent   *swarm.Agent
+	task    string
+	done    bool
+	outcome string
+	err     string
 }
 
 // TrackSwarmAgent is the exported entry point used by the cli to
@@ -6006,13 +6007,10 @@ func (i *Interactive) TrackSwarmAgent(a *swarm.Agent, task string) {
 }
 
 // trackSwarmAgent records a freshly-spawned auto-swarm agent and
-// subscribes to its prompt-level task completion events. Sub-agents
-// are long-lived daemons that keep running on the inbox after the
-// initial task, so we can't wait on agent.Wait() — it never returns
-// until the whole daemon dies. Instead we mark each entry done when
-// the swarm daemon reports the initial prompt has finished, and when
-// every tracked entry has reported in, flush a single summary into
-// the main chat.
+// subscribes to both ways its delegated task can finish. Successful
+// long-lived agents report a prompt-level turn_end and keep listening;
+// startup failures and unexpected daemon exits only unblock Agent.Wait.
+// Whichever signal arrives first completes the entry exactly once.
 //
 // Wired in from cli.go via SwarmSpawnTool.OnSpawned only when auto-
 // swarm is enabled, so this is a no-op when the feature is off.
@@ -6026,31 +6024,48 @@ func (i *Interactive) trackSwarmAgent(a *swarm.Agent, task string) {
 	i.swarmWatchMu.Unlock()
 
 	a.SetOnTurnEnd(func(step int, errMsg string) {
-		i.swarmWatchMu.Lock()
-		if entry.done {
-			i.swarmWatchMu.Unlock()
-			return
+		outcome := "completed"
+		if errMsg != "" {
+			outcome = "failed"
 		}
-		entry.done = true
-		entry.err = errMsg
-		allDone := true
-		for _, e := range i.swarmWatch {
-			if !e.done {
-				allDone = false
-				break
-			}
-		}
-		var batch []*swarmWatchEntry
-		if allDone {
-			batch = i.swarmWatch
-			i.swarmWatch = nil
-		}
-		i.swarmWatchMu.Unlock()
-		if len(batch) == 0 {
-			return
-		}
-		i.flushSwarmSummary(batch)
+		i.completeSwarmWatchEntry(entry, outcome, errMsg)
 	})
+	go func() {
+		a.Wait()
+		snap := a.Snapshot()
+		outcome := string(snap.Status)
+		if snap.Status == swarm.StatusDone {
+			outcome = "completed"
+		}
+		i.completeSwarmWatchEntry(entry, outcome, snap.Err)
+	}()
+}
+
+func (i *Interactive) completeSwarmWatchEntry(entry *swarmWatchEntry, outcome, errMsg string) {
+	i.swarmWatchMu.Lock()
+	if entry.done {
+		i.swarmWatchMu.Unlock()
+		return
+	}
+	entry.done = true
+	entry.outcome = outcome
+	entry.err = errMsg
+	allDone := true
+	for _, e := range i.swarmWatch {
+		if !e.done {
+			allDone = false
+			break
+		}
+	}
+	var batch []*swarmWatchEntry
+	if allDone {
+		batch = i.swarmWatch
+		i.swarmWatch = nil
+	}
+	i.swarmWatchMu.Unlock()
+	if len(batch) != 0 {
+		i.flushSwarmSummary(batch)
+	}
 }
 
 // flushSwarmSummary composes a synthetic user turn describing every
@@ -6066,12 +6081,15 @@ func (i *Interactive) flushSwarmSummary(batch []*swarmWatchEntry) {
 	fmt.Fprintf(&sb, "[auto-swarm update] %d sub-agent(s) finished:\n\n", len(batch))
 	for idx, e := range batch {
 		snap := e.agent.Snapshot()
-		status := string(snap.Status)
+		status := e.outcome
+		if status == "" {
+			status = string(snap.Status)
+		}
 		task := snap.Task
 		if task == "" {
 			task = e.task
 		}
-		fmt.Fprintf(&sb, "%d. agent %s \u2014 status: %s\n", idx+1, snap.ID, status)
+		fmt.Fprintf(&sb, "%d. agent %s - status: %s\n", idx+1, snap.ID, status)
 		fmt.Fprintf(&sb, "   task: %s\n", truncateForSummary(task, 240))
 		if snap.Err != "" {
 			fmt.Fprintf(&sb, "   error: %s\n", truncateForSummary(snap.Err, 240))

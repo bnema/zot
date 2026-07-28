@@ -314,9 +314,9 @@ func replayEventsIntoAgent(a *Agent, evs []Event) {
 	}
 }
 
-// Resume re-attaches a Runner to a previously-spawned agent. The
-// existing worktree, session file, branch, and inbox path are kept;
-// only the in-memory Agent and its runner are replaced. Use this to
+// Resume re-attaches a Runner to a previously-spawned agent. Durable
+// session and event files are kept, while the transient inbox path is
+// recalculated for the current runtime environment. Use this to
 // continue a swarm session across zot restarts:
 //
 //	swarmMgr.Reload()
@@ -339,15 +339,18 @@ func (f *Swarm) Resume(ctx context.Context, id string) (*Agent, error) {
 	}
 
 	// Rebuild from the meta record so we don't carry stale runner
-	// state from a previous incarnation. We re-read meta.json rather
-	// than reusing the live struct's fields so callers that mutated
-	// (e.g. tests that hand-built an Agent) don't accidentally route
-	// the new runner at the wrong paths.
+	// state from a previous incarnation. The inbox is transient and
+	// may have been persisted under an incompatible filesystem by an
+	// older zot version, so always select it again on resume.
+	inboxPath, err := inboxSocketPath(f.cfg.Root, existing.ID)
+	if err != nil {
+		return nil, fmt.Errorf("swarm inbox path: %w", err)
+	}
 	m := agentMeta{
 		ID: existing.ID, Task: existing.Task,
 		Dir: existing.Dir, Started: existing.Started,
 		Model: existing.Model, Provider: existing.Provider,
-		InboxPath: existing.InboxPath, EventLogPath: existing.EventLogPath,
+		InboxPath: inboxPath, EventLogPath: existing.EventLogPath,
 		SessionPath: existing.SessionPath,
 	}
 
