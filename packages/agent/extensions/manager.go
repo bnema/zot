@@ -512,6 +512,10 @@ func (m *Manager) WaitForReady(grace time.Duration) {
 	wg.Wait()
 }
 
+// extensionExitGrace bounds how long startup waits for a process to exit
+// after it closes stdout before completing the hello handshake.
+const extensionExitGrace = time.Second
+
 // spawn launches the subprocess, hooks up pipes, logs stderr, and
 // runs the synchronous portion of the hello handshake. Asynchronous
 // frames are processed in a goroutine started here.
@@ -599,7 +603,12 @@ func (m *Manager) spawn(ctx context.Context, ext *Extension) error {
 		if err := scanner.Err(); err != nil {
 			return fmt.Errorf("read hello (stderr log: %s): %w", logPath, err)
 		}
-		return fmt.Errorf("extension exited before hello (stderr log: %s)", logPath)
+		status, exited := waitForExtensionExit(cmd, extensionExitGrace)
+		started = false // waitForExtensionExit always reaps the process.
+		if exited {
+			return fmt.Errorf("extension exited before hello: %s (stderr log: %s)", status, logPath)
+		}
+		return fmt.Errorf("extension closed stdout before hello without exiting (stderr log: %s)", logPath)
 	}
 	var hello extproto.HelloFromExt
 	if err := json.Unmarshal(scanner.Bytes(), &hello); err != nil {
@@ -639,6 +648,31 @@ func (m *Manager) spawn(ctx context.Context, ext *Extension) error {
 	go m.assumeReadyAfterIdle(ext)
 
 	return nil
+}
+
+// waitForExtensionExit returns the process status when it exits promptly.
+// A process that closes stdout but remains alive has already violated the
+// protocol, so kill and reap it rather than blocking extension discovery.
+func waitForExtensionExit(cmd *exec.Cmd, grace time.Duration) (string, bool) {
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+
+	timer := time.NewTimer(grace)
+	defer timer.Stop()
+	select {
+	case err := <-done:
+		if cmd.ProcessState != nil {
+			return cmd.ProcessState.String(), true
+		}
+		if err != nil {
+			return err.Error(), true
+		}
+		return "exit status 0", true
+	case <-timer.C:
+		_ = cmd.Process.Kill()
+		<-done
+		return "", false
+	}
 }
 
 // readyIdleWindow is how long the manager waits for a frame after

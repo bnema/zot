@@ -119,7 +119,7 @@ done
 	}
 }
 
-func TestDiscoverReportsLogWhenExtensionExitsBeforeHello(t *testing.T) {
+func TestDiscoverReportsExitStatusAndLogWhenExtensionExitsBeforeHello(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("mock extension uses /bin/sh; skip on windows")
 	}
@@ -129,7 +129,7 @@ func TestDiscoverReportsLogWhenExtensionExitsBeforeHello(t *testing.T) {
 	if err := os.MkdirAll(extDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	script := "#!/bin/sh\nprintf '%s\\n' 'compile failed' >&2\nexit 1\n"
+	script := "#!/bin/sh\nprintf '%s\\n' 'compile failed' >&2\nexit 23\n"
 	if err := os.WriteFile(filepath.Join(extDir, "run.sh"), []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -147,8 +147,8 @@ func TestDiscoverReportsLogWhenExtensionExitsBeforeHello(t *testing.T) {
 	if strings.Contains(got, "%!w") {
 		t.Fatalf("error contains formatting artifact: %s", got)
 	}
-	if !strings.Contains(got, "extension exited before hello") || !strings.Contains(got, logPath) {
-		t.Fatalf("error does not explain failure and identify stderr log: %s", got)
+	if !strings.Contains(got, "extension exited before hello: exit status 23") || !strings.Contains(got, logPath) {
+		t.Fatalf("error does not report exit status and identify stderr log: %s", got)
 	}
 	logData, err := os.ReadFile(logPath)
 	if err != nil {
@@ -156,6 +156,35 @@ func TestDiscoverReportsLogWhenExtensionExitsBeforeHello(t *testing.T) {
 	}
 	if !strings.Contains(string(logData), "compile failed") {
 		t.Fatalf("extension stderr missing from log: %s", logData)
+	}
+}
+
+func TestDiscoverReportsSignalWhenExtensionExitsBeforeHello(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("mock extension uses Unix signals; skip on windows")
+	}
+
+	tmp := t.TempDir()
+	extDir := filepath.Join(tmp, "extensions", "signaled")
+	if err := os.MkdirAll(extDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	script := "#!/bin/sh\nkill -TERM $$\n"
+	if err := os.WriteFile(filepath.Join(extDir, "run.sh"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(extDir, "extension.json"), []byte(`{"name":"signaled","exec":"./run.sh"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	mgr := New(tmp, "", "0.0.0-test", "", "", nil)
+	errs := mgr.Discover(context.Background())
+	if len(errs) != 1 {
+		t.Fatalf("discover errors = %v, want one", errs)
+	}
+	got := errs[0].Error()
+	if !strings.Contains(got, "extension exited before hello: signal:") || !strings.Contains(got, "ext-signaled.log") {
+		t.Fatalf("error does not report signal and identify stderr log: %s", got)
 	}
 }
 
