@@ -2,6 +2,7 @@ package modes
 
 import (
 	"context"
+	"runtime"
 	"testing"
 	"time"
 
@@ -100,6 +101,9 @@ func TestRunSwarmNewSpawnsAgent(t *testing.T) {
 // then asserts the /swarm send <id> <text...> path routes through
 // Swarm.SendUserTurn and lands at the agent verbatim.
 func TestRunSwarmSendDeliversToAgentInbox(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("swarm inbox transport uses Unix-domain sockets")
+	}
 	root := t.TempDir()
 	recv := make(chan string, 4)
 	ready := make(chan error, 1)
