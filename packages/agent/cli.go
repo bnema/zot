@@ -1132,7 +1132,10 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 	// (the BeforeToolExecute closure captures it). SetConfirmer
 	// is mutex-guarded on the gate so this is safe.
 	if confirmGate != nil {
-		confirmGate.SetConfirmer(iv)
+		confirmGate.SetConfirmer(&confirmationEventConfirmer{
+			inner: iv,
+			emit:  extMgr.EmitEvent,
+		})
 	}
 
 	// Signal-driven flush: a SIGTERM / SIGHUP to the zot process

@@ -68,9 +68,10 @@ type EventHandler func(ev Event)
 //
 //	session_start    : (no extra fields)
 //	turn_start       : Step
-//	turn_end         : Stop, optional Error
-//	tool_call        : ToolID, ToolName, ToolArgs
-//	assistant_message: Text
+//	turn_end                  : Stop, optional Error
+//	tool_call                 : ToolID, ToolName, ToolArgs
+//	tool_confirmation_requested: ToolID, ToolName, ToolPreview
+//	assistant_message         : Text
 type Event struct {
 	Name string
 
@@ -78,9 +79,10 @@ type Event struct {
 	Stop  string
 	Error string
 
-	ToolID   string
-	ToolName string
-	ToolArgs json.RawMessage
+	ToolID      string
+	ToolName    string
+	ToolArgs    json.RawMessage
+	ToolPreview string
 
 	Text string
 }
@@ -410,7 +412,7 @@ func (e *Extension) registerTool(name, description string, schema json.RawMessag
 // notification; the same name can only have one handler (later
 // registrations replace earlier ones). Recognised names:
 // session_start, turn_start, turn_end, tool_call,
-// assistant_message.
+// tool_confirmation_requested, assistant_message.
 func (e *Extension) On(name string, fn EventHandler) {
 	e.mu.Lock()
 	if _, exists := e.eventHandlers[name]; !exists {
@@ -642,7 +644,7 @@ func (e *Extension) Run() error {
 					handler(Event{
 						Name: ef.Event, Step: ef.Step, Stop: ef.Stop,
 						Error: ef.Error, ToolID: ef.ToolID, ToolName: ef.ToolName,
-						ToolArgs: ef.ToolArgs, Text: ef.Text,
+						ToolArgs: ef.ToolArgs, ToolPreview: ef.ToolPreview, Text: ef.Text,
 					})
 				}()
 			}

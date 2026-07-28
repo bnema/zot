@@ -246,12 +246,18 @@ which it wants to intercept. Send once after `hello`, before `ready`.
 
 ```json
 {"type":"subscribe",
- "events":["session_start","turn_start","tool_call","turn_end","assistant_message"],
+ "events":["session_start","turn_start","tool_call","tool_confirmation_requested","turn_end","assistant_message"],
  "intercept":["tool_call","turn_start","assistant_message"]}
 ```
 
 Recognised event names: `session_start`, `turn_start`, `turn_end`,
-`tool_call`, `assistant_message`.
+`tool_call`, `tool_confirmation_requested`, `assistant_message`.
+
+`tool_confirmation_requested` fires only when zot is about to wait for
+interactive approval. Calls running in yolo mode, calls covered by a
+remembered approval, and calls blocked before confirmation do not emit it.
+The event includes `tool_id`, `tool_name`, and the short `tool_preview`
+shown in the confirmation dialog.
 
 Interceptable events:
 
@@ -448,6 +454,8 @@ Lifecycle notification for events the extension subscribed to via
 {"type":"event","event":"turn_start","step":1}
 {"type":"event","event":"tool_call",
  "tool_id":"...","tool_name":"read","tool_args":{"path":"foo.go"}}
+{"type":"event","event":"tool_confirmation_requested",
+ "tool_id":"...","tool_name":"read","tool_preview":"foo.go"}
 {"type":"event","event":"turn_end","stop":"end_turn"}
 ```
 

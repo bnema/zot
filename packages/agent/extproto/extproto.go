@@ -183,15 +183,16 @@ type ToolCallFromHost struct {
 }
 
 type EventFromHost struct {
-	Type     string          `json:"type"`
-	Event    string          `json:"event"`
-	Step     int             `json:"step,omitempty"`
-	Stop     string          `json:"stop,omitempty"`
-	Error    string          `json:"error,omitempty"`
-	ToolID   string          `json:"tool_id,omitempty"`
-	ToolName string          `json:"tool_name,omitempty"`
-	ToolArgs json.RawMessage `json:"tool_args,omitempty"`
-	Text     string          `json:"text,omitempty"`
+	Type        string          `json:"type"`
+	Event       string          `json:"event"`
+	Step        int             `json:"step,omitempty"`
+	Stop        string          `json:"stop,omitempty"`
+	Error       string          `json:"error,omitempty"`
+	ToolID      string          `json:"tool_id,omitempty"`
+	ToolName    string          `json:"tool_name,omitempty"`
+	ToolArgs    json.RawMessage `json:"tool_args,omitempty"`
+	ToolPreview string          `json:"tool_preview,omitempty"`
+	Text        string          `json:"text,omitempty"`
 }
 
 type EventInterceptFromHost struct {

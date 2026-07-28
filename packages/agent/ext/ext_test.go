@@ -220,6 +220,34 @@ func TestOpenPanelEmitsCorrectFrame(t *testing.T) {
 	h.hostW.Close()
 }
 
+func TestToolConfirmationRequestedEvent(t *testing.T) {
+	h := newHarness("confirmation-events")
+	received := make(chan Event, 1)
+	h.ext.On("tool_confirmation_requested", func(event Event) {
+		received <- event
+	})
+
+	go h.ext.Run()
+	h.handshake(t)
+	h.sendToExt(t, extproto.EventFromHost{
+		Type:        "event",
+		Event:       "tool_confirmation_requested",
+		ToolID:      "call-1",
+		ToolName:    "bash",
+		ToolPreview: "go test ./...",
+	})
+
+	select {
+	case event := <-received:
+		if event.Name != "tool_confirmation_requested" || event.ToolID != "call-1" || event.ToolName != "bash" || event.ToolPreview != "go test ./..." {
+			t.Fatalf("event = %+v", event)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for confirmation event")
+	}
+	h.hostW.Close()
+}
+
 func TestDeferredToolRegistrationAndActivation(t *testing.T) {
 	h := newHarness("deferred-ext")
 	h.ext.DeferredTool("weather", "weather lookup", json.RawMessage(`{"type":"object"}`), func(json.RawMessage) ToolResult {
