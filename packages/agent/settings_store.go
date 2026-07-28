@@ -50,6 +50,15 @@ func (configSettingsStore) SetAutoSwarm(enabled bool) error {
 	return SaveConfig(cfg)
 }
 
+func (configSettingsStore) SetAutoCompactThreshold(percent int) error {
+	cfg, err := LoadConfig()
+	if err != nil {
+		return err
+	}
+	cfg.AutoCompactThreshold = &percent
+	return SaveConfig(cfg)
+}
+
 func (configSettingsStore) SetJailByDefault(enabled bool) error {
 	cfg, err := LoadConfig()
 	if err != nil {

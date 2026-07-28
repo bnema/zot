@@ -989,6 +989,7 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 		Theme:                      theme,
 		InlineImagesEnabled:        initialCfg.InlineImagesEnabled,
 		AutoSwarmEnabled:           initialCfg.AutoSwarmEnabled,
+		AutoCompactThreshold:       initialCfg.AutoCompactThreshold,
 		JailByDefault:              initialCfg.JailByDefault,
 		QuickModelShortcuts:        quickModelShortcuts,
 		RecursiveFileSuggest:       initialCfg.RecursiveFileSuggest,
