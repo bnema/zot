@@ -58,6 +58,9 @@ func TestSetReloadStatusUsesErrorChannelForFailures(t *testing.T) {
 	if i.statusOK != "reload complete" || i.statusErr != "" {
 		t.Fatalf("successful reload status used wrong channel: err=%q ok=%q", i.statusErr, i.statusOK)
 	}
+	if len(i.reloadErrors) != 0 {
+		t.Fatalf("reload errors = %q after successful reload, want none", i.reloadErrors)
+	}
 }
 
 func TestStartupExtensionFailureAppearsInChatWithoutEnteringContext(t *testing.T) {

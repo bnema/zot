@@ -42,6 +42,7 @@ func (i *Interactive) setReloadStatus(msg string, failed bool) uint64 {
 	}
 	i.statusOK = msg
 	i.statusErr = ""
+	i.reloadErrors = nil
 	return i.reloadStatusSeq
 }
 
