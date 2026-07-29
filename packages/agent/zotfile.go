@@ -24,6 +24,7 @@ import (
 	"github.com/patriceckhart/zot/packages/agent/tools"
 	"github.com/patriceckhart/zot/packages/provider"
 	"github.com/patriceckhart/zot/packages/provider/auth"
+	"github.com/patriceckhart/zot/packages/tui"
 	"golang.org/x/term"
 )
 
@@ -128,8 +129,12 @@ func runLocalZotfile(ref string, args Args, version string) error {
 		return err
 	}
 	perms := zf.Manifest.Permissions.Expand(args.CWD, agentData)
-	if err := consentZotfile(zf, perms); err != nil {
+	allowed, err := consentZotfile(zf, perms)
+	if err != nil {
 		return err
+	}
+	if !allowed {
+		return nil
 	}
 	agentPath := filepath.Join(zf.Dir, "AGENT.md")
 	agentPrompt, err := os.ReadFile(agentPath)
@@ -750,9 +755,9 @@ func checkZotfileRequirements(zf zotfileLoaded, version string) error {
 
 var execLookPath = exec.LookPath
 
-func consentZotfile(zf zotfileLoaded, perms tools.PermissionSet) error {
+func consentZotfile(zf zotfileLoaded, perms tools.PermissionSet) (bool, error) {
 	if os.Getenv("ZOT_AGENT_CONSENT") == "1" {
-		return nil
+		return true, nil
 	}
 	// "ask" deliberately requires approval on every launch. Other consent
 	// is durable only for this exact artifact digest, so any package change
@@ -760,42 +765,68 @@ func consentZotfile(zf zotfileLoaded, perms tools.PermissionSet) error {
 	consentPath := filepath.Join(ZotHome(), "agents", safeAgentName(zf.Manifest.Name), "consents", zf.Digest+".json")
 	if strings.ToLower(strings.TrimSpace(perms.Bash.Mode)) != "ask" {
 		if _, err := os.Stat(consentPath); err == nil {
-			return nil
+			return true, nil
 		}
 	}
-	fmt.Printf("Agent %s@%s wants to run.\n\n", zf.Manifest.Name, zf.Manifest.Version)
-	fmt.Print(permissionSummary(perms))
-	if !term.IsTerminal(int(os.Stdin.Fd())) {
-		return fmt.Errorf("refusing to run without interactive consent; set ZOT_AGENT_CONSENT=1 to allow")
+	interactive := term.IsTerminal(int(os.Stdin.Fd())) && term.IsTerminal(int(os.Stdout.Fd()))
+	th := tui.Dark
+	if interactive {
+		cfg, _ := LoadConfig()
+		th, _, _ = tui.DetectThemeWithCustom(ZotHome(), cfg.Theme, 80*time.Millisecond)
 	}
-	fmt.Print("\nAllow? [y/n] ")
-	allowed, err := readZotfileConsent(os.Stdin, os.Stdout)
-	if err != nil {
-		return err
+	fmt.Print(formatZotfileConsent(zf, perms, th, interactive))
+	if !interactive {
+		return false, fmt.Errorf("refusing to run without interactive consent; set ZOT_AGENT_CONSENT=1 to allow")
 	}
-	if !allowed {
-		return fmt.Errorf("declined")
+	allowed, err := readZotfileConsent(os.Stdin, os.Stdout, th)
+	if err != nil || !allowed {
+		return allowed, err
 	}
 	if strings.ToLower(strings.TrimSpace(perms.Bash.Mode)) == "ask" {
-		return nil
+		return true, nil
 	}
 	if err := os.MkdirAll(filepath.Dir(consentPath), 0o700); err != nil {
-		return fmt.Errorf("save agent consent: %w", err)
+		return false, fmt.Errorf("save agent consent: %w", err)
 	}
 	receipt := map[string]string{"digest": zf.Digest, "name": zf.Manifest.Name, "version": zf.Manifest.Version}
 	data, _ := json.MarshalIndent(receipt, "", "  ")
 	if err := os.WriteFile(consentPath, append(data, '\n'), 0o600); err != nil {
-		return fmt.Errorf("save agent consent: %w", err)
+		return false, fmt.Errorf("save agent consent: %w", err)
 	}
-	return nil
+	return true, nil
 }
 
 var errZotfileConsentInterrupted = errors.New("interrupted")
 
-// readZotfileConsent reads an immediate single-key y/n answer without echoing
+func formatZotfileConsent(zf zotfileLoaded, perms tools.PermissionSet, th tui.Theme, color bool) string {
+	style := func(c int, text string) string {
+		if !color {
+			return text
+		}
+		return th.FG256(c, text)
+	}
+
+	var sb strings.Builder
+	sb.WriteString(style(th.Assistant, "Agent"))
+	sb.WriteByte(' ')
+	sb.WriteString(style(th.Accent, zf.Manifest.Name+"@"+zf.Manifest.Version))
+	sb.WriteString(style(th.FG, " wants to run."))
+	sb.WriteString("\n\n")
+	sb.WriteString(permissionSummaryStyled(perms, th, color))
+	if color {
+		sb.WriteByte('\n')
+		sb.WriteString(style(th.Assistant, "Allow?"))
+		sb.WriteByte(' ')
+		sb.WriteString(style(th.Muted, "[y/n]"))
+		sb.WriteByte(' ')
+	}
+	return sb.String()
+}
+
+// readZotfileConsent accepts one y/n answer followed by Enter without echoing
 // unrelated input. Raw mode also turns Ctrl+C into a byte so the terminal can
 // be restored before the command aborts.
-func readZotfileConsent(in *os.File, out io.Writer) (bool, error) {
+func readZotfileConsent(in *os.File, out io.Writer, th tui.Theme) (bool, error) {
 	fd := int(in.Fd())
 	state, err := term.MakeRaw(fd)
 	if err != nil {
@@ -803,7 +834,13 @@ func readZotfileConsent(in *os.File, out io.Writer) (bool, error) {
 	}
 	defer func() { _ = term.Restore(fd, state) }()
 
-	answer, err := readZotfileConsentKey(in)
+	answer, err := readZotfileConsentKey(in, func(answer byte) {
+		if answer == 0 {
+			fmt.Fprint(out, "\b \b")
+			return
+		}
+		fmt.Fprint(out, th.FG256(th.FG, string(answer)))
+	})
 	switch {
 	case errors.Is(err, errZotfileConsentInterrupted):
 		fmt.Fprint(out, "^C\r\n")
@@ -812,22 +849,37 @@ func readZotfileConsent(in *os.File, out io.Writer) (bool, error) {
 		fmt.Fprint(out, "\r\n")
 		return false, fmt.Errorf("read agent consent: %w", err)
 	default:
-		fmt.Fprintf(out, "%c\r\n", answer)
+		fmt.Fprint(out, "\r\n")
 		return answer == 'y', nil
 	}
 }
 
-func readZotfileConsentKey(r io.Reader) (byte, error) {
+func readZotfileConsentKey(r io.Reader, echo func(byte)) (byte, error) {
+	var answer byte
 	var b [1]byte
 	for {
 		if _, err := io.ReadFull(r, b[:]); err != nil {
 			return 0, err
 		}
 		switch b[0] {
-		case 'y', 'Y':
-			return 'y', nil
-		case 'n', 'N':
-			return 'n', nil
+		case 'y', 'Y', 'n', 'N':
+			if answer == 0 {
+				answer = b[0] | 0x20
+				if echo != nil {
+					echo(answer)
+				}
+			}
+		case '\r', '\n':
+			if answer != 0 {
+				return answer, nil
+			}
+		case '\b', 0x7f:
+			if answer != 0 {
+				answer = 0
+				if echo != nil {
+					echo(0)
+				}
+			}
 		case 3: // Ctrl+C in raw mode.
 			return 0, errZotfileConsentInterrupted
 		}
@@ -835,31 +887,58 @@ func readZotfileConsentKey(r io.Reader) (byte, error) {
 }
 
 func permissionSummary(p tools.PermissionSet) string {
+	return permissionSummaryStyled(p, tui.Theme{}, false)
+}
+
+func permissionSummaryStyled(p tools.PermissionSet, th tui.Theme, color bool) string {
+	style := func(c int, text string) string {
+		if !color {
+			return text
+		}
+		return th.FG256(c, text)
+	}
+	permissionValue := func(value string) string { return style(th.FG, value) }
+
 	var sb strings.Builder
+	sb.WriteString(style(th.Muted, "  fs read: "))
 	if len(p.FS.Read) > 0 {
-		fmt.Fprintf(&sb, "  fs read: %s\n", strings.Join(p.FS.Read, ", "))
+		sb.WriteString(permissionValue(strings.Join(p.FS.Read, ", ")))
 	} else {
-		fmt.Fprintln(&sb, "  fs read: none")
+		sb.WriteString(style(th.Muted, "none"))
 	}
+	sb.WriteByte('\n')
+	sb.WriteString(style(th.Muted, "  fs write: "))
 	if len(p.FS.Write) > 0 {
-		fmt.Fprintf(&sb, "  fs write: %s\n", strings.Join(p.FS.Write, ", "))
+		sb.WriteString(permissionValue(strings.Join(p.FS.Write, ", ")))
 	} else {
-		fmt.Fprintln(&sb, "  fs write: none")
+		sb.WriteString(style(th.Muted, "none"))
 	}
+	sb.WriteByte('\n')
 	mode := p.Bash.Mode
 	if mode == "" {
 		mode = "none"
 	}
-	fmt.Fprintf(&sb, "  bash: %s", mode)
-	if len(p.Bash.Allow) > 0 {
-		fmt.Fprintf(&sb, " (%s)", strings.Join(p.Bash.Allow, ", "))
+	sb.WriteString(style(th.Muted, "  bash: "))
+	modeColor := th.FG
+	if mode == "ask" {
+		modeColor = th.Warning
 	}
-	fmt.Fprintln(&sb)
+	sb.WriteString(style(modeColor, mode))
+	if len(p.Bash.Allow) > 0 {
+		sb.WriteString(style(th.Muted, " ("))
+		sb.WriteString(permissionValue(strings.Join(p.Bash.Allow, ", ")))
+		sb.WriteString(style(th.Muted, ")"))
+	}
+	sb.WriteByte('\n')
 	if len(p.Net.Allow) > 0 {
-		fmt.Fprintf(&sb, "  net: %s (declared, not enforced in this build)\n", strings.Join(p.Net.Allow, ", "))
+		sb.WriteString(style(th.Muted, "  net: "))
+		sb.WriteString(permissionValue(strings.Join(p.Net.Allow, ", ")))
+		sb.WriteString(style(th.Warning, " (declared, not enforced in this build)\n"))
 	}
 	if len(p.Env.Read) > 0 {
-		fmt.Fprintf(&sb, "  env read: %s (declared, not enforced in this build)\n", strings.Join(p.Env.Read, ", "))
+		sb.WriteString(style(th.Muted, "  env read: "))
+		sb.WriteString(permissionValue(strings.Join(p.Env.Read, ", ")))
+		sb.WriteString(style(th.Warning, " (declared, not enforced in this build)\n"))
 	}
 	return sb.String()
 }

@@ -15,6 +15,7 @@ import (
 	"testing"
 
 	"github.com/patriceckhart/zot/packages/agent/tools"
+	"github.com/patriceckhart/zot/packages/tui"
 )
 
 func TestReadZotfileConsentKeyAcceptsOnlyYesNo(t *testing.T) {
@@ -23,33 +24,59 @@ func TestReadZotfileConsentKeyAcceptsOnlyYesNo(t *testing.T) {
 		input []byte
 		want  byte
 	}{
-		{name: "lowercase yes", input: []byte{'y'}, want: 'y'},
-		{name: "uppercase yes", input: []byte{'Y'}, want: 'y'},
-		{name: "lowercase no", input: []byte{'n'}, want: 'n'},
-		{name: "uppercase no", input: []byte{'N'}, want: 'n'},
-		{name: "ignore unrelated keys", input: append([]byte("x\r\n\x1b[A"), 'y'), want: 'y'},
+		{name: "lowercase yes", input: []byte{'y', '\r'}, want: 'y'},
+		{name: "uppercase yes", input: []byte{'Y', '\n'}, want: 'y'},
+		{name: "lowercase no", input: []byte{'n', '\r'}, want: 'n'},
+		{name: "uppercase no", input: []byte{'N', '\n'}, want: 'n'},
+		{name: "ignore unrelated keys", input: append([]byte("x\r\n\x1b[A"), 'y', '\r'), want: 'y'},
+		{name: "keep first valid answer", input: []byte{'n', 'y', '\r'}, want: 'n'},
+		{name: "backspace changes answer", input: []byte{'y', 0x7f, 'n', '\r'}, want: 'n'},
+		{name: "ctrl h changes answer", input: []byte{'n', '\b', 'y', '\r'}, want: 'y'},
+		{name: "backspace without answer is ignored", input: []byte{0x7f, 'y', '\r'}, want: 'y'},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := readZotfileConsentKey(bytes.NewReader(tt.input))
+			var out bytes.Buffer
+			got, err := readZotfileConsentKey(bytes.NewReader(tt.input), func(answer byte) {
+				if answer == 0 {
+					out.Truncate(out.Len() - 1)
+					return
+				}
+				out.WriteByte(answer)
+			})
 			if err != nil {
 				t.Fatal(err)
 			}
 			if got != tt.want {
 				t.Fatalf("answer = %q, want %q", got, tt.want)
 			}
+			if out.String() != string(tt.want) {
+				t.Fatalf("echo = %q, want %q", out.String(), tt.want)
+			}
 		})
 	}
 }
 
+func TestReadZotfileConsentKeyWaitsForEnter(t *testing.T) {
+	var out bytes.Buffer
+	if _, err := readZotfileConsentKey(strings.NewReader("y"), func(answer byte) {
+		out.WriteByte(answer)
+	}); !errors.Is(err, io.EOF) {
+		t.Fatalf("error = %v, want EOF before Enter", err)
+	}
+	if out.String() != "y" {
+		t.Fatalf("echo = %q, want y", out.String())
+	}
+}
+
 func TestReadZotfileConsentKeyInterruptsOnCtrlC(t *testing.T) {
-	if _, err := readZotfileConsentKey(bytes.NewReader([]byte{'x', 3, 'y'})); !errors.Is(err, errZotfileConsentInterrupted) {
+	if _, err := readZotfileConsentKey(bytes.NewReader([]byte{'x', 3, 'y'}), nil); !errors.Is(err, errZotfileConsentInterrupted) {
 		t.Fatalf("error = %v, want interrupted", err)
 	}
 }
 
 func TestReadZotfileConsentKeyReportsInputError(t *testing.T) {
-	if _, err := readZotfileConsentKey(strings.NewReader("xxx")); !errors.Is(err, io.EOF) {
+	if _, err := readZotfileConsentKey(strings.NewReader("xxx"), nil); !errors.Is(err, io.EOF) {
 		t.Fatalf("error = %v, want EOF", err)
 	}
 }
@@ -246,6 +273,31 @@ func TestLoadRemoteZotfileDownloadsTemporaryGitHubArchive(t *testing.T) {
 	cleanup()
 	if _, err := os.Stat(root); !os.IsNotExist(err) {
 		t.Fatalf("temporary checkout was not removed: %v", err)
+	}
+}
+
+func TestFormatZotfileConsentUsesThemeColors(t *testing.T) {
+	th := tui.Theme{FG: 1, Muted: 2, Accent: 3, Assistant: 4, Warning: 5}
+	zf := zotfileLoaded{}
+	zf.Manifest.Name = "reviewer"
+	zf.Manifest.Version = "1.2.3"
+	perms := tools.PermissionSet{}
+	perms.FS.Read = []string{"/workspace"}
+	perms.Bash.Mode = "ask"
+
+	got := formatZotfileConsent(zf, perms, th, true)
+	for _, want := range []string{
+		th.FG256(th.Assistant, "Agent"),
+		th.FG256(th.Accent, "reviewer@1.2.3"),
+		th.FG256(th.Muted, "  fs read: "),
+		th.FG256(th.FG, "/workspace"),
+		th.FG256(th.Warning, "ask"),
+		th.FG256(th.Assistant, "Allow?"),
+		th.FG256(th.Muted, "[y/n]"),
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("themed consent missing %q:\n%s", want, got)
+		}
 	}
 }
 
