@@ -65,6 +65,50 @@ func TestAgentRetriesOverloadedStreamError(t *testing.T) {
 	}
 }
 
+// codexRetryFakeClient reproduces the generic OpenAI Codex backend
+// failure ("An error occurred while processing your request. You can
+// retry your request, ...") on the first call and succeeds afterwards.
+type codexRetryFakeClient struct {
+	calls int32
+}
+
+func (c *codexRetryFakeClient) Name() string { return "openai-codex" }
+
+func (c *codexRetryFakeClient) Stream(ctx context.Context, req provider.Request) (<-chan provider.Event, error) {
+	call := atomic.AddInt32(&c.calls, 1)
+	out := make(chan provider.Event, 4)
+	go func() {
+		defer close(out)
+		out <- provider.EventStart{Provider: "openai-codex", Model: req.Model}
+		if call == 1 {
+			out <- provider.EventDone{Stop: provider.StopError, Err: fmt.Errorf("codex error: An error occurred while processing your request. You can retry your request, or contact us through our help center at help.openai.com if the error persists. Please include the request ID 60c8ebbd-20bd-42e4-b756-6e844041cfc0 in your message.")}
+			return
+		}
+		out <- provider.EventDone{Stop: provider.StopEnd, Message: provider.Message{
+			Role:    provider.RoleAssistant,
+			Content: []provider.Content{provider.TextBlock{Text: "ok"}},
+		}}
+	}()
+	return out, nil
+}
+
+func TestAgentRetriesCodexProcessingError(t *testing.T) {
+	client := &codexRetryFakeClient{}
+	a := NewAgent(client, "gpt-5.6-sol", "system", Registry{})
+	a.RetryBaseDelay = time.Millisecond
+
+	if err := a.Prompt(context.Background(), "hello", nil, nil); err != nil {
+		t.Fatalf("Prompt returned %v; want retry to succeed", err)
+	}
+	if got := atomic.LoadInt32(&client.calls); got != 2 {
+		t.Fatalf("Stream calls = %d; want 2", got)
+	}
+	msgs := a.Messages()
+	if len(msgs) != 2 || extractText(msgs[1]) != "ok" {
+		t.Fatalf("messages = %v; want user + ok assistant", msgs)
+	}
+}
+
 type partialRetryFakeClient struct {
 	calls int32
 }

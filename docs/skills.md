@@ -1,8 +1,9 @@
 # zot skills
 
 A skill is a reusable instruction set written as a single
-`SKILL.md` file with a YAML frontmatter header. zot discovers skills
-at startup and surfaces them to the model in two ways:
+`SKILL.md` file with a YAML frontmatter header. Unless a skill disables
+model invocation, zot discovers it at startup and surfaces it to the model
+in two ways:
 
 1. The system prompt gains a short manifest:
    `Available skills: ... - code-review — Run a self-review pass...`
@@ -35,6 +36,7 @@ When asked to review code, ...
 |---|---|---|
 | `name` | optional | skill identifier; defaults to the directory name |
 | `description` | required | one-line summary shown in the system prompt |
+| `disable-model-invocation` | optional | when `true`, hide the skill from the model's startup manifest; invoke it explicitly with `/skill:<name>` |
 | `allowed-tools` | optional | list of tool names the skill is meant to use; informational |
 | `permissions` | optional | per-tool patterns; informational |
 
@@ -74,18 +76,27 @@ In zot, run `/skills`. A picker lists every discovered skill with its
 description and source path. Press enter on a row to view the full
 body inline. Press esc to go back.
 
-## How the model uses a skill
+## Invoking skills
 
-1. The system prompt tells the model that skills exist and what
-   their names + descriptions are.
-2. The model recognises a request that maps to a known skill and
-   calls the `skill` tool with `name: "<skill-name>"`.
-3. The `skill` tool returns the markdown body as the tool result.
-4. The model follows the body's instructions.
+For normal skills, the system prompt tells the model the skill names and
+short descriptions. When a request matches, the model calls the `skill` tool
+to load the full instructions on demand.
 
-You can prompt the model directly to use a skill (e.g. "use the
-code-review skill") but you don't have to — the descriptions in the
-manifest are enough for it to choose on its own.
+To force a specific skill, invoke it as a slash command:
+
+```text
+/skill:code-review
+/skill:code-review focus on security issues
+```
+
+zot expands the command into a user message containing the complete skill
+body, its directory for resolving relative references, and any text following
+the command as the request. This bypasses model-side skill selection.
+
+Set `disable-model-invocation: true` in a skill's frontmatter when it should
+only run after explicit user invocation. The skill remains visible in
+`/skills` and available through `/skill:<name>`, but its name and description
+are omitted from the model's startup context.
 
 ## Writing good skills
 

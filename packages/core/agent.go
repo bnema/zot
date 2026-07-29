@@ -471,6 +471,13 @@ func (a *Agent) canRetryError(err error, attempt int) bool {
 		"connection refused", "connection lost", "fetch failed", "upstream connect", "reset before headers",
 		"socket hang up", "ended without", "stream ended before", "did not get a response", "timed out",
 		"timeout", "terminated", "unexpected eof", "transport failure",
+		// OpenAI's ChatGPT/Codex backend returns this generic message (with a
+		// request ID) for transient server failures and explicitly says
+		// "You can retry your request".
+		"an error occurred while processing your request",
+		// Explicit retry guidance emitted by provider backends (OpenAI
+		// Responses, AWS Bedrock stream exceptions) with varying prefixes.
+		"you can retry your request", "try your request again", "please retry your request",
 	}
 	for _, needle := range needles {
 		if strings.Contains(msg, needle) {

@@ -61,6 +61,11 @@ type Skill struct {
 	// shipped in their project.
 	Builtin bool
 
+	// DisableModelInvocation hides the skill from the system-prompt
+	// manifest. The user can still load it explicitly with
+	// /skill:<name>.
+	DisableModelInvocation bool
+
 	// AllowedTools and Permissions are parsed for forward-
 	// compatibility but NOT enforced in this version. They appear
 	// in the skill body so the model can self-regulate.
@@ -166,13 +171,15 @@ func scanUserSkills(zotHome, cwd, userHome string, seen map[string]*Skill) []err
 // honestly in explanations and (b) distinguish between built-ins
 // and user-authored instruction sets when reasoning about trust.
 func SystemPromptAddendum(skills []*Skill) string {
-	if len(skills) == 0 {
-		return ""
-	}
 	home, _ := os.UserHomeDir()
 	var sb strings.Builder
-	sb.WriteString("Available skills (call the `skill` tool with a name from this list to load its full instructions):\n")
 	for _, s := range skills {
+		if s == nil || s.DisableModelInvocation {
+			continue
+		}
+		if sb.Len() == 0 {
+			sb.WriteString("Available skills (call the `skill` tool with a name from this list to load its full instructions):\n")
+		}
 		desc := strings.TrimSpace(s.Description)
 		if desc == "" {
 			desc = "(no description)"
@@ -326,6 +333,8 @@ func parseFrontmatter(front string, s *Skill) {
 				s.Name = unquote(value)
 			case "description":
 				s.Description = unquote(value)
+			case "disable-model-invocation", "disable_model_invocation":
+				s.DisableModelInvocation = strings.EqualFold(unquote(value), "true")
 			case "allowed-tools", "allowed_tools":
 				if value != "" {
 					s.AllowedTools = parseInlineList(value)

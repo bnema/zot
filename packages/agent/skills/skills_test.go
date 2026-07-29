@@ -25,6 +25,7 @@ func TestSplitFrontmatter(t *testing.T) {
 func TestParseFrontmatter(t *testing.T) {
 	front := `name: code-review
 description: "Review a recent change."
+disable-model-invocation: true
 allowed-tools: [read, bash]
 permissions:
   bash: ["git diff*", "git log*"]
@@ -37,6 +38,9 @@ permissions:
 	if s.Description != "Review a recent change." {
 		t.Errorf("description = %q", s.Description)
 	}
+	if !s.DisableModelInvocation {
+		t.Error("disable-model-invocation was not parsed")
+	}
 	if got := s.AllowedTools; len(got) != 2 || got[0] != "read" || got[1] != "bash" {
 		t.Errorf("allowed-tools = %v", got)
 	}
@@ -46,6 +50,7 @@ permissions:
 }
 
 func TestDiscoverProjectAndGlobalPriorityAndDedup(t *testing.T) {
+	t.Setenv("ZOT_AGENT_SKILLS", "")
 	tmp := t.TempDir()
 	zotHome := filepath.Join(tmp, "home")
 	cwd := filepath.Join(tmp, "proj")
@@ -110,6 +115,7 @@ func TestSystemPromptAddendum(t *testing.T) {
 	skills := []*Skill{
 		{Name: "built-a", Description: "Do A.", Builtin: true},
 		{Name: "user-b", Description: "Do B.", Path: "/tmp/skills/user-b/SKILL.md"},
+		{Name: "manual-c", Description: "Do C.", DisableModelInvocation: true},
 	}
 	out := SystemPromptAddendum(skills)
 	if !contains(out, "- built-a [builtin]: Do A.\n") {
@@ -117,6 +123,16 @@ func TestSystemPromptAddendum(t *testing.T) {
 	}
 	if !contains(out, "- user-b [/tmp/skills/user-b/SKILL.md]: Do B.\n") {
 		t.Errorf("user entry missing path pointer:\n%s", out)
+	}
+	if contains(out, "manual-c") {
+		t.Errorf("manual skill leaked into system prompt:\n%s", out)
+	}
+}
+
+func TestSystemPromptAddendumEmptyWhenAllSkillsDisableModelInvocation(t *testing.T) {
+	out := SystemPromptAddendum([]*Skill{{Name: "manual", DisableModelInvocation: true}})
+	if out != "" {
+		t.Fatalf("SystemPromptAddendum() = %q, want empty", out)
 	}
 }
 

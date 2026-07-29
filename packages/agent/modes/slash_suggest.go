@@ -158,8 +158,8 @@ func (s *slashSuggester) baseCatalog() []slashCommand {
 // ("/foo.bar/") so those can be sent to the model as-is.
 //
 // The head after "/" must be a single simple word: only letters,
-// digits, hyphens, and underscores. That excludes paths (contain "/"),
-// regexes (contain "."), and URLs.
+// digits, hyphens, and underscores. The /skill:<name> form additionally
+// permits one colon. Paths, regexes, and URLs are still excluded.
 func looksLikeSlashCommand(text string) bool {
 	text = strings.TrimSpace(text)
 	if len(text) < 2 || text[0] != '/' {
@@ -171,6 +171,12 @@ func looksLikeSlashCommand(text string) bool {
 	}
 	if head == "" {
 		return false
+	}
+	if strings.HasPrefix(strings.ToLower(head), "skill:") {
+		head = head[len("skill:"):]
+		if head == "" {
+			return true
+		}
 	}
 	for _, r := range head {
 		if !(r >= 'a' && r <= 'z') && !(r >= 'A' && r <= 'Z') &&
@@ -193,6 +199,9 @@ func isKnownSlashCommand(text string) bool {
 	head := text
 	if i := strings.IndexAny(text, " \t\n"); i >= 0 {
 		head = text[:i]
+	}
+	if len(head) >= len(skillCommandPrefix) && strings.EqualFold(head[:len(skillCommandPrefix)], skillCommandPrefix) {
+		return true
 	}
 	for _, c := range slashCatalog {
 		if strings.EqualFold(c.Name, head) {
