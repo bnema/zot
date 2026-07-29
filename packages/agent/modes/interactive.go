@@ -421,6 +421,14 @@ type Interactive struct {
 	// pre-turn fraction guard. Cleared by runCompact once shown.
 	pendingPostCompactNote string
 
+	// A pre-turn compaction must preserve the complete pending request,
+	// including images. Overflow recovery instead continues the user message
+	// already appended to the agent transcript, avoiding a duplicate message.
+	pendingCompactPrompt    string
+	pendingCompactImages    []provider.ImageBlock
+	hasPendingCompactPrompt bool
+	continueAfterCompact    bool
+
 	// compacting is true for both manual and automatic compaction. Prompts
 	// submitted while it is set stay in the host queue because Compact does
 	// not run the agent loop that drains the agent-owned queue.
@@ -5145,6 +5153,16 @@ func (i *Interactive) handleAuthEvent(ev auth.Event) {
 	}
 }
 
+// clearPendingCompactTurnLocked drops work that only makes sense after the
+// current compaction. The caller must hold i.mu.
+func (i *Interactive) clearPendingCompactTurnLocked() {
+	i.pendingCompactPrompt = ""
+	i.pendingCompactImages = nil
+	i.hasPendingCompactPrompt = false
+	i.continueAfterCompact = false
+	i.pendingPostCompactNote = ""
+}
+
 // runCompact invokes core.Agent.Compact and reflects the progress in
 // the tui. It runs in a goroutine so the ui stays responsive; esc/ctrl+c
 // cancel via the same cancelTurn channel used for normal turns.
@@ -5192,10 +5210,14 @@ func (i *Interactive) runCompact(parent context.Context, auto bool) {
 		i.cancelTurn = nil
 		i.autoCompacting = false
 
-		// Drain the queue: if the user typed a prompt while compacting,
-		// fire it now that the transcript is clean.
+		// Drain pending work after the transcript is clean. Overflow recovery
+		// continues the user message already in the transcript. Pre-turn
+		// compaction preserves its complete text-and-images request. Regular
+		// prompts typed during compaction remain in the host queue.
 		var next string
+		var nextImages []provider.ImageBlock
 		var hasNext bool
+		var continueExisting bool
 
 		switch {
 		case err != nil && ctx.Err() != nil:
@@ -5206,6 +5228,7 @@ func (i *Interactive) runCompact(parent context.Context, auto bool) {
 				i.statusOK = "compaction cancelled"
 			}
 			i.queued = nil // drop queue on cancel
+			i.clearPendingCompactTurnLocked()
 			if i.agent != nil {
 				i.agent.DrainQueuedMessages()
 			}
@@ -5213,6 +5236,7 @@ func (i *Interactive) runCompact(parent context.Context, auto bool) {
 			i.statusErr = "compaction failed: " + err.Error()
 			i.statusOK = ""
 			i.queued = nil // drop queue on error
+			i.clearPendingCompactTurnLocked()
 			if i.agent != nil {
 				i.agent.DrainQueuedMessages()
 			}
@@ -5239,8 +5263,18 @@ func (i *Interactive) runCompact(parent context.Context, auto bool) {
 			i.toolOrder = nil
 			i.toolGate = map[string]int{}
 			i.view.InvalidateRenderCache()
-			// Pop queued prompt if any.
-			if len(i.queued) > 0 {
+			switch {
+			case i.continueAfterCompact:
+				continueExisting = true
+				i.continueAfterCompact = false
+			case i.hasPendingCompactPrompt:
+				next = i.pendingCompactPrompt
+				nextImages = i.pendingCompactImages
+				i.pendingCompactPrompt = ""
+				i.pendingCompactImages = nil
+				i.hasPendingCompactPrompt = false
+				hasNext = true
+			case len(i.queued) > 0:
 				next, i.queued = i.queued[0], i.queued[1:]
 				hasNext = true
 			}
@@ -5248,12 +5282,16 @@ func (i *Interactive) runCompact(parent context.Context, auto bool) {
 		i.mu.Unlock()
 		i.invalidate()
 
-		if hasNext {
+		if hasNext || continueExisting {
 			p := i.runCtx
 			if p == nil {
 				p = context.Background()
 			}
-			i.startTurn(p, next)
+			if continueExisting {
+				i.startTurnRequest(p, "", nil, true)
+			} else {
+				i.startTurnWithImages(p, next, nextImages)
+			}
 		}
 	}()
 }
@@ -5364,6 +5402,10 @@ func (i *Interactive) startTurn(parent context.Context, prompt string) {
 }
 
 func (i *Interactive) startTurnWithImages(parent context.Context, prompt string, images []provider.ImageBlock) {
+	i.startTurnRequest(parent, prompt, images, false)
+}
+
+func (i *Interactive) startTurnRequest(parent context.Context, prompt string, images []provider.ImageBlock, overflowRecoveryAttempted bool) {
 	if i.agent == nil {
 		return
 	}
@@ -5373,11 +5415,11 @@ func (i *Interactive) startTurnWithImages(parent context.Context, prompt string,
 	// The condense flow re-fires the user's queued prompt for us, so
 	// we just hand it off and exit.
 	i.mu.Lock()
-	needsPreCompact := !i.autoCompacting && i.shouldAutoCompactLocked()
+	needsPreCompact := !overflowRecoveryAttempted && !i.autoCompacting && i.shouldAutoCompactLocked()
 	if needsPreCompact {
-		if prompt != "" {
-			i.queued = append([]string{prompt}, i.queued...)
-		}
+		i.pendingCompactPrompt = prompt
+		i.pendingCompactImages = append([]provider.ImageBlock(nil), images...)
+		i.hasPendingCompactPrompt = true
 		i.statusErr = ""
 		i.extNotes = append(i.extNotes, autoCompactNoteLine(i.cfg.Theme, "context near limit — condensing history before sending..."))
 		i.pendingPostCompactNote = "context auto-compacted; sending your last message"
@@ -5435,7 +5477,12 @@ func (i *Interactive) startTurnWithImages(parent context.Context, prompt string,
 	}
 
 	go func() {
-		err := i.agent.Prompt(ctx, prompt, images, sink)
+		var err error
+		if overflowRecoveryAttempted {
+			err = i.agent.Continue(ctx, sink)
+		} else {
+			err = i.agent.Prompt(ctx, prompt, images, sink)
+		}
 		i.mu.Lock()
 		i.busy = false
 		// Don't touch streamPending / streamFlushPending here — the
@@ -5476,15 +5523,16 @@ func (i *Interactive) startTurnWithImages(parent context.Context, prompt string,
 				i.statusErr = ""
 			}
 		}
-		// Detect HTTP 413 "payload too large" responses. The provider
-		// rejected the request because the request body exceeded its
-		// per-request limit. Token-based auto-compact can miss this
-		// because the limit is on raw bytes, not tokens. Re-queue the
-		// prompt so it survives the condense pass and trigger one.
-		payloadTooLarge := err != nil && ctx.Err() == nil && isPayloadTooLargeError(err)
-		if payloadTooLarge {
+		// Detect responses that reject the current context, either as an
+		// HTTP 413 payload limit or a model context-window error. Token-
+		// based auto-compact can miss both when metadata is stale or the
+		// limit is measured in raw bytes. Compact once, then continue the
+		// user message already present in the transcript.
+		contextOverflow := err != nil && ctx.Err() == nil && isContextOverflowError(err)
+		recoverContextOverflow := contextOverflow && !overflowRecoveryAttempted
+		if recoverContextOverflow {
 			i.statusErr = ""
-			i.queued = append([]string{prompt}, i.queued...)
+			i.continueAfterCompact = true
 			i.extNotes = append(i.extNotes, autoCompactNoteLine(i.cfg.Theme, "request was too large. condensing history before retrying ..."))
 			i.pendingPostCompactNote = "context auto-compacted; retrying your last message"
 		}
@@ -5509,7 +5557,7 @@ func (i *Interactive) startTurnWithImages(parent context.Context, prompt string,
 		}
 		// If the turn was cancelled or errored, drop the queue so the
 		// user isn't bombarded with stale messages after an interrupt.
-		if ctx.Err() != nil || err != nil {
+		if ctx.Err() != nil || (err != nil && !recoverContextOverflow) {
 			i.queued = nil
 			if i.agent != nil {
 				i.agent.DrainQueuedMessages()
@@ -5535,7 +5583,7 @@ func (i *Interactive) startTurnWithImages(parent context.Context, prompt string,
 			i.startTurn(parent, next)
 		case offer:
 			i.openRescueDialog(rescueProv, rescueFprov, rescueModel, rescueWhy, prompt, rescueImgs)
-		case payloadTooLarge:
+		case recoverContextOverflow:
 			i.runCompact(parent, true)
 		case shouldAutoCompact:
 			i.runCompact(parent, true)
@@ -5614,17 +5662,25 @@ func autoCompactNoteLine(th tui.Theme, msg string) string {
 	return "  " + th.FG256(th.Warning, "⚠ "+msg)
 }
 
-// isPayloadTooLargeError matches HTTP 413 responses surfaced by the
-// provider clients. The error formatting differs slightly between
-// providers (anthropic and openai both prepend the status code), so
-// we look for the canonical 413 marker as well as the conventional
-// 'payload too large' phrase.
-func isPayloadTooLargeError(err error) bool {
+// isContextOverflowError matches provider responses that reject the
+// current request because its raw payload or tokenized input is too
+// large. Providers surface this as either HTTP 413 or semantic context
+// errors with differing codes and messages.
+func isContextOverflowError(err error) bool {
 	if err == nil {
 		return false
 	}
 	msg := strings.ToLower(err.Error())
-	return strings.Contains(msg, "http 413") || strings.Contains(msg, " 413") || strings.HasPrefix(msg, "413 ") || strings.Contains(msg, "payload too large") || strings.Contains(msg, "request entity too large")
+	return strings.Contains(msg, "http 413") ||
+		strings.Contains(msg, " 413") ||
+		strings.HasPrefix(msg, "413 ") ||
+		strings.Contains(msg, "payload too large") ||
+		strings.Contains(msg, "request entity too large") ||
+		strings.Contains(msg, "input exceeds the context window") ||
+		strings.Contains(msg, "context window exceeded") ||
+		strings.Contains(msg, "maximum context length") ||
+		strings.Contains(msg, "context_length_exceeded") ||
+		(strings.Contains(msg, "input") && strings.Contains(msg, "exceeds the maximum number of tokens"))
 }
 
 const defaultAutoCompactThreshold = 85
