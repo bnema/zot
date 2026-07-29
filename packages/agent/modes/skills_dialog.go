@@ -122,6 +122,7 @@ func (d *skillsDialog) Render(th tui.Theme, width int) []string {
 	if end < len(d.skills) {
 		out = append(out, "  "+th.FG256(th.Muted, fmt.Sprintf("\u2193 %d more below", len(d.skills)-end)))
 	}
+	out = append(out, "  "+th.FG256(th.Muted, "run with /skill:<name> [request]"))
 	out = append(out, frameRule(th, width))
 	return out
 }
@@ -166,7 +167,11 @@ func (d *skillsDialog) renderBody(th tui.Theme, width int) []string {
 
 func formatSkillRow(s *skills.Skill, maxWidth int) string {
 	left := fmt.Sprintf("%-20s  ", truncateLineSafe(s.Name, 20))
-	src := "  " + truncateLineSafe(s.Source, 16)
+	source := s.Source
+	if s.DisableModelInvocation {
+		source = "manual, " + source
+	}
+	src := "  " + truncateLineSafe(source, 16)
 	room := maxWidth - len(left) - len(src)
 	if room < 10 {
 		room = 10

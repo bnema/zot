@@ -4161,6 +4161,27 @@ func longestCommonPrefix(ss []string) string {
 
 func (i *Interactive) runSlash(ctx context.Context, cmd string) (done bool) {
 	parts := strings.Fields(cmd)
+	if len(parts) == 0 {
+		return false
+	}
+
+	if isSkillCommand(cmd) {
+		var available []*skills.Skill
+		if i.cfg.SkillSnapshot != nil {
+			available = i.cfg.SkillSnapshot()
+		}
+		prompt, _, err := expandSkillCommand(cmd, available)
+		if err != nil {
+			i.mu.Lock()
+			i.statusErr = err.Error()
+			i.statusOK = ""
+			i.mu.Unlock()
+			return false
+		}
+		i.submitOrQueuePrompt(ctx, prompt)
+		return false
+	}
+
 	switch strings.ToLower(parts[0]) {
 	case "/exit":
 		return true
@@ -4785,6 +4806,36 @@ func (i *Interactive) openBtwDialog(args []string) {
 	seed := strings.TrimSpace(strings.Join(args, " "))
 	i.btwDialog.Open(i.cfg.Theme, i.agent, i.agent.System, i.cfg.Model, i.cfg.CWD, seed, i.compactModeEnabled(), i.cfg.FlatTools, tui.NormalizeInputStyle(i.cfg.TUIInputStyle) == tui.InputStyleLines, i.invalidate)
 	i.invalidate()
+}
+
+// submitOrQueuePrompt submits a slash command's expanded prompt immediately,
+// or queues it behind the active turn using the normal text-only queue.
+func (i *Interactive) submitOrQueuePrompt(ctx context.Context, prompt string) {
+	i.mu.Lock()
+	if i.agent == nil {
+		i.statusErr = "not logged in. type /login first."
+		i.statusOK = ""
+		i.mu.Unlock()
+		i.invalidate()
+		return
+	}
+	busy := i.busy
+	compacting := i.compacting
+	ag := i.agent
+	i.mu.Unlock()
+
+	if busy {
+		if !compacting {
+			ag.QueueMessage(prompt)
+		} else {
+			i.mu.Lock()
+			i.queued = append(i.queued, prompt)
+			i.mu.Unlock()
+		}
+		i.invalidate()
+		return
+	}
+	i.startTurn(ctx, prompt)
 }
 
 // openSkillsDialog opens the skill inspector. The picker reflects
