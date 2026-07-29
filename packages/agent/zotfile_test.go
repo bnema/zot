@@ -4,6 +4,8 @@ import (
 	"archive/tar"
 	"bytes"
 	"compress/gzip"
+	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -14,6 +16,43 @@ import (
 
 	"github.com/patriceckhart/zot/packages/agent/tools"
 )
+
+func TestReadZotfileConsentKeyAcceptsOnlyYesNo(t *testing.T) {
+	tests := []struct {
+		name  string
+		input []byte
+		want  byte
+	}{
+		{name: "lowercase yes", input: []byte{'y'}, want: 'y'},
+		{name: "uppercase yes", input: []byte{'Y'}, want: 'y'},
+		{name: "lowercase no", input: []byte{'n'}, want: 'n'},
+		{name: "uppercase no", input: []byte{'N'}, want: 'n'},
+		{name: "ignore unrelated keys", input: append([]byte("x\r\n\x1b[A"), 'y'), want: 'y'},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := readZotfileConsentKey(bytes.NewReader(tt.input))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got != tt.want {
+				t.Fatalf("answer = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestReadZotfileConsentKeyInterruptsOnCtrlC(t *testing.T) {
+	if _, err := readZotfileConsentKey(bytes.NewReader([]byte{'x', 3, 'y'})); !errors.Is(err, errZotfileConsentInterrupted) {
+		t.Fatalf("error = %v, want interrupted", err)
+	}
+}
+
+func TestReadZotfileConsentKeyReportsInputError(t *testing.T) {
+	if _, err := readZotfileConsentKey(strings.NewReader("xxx")); !errors.Is(err, io.EOF) {
+		t.Fatalf("error = %v, want EOF", err)
+	}
+}
 
 func writeTestZotfile(t *testing.T, manifest string) string {
 	t.Helper()

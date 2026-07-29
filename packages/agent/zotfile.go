@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -767,11 +768,12 @@ func consentZotfile(zf zotfileLoaded, perms tools.PermissionSet) error {
 	if !term.IsTerminal(int(os.Stdin.Fd())) {
 		return fmt.Errorf("refusing to run without interactive consent; set ZOT_AGENT_CONSENT=1 to allow")
 	}
-	fmt.Print("\nAllow? [y/N] ")
-	var answer string
-	_, _ = fmt.Fscanln(os.Stdin, &answer)
-	answer = strings.ToLower(strings.TrimSpace(answer))
-	if answer != "y" && answer != "yes" {
+	fmt.Print("\nAllow? [y/n] ")
+	allowed, err := readZotfileConsent(os.Stdin, os.Stdout)
+	if err != nil {
+		return err
+	}
+	if !allowed {
 		return fmt.Errorf("declined")
 	}
 	if strings.ToLower(strings.TrimSpace(perms.Bash.Mode)) == "ask" {
@@ -786,6 +788,50 @@ func consentZotfile(zf zotfileLoaded, perms tools.PermissionSet) error {
 		return fmt.Errorf("save agent consent: %w", err)
 	}
 	return nil
+}
+
+var errZotfileConsentInterrupted = errors.New("interrupted")
+
+// readZotfileConsent reads an immediate single-key y/n answer without echoing
+// unrelated input. Raw mode also turns Ctrl+C into a byte so the terminal can
+// be restored before the command aborts.
+func readZotfileConsent(in *os.File, out io.Writer) (bool, error) {
+	fd := int(in.Fd())
+	state, err := term.MakeRaw(fd)
+	if err != nil {
+		return false, fmt.Errorf("read agent consent: %w", err)
+	}
+	defer func() { _ = term.Restore(fd, state) }()
+
+	answer, err := readZotfileConsentKey(in)
+	switch {
+	case errors.Is(err, errZotfileConsentInterrupted):
+		fmt.Fprint(out, "^C\r\n")
+		return false, err
+	case err != nil:
+		fmt.Fprint(out, "\r\n")
+		return false, fmt.Errorf("read agent consent: %w", err)
+	default:
+		fmt.Fprintf(out, "%c\r\n", answer)
+		return answer == 'y', nil
+	}
+}
+
+func readZotfileConsentKey(r io.Reader) (byte, error) {
+	var b [1]byte
+	for {
+		if _, err := io.ReadFull(r, b[:]); err != nil {
+			return 0, err
+		}
+		switch b[0] {
+		case 'y', 'Y':
+			return 'y', nil
+		case 'n', 'N':
+			return 'n', nil
+		case 3: // Ctrl+C in raw mode.
+			return 0, errZotfileConsentInterrupted
+		}
+	}
 }
 
 func permissionSummary(p tools.PermissionSet) string {
