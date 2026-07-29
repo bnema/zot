@@ -122,11 +122,19 @@ func (a *extToolAdapter) NewExtensionTool(info ExtensionToolInfo) core.Tool {
 	})
 }
 
-// fanoutAgentEvent translates a core.AgentEvent into the wire-format
-// EventFromHost and pushes it through the extension manager. Only
-// the events that have a clear extension-facing meaning are
-// forwarded; internal-only ones (text_delta, tool_progress) are
-// dropped to keep the per-extension stream sane.
+// liveInteractiveAgent returns the agent currently owned by the TUI. The
+// fallback is only used before the Interactive has been constructed.
+//
+// Agent rebuilds, such as cross-provider model switches, replace the TUI's
+// agent without replacing the startup pointer held by runInteractive. Session
+// operations must therefore resolve the live agent at the time of the action.
+func liveInteractiveAgent(iv *modes.Interactive, fallback *core.Agent) *core.Agent {
+	if iv != nil {
+		return iv.Agent()
+	}
+	return fallback
+}
+
 func trimMessagesForResume(msgs []provider.Message, keepTail int) []provider.Message {
 	if keepTail <= 0 || len(msgs) <= keepTail {
 		return provider.RepairOrphanedToolResults(msgs)
@@ -147,6 +155,11 @@ func trimMessagesForResume(msgs []provider.Message, keepTail int) []provider.Mes
 	return provider.RepairOrphanedToolResults(out)
 }
 
+// fanoutAgentEvent translates a core.AgentEvent into the wire-format
+// EventFromHost and pushes it through the extension manager. Only
+// the events that have a clear extension-facing meaning are
+// forwarded; internal-only ones (text_delta, tool_progress) are
+// dropped to keep the per-extension stream sane.
 func fanoutAgentEvent(mgr *extensions.Manager, ev core.AgentEvent) {
 	if mgr == nil {
 		return
@@ -732,7 +745,7 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 	// loadSession replaces the current session with the one at path and
 	// hands its messages to the agent. Used by the /sessions picker.
 	loadSession := func(path string) error {
-		currentAg := ag // captured
+		currentAg := liveInteractiveAgent(iv, ag)
 		if currentAg == nil {
 			return fmt.Errorf("no agent running; log in first")
 		}
@@ -1020,6 +1033,7 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 		StartupSkillNames:          startupSkillNames(startupSkills),
 		ShowInstructionsAtStartup:  initialCfg.ShowInstructionsAtStartup,
 		ZotHome:                    ZotHome(),
+		SessionsRoot:               agentSessionsRoot(ZotHome(), args),
 		Version:                    version,
 		UpdateInfoChan:             updateCh,
 		Sandbox:                    sharedSandbox,

@@ -471,7 +471,7 @@ Sessions created by a zotfile are isolated from ordinary zot sessions and from o
 $ZOT_HOME/sessions/agents/<name>/
 ```
 
-Normal session flags still apply, including `--continue`, `--resume`, `--session`, and `--no-session`, but their default storage root is scoped to the active agent.
+Normal session flags still apply, including `--continue`, `--resume`, `--session`, and `--no-session`, but their default storage root is scoped to the active agent. The interactive `/sessions` picker and `/session` import, fork, and tree commands use that same agent-scoped root.
 
 ## Commands
 

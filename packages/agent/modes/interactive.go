@@ -171,9 +171,14 @@ type InteractiveConfig struct {
 	// picker to only show reachable models.
 	LoggedInProviders func() []string
 
-	// ZotHome is the root directory for sessions/, used by /sessions
-	// and the update-check cache.
+	// ZotHome is zot's global state directory, used by authentication,
+	// themes, extensions, and other shared configuration.
 	ZotHome string
+
+	// SessionsRoot is the root passed to core session operations. It differs
+	// from ZotHome for Zotfile agents, whose sessions are isolated by agent
+	// name. Empty falls back to ZotHome for embedders and tests.
+	SessionsRoot string
 
 	// Version is the binary's current version (from main.version).
 	// Used only for display; the update check itself is done outside
@@ -1079,6 +1084,14 @@ func (i *Interactive) buildChatLocked(cols int) []string {
 		chat = chat[:len(chat)-1]
 	}
 	return chat
+}
+
+// sessionsRoot returns the session namespace for this run.
+func (i *Interactive) sessionsRoot() string {
+	if i.cfg.SessionsRoot != "" {
+		return i.cfg.SessionsRoot
+	}
+	return i.cfg.ZotHome
 }
 
 // lastCols returns the current terminal width in columns.
@@ -4220,7 +4233,7 @@ func (i *Interactive) runSlash(ctx context.Context, cmd string) (done bool) {
 	case "/settings":
 		i.openSettingsDialog()
 	case "/sessions":
-		i.sessionDialog.Open(i.cfg.ZotHome, i.cfg.CWD)
+		i.sessionDialog.Open(i.sessionsRoot(), i.cfg.CWD)
 	case "/jump":
 		i.openJumpDialog(parts[1:])
 	case "/btw":
@@ -6476,7 +6489,7 @@ func (i *Interactive) doSessionImport(src string) {
 		i.invalidate()
 		return
 	}
-	newPath, err := core.ImportSession(src, i.cfg.ZotHome, i.cfg.CWD, i.cfg.Version)
+	newPath, err := core.ImportSession(src, i.sessionsRoot(), i.cfg.CWD, i.cfg.Version)
 	if err != nil {
 		i.mu.Lock()
 		i.statusErr = "import: " + err.Error()
@@ -6605,7 +6618,7 @@ func (i *Interactive) doSessionTree() {
 	if i.cfg.CurrentSessionPath != nil {
 		current = i.cfg.CurrentSessionPath()
 	}
-	if current != "" && i.sessionTreeDialog.OpenSessionFamily(i.cfg.ZotHome, i.cfg.CWD, current) {
+	if current != "" && i.sessionTreeDialog.OpenSessionFamily(i.sessionsRoot(), i.cfg.CWD, current) {
 		i.invalidate()
 		return
 	}
@@ -6657,7 +6670,7 @@ func (i *Interactive) applySessionTreeMessageSelection(src string, msgIdx, turnN
 	if role == provider.RoleUser {
 		upTo = msgIdx
 	}
-	newPath, err := core.BranchSessionHidden(src, i.cfg.ZotHome, i.cfg.CWD, i.cfg.Version, upTo)
+	newPath, err := core.BranchSessionHidden(src, i.sessionsRoot(), i.cfg.CWD, i.cfg.Version, upTo)
 	if err != nil {
 		i.mu.Lock()
 		i.statusErr = "tree: " + err.Error()
@@ -6712,7 +6725,7 @@ func (i *Interactive) applyForkSelection(msgIdx int) {
 	// msgIdx is 0-indexed message position; copy msgIdx+1 rows so
 	// the selected user message is included.
 	upTo := msgIdx + 1
-	newPath, err := core.BranchSession(src, i.cfg.ZotHome, i.cfg.CWD, i.cfg.Version, upTo)
+	newPath, err := core.BranchSession(src, i.sessionsRoot(), i.cfg.CWD, i.cfg.Version, upTo)
 	if err != nil {
 		i.mu.Lock()
 		i.statusErr = "fork: " + err.Error()
