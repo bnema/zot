@@ -2,6 +2,7 @@ package provider
 
 import (
 	"context"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -62,6 +63,25 @@ func TestComputeCost(t *testing.T) {
 	}
 }
 
+func TestComputeCostInputTier(t *testing.T) {
+	m := Model{
+		PriceInput: 1, PriceOutput: 2, PriceCacheRead: 0.1,
+		PriceTierInputTokens: 100,
+		PriceInputAbove:      3, PriceOutputAbove: 4, PriceCacheReadAbove: 0.2,
+	}
+	below := ComputeCost(m, Usage{InputTokens: 50, OutputTokens: 10, CacheReadTokens: 50})
+	wantBelow := (50.0*1 + 10*2 + 50*0.1) / 1_000_000
+	if math.Abs(below-wantBelow) > 1e-12 {
+		t.Fatalf("below-tier cost=%v want=%v", below, wantBelow)
+	}
+
+	above := ComputeCost(m, Usage{InputTokens: 51, OutputTokens: 10, CacheReadTokens: 50})
+	wantAbove := (51.0*3 + 10*4 + 50*0.2) / 1_000_000
+	if math.Abs(above-wantAbove) > 1e-12 {
+		t.Fatalf("above-tier cost=%v want=%v", above, wantAbove)
+	}
+}
+
 func TestAnthropicErrorStatus(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusUnauthorized)
@@ -87,6 +107,42 @@ func TestOpenAIErrorStatus(t *testing.T) {
 	_, err := c.Stream(context.Background(), Request{Model: "gpt-5"})
 	if err == nil || !strings.Contains(err.Error(), "400") {
 		t.Fatalf("want 400 err, got %v", err)
+	}
+}
+
+func TestMiniMaxM3CatalogAndRequest(t *testing.T) {
+	for _, provider := range []string{"minimax", "minimax-cn"} {
+		m, err := FindModel(provider, "MiniMax-M3")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if m.ContextWindow != 1000000 || m.MaxOutput != 131072 || !m.Reasoning || !m.AdaptiveThinkingCompat {
+			t.Errorf("%s metadata = %+v", provider, m)
+		}
+		if m.PriceInput != 0.3 || m.PriceOutput != 1.2 || m.PriceCacheRead != 0.06 || m.PriceTierInputTokens != 512000 || m.PriceInputAbove != 0.6 || m.PriceOutputAbove != 2.4 || m.PriceCacheReadAbove != 0.12 {
+			t.Errorf("%s pricing = %+v", provider, m)
+		}
+	}
+
+	c := NewAnthropicCompat("minimax", "x", "https://api.minimax.io/anthropic").(*anthropicClient)
+	temp := float32(0.7)
+	wire, err := c.buildRequest(Request{
+		Model:       "MiniMax-M3",
+		Reasoning:   "high",
+		Temperature: &temp,
+		Messages:    []Message{{Role: RoleUser, Content: []Content{TextBlock{Text: "hi"}}}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if wire.Thinking == nil || wire.Thinking.Type != "adaptive" || wire.Thinking.BudgetTokens != 0 {
+		t.Fatalf("want adaptive thinking without a budget, got %+v", wire.Thinking)
+	}
+	if wire.OutputConfig != nil {
+		t.Fatalf("MiniMax-M3 must not send output_config, got %+v", wire.OutputConfig)
+	}
+	if wire.Temperature == nil || *wire.Temperature != temp {
+		t.Fatalf("MiniMax-M3 should keep temperature, got %v", wire.Temperature)
 	}
 }
 

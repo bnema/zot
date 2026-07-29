@@ -23,11 +23,22 @@ type Model struct {
 	// output_config.effort and omits temperature for these models.
 	AdaptiveThinking bool
 
-	// Prices are USD per 1M tokens.
-	PriceInput      float64
-	PriceOutput     float64
-	PriceCacheRead  float64
-	PriceCacheWrite float64
+	// AdaptiveThinkingCompat marks Anthropic-compatible models that require
+	// thinking:{type:"adaptive"} but still accept sampling parameters and do
+	// not support Anthropic's output_config.effort extension.
+	AdaptiveThinkingCompat bool
+
+	// Prices are USD per 1M tokens. Price*Above fields apply to all token
+	// classes when the total prompt size exceeds PriceTierInputTokens.
+	PriceInput           float64
+	PriceOutput          float64
+	PriceCacheRead       float64
+	PriceCacheWrite      float64
+	PriceTierInputTokens int
+	PriceInputAbove      float64
+	PriceOutputAbove     float64
+	PriceCacheReadAbove  float64
+	PriceCacheWriteAbove float64
 
 	// Speculative marks models whose ids are known from the upstream
 	// vendor's CLI but not yet live on their public API. They'll 404
@@ -491,9 +502,21 @@ func ModelsForProvider(provider string) []Model {
 
 // ComputeCost returns the USD cost for the given usage on model m.
 func ComputeCost(m Model, u Usage) float64 {
+	inputPrice := m.PriceInput
+	outputPrice := m.PriceOutput
+	cacheReadPrice := m.PriceCacheRead
+	cacheWritePrice := m.PriceCacheWrite
+	promptTokens := u.InputTokens + u.CacheReadTokens + u.CacheWriteTokens
+	if m.PriceTierInputTokens > 0 && promptTokens > m.PriceTierInputTokens {
+		inputPrice = m.PriceInputAbove
+		outputPrice = m.PriceOutputAbove
+		cacheReadPrice = m.PriceCacheReadAbove
+		cacheWritePrice = m.PriceCacheWriteAbove
+	}
+
 	const per = 1_000_000.0
-	return float64(u.InputTokens)*m.PriceInput/per +
-		float64(u.OutputTokens)*m.PriceOutput/per +
-		float64(u.CacheReadTokens)*m.PriceCacheRead/per +
-		float64(u.CacheWriteTokens)*m.PriceCacheWrite/per
+	return float64(u.InputTokens)*inputPrice/per +
+		float64(u.OutputTokens)*outputPrice/per +
+		float64(u.CacheReadTokens)*cacheReadPrice/per +
+		float64(u.CacheWriteTokens)*cacheWritePrice/per
 }

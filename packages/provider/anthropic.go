@@ -195,7 +195,7 @@ type anthRequest struct {
 // the same family when reached through an Anthropic-Messages-
 // compatible proxy whose catalog row predates the flag.
 func usesAdaptiveThinking(m Model) bool {
-	if m.AdaptiveThinking {
+	if m.AdaptiveThinking || m.AdaptiveThinkingCompat {
 		return true
 	}
 	id := strings.ToLower(m.ID)
@@ -231,16 +231,17 @@ func (c *anthropicClient) buildRequest(req Request) (*anthRequest, error) {
 	}
 
 	adaptive := usesAdaptiveThinking(m)
+	adaptiveEffort := adaptive && !m.AdaptiveThinkingCompat
 
 	out := &anthRequest{
 		Model:     req.Model,
 		MaxTokens: maxTok,
 		Stream:    true,
 	}
-	// Adaptive-thinking models reject non-default sampling params
-	// (temperature/top_p/top_k -> 400). Only forward temperature for
-	// models that accept it.
-	if !adaptive {
+	// Anthropic's adaptive-thinking models reject non-default sampling
+	// params. Compatible implementations may use the adaptive thinking type
+	// while continuing to support temperature.
+	if !adaptiveEffort {
 		out.Temperature = req.Temperature
 	}
 
@@ -285,12 +286,14 @@ func (c *anthropicClient) buildRequest(req Request) (*anthRequest, error) {
 
 	if req.Reasoning != "" && m.Reasoning {
 		if adaptive {
-			// Adaptive-thinking models (Opus 4.7+): the model decides when
-			// and how much to think; depth is steered by output_config.effort.
-			// Explicit budgets are rejected with a 400, so none is sent.
+			// Adaptive-thinking models decide when and how much to think and
+			// reject explicit budgets. Anthropic models also accept the
+			// output_config.effort extension; compatible implementations may not.
 			out.Thinking = &anthThinking{Type: "adaptive"}
-			if effort := AnthropicAdaptiveEffort(req.Reasoning); effort != "" {
-				out.OutputConfig = &anthOutputConfig{Effort: effort}
+			if adaptiveEffort {
+				if effort := AnthropicAdaptiveEffort(req.Reasoning); effort != "" {
+					out.OutputConfig = &anthOutputConfig{Effort: effort}
+				}
 			}
 		} else {
 			budget := anthropicReasoningBudget(req.Reasoning)
