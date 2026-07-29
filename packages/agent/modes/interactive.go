@@ -40,6 +40,7 @@ type InteractiveConfig struct {
 
 	// Startup resource fields are loaded inputs available to list before the
 	// transcript. They are never sent to the provider or persisted by the view.
+	StartupAgentName      string
 	StartupContextPaths   []string
 	StartupExtensionNames []string
 	StartupSkillNames     []string
@@ -550,10 +551,12 @@ const resumeTailExpandStep = 80
 func NewInteractive(cfg InteractiveConfig) *Interactive {
 	renderer := tui.NewRenderer(cfg.Terminal)
 	renderer.SetTheme(cfg.Theme)
+	startupAgentName := ""
 	startupContextPaths := []string(nil)
 	startupExtensionNames := []string(nil)
 	startupSkillNames := []string(nil)
 	if cfg.ShowInstructionsAtStartup != nil && *cfg.ShowInstructionsAtStartup {
+		startupAgentName = cfg.StartupAgentName
 		startupContextPaths = append(startupContextPaths, cfg.StartupContextPaths...)
 		startupExtensionNames = append(startupExtensionNames, cfg.StartupExtensionNames...)
 		startupSkillNames = append(startupSkillNames, cfg.StartupSkillNames...)
@@ -566,6 +569,7 @@ func NewInteractive(cfg InteractiveConfig) *Interactive {
 			FlatTools:             cfg.FlatTools,
 			CompactUser:           cfg.CompactUser,
 			CompactMode:           cfg.CompactMode != nil && *cfg.CompactMode,
+			StartupAgentName:      startupAgentName,
 			StartupContextPaths:   startupContextPaths,
 			StartupExtensionNames: startupExtensionNames,
 			StartupSkillNames:     startupSkillNames,
@@ -3719,10 +3723,12 @@ func (i *Interactive) applySettingToggle(key string, value bool) {
 			}
 		}
 		i.mu.Lock()
+		i.view.StartupAgentName = ""
 		i.view.StartupContextPaths = nil
 		i.view.StartupExtensionNames = nil
 		i.view.StartupSkillNames = nil
 		if value {
+			i.view.StartupAgentName = i.cfg.StartupAgentName
 			i.view.StartupContextPaths = append(i.view.StartupContextPaths, i.cfg.StartupContextPaths...)
 			i.view.StartupExtensionNames = append(i.view.StartupExtensionNames, i.cfg.StartupExtensionNames...)
 			i.view.StartupSkillNames = append(i.view.StartupSkillNames, i.cfg.StartupSkillNames...)

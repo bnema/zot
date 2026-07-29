@@ -1013,6 +1013,7 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 		Tools:                      r.ToolRegistry,
 		MaxSteps:                   r.MaxSteps,
 		CWD:                        r.CWD,
+		StartupAgentName:           args.AgentName,
 		StartupContextPaths:        instructionContextPaths(r.ContextFiles),
 		StartupExtensionNames:      startupExtensionNames(extMgr.All()),
 		StartupExtensionErrors:     startupExtensionErrors,

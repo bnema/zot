@@ -492,7 +492,7 @@ zot run ./my-agent.zot --print "Do the task"
 zot run ./my-agent.zot --json "Do the task"
 ```
 
-Arguments after the reference use zot's normal CLI parser, so model, provider, reasoning, cwd, session, tool, and output-mode flags remain available. The manifest still imposes its permission and compatibility ceiling.
+Arguments after the reference use zot's normal CLI parser, so model, provider, reasoning, cwd, session, tool, and output-mode flags remain available. The manifest still imposes its permission and compatibility ceiling. In interactive mode, enabling **show loaded resources at startup** in `/settings` displays the manifest name in an `[Agent]` section above the transcript.
 
 Local filesystem directories, local archive paths, short names, and public GitHub agent-directory URLs are accepted. A short name uses local-first resolution:
 
