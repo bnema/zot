@@ -2,6 +2,7 @@ package core
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync/atomic"
@@ -65,11 +66,11 @@ func TestAgentRetriesOverloadedStreamError(t *testing.T) {
 	}
 }
 
-// codexRetryFakeClient reproduces the generic OpenAI Codex backend
-// failure ("An error occurred while processing your request. You can
-// retry your request, ...") on the first call and succeeds afterwards.
+// codexRetryFakeClient reproduces a transient OpenAI Codex backend
+// failure on the first call and succeeds afterwards.
 type codexRetryFakeClient struct {
-	calls int32
+	calls    int32
+	firstErr string
 }
 
 func (c *codexRetryFakeClient) Name() string { return "openai-codex" }
@@ -81,7 +82,7 @@ func (c *codexRetryFakeClient) Stream(ctx context.Context, req provider.Request)
 		defer close(out)
 		out <- provider.EventStart{Provider: "openai-codex", Model: req.Model}
 		if call == 1 {
-			out <- provider.EventDone{Stop: provider.StopError, Err: fmt.Errorf("codex error: An error occurred while processing your request. You can retry your request, or contact us through our help center at help.openai.com if the error persists. Please include the request ID 60c8ebbd-20bd-42e4-b756-6e844041cfc0 in your message.")}
+			out <- provider.EventDone{Stop: provider.StopError, Err: fmt.Errorf("%s", c.firstErr)}
 			return
 		}
 		out <- provider.EventDone{Stop: provider.StopEnd, Message: provider.Message{
@@ -93,19 +94,63 @@ func (c *codexRetryFakeClient) Stream(ctx context.Context, req provider.Request)
 }
 
 func TestAgentRetriesCodexProcessingError(t *testing.T) {
-	client := &codexRetryFakeClient{}
-	a := NewAgent(client, "gpt-5.6-sol", "system", Registry{})
-	a.RetryBaseDelay = time.Millisecond
+	cases := []struct {
+		name string
+		err  string
+	}{
+		{
+			name: "processing error",
+			err:  "codex error: An error occurred while processing your request. You can retry your request, or contact us through our help center at help.openai.com if the error persists. Please include the request ID 60c8ebbd-20bd-42e4-b756-6e844041cfc0 in your message.",
+		},
+		{
+			name: "servers overloaded",
+			err:  "codex error: Our servers are currently overloaded. Please try again later.",
+		},
+		{
+			name: "try again later only",
+			err:  "codex error: Something went wrong. Please try again later.",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			client := &codexRetryFakeClient{firstErr: tc.err}
+			a := NewAgent(client, "gpt-5.6-sol", "system", Registry{})
+			a.RetryBaseDelay = time.Millisecond
 
-	if err := a.Prompt(context.Background(), "hello", nil, nil); err != nil {
-		t.Fatalf("Prompt returned %v; want retry to succeed", err)
+			if err := a.Prompt(context.Background(), "hello", nil, nil); err != nil {
+				t.Fatalf("Prompt returned %v; want retry to succeed", err)
+			}
+			if got := atomic.LoadInt32(&client.calls); got != 2 {
+				t.Fatalf("Stream calls = %d; want 2", got)
+			}
+			msgs := a.Messages()
+			if len(msgs) != 2 || extractText(msgs[1]) != "ok" {
+				t.Fatalf("messages = %v; want user + ok assistant", msgs)
+			}
+		})
 	}
-	if got := atomic.LoadInt32(&client.calls); got != 2 {
-		t.Fatalf("Stream calls = %d; want 2", got)
+}
+
+// TestCanRetryErrorCapacityMessages pins the classification of Codex
+// capacity wording and makes sure quota/usage limits stay terminal even
+// when they carry "try again later" style advice.
+func TestCanRetryErrorCapacityMessages(t *testing.T) {
+	a := NewAgent(nil, "gpt-5.6-sol", "system", Registry{})
+	cases := []struct {
+		msg  string
+		want bool
+	}{
+		{"codex error: Our servers are currently overloaded. Please try again later.", true},
+		{"codex error: Our servers are busy right now.", true},
+		{"codex error: Please try again later.", true},
+		{"codex error: You have hit your monthly usage limit. Try again later.", false},
+		{"codex error: quota exceeded, try again later", false},
+		{"codex error: unsupported parameter: reasoning", false},
 	}
-	msgs := a.Messages()
-	if len(msgs) != 2 || extractText(msgs[1]) != "ok" {
-		t.Fatalf("messages = %v; want user + ok assistant", msgs)
+	for _, tc := range cases {
+		if got := a.canRetryError(errors.New(tc.msg), 0); got != tc.want {
+			t.Errorf("canRetryError(%q) = %v; want %v", tc.msg, got, tc.want)
+		}
 	}
 }
 

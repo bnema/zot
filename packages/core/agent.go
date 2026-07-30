@@ -478,6 +478,12 @@ func (a *Agent) canRetryError(err error, attempt int) bool {
 		// Explicit retry guidance emitted by provider backends (OpenAI
 		// Responses, AWS Bedrock stream exceptions) with varying prefixes.
 		"you can retry your request", "try your request again", "please retry your request",
+		// Capacity messages from the ChatGPT/Codex backend, e.g.
+		// "Our servers are currently overloaded. Please try again later."
+		// The trailing advice also shows up on its own for transient
+		// capacity failures; usage/quota limits are filtered out above by
+		// isNonRetryableProviderLimit before this list is consulted.
+		"servers are currently overloaded", "servers are busy", "try again later",
 	}
 	for _, needle := range needles {
 		if strings.Contains(msg, needle) {
