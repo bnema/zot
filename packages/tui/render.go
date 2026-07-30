@@ -629,53 +629,98 @@ func (r *Renderer) DrawLog(chat, bottom []string, cursorBottomRow, cursorCol int
 		// history. Replaying the full logical buffer to update one of them
 		// duplicates that history, and erasing it first destroys native text
 		// selections. Ignore inaccessible changes and patch only the first
-		// changed row that is still addressable. The cached logical buffer is
-		// updated below, so ignored rows remain historical snapshots while new
-		// output naturally pushes them farther into scrollback.
+		// changed row that is still addressable.
 		if firstChanged >= 0 && firstChanged < r.logViewportTop {
-			// A height change above the viewport shifts the logical row numbers
-			// of everything below it. If any already-emitted visible row also
-			// changed, an index-based patch would target the wrong physical row
-			// and splice the next tool frame into the previous one's border.
-			// Recover with a clean repaint. Pure suffix appends remain safe and
-			// keep terminal selections intact.
-			structuralReflow := len(chatFrame) < len(r.logChat)
-			if len(chatFrame) != len(r.logChat) {
+			delta := len(chatFrame) - len(r.logChat)
+			reflowAbove := false
+			if delta != 0 {
 				overlapEnd := len(chatFrame)
 				if len(r.logChat) < overlapEnd {
 					overlapEnd = len(r.logChat)
 				}
 				for idx := r.logViewportTop; idx < overlapEnd; idx++ {
 					if r.logChat[idx] != chatFrame[idx] {
-						structuralReflow = true
+						reflowAbove = true
 						break
 					}
 				}
 			}
-			if structuralReflow {
-				writeFull(true, false)
-				firstChanged = -1
-			} else {
-				firstChanged = -1
-				for idx := r.logViewportTop; idx < maxLines; idx++ {
-					oldLine := ""
-					if idx < len(r.logLines) {
-						oldLine = r.logLines[idx]
+			if reflowAbove {
+				// A height change above the viewport shifts every following
+				// logical row, but it does not move the rows already painted by
+				// the terminal. Rebase our logical coordinates by the same delta
+				// instead of clearing and replaying the transcript. The inaccessible
+				// prefix remains the historical snapshot the terminal actually
+				// holds; addressable chat and bottom rows stay aligned with their
+				// existing physical rows.
+				oldLines := r.logLines
+				oldChatLen := len(r.logChat)
+				newViewportTop := r.logViewportTop + delta
+				if newViewportTop < 0 {
+					newViewportTop = 0
+				}
+				rebasedLen := len(oldLines) + delta
+				if rebasedLen < 0 {
+					rebasedLen = 0
+				}
+				rebased := make([]string, rebasedLen)
+				for idx := range rebased {
+					switch {
+					case idx < newViewportTop:
+						// These rows cannot be repainted. Mark the new logical
+						// contents as accepted so they do not trigger a replay.
+						if idx < len(lines) {
+							rebased[idx] = lines[idx]
+						}
+					case idx < len(chatFrame):
+						oldIdx := idx - delta
+						if oldIdx >= 0 && oldIdx < oldChatLen {
+							rebased[idx] = oldLines[oldIdx]
+						}
+					default:
+						// Bottom rows are indexed relative to the end of chat,
+						// so preserve that relative position across the reflow.
+						oldIdx := oldChatLen + idx - len(chatFrame)
+						if oldIdx >= 0 && oldIdx < len(oldLines) {
+							rebased[idx] = oldLines[oldIdx]
+						}
 					}
-					newLine := ""
-					if idx < len(lines) {
-						newLine = lines[idx]
-					}
-					if oldLine != newLine {
+				}
+				r.logLines = rebased
+				r.logViewportTop = newViewportTop
+				r.logHardwareRow += delta
+				if r.logHardwareRow < 0 {
+					r.logHardwareRow = 0
+				}
+				maxLines = len(lines)
+				if len(r.logLines) > maxLines {
+					maxLines = len(r.logLines)
+				}
+			}
+
+			firstChanged = -1
+			lastChanged = -1
+			for idx := r.logViewportTop; idx < maxLines; idx++ {
+				oldLine := ""
+				if idx < len(r.logLines) {
+					oldLine = r.logLines[idx]
+				}
+				newLine := ""
+				if idx < len(lines) {
+					newLine = lines[idx]
+				}
+				if oldLine != newLine {
+					if firstChanged == -1 {
 						firstChanged = idx
-						break
 					}
+					lastChanged = idx
 				}
-				// A newly appended blank row compares equal to the implicit empty
-				// row past the old slice, but it still has to advance the terminal.
-				if firstChanged == -1 && len(lines) > len(r.logLines) && len(r.logLines) >= r.logViewportTop {
-					firstChanged = len(r.logLines)
-				}
+			}
+			// A newly appended blank row compares equal to the implicit empty
+			// row past the old slice, but it still has to advance the terminal.
+			if firstChanged == -1 && len(lines) > len(r.logLines) && len(r.logLines) >= r.logViewportTop {
+				firstChanged = len(r.logLines)
+				lastChanged = len(lines) - 1
 			}
 		}
 

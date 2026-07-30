@@ -126,37 +126,51 @@ func TestDrawLogInaccessibleChangePreservesScrollbackSelection(t *testing.T) {
 	}
 }
 
-func TestDrawLogStructuralReflowAboveViewportRepaintsToolFrames(t *testing.T) {
-	t.Setenv("TERM_PROGRAM", "")
+func TestDrawLogStructuralReflowAboveViewportRebasesWithoutReplay(t *testing.T) {
+	t.Setenv("TERM_PROGRAM", "ghostty")
 	var buf bytes.Buffer
 	r := NewRenderer(&buf)
 	r.Resize(80, 4)
 	oldChat := []string{
-		"┌ bash first ─────", "│", "│ old output", "└──────────────────",
+		"user prompt",
+		"┌ bash first ─────", "│ old output", "└──────────────────",
 		"┌ bash second ────", "│ second output", "└──────────────────",
 	}
 	r.DrawLog(oldChat, []string{"input"}, 0, 0)
 	buf.Reset()
 
 	// The first tool gains wrapped rows after its top has scrolled away.
-	// Every following logical row shifts, so patching by the old indexes
-	// would draw the second header inside the first tool's border.
+	// Clearing the viewport and replaying the complete logical transcript
+	// leaves the old prompt in native scrollback and prints a second copy.
+	// Rebase the logical row coordinates instead, leaving inaccessible rows
+	// as historical snapshots and keeping the visible tail aligned.
 	newChat := []string{
-		"┌ bash first ─────", "│", "│ old output", "│ wrapped line 1", "│ wrapped line 2", "└──────────────────",
+		"user prompt",
+		"┌ bash first ─────", "│ old output", "│ wrapped line 1", "│ wrapped line 2", "└──────────────────",
 		"┌ bash second ────", "│ second output", "└──────────────────",
 	}
 	r.DrawLog(newChat, []string{"input"}, 0, 0)
 	got := buf.String()
-	if !strings.Contains(got, SeqClearScreenNoHome) {
-		t.Fatalf("structural reflow was patched in place instead of repainted: %q", got)
+	if strings.Contains(got, SeqClearScreenNoHome) || strings.Contains(got, SeqClearScrollback) {
+		t.Fatalf("structural reflow cleared the terminal: %q", got)
 	}
-	for _, want := range []string{"│ wrapped line 2", "┌ bash second", "└──────────────────"} {
-		if !strings.Contains(got, want) {
-			t.Fatalf("repaint missing %q: %q", want, got)
+	for _, replayed := range []string{"user prompt", "┌ bash first", "┌ bash second"} {
+		if strings.Contains(got, replayed) {
+			t.Fatalf("structural reflow replayed %q into scrollback: %q", replayed, got)
 		}
 	}
-	if strings.Contains(got, SeqClearScrollback) {
-		t.Fatalf("automatic recovery erased terminal scrollback: %q", got)
+
+	buf.Reset()
+	appended := append(append([]string(nil), newChat...), "┌ bash third ─────", "│ third output", "└──────────────────")
+	r.DrawLog(appended, []string{"input"}, 0, 0)
+	got = buf.String()
+	if !strings.Contains(got, "┌ bash third") || !strings.Contains(got, "│ third output") {
+		t.Fatalf("new output was not appended after coordinate rebase: %q", got)
+	}
+	for _, replayed := range []string{"user prompt", "┌ bash first", "┌ bash second"} {
+		if strings.Contains(got, replayed) {
+			t.Fatalf("append after rebase replayed %q: %q", replayed, got)
+		}
 	}
 }
 
