@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -17,6 +19,12 @@ import (
 // resets the connection before headers, without making the user wait
 // noticeably long if the outage is real.
 const streamRetryAttempts = 2
+
+// maxServerRetryDelay caps how long we are willing to honor a
+// server-requested Retry-After delay. When a provider asks for a
+// longer wait (e.g. a quota that resets in hours), the request fails
+// immediately with an informative error instead of silently blocking.
+const maxServerRetryDelay = 60 * time.Second
 
 // streamRetryBackoff returns the wait duration before retry attempt n
 // (1-based). Short, fixed backoff: 250ms, then 750ms. Anything longer
@@ -39,7 +47,12 @@ func streamRetryBackoff(attempt int) time.Duration {
 // Retries fire on:
 //   - net.Conn dial errors (connection refused, no such host, EOF
 //     before headers, "upstream connect error", "connection reset")
-//   - HTTP 502/503/504
+//   - HTTP 429/500/502/503/504/524/529, except 429 responses whose
+//     body indicates a terminal quota/billing limit
+//
+// When a retryable response carries a Retry-After (or retry-after-ms)
+// header, the wait before the next attempt uses the server-requested
+// delay instead of the fixed backoff, capped by maxServerRetryDelay.
 //
 // The handler is responsible for re-reading the request body each
 // attempt; we re-create the request via newReq() because http.Request
@@ -52,12 +65,18 @@ func streamRetryBackoff(attempt int) time.Duration {
 // the loop bails out immediately with ctx.Err().
 func doStreamWithRetry(ctx context.Context, client *http.Client, newReq func() (*http.Request, error)) (*http.Response, error) {
 	var lastErr error
+	serverDelay := time.Duration(-1) // <0: use the default fixed backoff
 	for attempt := 0; attempt <= streamRetryAttempts; attempt++ {
 		if attempt > 0 {
+			delay := streamRetryBackoff(attempt)
+			if serverDelay >= 0 {
+				delay = serverDelay
+			}
+			serverDelay = -1
 			select {
 			case <-ctx.Done():
 				return nil, ctx.Err()
-			case <-time.After(streamRetryBackoff(attempt)):
+			case <-time.After(delay):
 			}
 		}
 		req, err := newReq()
@@ -78,12 +97,27 @@ func doStreamWithRetry(ctx context.Context, client *http.Client, newReq func() (
 			// at 4 KiB because edge proxies sometimes send pages.
 			body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 			resp.Body.Close()
-			lastErr = &transientHTTPError{Status: resp.StatusCode, Body: strings.TrimSpace(string(body))}
+			trimmed := strings.TrimSpace(string(body))
+			if resp.StatusCode == http.StatusTooManyRequests && isTerminalRateLimitBody(trimmed) {
+				// Subscription/quota/billing limits are not transient
+				// throttles; retrying only burns time. Surface the
+				// response immediately so the caller formats the
+				// normal "http 429: body" error.
+				return synthesizeResponse(resp.StatusCode, body), nil
+			}
+			lastErr = &transientHTTPError{Status: resp.StatusCode, Body: trimmed}
 			if attempt == streamRetryAttempts {
 				// Wrap as a real *http.Response shape the caller
 				// expects so it formats the error identically to a
 				// non-retried failure.
 				return synthesizeResponse(resp.StatusCode, body), nil
+			}
+			if d, ok := retryAfterDelay(resp.Header); ok {
+				if d > maxServerRetryDelay {
+					return nil, fmt.Errorf("server requested %s retry delay (max %s): http %d: %s",
+						d.Round(time.Second), maxServerRetryDelay, resp.StatusCode, trimmed)
+				}
+				serverDelay = d
 			}
 			continue
 		}
@@ -145,14 +179,74 @@ func isTransientConnectError(err error) bool {
 }
 
 // isTransientHTTPStatus reports whether a non-200 status code is
-// likely transient (502/503/504). 5xx outside this range is surfaced
-// immediately because it usually indicates a real backend bug.
+// likely transient. 429 covers rate limits and capacity throttles
+// (terminal quota/billing 429s are filtered by isTerminalRateLimitBody
+// in the retry loop). 500 shows up for transient backend failures on
+// several providers, 524 is Cloudflare's origin timeout, and 529 is
+// the overloaded status used by Anthropic-style backends.
 func isTransientHTTPStatus(code int) bool {
 	switch code {
-	case http.StatusBadGateway,
+	case http.StatusTooManyRequests,
+		http.StatusInternalServerError,
+		http.StatusBadGateway,
 		http.StatusServiceUnavailable,
-		http.StatusGatewayTimeout:
+		http.StatusGatewayTimeout,
+		524, // Cloudflare: a timeout occurred
+		529: // overloaded
 		return true
 	}
 	return false
+}
+
+// isTerminalRateLimitBody reports whether a 429 body describes a
+// subscription, quota, or billing limit rather than a transient
+// throttle. Retrying those only delays the inevitable error, and on
+// some backends it can even extend the block.
+func isTerminalRateLimitBody(body string) bool {
+	msg := strings.ToLower(body)
+	for _, needle := range []string{
+		"gousagelimiterror", "freeusagelimiterror",
+		"usage limit", "monthly usage limit",
+		"available balance", "insufficient_quota",
+		"out of budget", "quota exceeded", "billing",
+	} {
+		if strings.Contains(msg, needle) {
+			return true
+		}
+	}
+	return false
+}
+
+// retryAfterDelay extracts a server-requested retry delay from
+// response headers. "retry-after-ms" (milliseconds) wins over the
+// standard "Retry-After", which may hold either delay-seconds or an
+// HTTP-date. Returns false when no parseable delay is present.
+func retryAfterDelay(h http.Header) (time.Duration, bool) {
+	if v := h.Get("retry-after-ms"); v != "" {
+		if ms, err := strconv.ParseFloat(strings.TrimSpace(v), 64); err == nil {
+			if ms < 0 {
+				ms = 0
+			}
+			return time.Duration(ms * float64(time.Millisecond)), true
+		}
+	}
+	v := h.Get("Retry-After")
+	if v == "" {
+		return 0, false
+	}
+	v = strings.TrimSpace(v)
+	if secs, err := strconv.ParseFloat(v, 64); err == nil {
+		if secs < 0 {
+			secs = 0
+		}
+		return time.Duration(secs * float64(time.Second)), true
+	}
+	if when, err := http.ParseTime(v); err == nil {
+		d := time.Until(when)
+		if d < 0 {
+			d = 0
+		}
+		return d, true
+	}
+	return 0, false
 }
