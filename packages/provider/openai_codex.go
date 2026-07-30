@@ -45,6 +45,7 @@ type codexClient struct {
 	providerName      string
 	modelName         func(string) string
 	disableCLIRouting bool
+	cliRoutingAll     bool
 	http              *http.Client
 }
 
@@ -61,7 +62,14 @@ func NewOpenAICodex(token, accountID, baseURL string) Client {
 		baseURL:      strings.TrimRight(baseURL, "/"),
 		errorLabel:   "codex",
 		providerName: "openai-codex",
-		http:         &http.Client{Timeout: 0},
+		// The ChatGPT Codex backend load-sheds requests from client
+		// identities it does not recognize: unknown originator/user-agent
+		// pairs receive "Our servers are currently overloaded" stream
+		// errors near-deterministically while Codex CLI requests succeed.
+		// Send the Codex CLI request shape for every model on this
+		// backend.
+		cliRoutingAll: true,
+		http:          &http.Client{Timeout: 0},
 	}
 }
 
@@ -363,7 +371,7 @@ func (c *codexClient) Stream(ctx context.Context, req Request) (<-chan Event, er
 		wire.Model = c.modelName(wire.Model)
 	}
 	var codexCLISessionID string
-	if !c.disableCLIRouting && usesCodexCLIRouting(wire.Model) {
+	if !c.disableCLIRouting && (c.cliRoutingAll || usesCodexCLIRouting(wire.Model)) {
 		codexCLISessionID = newCodexSessionID()
 		wire.PromptCacheKey = codexCLISessionID
 	}
@@ -383,9 +391,10 @@ func (c *codexClient) Stream(ctx context.Context, req Request) (<-chan Event, er
 		httpReq.Header.Set("chatgpt-account-id", c.accountID)
 		httpReq.Header.Set("openai-beta", "responses=experimental")
 		if codexCLISessionID != "" {
-			// Some preview models are only admitted or reliably served by the
-			// ChatGPT Codex backend when the request follows Codex CLI routing
-			// metadata. Keep this narrow so Sol retains zot's proven shape.
+			// The ChatGPT Codex backend only admits (and reliably serves)
+			// requests that follow Codex CLI routing metadata; other client
+			// identities are load-shed with "servers are currently
+			// overloaded" errors even when capacity is fine.
 			httpReq.Header.Set("originator", "codex_cli_rs")
 			httpReq.Header.Set("session-id", codexCLISessionID)
 			httpReq.Header.Set("user-agent", "codex_cli_rs/0.0.0")

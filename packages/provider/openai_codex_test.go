@@ -196,7 +196,13 @@ func TestCodexNestedStreamError(t *testing.T) {
 	}
 }
 
-func TestCodexSolKeepsZotShape(t *testing.T) {
+// TestCodexSubscriptionAlwaysUsesCodexCLIShape pins the ChatGPT
+// subscription backend to the Codex CLI request identity for every
+// model. The backend load-sheds unrecognized originator/user-agent
+// pairs with "Our servers are currently overloaded" stream errors
+// even when capacity is fine, so the CLI shape is required for
+// reliable service, not just for preview-model admission.
+func TestCodexSubscriptionAlwaysUsesCodexCLIShape(t *testing.T) {
 	c := NewOpenAICodex("token", "acct", "https://example.test/backend-api/codex/responses").(*codexClient)
 	var gotReq *http.Request
 	var body bytes.Buffer
@@ -223,13 +229,16 @@ func TestCodexSolKeepsZotShape(t *testing.T) {
 	if gotReq == nil {
 		t.Fatal("request was not sent")
 	}
-	if gotReq.Header.Get("originator") != "zot" {
+	if gotReq.Header.Get("originator") != "codex_cli_rs" {
 		t.Fatalf("originator = %q", gotReq.Header.Get("originator"))
 	}
-	if gotReq.Header.Get("session-id") != "" {
-		t.Fatalf("session-id = %q", gotReq.Header.Get("session-id"))
+	if gotReq.Header.Get("user-agent") != "codex_cli_rs/0.0.0" {
+		t.Fatalf("user-agent = %q", gotReq.Header.Get("user-agent"))
 	}
-	if strings.Contains(body.String(), "prompt_cache_key") {
-		t.Fatalf("Sol request unexpectedly included prompt_cache_key: %s", body.String())
+	if gotReq.Header.Get("session-id") == "" {
+		t.Fatal("session-id header missing")
+	}
+	if !strings.Contains(body.String(), "prompt_cache_key") {
+		t.Fatalf("request missing prompt_cache_key: %s", body.String())
 	}
 }
