@@ -88,16 +88,12 @@ func (d *changelogDialog) Render(th tui.Theme, width int) []string {
 		if strings.HasPrefix(l, "\x00H:") {
 			// Heading: render in accent color, bold.
 			heading := strings.TrimPrefix(l, "\x00H:")
-			bodyLines = append(bodyLines, th.FG256(th.Accent, tui.Bold(heading)))
+			styled := th.FG256(th.Accent, tui.Bold(heading))
+			bodyLines = append(bodyLines, wrapDialogTextRows(styled, width)...)
 		} else {
-			// Regular line: render through markdown for bullet points etc.
-			rendered := tui.RenderMarkdown(l, th, width-4)
-			for _, rl := range strings.Split(rendered, "\n") {
-				if len(rl) > 0 && rl[0] == tui.FlushLeftSentinel {
-					rl = rl[1:]
-				}
-				bodyLines = append(bodyLines, rl)
-			}
+			// Regular line: render and wrap through the shared dialog
+			// markdown path so ANSI styling does not affect display width.
+			bodyLines = append(bodyLines, renderDialogMarkdownRows(l, th, width)...)
 		}
 	}
 
@@ -112,9 +108,7 @@ func (d *changelogDialog) Render(th tui.Theme, width int) []string {
 	if end > len(bodyLines) {
 		end = len(bodyLines)
 	}
-	for _, line := range bodyLines[d.scroll:end] {
-		out = append(out, "    "+line)
-	}
+	out = append(out, bodyLines[d.scroll:end]...)
 	if end < len(bodyLines) {
 		out = append(out, "  "+th.FG256(th.Muted, fmt.Sprintf("\u2193 %d more lines (down/pgdn)", len(bodyLines)-end)))
 	}
