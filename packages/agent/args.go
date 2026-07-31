@@ -35,6 +35,12 @@ type Args struct {
 	Model    string
 	APIKey   string
 
+	// inheritedCredential is populated only by swarm-agent mode from
+	// the supervisor's stdin. It is never accepted as a CLI argument.
+	inheritedCredential string
+	inheritedAuthMethod string
+	inheritedAccountID  string
+
 	BaseURL            string // override provider base URL (for tests/self-hosted)
 	SystemPrompt       string
 	AppendSystemPrompt []string

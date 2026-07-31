@@ -351,7 +351,11 @@ func Resolve(args Args, requireCred bool) (Resolved, error) {
 		accountID string
 		credErr   error
 	)
-	if provName == "ollama" {
+	if args.inheritedCredential != "" {
+		cred = args.inheritedCredential
+		method = args.inheritedAuthMethod
+		accountID = args.inheritedAccountID
+	} else if provName == "ollama" {
 		cred = firstNonEmpty(args.APIKey, "ollama")
 		method = "apikey"
 	} else {

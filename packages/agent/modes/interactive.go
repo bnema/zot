@@ -6295,7 +6295,11 @@ func (i *Interactive) flushSwarmSummary(batch []*swarmWatchEntry) {
 		} else if e.err != "" {
 			fmt.Fprintf(&sb, "   turn error: %s\n", truncateForSummary(e.err, 240))
 		}
-		if tail := strings.TrimSpace(snap.Tail); tail != "" {
+		if snap.LastAssistant != "" {
+			sb.WriteString("   final response:\n")
+			sb.WriteString(snap.LastAssistant)
+			sb.WriteString("\n")
+		} else if tail := strings.TrimSpace(snap.Tail); tail != "" {
 			fmt.Fprintf(&sb, "   tail: %s\n", truncateForSummary(tail, 600))
 		}
 		sb.WriteString("\n")

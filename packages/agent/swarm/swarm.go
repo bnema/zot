@@ -63,8 +63,20 @@ type Config struct {
 	// here.
 	NewRunner func(a *Agent) Runner
 
+	// ResolveCredential resolves the credential inherited by a child
+	// process. The default runner transfers it over the child's stdin,
+	// keeping command-backed credentials out of argv and the environment.
+	ResolveCredential func(ctx context.Context, provider string) (Credential, error)
+
 	// Now is a clock seam for tests; defaults to time.Now.
 	Now func() time.Time
+}
+
+// Credential is the resolved authentication state inherited by a swarm child.
+type Credential struct {
+	Value     string `json:"value"`
+	Method    string `json:"method"`
+	AccountID string `json:"account_id,omitempty"`
 }
 
 // Runner executes one agent task. Run blocks until the task finishes,
@@ -117,7 +129,9 @@ func New(cfg Config) *Swarm {
 		cfg.Now = time.Now
 	}
 	if cfg.NewRunner == nil {
-		cfg.NewRunner = func(a *Agent) Runner { return &execRunner{agent: a} }
+		cfg.NewRunner = func(a *Agent) Runner {
+			return &execRunner{agent: a, resolveCredential: cfg.ResolveCredential}
+		}
 	}
 	return &Swarm{
 		cfg:    cfg,
@@ -418,16 +432,17 @@ func (f *Swarm) Remove(id string) error {
 // Snapshot returns a read-only view of one agent. Safe for the TUI
 // goroutine to call repeatedly; never blocks on the Runner.
 type AgentSnapshot struct {
-	ID       string
-	Task     string
-	Dir      string
-	Status   Status
-	Activity string
-	Started  time.Time
-	Finished time.Time
-	Err      string
-	Tail     string   // last few transcript lines, joined with "\n"
-	Lines    []string // full transcript (already capped by Agent.appendTranscript)
+	ID            string
+	Task          string
+	Dir           string
+	Status        Status
+	Activity      string
+	Started       time.Time
+	Finished      time.Time
+	Err           string
+	Tail          string   // last few transcript lines, joined with "\n"
+	Lines         []string // full transcript (already capped by Agent.appendTranscript)
+	LastAssistant string   // complete final assistant message, without role formatting
 
 	// Model and Provider expose the per-agent overrides set at
 	// Spawn time (empty when the agent inherits the child's default
@@ -461,11 +476,12 @@ func (a *Agent) Snapshot() AgentSnapshot {
 		Status: a.status, Activity: a.activity,
 		Started: a.Started, Finished: a.finished,
 		Err: errStr, Tail: tail, Lines: lines,
-		Model:        a.Model,
-		Provider:     a.Provider,
-		InboxPath:    a.InboxPath,
-		EventLogPath: a.EventLogPath,
-		SessionPath:  a.SessionPath,
+		LastAssistant: a.lastAssistant,
+		Model:         a.Model,
+		Provider:      a.Provider,
+		InboxPath:     a.InboxPath,
+		EventLogPath:  a.EventLogPath,
+		SessionPath:   a.SessionPath,
 	}
 }
 
@@ -501,8 +517,16 @@ func (f *Swarm) SnapshotAll() []AgentSnapshot {
 // agentSink is the Sink the Swarm hands to each Runner.
 type agentSink struct{ a *Agent }
 
-func (s agentSink) Activity(msg string)     { s.a.setActivity(msg) }
-func (s agentSink) Transcript(chunk string) { s.a.appendTranscript(chunk) }
+func (s agentSink) Activity(msg string) { s.a.setActivity(msg) }
+func (s agentSink) Transcript(chunk string) {
+	if strings.HasPrefix(chunk, "stderr: ") || strings.HasPrefix(chunk, "error: ") {
+		s.a.appendTranscript(chunk)
+		return
+	}
+	s.a.appendAssistantMessage(chunk)
+}
+func (s agentSink) userMessage(text string)      { s.a.appendUserMessage(text) }
+func (s agentSink) assistantMessage(text string) { s.a.appendAssistantMessage(text) }
 
 func truncate(s string, n int) string {
 	if len(s) <= n {

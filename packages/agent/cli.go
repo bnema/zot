@@ -456,6 +456,21 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 	swarmMgr = swarm.New(swarm.Config{
 		Root:     filepath.Join(ZotHome(), "swarm"),
 		RepoRoot: r.CWD,
+		ResolveCredential: func(ctx context.Context, providerID string) (swarm.Credential, error) {
+			if providerID == "ollama" {
+				return swarm.Credential{Value: "ollama", Method: "apikey"}, nil
+			}
+			credential, method, accountID, err := ResolveCredentialFullContext(ctx, providerID, "")
+			if err != nil {
+				// Providers backed only by a local endpoint do not need a key.
+				// Leave stdin untouched and let the child resolve that endpoint.
+				if !CredentialAvailable(providerID) {
+					return swarm.Credential{}, nil
+				}
+				return swarm.Credential{}, err
+			}
+			return swarm.Credential{Value: credential, Method: method, AccountID: accountID}, nil
+		},
 	})
 	// Pull any previously-spawned agents off disk so the dashboard
 	// shows them as detached and the user can resume / remove them.

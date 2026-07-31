@@ -11,6 +11,31 @@ import (
 	"github.com/patriceckhart/zot/packages/core"
 )
 
+func TestAutoSwarmSummaryIncludesCompleteFinalResponseAfterLongTask(t *testing.T) {
+	response := "first response line\n" + strings.Repeat("result ", 150) + "final marker"
+	mgr := swarm.New(swarm.Config{
+		Root:     t.TempDir(),
+		RepoRoot: t.TempDir(),
+		NewRunner: func(*swarm.Agent) swarm.Runner {
+			return swarm.RunnerFunc(func(_ context.Context, sink swarm.Sink) error {
+				sink.Transcript(response)
+				return nil
+			})
+		},
+	})
+	a, err := mgr.Spawn(context.Background(), strings.Repeat("long task ", 150))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	iv := newQueuedAutoSwarmInteractive()
+	iv.TrackSwarmAgent(a, a.Task)
+	update := waitForQueuedPrompt(t, iv)
+	if !strings.Contains(update, "final response:\n"+response) {
+		t.Fatalf("update missing complete final response: %q", update)
+	}
+}
+
 func TestTrackSwarmAgentReportsStartupFailure(t *testing.T) {
 	mgr := swarm.New(swarm.Config{
 		Root:     t.TempDir(),

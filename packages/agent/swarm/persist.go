@@ -242,27 +242,23 @@ func replayEventsIntoAgent(a *Agent, evs []Event) {
 	terminal := false
 	for _, ev := range evs {
 		switch ev.Type {
-		case "assistant_message":
+		case "assistant_message", "user_message":
+			var text []string
 			if c, ok := ev.Data["content"].([]any); ok {
 				for _, blk := range c {
 					m, _ := blk.(map[string]any)
 					if t, _ := m["type"].(string); t == "text" {
 						if txt, _ := m["text"].(string); txt != "" {
-							a.appendTranscript(txt)
+							text = append(text, txt)
 						}
 					}
 				}
 			}
-		case "user_message":
-			if c, ok := ev.Data["content"].([]any); ok {
-				for _, blk := range c {
-					m, _ := blk.(map[string]any)
-					if t, _ := m["type"].(string); t == "text" {
-						if txt, _ := m["text"].(string); txt != "" {
-							a.appendTranscript("user: " + txt)
-						}
-					}
-				}
+			message := strings.Join(text, "\n")
+			if ev.Type == "assistant_message" {
+				a.appendAssistantMessage(message)
+			} else {
+				a.appendUserMessage(message)
 			}
 		case "stdout":
 			if txt, _ := ev.Data["text"].(string); txt != "" {

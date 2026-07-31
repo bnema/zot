@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 	"sync"
@@ -35,6 +36,19 @@ import (
 func runSwarmAgentMode(ctx context.Context, args Args, version string) error {
 	if args.SwarmAgent == "" {
 		return fmt.Errorf("--swarm-agent requires a socket path")
+	}
+	if os.Getenv("ZOT_SWARM_CREDENTIAL_STDIN") == "1" {
+		var inherited swarm.Credential
+		dec := json.NewDecoder(io.LimitReader(os.Stdin, 1<<20))
+		if err := dec.Decode(&inherited); err != nil {
+			return fmt.Errorf("read inherited swarm credential: %w", err)
+		}
+		if inherited.Value == "" || inherited.Method == "" {
+			return fmt.Errorf("read inherited swarm credential: missing value or method")
+		}
+		args.inheritedCredential = inherited.Value
+		args.inheritedAuthMethod = inherited.Method
+		args.inheritedAccountID = inherited.AccountID
 	}
 
 	r, err := Resolve(args, true)

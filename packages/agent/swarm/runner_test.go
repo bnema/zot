@@ -1,6 +1,11 @@
 package swarm
 
 import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -25,6 +30,82 @@ import (
 // The test asserts the load-bearing pieces are present in plausible
 // positions. If a flag is renamed, update both the runner and this
 // test so we notice immediately.
+func TestCredentialStdinHelperProcess(t *testing.T) {
+	if os.Getenv("ZOT_SWARM_CREDENTIAL_HELPER") != "1" {
+		return
+	}
+	if os.Getenv("ZOT_SWARM_CREDENTIAL_STDIN") != "1" {
+		os.Exit(2)
+	}
+	var credential Credential
+	if err := json.NewDecoder(os.Stdin).Decode(&credential); err != nil {
+		os.Exit(3)
+	}
+	if credential.Value != "inherited-secret" || credential.Method != "apikey" {
+		os.Exit(4)
+	}
+	for _, arg := range os.Args {
+		if strings.Contains(arg, credential.Value) {
+			os.Exit(5)
+		}
+	}
+	for _, env := range os.Environ() {
+		if strings.Contains(env, credential.Value) {
+			os.Exit(6)
+		}
+	}
+	fmt.Println(`{"type":"agent_stopped","data":{"reason":"completed"}}`)
+	os.Exit(0)
+}
+
+func TestExecRunnerTransfersCredentialOnlyOnStdin(t *testing.T) {
+	t.Setenv("ZOT_SWARM_CREDENTIAL_HELPER", "1")
+	root := t.TempDir()
+	a := &Agent{
+		ID:           "credential-test",
+		Dir:          root,
+		Provider:     "custom",
+		SessionPath:  filepath.Join(root, "session.json"),
+		InboxPath:    filepath.Join(root, "inbox"),
+		EventLogPath: filepath.Join(root, "events.jsonl"),
+	}
+	calls := 0
+	r := &execRunner{
+		agent:   a,
+		Command: []string{os.Args[0], "-test.run=^TestCredentialStdinHelperProcess$"},
+		resolveCredential: func(context.Context, string) (Credential, error) {
+			calls++
+			return Credential{Value: "inherited-secret", Method: "apikey"}, nil
+		},
+	}
+	if err := r.Run(context.Background(), agentSink{a: a}); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 1 {
+		t.Fatalf("credential resolver called %d times, want 1", calls)
+	}
+}
+
+func TestApplyEventPreservesMultilineRolesAndFinalAssistant(t *testing.T) {
+	a := &Agent{}
+	sink := agentSink{a: a}
+	applyEventToSink(NewEvent("user_message", map[string]any{"content": []any{
+		map[string]any{"type": "text", "text": "first line\n\nlast line"},
+	}}), sink)
+	applyEventToSink(NewEvent("assistant_message", map[string]any{"content": []any{
+		map[string]any{"type": "text", "text": "complete\nanswer"},
+	}}), sink)
+
+	snap := a.Snapshot()
+	wantLines := []string{"user: first line", "user: ", "user: last line", "complete", "answer"}
+	if strings.Join(snap.Lines, "\n") != strings.Join(wantLines, "\n") {
+		t.Fatalf("transcript = %#v, want %#v", snap.Lines, wantLines)
+	}
+	if snap.LastAssistant != "complete\nanswer" {
+		t.Fatalf("last assistant = %q", snap.LastAssistant)
+	}
+}
+
 func TestSwarmAgentArgs(t *testing.T) {
 	args := swarmAgentArgs(swarmAgentArgsOpts{
 		Exe:         "/path/to/zot",

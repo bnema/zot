@@ -257,6 +257,25 @@ func TestResolveOllamaUsesModelBaseURLBeforeDefault(t *testing.T) {
 	}
 }
 
+func TestResolveUsesInheritedSwarmCredential(t *testing.T) {
+	t.Setenv("ZOT_HOME", t.TempDir())
+	t.Setenv("OPENAI_API_KEY", "")
+
+	r, err := Resolve(Args{
+		Provider:            "openai",
+		Model:               "gpt-5",
+		inheritedCredential: "inherited-key",
+		inheritedAuthMethod: "apikey",
+		inheritedAccountID:  "account-id",
+	}, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.Credential != "inherited-key" || r.AuthMethod != "apikey" || r.AccountID != "account-id" {
+		t.Fatalf("inherited credential was not preserved: %+v", r)
+	}
+}
+
 func TestResolveLlamaCPPUsesRouterInferenceURL(t *testing.T) {
 	t.Setenv("ZOT_HOME", t.TempDir())
 	t.Setenv("LLAMA_BASE_URL", "http://127.0.0.1:8080/v1/")

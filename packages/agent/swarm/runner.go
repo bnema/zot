@@ -2,6 +2,7 @@ package swarm
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -33,7 +34,8 @@ import (
 // for the parent's own agents. /swarm open in a separate zot would
 // read the log directly.
 type execRunner struct {
-	agent *Agent
+	agent             *Agent
+	resolveCredential func(context.Context, string) (Credential, error)
 
 	// Command overrides the default `zot --swarm-agent ...`
 	// invocation. Tests set this to a fake binary (or `go run`
@@ -174,6 +176,20 @@ func (r *execRunner) Run(ctx context.Context, sink Sink) error {
 		"ZOT_SWARM_AGENT_ID="+r.agent.ID,
 		"ZOT_SWARM_EVENT_LOG="+logPath,
 	)
+	if r.resolveCredential != nil {
+		credential, resolveErr := r.resolveCredential(ctx, r.agent.Provider)
+		if resolveErr != nil {
+			return fmt.Errorf("resolve swarm credential for %s: %w", r.agent.Provider, resolveErr)
+		}
+		if credential.Value != "" {
+			encoded, encodeErr := json.Marshal(credential)
+			if encodeErr != nil {
+				return fmt.Errorf("encode swarm credential: %w", encodeErr)
+			}
+			cmd.Stdin = bytes.NewReader(encoded)
+			cmd.Env = append(cmd.Env, "ZOT_SWARM_CREDENTIAL_STDIN=1")
+		}
+	}
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -319,29 +335,45 @@ func notifyPromptTurnEnd(a *Agent, ev Event) {
 // few event types are interpreted; the rest still land in the
 // durable log via the caller.
 func applyEventToSink(ev Event, sink Sink) {
+	type roleSink interface {
+		userMessage(string)
+		assistantMessage(string)
+	}
+	appendMessage := func(text string, assistant bool) {
+		if text == "" {
+			return
+		}
+		if roles, ok := sink.(roleSink); ok {
+			if assistant {
+				roles.assistantMessage(text)
+			} else {
+				roles.userMessage(text)
+			}
+			return
+		}
+		if assistant {
+			sink.Transcript(text)
+		} else {
+			sink.Transcript("user: " + text)
+		}
+	}
+
 	switch ev.Type {
-	case "assistant_message":
+	case "assistant_message", "user_message":
+		var text []string
 		if c, ok := ev.Data["content"].([]any); ok {
 			for _, blk := range c {
 				m, _ := blk.(map[string]any)
 				if t, _ := m["type"].(string); t == "text" {
 					if txt, _ := m["text"].(string); txt != "" {
-						sink.Transcript(txt)
+						text = append(text, txt)
 					}
 				}
 			}
 		}
-		sink.Activity("idle")
-	case "user_message":
-		if c, ok := ev.Data["content"].([]any); ok {
-			for _, blk := range c {
-				m, _ := blk.(map[string]any)
-				if t, _ := m["type"].(string); t == "text" {
-					if txt, _ := m["text"].(string); txt != "" {
-						sink.Transcript("user: " + txt)
-					}
-				}
-			}
+		appendMessage(strings.Join(text, "\n"), ev.Type == "assistant_message")
+		if ev.Type == "assistant_message" {
+			sink.Activity("idle")
 		}
 	case "turn_start":
 		sink.Activity("thinking")

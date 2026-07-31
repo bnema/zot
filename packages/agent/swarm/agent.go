@@ -64,12 +64,13 @@ type Agent struct {
 	// caller redialing.
 	inbox *Inbox
 
-	mu         sync.Mutex
-	status     Status
-	activity   string
-	transcript []string
-	finished   time.Time
-	lastErr    error
+	mu            sync.Mutex
+	status        Status
+	activity      string
+	transcript    []string
+	lastAssistant string
+	finished      time.Time
+	lastErr       error
 
 	// OnTurnEnd, if set, fires once per prompt-level turn_end event
 	// emitted by the swarm daemon wrapper. Provider/tool-loop
@@ -154,13 +155,29 @@ func (a *Agent) setActivity(msg string) {
 }
 
 func (a *Agent) appendTranscript(chunk string) {
+	a.appendTranscriptLocked(chunk, "", false)
+}
+
+func (a *Agent) appendUserMessage(text string) {
+	a.appendTranscriptLocked(text, "user: ", false)
+}
+
+func (a *Agent) appendAssistantMessage(text string) {
+	a.appendTranscriptLocked(text, "", true)
+}
+
+func (a *Agent) appendTranscriptLocked(chunk, linePrefix string, assistant bool) {
+	message := chunk
 	chunk = strings.TrimRight(chunk, "\n")
 	if chunk == "" {
 		return
 	}
 	a.mu.Lock()
 	for _, line := range strings.Split(chunk, "\n") {
-		a.transcript = append(a.transcript, line)
+		a.transcript = append(a.transcript, linePrefix+line)
+	}
+	if assistant {
+		a.lastAssistant = message
 	}
 	// Bound the transcript so dashboards don't hold gigabytes for
 	// long-running agents. 2000 lines is plenty for inspection;
