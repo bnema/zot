@@ -17,6 +17,7 @@ type Mode string
 const (
 	ModeInteractive Mode = "interactive"
 	ModePrint       Mode = "print"
+	ModeStream      Mode = "stream"
 	ModeJSON        Mode = "json"
 	ModeRPC         Mode = "rpc"
 	// ModeSwarmAgent is the long-lived, headless daemon mode used by
@@ -97,11 +98,20 @@ type Args struct {
 	// freely so automated workflows keep working.
 	NoYolo bool
 
+	// Yes accepts zotfile launch consent without an interactive
+	// Allow? prompt (zot run -y / --yes). Durable consent receipts
+	// are still written for modes other than bash ask.
+	Yes bool
+
 	ListModels bool
 	Help       bool
 	Version    bool
 
 	Prompt string // concatenated positional args
+
+	// StartupPre is an optional zotfile entry.pre value. Interactive
+	// mode auto-submits it once at startup before InitialInput handling.
+	StartupPre string
 
 	// SwarmAgent is the inbox-socket path when this process is a
 	// swarm-spawned agent. Empty in every other mode. Set by
@@ -138,6 +148,8 @@ func ParseArgs(in []string) (Args, error) {
 			a.Version = true
 		case "-p", "--print":
 			a.Mode = ModePrint
+		case "--stream":
+			a.Mode = ModeStream
 		case "--json":
 			a.Mode = ModeJSON
 		case "--rpc":
@@ -211,6 +223,8 @@ func ParseArgs(in []string) (Args, error) {
 			a.InsecureTLS = true
 		case "--no-yolo":
 			a.NoYolo = true
+		case "-y", "--yes":
+			a.Yes = true
 		case "--reasoning":
 			v, err := want(&i, arg)
 			if err != nil {
@@ -364,6 +378,7 @@ func PrintHelp(version string) {
 		row{"zot", "interactive tui"},
 		row{"zot \"prompt\"", "interactive, pre-filled prompt"},
 		row{"zot -p \"prompt\"", "print final text, exit"},
+		row{"zot --stream \"prompt\"", "stream assistant text live, exit"},
 		row{"zot --json \"prompt\"", "newline-delimited json events, exit"},
 		row{"zot rpc", "json-rpc loop on stdin/stdout (see docs/rpc.md)"},
 	)
@@ -409,6 +424,7 @@ func PrintHelp(version string) {
 		row{"--no-tools", "disable all tools"},
 		row{"--tools csv", "only enable the listed tools"},
 		row{"--no-yolo", "ask before running every tool call"},
+		row{"-y, --yes", "accept zot run consent without prompting"},
 		row{"--no-ext", "skip extension discovery for this run"},
 		row{"--no-skill", "skip all skill discovery for this run"},
 	)

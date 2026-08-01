@@ -88,14 +88,14 @@ The first run displays the declared permissions and asks for consent before the 
 ```text
 my-agent/
 ├── manifest.json          # identity, requirements, and permissions, required
-├── AGENT.md               # persona and standing instructions, required
+├── AGENT.md               # persona and standing instructions
 ├── skills/                # SKILL.md directories, optional
 │   └── my-skill/SKILL.md
 ├── assets/                # static files, optional
 └── README.md              # human-facing documentation, optional
 ```
 
-Only `manifest.json` and a regular `AGENT.md` file are required. Other ordinary files and directories are included in the archive, but the runtime gives no special behavior to `assets/` or `README.md` yet. Files in `assets/` are not automatically added to the model context or granted filesystem access.
+Only `manifest.json`. Other ordinary files and directories are included in the archive, but the runtime gives no special behavior to `assets/` or `README.md` yet. Files in `assets/` are not automatically added to the model context or granted filesystem access.
 
 Do not include executable extensions in `extensions/`. The local runtime rejects any bundled extension directory containing `extension.json` because extension subprocesses cannot yet be confined to the manifest permissions. This is a deliberate fail-closed restriction.
 
@@ -103,7 +103,7 @@ Symlinks are not supported and cause `zot pack` to fail.
 
 ## `AGENT.md`
 
-By default, `AGENT.md` is appended to zot's system prompt. It should describe the agent's role, workflow, constraints, output format, and when to load bundled skills.
+`AGENT.md` is optional. When present, it is appended to zot's system prompt by default. It should describe the agent's role, workflow, constraints, output format, and when to load bundled skills. When absent, the system prompt is left unchanged.
 
 Keep capability and security declarations out of this file. Permissions come only from `manifest.json` and are enforced independently of agent-authored prose.
 
@@ -275,6 +275,16 @@ Zot checks these requirements before requesting consent. These zotfiles do not h
 
 ### Entry fields
 
+`entry.pre` is auto-submitted once when `zot run` starts, before the initial prompt is applied. Values that begin with `!` use the interactive shell-escape path (or `BashTool` in `--print` / `--stream` / `--json`). Shell output streams live to the TUI (interactive) or stderr (non-interactive). Other values are sent as a normal user turn; in `--stream` mode that turn's assistant text also streams to stdout. After `pre` finishes, zot reloads extensions and rediscovers skills so anything installed by that command is available for the following turn.
+
+```json
+{
+  "entry": {
+    "pre": "!npx -y skills add tt-a1i/archify --skill archify --agent cursor --copy --yes"
+  }
+}
+```
+
 `entry.default_prompt` is used when the user runs the agent without a prompt. It may be a string or `null`:
 
 ```json
@@ -285,7 +295,9 @@ Zot checks these requirements before requesting consent. These zotfiles do not h
 }
 ```
 
-A prompt supplied on the command line takes precedence.
+In interactive mode, when no prompt is given on the command line, `default_prompt` pre-fills the editor after `pre` finishes (or immediately when `pre` is empty). It is not auto-submitted. A prompt supplied on the command line takes precedence the same way.
+
+In `--print` / `--stream` / `--json` modes, `pre` still runs first: shell escapes abort the run on failure; plain-text `pre` is sent as a first agent turn before the main prompt (`default_prompt` or the CLI prompt).
 
 `entry.greeting` is part of the manifest, but the current local runtime does not render it yet.
 
@@ -447,7 +459,11 @@ $ZOT_HOME/agents/<name>/consents/<digest>.json
 
 Any change to the packaged artifact produces a different digest and requires consent again. `bash: ask` always requires fresh launch consent.
 
-Non-interactive runs refuse to bypass consent by default. For controlled automation, set:
+Non-interactive runs refuse to bypass consent by default. For controlled automation, pass `-y` / `--yes` or set:
+
+```bash
+zot run -y ./code-reviewer.zot --print "Review this repository"
+```
 
 ```bash
 ZOT_AGENT_CONSENT=1 zot run ./code-reviewer.zot --print "Review this repository"
@@ -481,7 +497,9 @@ Run an unpackaged directory during development:
 
 ```bash
 zot run ./my-agent
+zot run -y ./my-agent
 zot run ./my-agent "Do the task"
+zot run ./my-agent -y --print "Do the task"
 ```
 
 Run a packed artifact:
@@ -489,6 +507,7 @@ Run a packed artifact:
 ```bash
 zot run ./my-agent.zot
 zot run ./my-agent.zot --print "Do the task"
+zot run ./my-agent.zot --stream "Do the task"
 zot run ./my-agent.zot --json "Do the task"
 ```
 
@@ -502,7 +521,7 @@ zot run zot-maintenance
 
 Zot checks `./zot-maintenance` and `./zot-maintenance.zot` before falling back to `https://github.com/patriceckhart/agents/zot-maintenance`. This makes local development override the remote collection without an install or cache step.
 
-A two-part name selects a GitHub repository under the `patriceckhart` organization:
+A two-part name is treated as a GitHub `owner/repo` reference. Resolution is local-first, then the repository root:
 
 ```bash
 zot run agents/zot-maintenance
@@ -525,7 +544,7 @@ zot run https://github.com/patriceckhart/agents/tree/main/zot-maintenance
 
 The short form reads the repository's default branch through GitHub's `HEAD` archive. A tree URL uses the branch or tag in the URL. Private repositories and GitHub references containing `/` are not currently supported. The downloaded source is temporary, but normal agent data, consent receipts, and session transcripts remain under `$ZOT_HOME`.
 
-Short-name fallback is a fixed GitHub mapping, not an indexed or signed registry. Installed names, arbitrary URLs, OCI references, and third-party registry configuration are not resolved yet.
+Short-name and `owner/repo` fallbacks are fixed GitHub mappings, not an indexed or signed registry. Installed names, arbitrary URLs, OCI references, and third-party registry configuration are not resolved yet.
 
 ### `zot pack`
 
@@ -596,6 +615,7 @@ Implemented now:
 
 - local directories and `.zot` archives
 - local-first short-name resolution to the official GitHub agent collection
+- local-first `owner/repo` resolution to `https://github.com/owner/repo`
 - temporary execution of agent directories from public GitHub repositories
 - `zot pack`, `zot inspect`, `zot verify`, and `zot run`
 - canonical tar creation with zstd compression

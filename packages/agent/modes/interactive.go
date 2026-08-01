@@ -131,6 +131,21 @@ type InteractiveConfig struct {
 
 	InitialInput string
 
+	// StartupPre is auto-submitted once when the interactive session
+	// opens, before InitialInput is applied. Uses the same path as a
+	// typed Enter submit ("!" → shell escape, otherwise a model turn).
+	StartupPre string
+
+	// OnStartupPreDone runs after StartupPre finishes (shell escape or
+	// model turn), before deferred InitialInput is applied. Hosts use
+	// it to rediscover skills / reload extensions installed by pre.
+	OnStartupPreDone func()
+
+	// AutoSubmitInitial, when true, auto-submits InitialInput after
+	// StartupPre completes (or immediately when StartupPre is empty).
+	// When false, InitialInput only pre-fills the editor.
+	AutoSubmitInitial bool
+
 	// Auth is required. When the user runs /login, Interactive talks to
 	// AuthManager to open a browser and wait for the callback.
 	AuthManager *auth.Manager
@@ -522,6 +537,15 @@ type Interactive struct {
 	// i.busy/i.cancelTurn so esc cancels it and no turn or other shell
 	// escape can start while one is in flight.
 	shellRunning bool
+	// shellLive is the accumulating stdout/stderr of the in-flight
+	// shell escape, updated via BashTool progress for live rendering.
+	shellLive string
+
+	// awaitingStartupPre is true while the zotfile entry.pre auto-submit
+	// is in flight. When it clears, deferredInitialInput is applied.
+	awaitingStartupPre   bool
+	deferredInitialInput string
+	autoSubmitDeferred   bool
 
 	// sessionLoading is true while a /sessions selection is being read
 	// on a background goroutine. Keeping this off the input goroutine
@@ -703,7 +727,14 @@ func (i *Interactive) Run(ctx context.Context) error {
 		i.redraw()
 	})
 
-	if i.cfg.InitialInput != "" {
+	if i.cfg.StartupPre != "" {
+		i.deferredInitialInput = i.cfg.InitialInput
+		i.autoSubmitDeferred = i.cfg.AutoSubmitInitial
+		i.awaitingStartupPre = true
+		i.Submit(i.cfg.StartupPre)
+	} else if i.cfg.AutoSubmitInitial && i.cfg.InitialInput != "" {
+		i.Submit(i.cfg.InitialInput)
+	} else if i.cfg.InitialInput != "" {
 		i.ed.SetValue(i.cfg.InitialInput)
 	}
 
@@ -1060,6 +1091,16 @@ func (i *Interactive) buildChatLocked(cols int) []string {
 			line = line[:cols-3] + "..."
 		}
 		chat = append(chat, i.cfg.Theme.FG256(i.cfg.Theme.Tool, line), "")
+	}
+
+	// Live shell-escape output (!command / entry.pre) streams into the
+	// transcript area while the command runs, then is replaced by the
+	// final user-context message when it finishes.
+	if i.shellRunning && i.shellLive != "" {
+		for _, line := range strings.Split(strings.TrimRight(i.shellLive, "\n"), "\n") {
+			chat = append(chat, line)
+		}
+		chat = append(chat, "")
 	}
 
 	// Extension notes (notify / display) live just under the
@@ -2940,6 +2981,36 @@ func (i *Interactive) Submit(text string) {
 		return
 	}
 	i.startTurn(i.runCtx, text)
+}
+
+// completeStartupPre applies deferred InitialInput after entry.pre finishes.
+// When AutoSubmitInitial was set, the deferred prompt is submitted; otherwise
+// it only pre-fills the editor (CLI-supplied prompts).
+func (i *Interactive) completeStartupPre() {
+	i.mu.Lock()
+	if !i.awaitingStartupPre {
+		i.mu.Unlock()
+		return
+	}
+	i.awaitingStartupPre = false
+	deferred := i.deferredInitialInput
+	auto := i.autoSubmitDeferred
+	i.deferredInitialInput = ""
+	i.autoSubmitDeferred = false
+	onDone := i.cfg.OnStartupPreDone
+	i.mu.Unlock()
+	if onDone != nil {
+		onDone()
+	}
+	if deferred == "" {
+		return
+	}
+	if auto {
+		i.Submit(deferred)
+		return
+	}
+	i.ed.SetValue(deferred)
+	i.invalidate()
 }
 
 // ApplyChangedCWD is called by hosts after a successful /cd hook that do
@@ -5366,6 +5437,15 @@ func (i *Interactive) runCompact(parent context.Context, auto bool) {
 // treated as not an escape so it falls through to the normal prompt
 // path rather than running an empty shell.
 func shellEscapeCommand(text string) (string, bool) {
+	return ShellEscapeCommand(text)
+}
+
+// ShellEscapeCommand reports whether text is a "!command" shell
+// escape and, if so, returns the command with the leading '!' (and
+// surrounding whitespace) stripped. A bare "!" with no command is
+// treated as not an escape so it falls through to the normal prompt
+// path rather than running an empty shell.
+func ShellEscapeCommand(text string) (string, bool) {
 	trimmed := strings.TrimLeft(text, " \t")
 	if !strings.HasPrefix(trimmed, "!") {
 		return "", false
@@ -5401,6 +5481,7 @@ func (i *Interactive) startShellEscape(parent context.Context, cmd string) {
 	ctx, cancel := context.WithCancel(parent)
 	i.busy = true
 	i.shellRunning = true
+	i.shellLive = "$ " + cmd + "\n\n"
 	i.cancelTurn = cancel
 	i.statusErr = ""
 	i.statusOK = ""
@@ -5421,7 +5502,13 @@ func (i *Interactive) startShellEscape(parent context.Context, cmd string) {
 		defer cancel()
 		raw, _ := json.Marshal(map[string]any{"command": cmd})
 		bash := &tools.BashTool{CWD: cwd, Sandbox: sandbox}
-		res, err := bash.Execute(ctx, raw, nil)
+		progress := func(chunk string) {
+			i.mu.Lock()
+			i.shellLive += chunk
+			i.mu.Unlock()
+			i.invalidate()
+		}
+		res, err := bash.Execute(ctx, raw, progress)
 
 		var out string
 		if err != nil {
@@ -5443,8 +5530,10 @@ func (i *Interactive) startShellEscape(parent context.Context, cmd string) {
 
 		i.mu.Lock()
 		i.shellRunning = false
+		i.shellLive = ""
 		i.busy = false
 		i.cancelTurn = nil
+		awaitingPre := i.awaitingStartupPre
 		if failed {
 			if cancelled {
 				i.statusErr = "shell command cancelled"
@@ -5458,6 +5547,9 @@ func (i *Interactive) startShellEscape(parent context.Context, cmd string) {
 		}
 		i.mu.Unlock()
 		i.invalidate()
+		if awaitingPre {
+			i.completeStartupPre()
+		}
 	}()
 }
 
@@ -5471,6 +5563,14 @@ func (i *Interactive) startTurnWithImages(parent context.Context, prompt string,
 
 func (i *Interactive) startTurnRequest(parent context.Context, prompt string, images []provider.ImageBlock, overflowRecoveryAttempted bool) {
 	if i.agent == nil {
+		// Text startup pre cannot run without credentials; continue so
+		// deferred InitialInput (pre-fill or auto-submit) still applies.
+		i.mu.Lock()
+		awaitingPre := i.awaitingStartupPre
+		i.mu.Unlock()
+		if awaitingPre {
+			i.completeStartupPre()
+		}
 		return
 	}
 	// Pre-turn safety: if the most recent context measurement is
@@ -5612,10 +5712,11 @@ func (i *Interactive) startTurnRequest(parent context.Context, prompt string, im
 			flush()
 		}
 		i.mu.Lock()
+		awaitingPre := i.awaitingStartupPre
 		// Pop the next queued message, if any, and relaunch.
 		var next string
 		var hasNext bool
-		if len(i.queued) > 0 && ctx.Err() == nil && err == nil {
+		if !awaitingPre && len(i.queued) > 0 && ctx.Err() == nil && err == nil {
 			next, i.queued = i.queued[0], i.queued[1:]
 			hasNext = true
 		}
@@ -5635,12 +5736,16 @@ func (i *Interactive) startTurnRequest(parent context.Context, prompt string, im
 		if i.agent != nil {
 			agentQueued = i.agent.QueuedMessageCount()
 		}
-		shouldAutoCompact := !hasNext && agentQueued == 0 && err == nil && ctx.Err() == nil && i.shouldAutoCompactLocked()
+		shouldAutoCompact := !awaitingPre && !hasNext && agentQueued == 0 && err == nil && ctx.Err() == nil && i.shouldAutoCompactLocked()
 		i.mu.Unlock()
 		i.invalidate()
 		parent := i.runCtx
 		if parent == nil {
 			parent = context.Background()
+		}
+		if awaitingPre {
+			i.completeStartupPre()
+			return
 		}
 		switch {
 		case hasNext:

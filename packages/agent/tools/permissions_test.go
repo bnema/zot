@@ -63,3 +63,23 @@ func TestBashAllowlistRejectsShellEscapes(t *testing.T) {
 		t.Fatal("unlisted command was allowed")
 	}
 }
+
+func TestBashModeNoneDenies(t *testing.T) {
+	var p PermissionSet
+	p.Bash.Mode = "none"
+	s := NewSandbox(t.TempDir())
+	s.SetPermissions(&p)
+	if err := s.CheckBashPermission("echo ok"); err == nil {
+		t.Fatal("none mode allowed bash")
+	}
+}
+
+func TestBashModeAskAllows(t *testing.T) {
+	var p PermissionSet
+	p.Bash.Mode = "ask"
+	s := NewSandbox(t.TempDir())
+	s.SetPermissions(&p)
+	if err := s.CheckBashPermission("rm -rf /tmp/x"); err != nil {
+		t.Fatalf("ask mode rejected command: %v", err)
+	}
+}

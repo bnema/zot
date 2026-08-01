@@ -1,0 +1,107 @@
+package modes
+
+import (
+	"context"
+	"runtime"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/patriceckhart/zot/packages/core"
+)
+
+func TestCompleteStartupPrePrefillsEditor(t *testing.T) {
+	i := NewInteractive(InteractiveConfig{})
+	i.awaitingStartupPre = true
+	i.deferredInitialInput = "Bom dia!"
+	i.autoSubmitDeferred = false
+	i.completeStartupPre()
+	if got := i.ed.Value(); got != "Bom dia!" {
+		t.Fatalf("editor = %q, want Bom dia!", got)
+	}
+	i.mu.Lock()
+	awaiting := i.awaitingStartupPre
+	i.mu.Unlock()
+	if awaiting {
+		t.Fatal("awaitingStartupPre still set after completeStartupPre")
+	}
+}
+
+func TestCompleteStartupPreCallsOnDone(t *testing.T) {
+	called := false
+	i := NewInteractive(InteractiveConfig{
+		OnStartupPreDone: func() { called = true },
+	})
+	i.awaitingStartupPre = true
+	i.completeStartupPre()
+	if !called {
+		t.Fatal("OnStartupPreDone was not called")
+	}
+}
+
+func TestStartupPreShellThenPrefill(t *testing.T) {
+	agent := core.NewAgent(nil, "", "", nil)
+	i := NewInteractive(InteractiveConfig{Agent: agent, CWD: t.TempDir()})
+	i.runCtx = context.Background()
+	i.awaitingStartupPre = true
+	i.deferredInitialInput = "after-pre"
+	i.autoSubmitDeferred = false
+
+	cmd := "printf zot-pre"
+	if runtime.GOOS == "windows" {
+		cmd = "echo zot-pre"
+	}
+	i.startShellEscape(context.Background(), cmd)
+
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		i.mu.Lock()
+		running := i.shellRunning
+		awaiting := i.awaitingStartupPre
+		i.mu.Unlock()
+		if !running && !awaiting {
+			if got := i.ed.Value(); got != "after-pre" {
+				t.Fatalf("editor = %q, want after-pre", got)
+			}
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("startup pre did not complete and prefill the editor")
+}
+
+func TestStartupPreShellThenAutoSubmitShell(t *testing.T) {
+	agent := core.NewAgent(nil, "", "", nil)
+	i := NewInteractive(InteractiveConfig{Agent: agent, CWD: t.TempDir()})
+	i.runCtx = context.Background()
+	i.awaitingStartupPre = true
+	i.deferredInitialInput = "!printf zot-default"
+	if runtime.GOOS == "windows" {
+		i.deferredInitialInput = "!echo zot-default"
+	}
+	i.autoSubmitDeferred = true
+
+	cmd := "printf zot-pre"
+	if runtime.GOOS == "windows" {
+		cmd = "echo zot-pre"
+	}
+	i.startShellEscape(context.Background(), cmd)
+
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		messages := agent.Messages()
+		i.mu.Lock()
+		running := i.shellRunning || i.busy
+		awaiting := i.awaitingStartupPre
+		i.mu.Unlock()
+		if len(messages) >= 2 && !running && !awaiting {
+			joined := userMessageText(messages[0]) + "\n" + userMessageText(messages[1])
+			if !strings.Contains(joined, "zot-pre") || !strings.Contains(joined, "zot-default") {
+				t.Fatalf("context = %q, want both pre and default shell output", joined)
+			}
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("startup pre did not auto-submit the deferred prompt")
+}
