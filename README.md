@@ -234,6 +234,7 @@ When the sandbox is on (see `/jail`), all four tools refuse paths outside the se
 
 - **Interactive** (default): chat TUI with streaming output, spinner, cost meter, slash commands.
 - **Print**: `zot -p "prompt"` runs the agent to completion and writes only the final assistant text to stdout.
+- **Stream**: `zot --stream "prompt"` runs without the TUI and writes assistant text to stdout as it arrives. Tool activity goes to stderr.
 - **JSON**: `zot --json "prompt"` emits one JSON object per agent event to stdout, newline-delimited. The schema is documented in [docs/rpc.md](docs/rpc.md).
 - **RPC**: `zot rpc` runs as a long-lived child process; commands in on stdin, events and responses out on stdout, both as NDJSON. Designed for embedding zot in third-party apps written in any language. See [docs/rpc.md](docs/rpc.md) for the wire schema and `examples/rpc/{python,node,shell,go}` for working clients.
 

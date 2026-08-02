@@ -50,6 +50,7 @@ type ZotfileManifest struct {
 	} `json:"requirements"`
 	Entry struct {
 		Greeting      string  `json:"greeting"`
+		Pre           string  `json:"pre"`
 		DefaultPrompt *string `json:"default_prompt"`
 	} `json:"entry"`
 	ReplaceSystemPrompt bool `json:"replace_system_prompt"`
@@ -99,12 +100,19 @@ func runZotfileCommand(rawArgs []string, version string) (bool, error) {
 		if len(rawArgs) < 2 {
 			return true, fmt.Errorf("zot run requires a name, .zot file, directory, or GitHub URL")
 		}
-		ref := rawArgs[1]
-		rest := rawArgs[2:]
+		yes, remaining := peelLeadingYes(rawArgs[1:])
+		if len(remaining) < 1 {
+			return true, fmt.Errorf("zot run requires a name, .zot file, directory, or GitHub URL")
+		}
+		ref := remaining[0]
+		rest := remaining[1:]
 		args, err := ParseArgs(rest)
 		if err != nil {
 			PrintHelp(version)
 			return true, err
+		}
+		if yes {
+			args.Yes = true
 		}
 		return true, runLocalZotfile(ref, args, version)
 	default:
@@ -129,26 +137,32 @@ func runLocalZotfile(ref string, args Args, version string) error {
 		return err
 	}
 	perms := zf.Manifest.Permissions.Expand(args.CWD, agentData)
-	allowed, err := consentZotfile(zf, perms)
+	allowed, err := consentZotfile(zf, perms, args.Yes)
 	if err != nil {
 		return err
 	}
 	if !allowed {
 		return nil
 	}
-	agentPath := filepath.Join(zf.Dir, "AGENT.md")
-	agentPrompt, err := os.ReadFile(agentPath)
-	if err != nil {
-		return fmt.Errorf("read AGENT.md: %w", err)
-	}
 	if err := applyZotfileModelRequirements(&args, zf.Manifest); err != nil {
 		return err
 	}
-	if zf.Manifest.ReplaceSystemPrompt {
-		args.SystemPrompt = strings.TrimSpace(string(agentPrompt))
-	} else {
-		args.AppendSystemPrompt = append(args.AppendSystemPrompt, strings.TrimSpace(string(agentPrompt)))
+	agentPath := filepath.Join(zf.Dir, "AGENT.md")
+	agentPrompt, err := os.ReadFile(agentPath)
+	switch {
+	case err == nil:
+		text := strings.TrimSpace(string(agentPrompt))
+		if zf.Manifest.ReplaceSystemPrompt {
+			args.SystemPrompt = text
+		} else {
+			args.AppendSystemPrompt = append(args.AppendSystemPrompt, text)
+		}
+	case os.IsNotExist(err):
+		// AGENT.md is optional; missing file leaves the system prompt unchanged.
+	default:
+		return fmt.Errorf("read AGENT.md: %w", err)
 	}
+	args.StartupPre = strings.TrimSpace(zf.Manifest.Entry.Pre)
 	if args.Prompt == "" && zf.Manifest.Entry.DefaultPrompt != nil {
 		args.Prompt = *zf.Manifest.Entry.DefaultPrompt
 	}
@@ -397,7 +411,12 @@ func resolveZotfileRef(ref string) (string, error) {
 		return officialZotfileCollection + "/" + parts[0], nil
 	}
 	if len(parts) == 2 && validZotfileCollectionSegment(parts[0]) && validZotfileCollectionSegment(parts[1]) {
-		return "https://github.com/patriceckhart/" + parts[0] + "/" + parts[1], nil
+		// Preserve the original official-collection shorthand, where
+		// agents/<name> selects a subdirectory of patriceckhart/agents.
+		if parts[0] == "agents" {
+			return officialZotfileCollection + "/" + parts[1], nil
+		}
+		return "https://github.com/" + parts[0] + "/" + parts[1], nil
 	}
 	return ref, nil
 }
@@ -566,9 +585,17 @@ func readZotManifest(dir string) (ZotfileManifest, error) {
 }
 
 func validateZotfileDir(dir string) error {
-	st, err := os.Stat(filepath.Join(dir, "AGENT.md"))
-	if err != nil || !st.Mode().IsRegular() {
-		return fmt.Errorf("AGENT.md is required")
+	agentPath := filepath.Join(dir, "AGENT.md")
+	st, err := os.Stat(agentPath)
+	switch {
+	case err == nil:
+		if !st.Mode().IsRegular() {
+			return fmt.Errorf("AGENT.md must be a regular file")
+		}
+	case os.IsNotExist(err):
+		// AGENT.md is optional.
+	default:
+		return fmt.Errorf("stat AGENT.md: %w", err)
 	}
 	if exts := bundledExtensionDirs(filepath.Join(dir, "extensions")); len(exts) > 0 {
 		return fmt.Errorf("bundled executable extensions are not supported by the local runtime: they cannot yet be confined to manifest permissions")
@@ -755,9 +782,23 @@ func checkZotfileRequirements(zf zotfileLoaded, version string) error {
 
 var execLookPath = exec.LookPath
 
-func consentZotfile(zf zotfileLoaded, perms tools.PermissionSet) (bool, error) {
-	if os.Getenv("ZOT_AGENT_CONSENT") == "1" {
-		return true, nil
+func peelLeadingYes(args []string) (yes bool, rest []string) {
+	rest = args
+	for len(rest) > 0 {
+		switch rest[0] {
+		case "-y", "--yes":
+			yes = true
+			rest = rest[1:]
+		default:
+			return yes, rest
+		}
+	}
+	return yes, rest
+}
+
+func consentZotfile(zf zotfileLoaded, perms tools.PermissionSet, autoYes bool) (bool, error) {
+	if autoYes || os.Getenv("ZOT_AGENT_CONSENT") == "1" {
+		return acceptZotfileConsent(zf, perms)
 	}
 	// "ask" deliberately requires approval on every launch. Other consent
 	// is durable only for this exact artifact digest, so any package change
@@ -776,15 +817,23 @@ func consentZotfile(zf zotfileLoaded, perms tools.PermissionSet) (bool, error) {
 	}
 	fmt.Print(formatZotfileConsent(zf, perms, th, interactive))
 	if !interactive {
-		return false, fmt.Errorf("refusing to run without interactive consent; set ZOT_AGENT_CONSENT=1 to allow")
+		return false, fmt.Errorf("refusing to run without interactive consent; pass -y/--yes or set ZOT_AGENT_CONSENT=1 to allow")
 	}
 	allowed, err := readZotfileConsent(os.Stdin, os.Stdout, th)
 	if err != nil || !allowed {
 		return allowed, err
 	}
+	return acceptZotfileConsent(zf, perms)
+}
+
+// acceptZotfileConsent records durable consent when the bash mode is not
+// "ask". Ask mode never caches receipts so every launch re-prompts unless
+// -y / ZOT_AGENT_CONSENT is used for that run.
+func acceptZotfileConsent(zf zotfileLoaded, perms tools.PermissionSet) (bool, error) {
 	if strings.ToLower(strings.TrimSpace(perms.Bash.Mode)) == "ask" {
 		return true, nil
 	}
+	consentPath := filepath.Join(ZotHome(), "agents", safeAgentName(zf.Manifest.Name), "consents", zf.Digest+".json")
 	if err := os.MkdirAll(filepath.Dir(consentPath), 0o700); err != nil {
 		return false, fmt.Errorf("save agent consent: %w", err)
 	}

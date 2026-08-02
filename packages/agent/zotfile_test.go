@@ -93,6 +93,33 @@ func writeTestZotfile(t *testing.T, manifest string) string {
 	return dir
 }
 
+func TestLoadZotfileAllowsMissingAgentMD(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "manifest.json"), []byte(`{"zotfile":1,"name":"test"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	zf, cleanup, err := loadZotfile(dir)
+	if cleanup != nil {
+		defer cleanup()
+	}
+	if err != nil {
+		t.Fatalf("load without AGENT.md: %v", err)
+	}
+	if zf.Manifest.Name != "test" {
+		t.Fatalf("name = %q, want test", zf.Manifest.Name)
+	}
+}
+
+func TestValidateZotfileDirRejectsAgentMDDirectory(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(dir, "AGENT.md"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := validateZotfileDir(dir); err == nil || !strings.Contains(err.Error(), "regular file") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 func TestLoadZotfileRejectsUnenforcedPermissions(t *testing.T) {
 	for _, field := range []string{
 		`"net":{"allow":["example.com"]}`,
@@ -102,6 +129,27 @@ func TestLoadZotfileRejectsUnenforcedPermissions(t *testing.T) {
 		if _, _, err := loadZotfile(dir); err == nil {
 			t.Fatalf("manifest with %s was accepted", field)
 		}
+	}
+}
+
+func TestLoadZotfileBashModes(t *testing.T) {
+	for _, mode := range []string{"none", "ask", "allowlist"} {
+		manifest := `{"zotfile":1,"name":"test","permissions":{"bash":{"mode":"` + mode + `"}}}`
+		if mode == "allowlist" {
+			manifest = `{"zotfile":1,"name":"test","permissions":{"bash":{"mode":"allowlist","allow":["git"]}}}`
+		}
+		dir := writeTestZotfile(t, manifest)
+		if _, _, err := loadZotfile(dir); err != nil {
+			t.Fatalf("mode %q rejected: %v", mode, err)
+		}
+	}
+	dir := writeTestZotfile(t, `{"zotfile":1,"name":"test","permissions":{"bash":{"mode":"all"}}}`)
+	if _, _, err := loadZotfile(dir); err == nil || !strings.Contains(err.Error(), "unsupported bash permission mode") {
+		t.Fatalf("unexpected error for all mode: %v", err)
+	}
+	dir = writeTestZotfile(t, `{"zotfile":1,"name":"test","permissions":{"bash":{"mode":"everything"}}}`)
+	if _, _, err := loadZotfile(dir); err == nil || !strings.Contains(err.Error(), "unsupported bash permission mode") {
+		t.Fatalf("unexpected error for unknown mode: %v", err)
 	}
 }
 
@@ -132,8 +180,9 @@ func TestResolveZotfileRefUsesLocalFirstThenOfficialCollection(t *testing.T) {
 		{"packed-agent", "packed-agent.zot"},
 		{"remote-agent", officialZotfileCollection + "/remote-agent"},
 		{"missing.zot", "missing.zot"},
-		{"agents/remote-agent", "https://github.com/patriceckhart/agents/remote-agent"},
-		{`agents\remote-agent`, "https://github.com/patriceckhart/agents/remote-agent"},
+		{"agents/remote-agent", officialZotfileCollection + "/remote-agent"},
+		{`agents\remote-agent`, officialZotfileCollection + "/remote-agent"},
+		{"frkr/zot-archify", "https://github.com/frkr/zot-archify"},
 		{"./missing-agent", "./missing-agent"},
 		{"Remote-Agent", "Remote-Agent"},
 		{"https://github.com/acme/agents/example", "https://github.com/acme/agents/example"},
@@ -305,5 +354,55 @@ func TestPermissionSummaryShowsDeniedScopes(t *testing.T) {
 	got := permissionSummary(tools.PermissionSet{})
 	if !strings.Contains(got, "fs read: none") || !strings.Contains(got, "fs write: none") {
 		t.Fatalf("summary did not show denied scopes:\n%s", got)
+	}
+}
+
+func TestPeelLeadingYes(t *testing.T) {
+	yes, rest := peelLeadingYes([]string{"-y", "--yes", "agent", "-y"})
+	if !yes {
+		t.Fatal("expected yes")
+	}
+	if len(rest) != 2 || rest[0] != "agent" || rest[1] != "-y" {
+		t.Fatalf("rest = %v", rest)
+	}
+	yes, rest = peelLeadingYes([]string{"agent", "-y"})
+	if yes || len(rest) != 2 {
+		t.Fatalf("yes=%v rest=%v", yes, rest)
+	}
+}
+
+func TestConsentZotfileAutoYesWritesReceipt(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("ZOT_HOME", home)
+	zf := zotfileLoaded{Digest: "abc123", Manifest: ZotfileManifest{Name: "demo", Version: "1.0.0"}}
+	var perms tools.PermissionSet
+	perms.Bash.Mode = "none"
+	allowed, err := consentZotfile(zf, perms, true)
+	if err != nil || !allowed {
+		t.Fatalf("auto yes: allowed=%v err=%v", allowed, err)
+	}
+	path := filepath.Join(home, "agents", "demo", "consents", "abc123.json")
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("consent receipt missing: %v", err)
+	}
+	// Second call without -y should use the receipt.
+	allowed, err = consentZotfile(zf, perms, false)
+	if err != nil || !allowed {
+		t.Fatalf("cached consent: allowed=%v err=%v", allowed, err)
+	}
+}
+
+func TestConsentZotfileAutoYesAskDoesNotCache(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("ZOT_HOME", home)
+	zf := zotfileLoaded{Digest: "askdig", Manifest: ZotfileManifest{Name: "ask-agent", Version: "1.0.0"}}
+	var perms tools.PermissionSet
+	perms.Bash.Mode = "ask"
+	if _, err := consentZotfile(zf, perms, true); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(home, "agents", "ask-agent", "consents", "askdig.json")
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("ask mode should not cache consent, err=%v", err)
 	}
 }

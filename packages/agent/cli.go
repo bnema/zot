@@ -248,6 +248,8 @@ func runWithArgs(args Args, version string) error {
 	switch args.Mode {
 	case ModePrint:
 		return runPrintMode(ctx, args, version)
+	case ModeStream:
+		return runStreamMode(ctx, args, version)
 	case ModeJSON:
 		return runJSONMode(ctx, args, version)
 	case ModeRPC:
@@ -354,9 +356,95 @@ func runPrintMode(ctx context.Context, args Args, version string) error {
 	}
 
 	start := len(ag.Messages())
+	if err := runZotfileStartupPre(ctx, args.StartupPre, r.CWD, r.Sandbox, ag, nil, os.Stderr); err != nil {
+		return err
+	}
+	reloadResourcesAfterStartupPre(ctx, args, extMgr, r.Sandbox, ag)
 	err = modes.RunPrint(ctx, ag, prompt, nil, os.Stdout)
 	WriteNewTranscript(ag, sess, start)
 	return err
+}
+
+func runStreamMode(ctx context.Context, args Args, version string) error {
+	if args.NoYolo {
+		fmt.Fprintln(os.Stderr, "warning: --no-yolo has no effect in stream mode (no interactive prompt available); tools will run without confirmation")
+	}
+	r, err := Resolve(args, true)
+	if err != nil {
+		return err
+	}
+	extMgr, stopExt := setupNonInteractiveExtensions(ctx, args, &r, version)
+	defer stopExt()
+
+	ag := r.NewAgent()
+	wireNonInteractiveAgentExtHooks(ctx, ag, extMgr)
+	sess, _ := openOrCreateSession(args, r, ag, version)
+	defer sess.Close()
+
+	prompt := args.Prompt
+	if prompt == "" {
+		piped, _ := readAllStdin()
+		prompt = strings.TrimSpace(piped)
+	}
+	if prompt == "" {
+		return fmt.Errorf("stream mode requires a prompt (arg or stdin)")
+	}
+
+	start := len(ag.Messages())
+	preSink, finishPre := newStreamTextSink(os.Stdout)
+	if err := runZotfileStartupPre(ctx, args.StartupPre, r.CWD, r.Sandbox, ag, preSink, os.Stderr); err != nil {
+		finishPre()
+		return err
+	}
+	finishPre()
+	reloadResourcesAfterStartupPre(ctx, args, extMgr, r.Sandbox, ag)
+	err = modes.RunStream(ctx, ag, prompt, nil, os.Stdout)
+	WriteNewTranscript(ag, sess, start)
+	return err
+}
+
+func newStreamTextSink(out io.Writer) (func(core.AgentEvent), func()) {
+	var streamed, wroteText, lastWasNL bool
+	writeText := func(text string) {
+		if text == "" {
+			return
+		}
+		_, _ = fmt.Fprint(out, text)
+		if syncer, ok := out.(interface{ Sync() error }); ok {
+			_ = syncer.Sync()
+		}
+		wroteText = true
+		lastWasNL = strings.HasSuffix(text, "\n")
+	}
+	sink := func(ev core.AgentEvent) {
+		switch e := ev.(type) {
+		case core.EvAssistantStart:
+			streamed = false
+		case core.EvTextDelta:
+			streamed = true
+			writeText(e.Delta)
+		case core.EvAssistantMessage:
+			if streamed {
+				return
+			}
+			var text strings.Builder
+			for _, content := range e.Message.Content {
+				if block, ok := content.(provider.TextBlock); ok {
+					if text.Len() > 0 {
+						text.WriteString("\n")
+					}
+					text.WriteString(block.Text)
+				}
+			}
+			writeText(text.String())
+		}
+	}
+	finish := func() {
+		if wroteText && !lastWasNL {
+			writeText("\n")
+		}
+	}
+	return sink, finish
 }
 
 func runJSONMode(ctx context.Context, args Args, version string) error {
@@ -385,9 +473,117 @@ func runJSONMode(ctx context.Context, args Args, version string) error {
 	}
 
 	start := len(ag.Messages())
+	enc := json.NewEncoder(os.Stdout)
+	preSink := func(ev core.AgentEvent) {
+		_ = enc.Encode(modes.EventToJSON(ev))
+	}
+	if err := runZotfileStartupPre(ctx, args.StartupPre, r.CWD, r.Sandbox, ag, preSink, os.Stderr); err != nil {
+		_ = enc.Encode(map[string]any{"type": "error", "message": err.Error()})
+		return err
+	}
+	reloadResourcesAfterStartupPre(ctx, args, extMgr, r.Sandbox, ag)
 	err = modes.RunJSON(ctx, ag, prompt, nil, os.Stdout)
 	WriteNewTranscript(ag, sess, start)
 	return err
+}
+
+// runZotfileStartupPre runs entry.pre before the main non-interactive prompt.
+// "!command" values execute via BashTool; other values are sent as an agent turn.
+// shellOut receives live shell chunks (typically os.Stderr); sink receives
+// agent events for plain-text pre (stream mode wires a live text sink).
+func runZotfileStartupPre(ctx context.Context, pre, cwd string, sandbox *tools.Sandbox, ag *core.Agent, sink func(core.AgentEvent), shellOut io.Writer) error {
+	pre = strings.TrimSpace(pre)
+	if pre == "" {
+		return nil
+	}
+	if cmd, ok := modes.ShellEscapeCommand(pre); ok {
+		raw, err := json.Marshal(map[string]any{"command": cmd})
+		if err != nil {
+			return err
+		}
+		if shellOut != nil {
+			fmt.Fprintf(shellOut, "$ %s\n", cmd)
+			if f, ok := shellOut.(interface{ Sync() error }); ok {
+				_ = f.Sync()
+			}
+		}
+		progress := func(chunk string) {
+			if shellOut == nil || chunk == "" {
+				return
+			}
+			fmt.Fprint(shellOut, chunk)
+			if f, ok := shellOut.(interface{ Sync() error }); ok {
+				_ = f.Sync()
+			}
+		}
+		bash := &tools.BashTool{CWD: cwd, Sandbox: sandbox}
+		res, err := bash.Execute(ctx, raw, progress)
+		if err != nil {
+			return fmt.Errorf("zotfile entry.pre: %w", err)
+		}
+		if res.IsError {
+			var sb strings.Builder
+			for _, c := range res.Content {
+				if tb, ok := c.(provider.TextBlock); ok {
+					sb.WriteString(tb.Text)
+				}
+			}
+			msg := strings.TrimSpace(sb.String())
+			if msg == "" {
+				msg = "command failed"
+			}
+			return fmt.Errorf("zotfile entry.pre: %s", msg)
+		}
+		return nil
+	}
+	if ag == nil {
+		return fmt.Errorf("zotfile entry.pre requires an agent for non-shell prompts")
+	}
+	if sink == nil {
+		sink = func(core.AgentEvent) {}
+	}
+	return ag.Prompt(ctx, pre, nil, sink)
+}
+
+// refreshAgentToolsAndPrompt re-resolves tools (including rediscovered
+// skills and currently loaded extension tools) and updates the live
+// agent's registry and system prompt. Used after /reload-ext and after
+// zotfile entry.pre installs new skills or extensions.
+// mutateRegistry, if non-nil, can inject session-specific tools (e.g. swarm_spawn).
+func refreshAgentToolsAndPrompt(args Args, sharedSandbox *tools.Sandbox, extToolAdapter ExtensionToolSource, ag *core.Agent, mutateRegistry func(core.Registry) core.Registry) {
+	if ag == nil {
+		return
+	}
+	resolved, err := Resolve(args, true)
+	if err != nil {
+		return
+	}
+	if sharedSandbox != nil {
+		resolved.UseSandbox(sharedSandbox)
+	}
+	if extToolAdapter != nil {
+		resolved.MergeExtensionTools(extToolAdapter)
+	}
+	reg := resolved.ToolRegistry
+	if mutateRegistry != nil {
+		reg = mutateRegistry(reg)
+	}
+	ag.SetTools(reg)
+	ag.System = resolved.SystemPrompt
+}
+
+// reloadResourcesAfterStartupPre reloads extensions (if any) and
+// refreshes the agent tool registry + system prompt so skills/extensions
+// installed by entry.pre are visible to the following turn.
+func reloadResourcesAfterStartupPre(ctx context.Context, args Args, extMgr *extensions.Manager, sharedSandbox *tools.Sandbox, ag *core.Agent) {
+	if strings.TrimSpace(args.StartupPre) == "" || ag == nil {
+		return
+	}
+	adapter := &extToolAdapter{mgr: extMgr}
+	if extMgr != nil {
+		_ = extMgr.Reload(ctx, 2*time.Second)
+	}
+	refreshAgentToolsAndPrompt(args, sharedSandbox, adapter, ag, nil)
 }
 
 // ---- interactive mode: opens the TUI even without credentials ----
@@ -653,18 +849,11 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 	// /model swap since spawn, so re-read the live `ag` on each
 	// invocation.
 	extMgr.SetOnReload(func() {
-		current := ag
+		current := liveInteractiveAgent(iv, ag)
 		if current == nil {
 			return
 		}
-		resolved, err := Resolve(args, true)
-		if err != nil {
-			return
-		}
-		resolved.UseSandbox(sharedSandbox)
-		resolved.MergeExtensionTools(extToolAdapter)
-		injectSwarmSpawn(resolved.ToolRegistry)
-		current.SetTools(resolved.ToolRegistry)
+		refreshAgentToolsAndPrompt(args, sharedSandbox, extToolAdapter, current, injectSwarmSpawn)
 	})
 
 	// Fire session_start once we know the manager's running.
@@ -1013,47 +1202,59 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 	}
 
 	iv = modes.NewInteractive(modes.InteractiveConfig{
-		Terminal:                   term,
-		Theme:                      theme,
-		InlineImagesEnabled:        initialCfg.InlineImagesEnabled,
-		AutoSwarmEnabled:           initialCfg.AutoSwarmEnabled,
-		AutoCompactThreshold:       initialCfg.AutoCompactThreshold,
-		JailByDefault:              initialCfg.JailByDefault,
-		QuickModelShortcuts:        quickModelShortcuts,
-		RecursiveFileSuggest:       initialCfg.RecursiveFileSuggest,
-		RespectGitignore:           initialCfg.RespectGitignore,
-		CompactMode:                initialCfg.CompactMode,
-		TUIInputStyle:              initialCfg.TUIInputStyle,
-		TUIStatusPosition:          initialCfg.TUIStatusPosition,
-		TUIWorkingPosition:         initialCfg.TUIWorkingPosition,
-		ThemeName:                  initialCfg.Theme,
-		FlatTools:                  initialCfg.FlatToolRender(),
-		CompactUser:                initialCfg.CompactUserInput(),
-		ExtensionThemes:            extMgr.ThemeOptions,
-		AutoSwarmSystemAddendum:    AutoSwarmSystemAddendum,
-		SettingsStore:              configSettingsStore{},
-		Model:                      r.Model,
-		Provider:                   r.Provider,
-		AuthMethod:                 r.AuthMethod,
-		BaseURL:                    r.BaseURL,
-		Reasoning:                  r.Reasoning,
-		SystemPrompt:               r.SystemPrompt,
-		Tools:                      r.ToolRegistry,
-		MaxSteps:                   r.MaxSteps,
-		CWD:                        r.CWD,
-		StartupAgentName:           args.AgentName,
-		StartupContextPaths:        instructionContextPaths(r.ContextFiles),
-		StartupExtensionNames:      startupExtensionNames(extMgr.All()),
-		StartupExtensionErrors:     startupExtensionErrors,
-		StartupSkillNames:          startupSkillNames(startupSkills),
-		ShowInstructionsAtStartup:  initialCfg.ShowInstructionsAtStartup,
-		ZotHome:                    ZotHome(),
-		SessionsRoot:               agentSessionsRoot(ZotHome(), args),
-		Version:                    version,
-		UpdateInfoChan:             updateCh,
-		Sandbox:                    sharedSandbox,
-		Agent:                      ag,
-		InitialInput:               args.Prompt,
+		Terminal:                  term,
+		Theme:                     theme,
+		InlineImagesEnabled:       initialCfg.InlineImagesEnabled,
+		AutoSwarmEnabled:          initialCfg.AutoSwarmEnabled,
+		AutoCompactThreshold:      initialCfg.AutoCompactThreshold,
+		JailByDefault:             initialCfg.JailByDefault,
+		QuickModelShortcuts:       quickModelShortcuts,
+		RecursiveFileSuggest:      initialCfg.RecursiveFileSuggest,
+		RespectGitignore:          initialCfg.RespectGitignore,
+		CompactMode:               initialCfg.CompactMode,
+		TUIInputStyle:             initialCfg.TUIInputStyle,
+		TUIStatusPosition:         initialCfg.TUIStatusPosition,
+		TUIWorkingPosition:        initialCfg.TUIWorkingPosition,
+		ThemeName:                 initialCfg.Theme,
+		FlatTools:                 initialCfg.FlatToolRender(),
+		CompactUser:               initialCfg.CompactUserInput(),
+		ExtensionThemes:           extMgr.ThemeOptions,
+		AutoSwarmSystemAddendum:   AutoSwarmSystemAddendum,
+		SettingsStore:             configSettingsStore{},
+		Model:                     r.Model,
+		Provider:                  r.Provider,
+		AuthMethod:                r.AuthMethod,
+		BaseURL:                   r.BaseURL,
+		Reasoning:                 r.Reasoning,
+		SystemPrompt:              r.SystemPrompt,
+		Tools:                     r.ToolRegistry,
+		MaxSteps:                  r.MaxSteps,
+		CWD:                       r.CWD,
+		StartupAgentName:          args.AgentName,
+		StartupContextPaths:       instructionContextPaths(r.ContextFiles),
+		StartupExtensionNames:     startupExtensionNames(extMgr.All()),
+		StartupExtensionErrors:    startupExtensionErrors,
+		StartupSkillNames:         startupSkillNames(startupSkills),
+		ShowInstructionsAtStartup: initialCfg.ShowInstructionsAtStartup,
+		ZotHome:                   ZotHome(),
+		SessionsRoot:              agentSessionsRoot(ZotHome(), args),
+		Version:                   version,
+		UpdateInfoChan:            updateCh,
+		Sandbox:                   sharedSandbox,
+		Agent:                     ag,
+		InitialInput:              args.Prompt,
+		StartupPre:                args.StartupPre,
+		OnStartupPreDone: func() {
+			// entry.pre often installs skills/extensions; rediscover them
+			// before the user starts a model turn.
+			current := liveInteractiveAgent(iv, ag)
+			if extMgr != nil {
+				_ = extMgr.Reload(context.Background(), 2*time.Second)
+			}
+			if current != nil {
+				refreshAgentToolsAndPrompt(args, sharedSandbox, extToolAdapter, current, injectSwarmSpawn)
+			}
+		},
 		AuthManager:                mgr,
 		LlamaCPPConfig:             ResolveLlamaCPPConfig,
 		RefreshLlamaCPPModels:      RefreshLlamaCPPModels,

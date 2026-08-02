@@ -17,3 +17,28 @@ func TestParseArgsTemperatureRejectsOutOfRange(t *testing.T) {
 		t.Fatal("ParseArgs accepted out-of-range temperature")
 	}
 }
+
+func TestParseArgsYes(t *testing.T) {
+	for _, flag := range []string{"-y", "--yes"} {
+		args, err := ParseArgs([]string{flag, "--print", "hi"})
+		if err != nil {
+			t.Fatalf("ParseArgs(%q): %v", flag, err)
+		}
+		if !args.Yes {
+			t.Fatalf("ParseArgs(%q): Yes = false", flag)
+		}
+		if args.Mode != ModePrint || args.Prompt != "hi" {
+			t.Fatalf("ParseArgs(%q): Mode=%q Prompt=%q", flag, args.Mode, args.Prompt)
+		}
+	}
+}
+
+func TestParseArgsStream(t *testing.T) {
+	args, err := ParseArgs([]string{"--stream", "hi"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if args.Mode != ModeStream || args.Prompt != "hi" {
+		t.Fatalf("Mode=%q Prompt=%q", args.Mode, args.Prompt)
+	}
+}
