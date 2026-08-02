@@ -401,6 +401,7 @@ type Interactive struct {
 	busy             bool
 	dirty            chan struct{}
 	modelRefresh     chan modelRefreshResult
+	startupPreDone   chan startupPreResult
 	cancelTurn       context.CancelFunc
 	scrollOffset     int // rows from the bottom; 0 = pinned to latest
 	prevScrollOffset int // last value redraw snapped against; tracks intent
@@ -584,6 +585,11 @@ const initialResumeTailLimit = 80
 // reveal that would feel jerky.
 const resumeTailExpandStep = 80
 
+type startupPreResult struct {
+	deferred   string
+	autoSubmit bool
+}
+
 // NewInteractive constructs an Interactive from cfg.
 func NewInteractive(cfg InteractiveConfig) *Interactive {
 	renderer := tui.NewRenderer(cfg.Terminal)
@@ -620,6 +626,7 @@ func NewInteractive(cfg InteractiveConfig) *Interactive {
 		toolGate:          map[string]int{},
 		dirty:             make(chan struct{}, 8),
 		modelRefresh:      make(chan modelRefreshResult, 1),
+		startupPreDone:    make(chan startupPreResult, 1),
 		dialog:            newLoginDialog(),
 		modelDialog:       newModelDialog(),
 		llamaDialog:       newLlamaDialog(),
@@ -883,6 +890,9 @@ func (i *Interactive) Run(ctx context.Context) error {
 			i.invalidate()
 		case result := <-i.modelRefresh:
 			i.openModelPickerAfterRefresh(result.err)
+			i.invalidate()
+		case result := <-i.startupPreDone:
+			i.applyStartupPreResult(result)
 			i.invalidate()
 		case info, ok := <-updates:
 			if ok && info.Available {
@@ -3002,15 +3012,24 @@ func (i *Interactive) completeStartupPre() {
 	if onDone != nil {
 		onDone()
 	}
-	if deferred == "" {
-		return
-	}
-	if auto {
-		i.Submit(deferred)
-		return
-	}
-	i.ed.SetValue(deferred)
+	i.startupPreDone <- startupPreResult{deferred: deferred, autoSubmit: auto}
 	i.invalidate()
+}
+
+// applyStartupPreResult runs on the TUI event loop so the editor remains
+// single-threaded. Input entered while resources were reloading wins over the
+// deferred prefill rather than being overwritten.
+func (i *Interactive) applyStartupPreResult(result startupPreResult) {
+	if result.deferred == "" {
+		return
+	}
+	if result.autoSubmit {
+		i.Submit(result.deferred)
+		return
+	}
+	if i.ed.IsEmpty() {
+		i.ed.SetValue(result.deferred)
+	}
 }
 
 // ApplyChangedCWD is called by hosts after a successful /cd hook that do
@@ -5526,7 +5545,9 @@ func (i *Interactive) startShellEscape(parent context.Context, cmd string) {
 			out += "\n\n[cancelled]"
 		}
 
-		i.agent.AppendUserContext(out, map[string]string{shellEscapeMetaKey: "true"})
+		if i.agent != nil {
+			i.agent.AppendUserContext(out, map[string]string{shellEscapeMetaKey: "true"})
+		}
 
 		i.mu.Lock()
 		i.shellRunning = false

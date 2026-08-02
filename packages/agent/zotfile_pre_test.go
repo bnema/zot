@@ -1,11 +1,30 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/patriceckhart/zot/packages/core"
+	"github.com/patriceckhart/zot/packages/provider"
 )
+
+func TestStreamTextSinkDoesNotRepeatCompletedMessage(t *testing.T) {
+	var out bytes.Buffer
+	sink, finish := newStreamTextSink(&out)
+	sink(core.EvAssistantStart{})
+	sink(core.EvTextDelta{Delta: "streamed"})
+	sink(core.EvAssistantMessage{Message: provider.Message{
+		Role:    provider.RoleAssistant,
+		Content: []provider.Content{provider.TextBlock{Text: "streamed"}},
+	}})
+	finish()
+	if got := out.String(); got != "streamed\n" {
+		t.Fatalf("output = %q, want streamed\\n", got)
+	}
+}
 
 func TestRunZotfileStartupPreShellFailure(t *testing.T) {
 	pre := "!false"

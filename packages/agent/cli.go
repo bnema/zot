@@ -391,35 +391,60 @@ func runStreamMode(ctx context.Context, args Args, version string) error {
 	}
 
 	start := len(ag.Messages())
-	preSink := func(ev core.AgentEvent) {
-		switch e := ev.(type) {
-		case core.EvTextDelta:
-			fmt.Fprint(os.Stdout, e.Delta)
-			_ = os.Stdout.Sync()
-		case core.EvAssistantMessage:
-			// Fallback when the provider does not emit deltas.
-			var sb strings.Builder
-			for _, c := range e.Message.Content {
-				if tb, ok := c.(provider.TextBlock); ok {
-					if sb.Len() > 0 {
-						sb.WriteString("\n")
-					}
-					sb.WriteString(tb.Text)
-				}
-			}
-			if sb.Len() > 0 {
-				fmt.Fprint(os.Stdout, sb.String())
-				_ = os.Stdout.Sync()
-			}
-		}
-	}
+	preSink, finishPre := newStreamTextSink(os.Stdout)
 	if err := runZotfileStartupPre(ctx, args.StartupPre, r.CWD, r.Sandbox, ag, preSink, os.Stderr); err != nil {
+		finishPre()
 		return err
 	}
+	finishPre()
 	reloadResourcesAfterStartupPre(ctx, args, extMgr, r.Sandbox, ag)
 	err = modes.RunStream(ctx, ag, prompt, nil, os.Stdout)
 	WriteNewTranscript(ag, sess, start)
 	return err
+}
+
+func newStreamTextSink(out io.Writer) (func(core.AgentEvent), func()) {
+	var streamed, wroteText, lastWasNL bool
+	writeText := func(text string) {
+		if text == "" {
+			return
+		}
+		_, _ = fmt.Fprint(out, text)
+		if syncer, ok := out.(interface{ Sync() error }); ok {
+			_ = syncer.Sync()
+		}
+		wroteText = true
+		lastWasNL = strings.HasSuffix(text, "\n")
+	}
+	sink := func(ev core.AgentEvent) {
+		switch e := ev.(type) {
+		case core.EvAssistantStart:
+			streamed = false
+		case core.EvTextDelta:
+			streamed = true
+			writeText(e.Delta)
+		case core.EvAssistantMessage:
+			if streamed {
+				return
+			}
+			var text strings.Builder
+			for _, content := range e.Message.Content {
+				if block, ok := content.(provider.TextBlock); ok {
+					if text.Len() > 0 {
+						text.WriteString("\n")
+					}
+					text.WriteString(block.Text)
+				}
+			}
+			writeText(text.String())
+		}
+	}
+	finish := func() {
+		if wroteText && !lastWasNL {
+			writeText("\n")
+		}
+	}
+	return sink, finish
 }
 
 func runJSONMode(ctx context.Context, args Args, version string) error {

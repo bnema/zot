@@ -524,11 +524,17 @@ Zot checks `./zot-maintenance` and `./zot-maintenance.zot` before falling back t
 A two-part name is treated as a GitHub `owner/repo` reference. Resolution is local-first, then the repository root:
 
 ```bash
+zot run frkr/zot-archify
+```
+
+The legacy `agents/<name>` form remains reserved for selecting an agent directory from the official `patriceckhart/agents` collection:
+
+```bash
 zot run agents/zot-maintenance
 zot run agents\zot-maintenance  # also accepted on Windows
 ```
 
-The first part is the repository and the second part is the agent directory. Both parts must use lowercase letters, digits, dots, hyphens, or underscores. Prefix a reference with `./`, use an absolute path, retain the `.zot` suffix, or provide a complete GitHub URL when remote fallback is not wanted.
+Both parts must use lowercase letters, digits, dots, hyphens, or underscores. Prefix a reference with `./`, use an absolute path, retain the `.zot` suffix, or provide a complete GitHub URL when remote fallback is not wanted.
 
 For GitHub, zot downloads the repository archive into a temporary directory, selects the requested agent subdirectory, validates it, runs it, and removes the downloaded files when the command exits:
 
@@ -536,15 +542,15 @@ For GitHub, zot downloads the repository archive into a temporary directory, sel
 zot run https://github.com/patriceckhart/agents/zot-maintenance --cwd /path/to/zot
 ```
 
-Both the short subdirectory form above and a standard GitHub tree URL are supported:
+Both the legacy official-collection form above and a standard GitHub tree URL are supported:
 
 ```bash
 zot run https://github.com/patriceckhart/agents/tree/main/zot-maintenance
 ```
 
-The short form reads the repository's default branch through GitHub's `HEAD` archive. A tree URL uses the branch or tag in the URL. Private repositories and GitHub references containing `/` are not currently supported. The downloaded source is temporary, but normal agent data, consent receipts, and session transcripts remain under `$ZOT_HOME`.
+Short forms read the repository's default branch through GitHub's `HEAD` archive. A tree URL uses the branch or tag in the URL. Private repositories and branch or tag names containing `/` are not currently supported. The downloaded source is temporary, but normal agent data, consent receipts, and session transcripts remain under `$ZOT_HOME`.
 
-Short-name and `owner/repo` fallbacks are fixed GitHub mappings, not an indexed or signed registry. Installed names, arbitrary URLs, OCI references, and third-party registry configuration are not resolved yet.
+Short-name and `owner/repo` fallbacks are direct GitHub mappings, not an indexed or signed registry. Installed names, arbitrary URLs, OCI references, and third-party registry configuration are not resolved yet.
 
 ### `zot pack`
 

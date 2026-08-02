@@ -411,6 +411,11 @@ func resolveZotfileRef(ref string) (string, error) {
 		return officialZotfileCollection + "/" + parts[0], nil
 	}
 	if len(parts) == 2 && validZotfileCollectionSegment(parts[0]) && validZotfileCollectionSegment(parts[1]) {
+		// Preserve the original official-collection shorthand, where
+		// agents/<name> selects a subdirectory of patriceckhart/agents.
+		if parts[0] == "agents" {
+			return officialZotfileCollection + "/" + parts[1], nil
+		}
 		return "https://github.com/" + parts[0] + "/" + parts[1], nil
 	}
 	return ref, nil

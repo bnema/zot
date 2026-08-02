@@ -10,12 +10,23 @@ import (
 	"github.com/patriceckhart/zot/packages/core"
 )
 
+func applyStartupPreResultForTest(t *testing.T, i *Interactive) {
+	t.Helper()
+	select {
+	case result := <-i.startupPreDone:
+		i.applyStartupPreResult(result)
+	default:
+		t.Fatal("startup pre result was not queued")
+	}
+}
+
 func TestCompleteStartupPrePrefillsEditor(t *testing.T) {
 	i := NewInteractive(InteractiveConfig{})
 	i.awaitingStartupPre = true
 	i.deferredInitialInput = "Bom dia!"
 	i.autoSubmitDeferred = false
 	i.completeStartupPre()
+	applyStartupPreResultForTest(t, i)
 	if got := i.ed.Value(); got != "Bom dia!" {
 		t.Fatalf("editor = %q, want Bom dia!", got)
 	}
@@ -24,6 +35,15 @@ func TestCompleteStartupPrePrefillsEditor(t *testing.T) {
 	i.mu.Unlock()
 	if awaiting {
 		t.Fatal("awaitingStartupPre still set after completeStartupPre")
+	}
+}
+
+func TestStartupPrePrefillPreservesTypedInput(t *testing.T) {
+	i := NewInteractive(InteractiveConfig{})
+	i.ed.SetValue("typed while reloading")
+	i.applyStartupPreResult(startupPreResult{deferred: "default prompt"})
+	if got := i.ed.Value(); got != "typed while reloading" {
+		t.Fatalf("editor = %q, want typed input to be preserved", got)
 	}
 }
 
@@ -39,9 +59,8 @@ func TestCompleteStartupPreCallsOnDone(t *testing.T) {
 	}
 }
 
-func TestStartupPreShellThenPrefill(t *testing.T) {
-	agent := core.NewAgent(nil, "", "", nil)
-	i := NewInteractive(InteractiveConfig{Agent: agent, CWD: t.TempDir()})
+func TestStartupPreShellWithoutAgentThenPrefill(t *testing.T) {
+	i := NewInteractive(InteractiveConfig{CWD: t.TempDir()})
 	i.runCtx = context.Background()
 	i.awaitingStartupPre = true
 	i.deferredInitialInput = "after-pre"
@@ -55,6 +74,11 @@ func TestStartupPreShellThenPrefill(t *testing.T) {
 
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
+		select {
+		case result := <-i.startupPreDone:
+			i.applyStartupPreResult(result)
+		default:
+		}
 		i.mu.Lock()
 		running := i.shellRunning
 		awaiting := i.awaitingStartupPre
@@ -89,6 +113,11 @@ func TestStartupPreShellThenAutoSubmitShell(t *testing.T) {
 
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
+		select {
+		case result := <-i.startupPreDone:
+			i.applyStartupPreResult(result)
+		default:
+		}
 		messages := agent.Messages()
 		i.mu.Lock()
 		running := i.shellRunning || i.busy
