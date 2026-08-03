@@ -2,7 +2,7 @@
 
 A zotfile packages an agent's behavior into one portable `.zot` file. It can contain the agent's instructions, reusable skills, static assets, and metadata describing the runtime, model, operating-system, binary, and tool permissions it needs.
 
-The current implementation supports creating, inspecting, verifying, and running local directories and `.zot` archives. It can also run an agent directory directly from a public GitHub repository without keeping a clone. Short names resolve local-first and then fall back to zot's official GitHub agent collection. Indexed registry distribution, installation, signatures, bundled executable extensions, network permissions, and environment permissions are not implemented yet.
+The current implementation supports creating, inspecting, verifying, and running local directories and `.zot` archives. It can also run an agent repository or directory directly from any public GitHub repository without keeping a clone. zot has no built-in owner or official collection. Indexed registry distribution, installation, signatures, bundled executable extensions, network permissions, and environment permissions are not implemented yet.
 
 ## Quick start
 
@@ -513,44 +513,42 @@ zot run ./my-agent.zot --json "Do the task"
 
 Arguments after the reference use zot's normal CLI parser, so model, provider, reasoning, cwd, session, tool, and output-mode flags remain available. The manifest still imposes its permission and compatibility ceiling. In interactive mode, enabling **show loaded resources at startup** in `/settings` displays the manifest name in an `[Agent]` section above the transcript.
 
-Local filesystem directories, local archive paths, short names, and public GitHub agent-directory URLs are accepted. A short name uses local-first resolution:
+Local filesystem directories, local archive paths, GitHub shorthand, and public GitHub agent-directory URLs are accepted. A single-part name resolves only to a matching local directory or `.zot` archive:
 
 ```bash
-zot run zot-maintenance
+zot run my-agent
 ```
 
-Zot checks `./zot-maintenance` and `./zot-maintenance.zot` before falling back to `https://github.com/patriceckhart/agents/zot-maintenance`. This makes local development override the remote collection without an install or cache step.
-
-A two-part name is treated as a GitHub `owner/repo` reference. Resolution is local-first, then the repository root:
+A two-part name is treated as a GitHub `owner/repository` reference. Resolution remains local-first, then uses the repository root:
 
 ```bash
 zot run frkr/zot-archify
 ```
 
-The legacy `agents/<name>` form remains reserved for selecting an agent directory from the official `patriceckhart/agents` collection:
+Use three or more parts to select an agent directory from any public GitHub collection:
 
 ```bash
-zot run agents/zot-maintenance
-zot run agents\zot-maintenance  # also accepted on Windows
+zot run acme/agents/reviewer
+zot run acme/clankers/reviewers/go
 ```
 
-Both parts must use lowercase letters, digits, dots, hyphens, or underscores. Prefix a reference with `./`, use an absolute path, retain the `.zot` suffix, or provide a complete GitHub URL when remote fallback is not wanted.
+There is no built-in owner, official collection, collection configuration, or allowlist. Every shorthand part must use lowercase letters, digits, dots, hyphens, or underscores. Backslashes are also accepted as separators on Windows. Prefix a reference with `./`, use an absolute path, retain the `.zot` suffix, or provide a complete GitHub URL to force local or explicit remote resolution.
 
 For GitHub, zot downloads the repository archive into a temporary directory, selects the requested agent subdirectory, validates it, runs it, and removes the downloaded files when the command exits:
 
 ```bash
-zot run https://github.com/patriceckhart/agents/zot-maintenance --cwd /path/to/zot
+zot run https://github.com/acme/agents/reviewer
 ```
 
-Both the legacy official-collection form above and a standard GitHub tree URL are supported:
+A standard GitHub tree URL is also supported:
 
 ```bash
-zot run https://github.com/patriceckhart/agents/tree/main/zot-maintenance
+zot run https://github.com/acme/agents/tree/main/reviewer
 ```
 
 Short forms read the repository's default branch through GitHub's `HEAD` archive. A tree URL uses the branch or tag in the URL. Private repositories and branch or tag names containing `/` are not currently supported. The downloaded source is temporary, but normal agent data, consent receipts, and session transcripts remain under `$ZOT_HOME`.
 
-Short-name and `owner/repo` fallbacks are direct GitHub mappings, not an indexed or signed registry. Installed names, arbitrary URLs, OCI references, and third-party registry configuration are not resolved yet.
+`owner/repository` and `owner/repository/path` are direct GitHub mappings, not an indexed or signed registry. Installed names, arbitrary URLs, and OCI references are not resolved yet.
 
 ### `zot pack`
 
@@ -575,7 +573,7 @@ Packing validates the manifest and directory, then creates a zstd-compressed tar
 ```bash
 zot inspect ./my-agent
 zot inspect ./my-agent.zot
-zot inspect https://github.com/patriceckhart/agents/zot-maintenance
+zot inspect https://github.com/acme/agents/code-reviewer
 ```
 
 Inspection validates and prints the agent's name, version, description, digest, declared permissions, and complete file list. It does not execute the agent.
@@ -620,8 +618,8 @@ Archive extraction rejects absolute paths and parent traversal. Unsupported tar 
 Implemented now:
 
 - local directories and `.zot` archives
-- local-first short-name resolution to the official GitHub agent collection
-- local-first `owner/repo` resolution to `https://github.com/owner/repo`
+- local-only resolution for single-part names
+- local-first `owner/repository` and `owner/repository/path` resolution to any public GitHub repository
 - temporary execution of agent directories from public GitHub repositories
 - `zot pack`, `zot inspect`, `zot verify`, and `zot run`
 - canonical tar creation with zstd compression

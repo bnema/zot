@@ -383,8 +383,6 @@ func loadZotfile(ref string) (zotfileLoaded, func(), error) {
 	return zotfileLoaded{Dir: tmp, Temp: true, Digest: digest, Manifest: m}, cleanup, nil
 }
 
-const officialZotfileCollection = "https://github.com/patriceckhart/agents"
-
 func resolveZotfileRef(ref string) (string, error) {
 	if u, err := url.Parse(ref); err == nil && (u.Scheme == "http" || u.Scheme == "https") {
 		return ref, nil
@@ -405,23 +403,23 @@ func resolveZotfileRef(ref string) (string, error) {
 	if strings.HasSuffix(strings.ToLower(ref), ".zot") {
 		return ref, nil
 	}
-	collectionRef := strings.ReplaceAll(ref, "\\", "/")
-	parts := strings.Split(collectionRef, "/")
-	if len(parts) == 1 && validZotfileCollectionSegment(parts[0]) {
-		return officialZotfileCollection + "/" + parts[0], nil
-	}
-	if len(parts) == 2 && validZotfileCollectionSegment(parts[0]) && validZotfileCollectionSegment(parts[1]) {
-		// Preserve the original official-collection shorthand, where
-		// agents/<name> selects a subdirectory of patriceckhart/agents.
-		if parts[0] == "agents" {
-			return officialZotfileCollection + "/" + parts[1], nil
-		}
+	githubRef := strings.ReplaceAll(ref, "\\", "/")
+	parts := strings.Split(githubRef, "/")
+	if len(parts) == 2 && validGitHubZotfileSegment(parts[0]) && validGitHubZotfileSegment(parts[1]) {
 		return "https://github.com/" + parts[0] + "/" + parts[1], nil
+	}
+	if len(parts) >= 3 {
+		for _, part := range parts {
+			if !validGitHubZotfileSegment(part) {
+				return ref, nil
+			}
+		}
+		return "https://github.com/" + strings.Join(parts, "/"), nil
 	}
 	return ref, nil
 }
 
-func validZotfileCollectionSegment(s string) bool {
+func validGitHubZotfileSegment(s string) bool {
 	return s != "" && s == strings.ToLower(s) && safeAgentName(s) == s
 }
 

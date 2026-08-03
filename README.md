@@ -249,11 +249,11 @@ A zotfile packages an agent's instructions, skills, requirements, and enforced t
 ```bash
 zot run ./my-agent
 zot run ./my-agent.zot
-zot run zot-maintenance --cwd /path/to/zot
-zot run https://github.com/patriceckhart/agents/zot-maintenance --cwd /path/to/zot
+zot run frkr/zot-archify
+zot run acme/agents/code-reviewer --cwd /path/to/project
 ```
 
-Short names resolve local-first: zot checks the matching directory and `.zot` archive before falling back to the official GitHub agent collection. For GitHub sources, zot downloads the repository archive into a temporary directory, validates and runs the selected agent, then removes the downloaded source when the command exits. Agent data, consent receipts, and sessions still persist under `$ZOT_HOME`. See [docs/zotfiles.md](docs/zotfiles.md) for authoring, permissions, packaging, and current limitations.
+Single-part names resolve only to a matching local directory or `.zot` archive. Anyone can publish an agent as a public GitHub repository and run it as `owner/repository`, or publish a collection and run an agent directory as `owner/repository/agent`. zot has no built-in owner, official collection, configured registry, or allowlist. For GitHub sources, zot downloads the repository archive into a temporary directory, validates and runs the selected agent, then removes the downloaded source when the command exits. Agent data, consent receipts, and sessions still persist under `$ZOT_HOME`. See [docs/zotfiles.md](docs/zotfiles.md) for authoring, permissions, packaging, and current limitations.
 
 ## Embedding
 

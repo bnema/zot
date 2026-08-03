@@ -162,7 +162,7 @@ func TestLoadZotfileRejectsUnsafeOrCollidingNames(t *testing.T) {
 	}
 }
 
-func TestResolveZotfileRefUsesLocalFirstThenOfficialCollection(t *testing.T) {
+func TestResolveZotfileRefUsesLocalFirstThenGitHubShorthand(t *testing.T) {
 	dir := t.TempDir()
 	t.Chdir(dir)
 	if err := os.Mkdir("local-agent", 0o700); err != nil {
@@ -178,11 +178,13 @@ func TestResolveZotfileRefUsesLocalFirstThenOfficialCollection(t *testing.T) {
 	}{
 		{"local-agent", "local-agent"},
 		{"packed-agent", "packed-agent.zot"},
-		{"remote-agent", officialZotfileCollection + "/remote-agent"},
+		{"remote-agent", "remote-agent"},
 		{"missing.zot", "missing.zot"},
-		{"agents/remote-agent", officialZotfileCollection + "/remote-agent"},
-		{`agents\remote-agent`, officialZotfileCollection + "/remote-agent"},
+		{"agents/remote-agent", "https://github.com/agents/remote-agent"},
+		{`agents\remote-agent`, "https://github.com/agents/remote-agent"},
 		{"frkr/zot-archify", "https://github.com/frkr/zot-archify"},
+		{"acme/agents/reviewer", "https://github.com/acme/agents/reviewer"},
+		{`acme\agents\reviewers\go`, "https://github.com/acme/agents/reviewers/go"},
 		{"./missing-agent", "./missing-agent"},
 		{"Remote-Agent", "Remote-Agent"},
 		{"https://github.com/acme/agents/example", "https://github.com/acme/agents/example"},
@@ -259,8 +261,9 @@ func TestParseGitHubAgentURL(t *testing.T) {
 		input                 string
 		owner, repo, ref, dir string
 	}{
-		{"https://github.com/patriceckhart/agents/zot-maintenance", "patriceckhart", "agents", "HEAD", "zot-maintenance"},
-		{"https://github.com/patriceckhart/agents/tree/main/zot-maintenance", "patriceckhart", "agents", "main", "zot-maintenance"},
+		{"https://github.com/acme/agents/reviewer", "acme", "agents", "HEAD", "reviewer"},
+		{"https://github.com/acme/agents/tree/main/reviewer", "acme", "agents", "main", "reviewer"},
+		{"https://github.com/acme/agents/reviewers/go", "acme", "agents", "HEAD", "reviewers/go"},
 		{"https://github.com/acme/agent.git", "acme", "agent", "HEAD", ""},
 	}
 	for _, tt := range tests {
@@ -310,7 +313,7 @@ func TestLoadRemoteZotfileDownloadsTemporaryGitHubArchive(t *testing.T) {
 	githubArchiveURL = func(_, _, _ string) string { return server.URL }
 	t.Cleanup(func() { githubArchiveURL = oldArchiveURL })
 
-	u, _ := url.Parse("https://github.com/patriceckhart/agents/zot-maintenance")
+	u, _ := url.Parse("https://github.com/acme/agents/zot-maintenance")
 	zf, cleanup, err := loadRemoteZotfile(u)
 	if err != nil {
 		t.Fatal(err)
