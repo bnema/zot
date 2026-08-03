@@ -622,6 +622,9 @@ func (c *codexClient) runStream(ctx context.Context, resp *http.Response, req Re
 							InputTokensDetails struct {
 								CachedTokens int `json:"cached_tokens"`
 							} `json:"input_tokens_details"`
+							OutputTokensDetails *struct {
+								ReasoningTokens int `json:"reasoning_tokens"`
+							} `json:"output_tokens_details"`
 						} `json:"usage"`
 						Status string `json:"status"`
 					} `json:"response"`
@@ -633,6 +636,10 @@ func (c *codexClient) runStream(ctx context.Context, resp *http.Response, req Re
 				}
 				usage.OutputTokens = p.Response.Usage.OutputTokens
 				usage.CacheReadTokens = p.Response.Usage.InputTokensDetails.CachedTokens
+				if details := p.Response.Usage.OutputTokensDetails; details != nil {
+					usage.ReasoningTokens = details.ReasoningTokens
+					usage.ReasoningTokensKnown = true
+				}
 
 				hadTool := false
 				for _, it := range items {

@@ -330,6 +330,45 @@ func wireNonInteractiveAgentExtHooks(ctx context.Context, ag *core.Agent, extMgr
 	ag.OnEvent = func(ev core.AgentEvent) { fanoutAgentEvent(extMgr, ev) }
 }
 
+type printStats struct {
+	Provider              string `json:"provider"`
+	Model                 string `json:"model"`
+	PromptTokens          int    `json:"prompt_tokens"`
+	ReasoningTokens       *int   `json:"reasoning_tokens"`
+	GeneratedOutputTokens int    `json:"generated_output_tokens"`
+	ElapsedMS             int64  `json:"elapsed_ms"`
+}
+
+func writePrintStats(path, providerID, model string, usage provider.Usage, elapsed time.Duration) error {
+	var reasoning *int
+	generated := usage.OutputTokens
+	if usage.ReasoningTokensKnown {
+		count := usage.ReasoningTokens
+		reasoning = &count
+		generated -= count
+		if generated < 0 {
+			generated = 0
+		}
+	}
+	stats := printStats{
+		Provider:              providerID,
+		Model:                 model,
+		PromptTokens:          usage.InputTokens + usage.CacheReadTokens + usage.CacheWriteTokens,
+		ReasoningTokens:       reasoning,
+		GeneratedOutputTokens: generated,
+		ElapsedMS:             elapsed.Milliseconds(),
+	}
+	data, err := json.MarshalIndent(stats, "", "  ")
+	if err != nil {
+		return fmt.Errorf("encode stats: %w", err)
+	}
+	data = append(data, '\n')
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		return fmt.Errorf("write stats %q: %w", path, err)
+	}
+	return nil
+}
+
 func runPrintMode(ctx context.Context, args Args, version string) error {
 	if args.NoYolo {
 		fmt.Fprintln(os.Stderr, "warning: --no-yolo has no effect in print mode (no interactive prompt available); tools will run without confirmation")
@@ -360,9 +399,17 @@ func runPrintMode(ctx context.Context, args Args, version string) error {
 		return err
 	}
 	reloadResourcesAfterStartupPre(ctx, args, extMgr, r.Sandbox, ag)
-	err = modes.RunPrint(ctx, ag, prompt, nil, os.Stdout)
+	started := time.Now()
+	usage, err := modes.RunPrint(ctx, ag, prompt, nil, os.Stdout)
+	elapsed := time.Since(started)
 	WriteNewTranscript(ag, sess, start)
-	return err
+	if err != nil {
+		return err
+	}
+	if args.StatsPath != "" {
+		return writePrintStats(args.StatsPath, r.Provider, r.Model, usage, elapsed)
+	}
+	return nil
 }
 
 func runStreamMode(ctx context.Context, args Args, version string) error {

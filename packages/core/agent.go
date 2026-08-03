@@ -268,7 +268,7 @@ func (a *Agent) Cost() provider.Usage {
 func (a *Agent) SeedCost(u provider.Usage) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	a.cost.Total = u
+	a.cost.Seed(u)
 }
 
 // LastTurnUsage returns the per-turn usage of the most recent

@@ -414,11 +414,19 @@ func (s *rpcServer) snapshotState() map[string]any {
 		"usage": map[string]any{
 			"input":       cum.InputTokens,
 			"output":      cum.OutputTokens,
+			"reasoning":   rpcReasoningTokens(cum),
 			"cache_read":  cum.CacheReadTokens,
 			"cache_write": cum.CacheWriteTokens,
 			"cost_usd":    cum.CostUSD,
 		},
 	}
+}
+
+func rpcReasoningTokens(usage provider.Usage) any {
+	if !usage.ReasoningTokensKnown {
+		return nil
+	}
+	return usage.ReasoningTokens
 }
 
 // ---- write helpers (single-line JSON, mutex-guarded) ----

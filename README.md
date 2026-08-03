@@ -189,12 +189,15 @@ The first time you launch a newer zot binary, the TUI shows the GitHub release n
 zot                              # interactive tui
 zot "fix the failing test"       # tui, pre-filled prompt
 zot -p "list all go files"       # print final text, exit
+zot -p --stats stats.json "task" # print final text and write generation stats
 zot --json "refactor main.go"    # newline-delimited json events, exit
 zot --continue                   # resume the most recent session for this cwd
 zot --resume                     # pick a session to resume
 zot --list-models                # show supported models
 zot --help
 ```
+
+Print-mode stats contain `provider`, `model`, `prompt_tokens`, `reasoning_tokens`, `generated_output_tokens`, and `elapsed_ms`. Counts cover all model turns triggered by the prompt, including tool loops. Prompt tokens include cache reads and writes. `reasoning_tokens` is `null` when the provider does not report a separate count; in that case `generated_output_tokens` is the provider's total output count and may include reasoning. Elapsed time covers the agent run, not startup and credential resolution. The file is written only after a successful run.
 
 ## Flags
 
@@ -208,6 +211,7 @@ zot --help
 | `--system-prompt <text>` | Replace the default system prompt for this run (also overrides `$ZOT_HOME/SYSTEM.md`). |
 | `--append-system-prompt <text>` | Append text to the system prompt (repeatable). |
 | `--reasoning off\|minimum\|low\|medium\|high\|xhigh\|max` | Set thinking level on supported models (default: off). `max` is a separate opt-in tier above `xhigh`. |
+| `--stats <path>` | With `-p`/`--print`, write generation statistics as JSON. |
 | `-c`, `--continue` | Resume the latest session for this cwd. |
 | `-r`, `--resume` | Pick a session to resume. |
 | `--session <path>` | Resume a specific session file. |

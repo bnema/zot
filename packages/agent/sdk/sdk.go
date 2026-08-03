@@ -191,6 +191,7 @@ func (r *Runtime) Cost() Usage {
 	return Usage{
 		Input:      u.InputTokens,
 		Output:     u.OutputTokens,
+		Reasoning:  sdkReasoningTokens(u),
 		CacheRead:  u.CacheReadTokens,
 		CacheWrite: u.CacheWriteTokens,
 		CostUSD:    u.CostUSD,

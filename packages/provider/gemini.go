@@ -677,11 +677,11 @@ func (c *geminiClient) runStream(ctx context.Context, resp *http.Response, req R
 					FinishReason string `json:"finishReason"`
 				} `json:"candidates"`
 				UsageMetadata *struct {
-					PromptTokenCount        int `json:"promptTokenCount"`
-					CandidatesTokenCount    int `json:"candidatesTokenCount"`
-					ThoughtsTokenCount      int `json:"thoughtsTokenCount"`
-					CachedContentTokenCount int `json:"cachedContentTokenCount"`
-					TotalTokenCount         int `json:"totalTokenCount"`
+					PromptTokenCount        int  `json:"promptTokenCount"`
+					CandidatesTokenCount    int  `json:"candidatesTokenCount"`
+					ThoughtsTokenCount      *int `json:"thoughtsTokenCount"`
+					CachedContentTokenCount int  `json:"cachedContentTokenCount"`
+					TotalTokenCount         int  `json:"totalTokenCount"`
 				} `json:"usageMetadata"`
 				Error *struct {
 					Code    int    `json:"code"`
@@ -753,7 +753,12 @@ func (c *geminiClient) runStream(ctx context.Context, resp *http.Response, req R
 					input = um.PromptTokenCount
 				}
 				usage.InputTokens = input
-				usage.OutputTokens = um.CandidatesTokenCount + um.ThoughtsTokenCount
+				usage.OutputTokens = um.CandidatesTokenCount
+				if um.ThoughtsTokenCount != nil {
+					usage.ReasoningTokens = *um.ThoughtsTokenCount
+					usage.ReasoningTokensKnown = true
+					usage.OutputTokens += *um.ThoughtsTokenCount
+				}
 				usage.CacheReadTokens = um.CachedContentTokenCount
 			}
 			// Promote ToolUse stop when tool calls are present and

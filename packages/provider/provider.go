@@ -156,21 +156,26 @@ func activatedToolNames(messages []Message) map[string]bool {
 
 // Usage aggregates token counts and cost for a turn.
 type Usage struct {
-	InputTokens      int     `json:"input_tokens"`
-	OutputTokens     int     `json:"output_tokens"`
-	CacheReadTokens  int     `json:"cache_read_tokens"`
-	CacheWriteTokens int     `json:"cache_write_tokens"`
-	CostUSD          float64 `json:"cost_usd"`
+	InputTokens          int     `json:"input_tokens"`
+	OutputTokens         int     `json:"output_tokens"`
+	ReasoningTokens      int     `json:"reasoning_tokens"`
+	ReasoningTokensKnown bool    `json:"reasoning_tokens_known,omitempty"`
+	CacheReadTokens      int     `json:"cache_read_tokens"`
+	CacheWriteTokens     int     `json:"cache_write_tokens"`
+	CostUSD              float64 `json:"cost_usd"`
 }
 
-// Add returns u plus v.
+// Add returns u plus v. A reasoning total is known only when both
+// component usage reports include a separate reasoning-token count.
 func (u Usage) Add(v Usage) Usage {
 	return Usage{
-		InputTokens:      u.InputTokens + v.InputTokens,
-		OutputTokens:     u.OutputTokens + v.OutputTokens,
-		CacheReadTokens:  u.CacheReadTokens + v.CacheReadTokens,
-		CacheWriteTokens: u.CacheWriteTokens + v.CacheWriteTokens,
-		CostUSD:          u.CostUSD + v.CostUSD,
+		InputTokens:          u.InputTokens + v.InputTokens,
+		OutputTokens:         u.OutputTokens + v.OutputTokens,
+		ReasoningTokens:      u.ReasoningTokens + v.ReasoningTokens,
+		ReasoningTokensKnown: u.ReasoningTokensKnown && v.ReasoningTokensKnown,
+		CacheReadTokens:      u.CacheReadTokens + v.CacheReadTokens,
+		CacheWriteTokens:     u.CacheWriteTokens + v.CacheWriteTokens,
+		CostUSD:              u.CostUSD + v.CostUSD,
 	}
 }
 

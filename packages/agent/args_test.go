@@ -33,6 +33,20 @@ func TestParseArgsYes(t *testing.T) {
 	}
 }
 
+func TestParseArgsStatsRequiresPrintMode(t *testing.T) {
+	args, err := ParseArgs([]string{"-p", "--stats", "stats.json", "hi"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if args.StatsPath != "stats.json" || args.Mode != ModePrint {
+		t.Fatalf("StatsPath=%q Mode=%q", args.StatsPath, args.Mode)
+	}
+
+	if _, err := ParseArgs([]string{"--stats", "stats.json", "hi"}); err == nil {
+		t.Fatal("ParseArgs accepted --stats without print mode")
+	}
+}
+
 func TestParseArgsStream(t *testing.T) {
 	args, err := ParseArgs([]string{"--stream", "hi"})
 	if err != nil {

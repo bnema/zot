@@ -85,6 +85,7 @@ type Image struct {
 type Usage struct {
 	Input      int     `json:"input"`
 	Output     int     `json:"output"`
+	Reasoning  *int    `json:"reasoning"`
 	CacheRead  int     `json:"cache_read"`
 	CacheWrite int     `json:"cache_write"`
 	CostUSD    float64 `json:"cost_usd"`
@@ -117,6 +118,14 @@ type ModelInfo struct {
 
 // ---- internal converters ----
 
+func sdkReasoningTokens(usage provider.Usage) *int {
+	if !usage.ReasoningTokensKnown {
+		return nil
+	}
+	count := usage.ReasoningTokens
+	return &count
+}
+
 func toEvent(ev core.AgentEvent) Event {
 	out := Event{Type: ev.Type()}
 	switch e := ev.(type) {
@@ -143,6 +152,7 @@ func toEvent(ev core.AgentEvent) Event {
 		out.Usage = &Usage{
 			Input:      e.Usage.InputTokens,
 			Output:     e.Usage.OutputTokens,
+			Reasoning:  sdkReasoningTokens(e.Usage),
 			CacheRead:  e.Usage.CacheReadTokens,
 			CacheWrite: e.Usage.CacheWriteTokens,
 			CostUSD:    e.Usage.CostUSD,
@@ -150,6 +160,7 @@ func toEvent(ev core.AgentEvent) Event {
 		out.Cumulative = &Usage{
 			Input:      e.Cumulative.InputTokens,
 			Output:     e.Cumulative.OutputTokens,
+			Reasoning:  sdkReasoningTokens(e.Cumulative),
 			CacheRead:  e.Cumulative.CacheReadTokens,
 			CacheWrite: e.Cumulative.CacheWriteTokens,
 			CostUSD:    e.Cumulative.CostUSD,

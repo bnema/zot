@@ -213,6 +213,8 @@ func SessionUsageDetail(path string) (cumulative, lastTurn provider.Usage, err e
 		// input/output are monotonic totals -> per-turn = delta.
 		lastTurn.InputTokens = nonNegDelta(cumulative.InputTokens, prevCum.InputTokens)
 		lastTurn.OutputTokens = nonNegDelta(cumulative.OutputTokens, prevCum.OutputTokens)
+		lastTurn.ReasoningTokens = nonNegDelta(cumulative.ReasoningTokens, prevCum.ReasoningTokens)
+		lastTurn.ReasoningTokensKnown = cumulative.ReasoningTokensKnown
 		// cache_read/write on the final row already represent the last prompt's
 		// cache hit/creation, not a running total of bytes; use directly.
 		lastTurn.CacheReadTokens = cumulative.CacheReadTokens - prevCum.CacheReadTokens

@@ -106,6 +106,7 @@ type Args struct {
 	ListModels bool
 	Help       bool
 	Version    bool
+	StatsPath  string // write print-mode generation statistics as JSON
 
 	Prompt string // concatenated positional args
 
@@ -247,6 +248,12 @@ func ParseArgs(in []string) (Args, error) {
 			}
 			t := float32(f)
 			a.Temperature = &t
+		case "--stats":
+			v, err := want(&i, arg)
+			if err != nil {
+				return a, err
+			}
+			a.StatsPath = v
 		case "--session":
 			v, err := want(&i, arg)
 			if err != nil {
@@ -299,6 +306,9 @@ func ParseArgs(in []string) (Args, error) {
 		a.Prompt = strings.Join(positional, " ")
 	}
 
+	if a.StatsPath != "" && a.Mode != ModePrint {
+		return a, fmt.Errorf("--stats requires -p or --print")
+	}
 	if a.CWD == "" {
 		a.CWD, _ = os.Getwd()
 	}
@@ -412,6 +422,7 @@ func PrintHelp(version string) {
 		row{"--temperature N", "sampling temperature, 0 to 2 (omit for provider default)"},
 	)
 	section("prompt and session flags",
+		row{"--stats PATH", "write print-mode generation stats as json"},
 		row{"--system-prompt TEXT", "replace the default system prompt"},
 		row{"--append-system-prompt TEXT", "append to the system prompt (repeatable)"},
 		row{"-c, --continue", "continue the most recent session for this cwd"},

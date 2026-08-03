@@ -12,10 +12,13 @@ import (
 )
 
 // RunPrint runs the agent to completion and writes only the final
-// assistant text block to out. Exit code comes from the caller.
-func RunPrint(ctx context.Context, ag *core.Agent, prompt string, images []provider.ImageBlock, out io.Writer) error {
+// assistant text block to out. It returns usage for this invocation,
+// excluding any cumulative usage restored from a session.
+func RunPrint(ctx context.Context, ag *core.Agent, prompt string, images []provider.ImageBlock, out io.Writer) (provider.Usage, error) {
 	var finalText strings.Builder
 	var lastAssistant string
+	var usage provider.Usage
+	var haveUsage bool
 	var runErr error
 
 	sink := func(ev core.AgentEvent) {
@@ -34,6 +37,13 @@ func RunPrint(ctx context.Context, ag *core.Agent, prompt string, images []provi
 			if sb.Len() > 0 {
 				lastAssistant = sb.String()
 			}
+		case core.EvUsage:
+			if haveUsage {
+				usage = usage.Add(e.Usage)
+			} else {
+				usage = e.Usage
+				haveUsage = true
+			}
 		case core.EvTurnEnd:
 			if e.Err != nil {
 				runErr = e.Err
@@ -42,10 +52,10 @@ func RunPrint(ctx context.Context, ag *core.Agent, prompt string, images []provi
 	}
 
 	if err := ag.Prompt(ctx, prompt, images, sink); err != nil {
-		return err
+		return usage, err
 	}
 	if runErr != nil {
-		return runErr
+		return usage, runErr
 	}
 
 	finalText.WriteString(lastAssistant)
@@ -53,5 +63,5 @@ func RunPrint(ctx context.Context, ag *core.Agent, prompt string, images []provi
 		finalText.WriteString("\n")
 	}
 	_, err := fmt.Fprint(out, finalText.String())
-	return err
+	return usage, err
 }

@@ -121,7 +121,7 @@ Response data:
   "cwd": "/Users/pat/Developer/zot",
   "message_count": 12,
   "busy": false,
-  "usage": {"input": 1234, "output": 567, "cache_read": 890, "cache_write": 0, "cost_usd": 0.0123}
+  "usage": {"input": 1234, "output": 567, "reasoning": 123, "cache_read": 890, "cache_write": 0, "cost_usd": 0.0123}
 }
 ```
 
@@ -197,7 +197,7 @@ Stream notifications during a `prompt` or `compact`. None carry an `id`.
 | `tool_progress` | `id`, `text` | Optional progress line from the tool while it runs |
 | `tool_result` | `id`, `is_error`, `content` | Tool finished |
 | `assistant_message` | `content`, `time` | Final assistant message after the model turn ends |
-| `usage` | `input`, `output`, `cache_read`, `cache_write`, `cost_usd`, `cumulative` | Per-turn + cumulative tokens / cost |
+| `usage` | `input`, `output`, `reasoning`, `cache_read`, `cache_write`, `cost_usd`, `cumulative` | Per-turn + cumulative tokens / cost. `reasoning` is null when unavailable. |
 | `turn_end` | `stop`, optional `error` | One model call finished. `stop` is `end_turn`, `tool_use`, `length`, `error`, or `aborted` |
 | `done` | (none) | The whole prompt/compact completed (success or error) |
 | `error` | `message` | Non-fatal error message |

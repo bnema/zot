@@ -73,12 +73,14 @@ func EventToJSON(ev core.AgentEvent) map[string]any {
 	case core.EvUsage:
 		m["input"] = e.Usage.InputTokens
 		m["output"] = e.Usage.OutputTokens
+		m["reasoning"] = nullableReasoningTokens(e.Usage)
 		m["cache_read"] = e.Usage.CacheReadTokens
 		m["cache_write"] = e.Usage.CacheWriteTokens
 		m["cost_usd"] = e.Usage.CostUSD
 		m["cumulative"] = map[string]any{
 			"input":       e.Cumulative.InputTokens,
 			"output":      e.Cumulative.OutputTokens,
+			"reasoning":   nullableReasoningTokens(e.Cumulative),
 			"cache_read":  e.Cumulative.CacheReadTokens,
 			"cache_write": e.Cumulative.CacheWriteTokens,
 			"cost_usd":    e.Cumulative.CostUSD,
@@ -117,6 +119,13 @@ func ContentToJSON(blocks []provider.Content) []map[string]any {
 		}
 	}
 	return out
+}
+
+func nullableReasoningTokens(usage provider.Usage) any {
+	if !usage.ReasoningTokensKnown {
+		return nil
+	}
+	return usage.ReasoningTokens
 }
 
 func jsonString(s string) string {

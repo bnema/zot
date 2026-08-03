@@ -510,6 +510,9 @@ func TestGeminiStreamReasoning(t *testing.T) {
 	if usage.OutputTokens != 5 { // candidatesTokenCount (2) + thoughtsTokenCount (3)
 		t.Fatalf("usage output tokens=%d, want 5", usage.OutputTokens)
 	}
+	if usage.ReasoningTokens != 3 || !usage.ReasoningTokensKnown {
+		t.Fatalf("usage reasoning tokens=%d known=%v, want 3 true", usage.ReasoningTokens, usage.ReasoningTokensKnown)
+	}
 
 	// Verify that the final message contains both the ReasoningBlock and the TextBlock
 	msg := done.Message

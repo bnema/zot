@@ -633,6 +633,9 @@ func (c *openaiClient) runStream(ctx context.Context, resp *http.Response, req R
 					PromptTokensDetails struct {
 						CachedTokens int `json:"cached_tokens"`
 					} `json:"prompt_tokens_details"`
+					CompletionTokensDetails *struct {
+						ReasoningTokens int `json:"reasoning_tokens"`
+					} `json:"completion_tokens_details"`
 				} `json:"usage"`
 				Error *struct {
 					Message string `json:"message"`
@@ -655,6 +658,10 @@ func (c *openaiClient) runStream(ctx context.Context, resp *http.Response, req R
 				}
 				usage.OutputTokens = chunk.Usage.CompletionTokens
 				usage.CacheReadTokens = chunk.Usage.PromptTokensDetails.CachedTokens
+				if details := chunk.Usage.CompletionTokensDetails; details != nil {
+					usage.ReasoningTokens = details.ReasoningTokens
+					usage.ReasoningTokensKnown = true
+				}
 			}
 			for _, ch := range chunk.Choices {
 				if ch.Delta.ReasoningContent != "" {
