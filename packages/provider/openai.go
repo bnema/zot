@@ -181,10 +181,12 @@ type oaiRequest struct {
 // ---- request building ----
 
 func (c *openaiClient) buildRequest(req Request) (*oaiRequest, error) {
-	// Look up the model by id across all providers (not just openai)
-	// because the OpenAI client is also used for ollama and other
-	// OpenAI-compatible backends.
-	m, err := FindModel("", req.Model)
+	// The OpenAI wire client is shared by many providers, so prefer its own
+	// provider namespace before falling back to a provider-agnostic lookup.
+	m, err := FindModel(c.Name(), req.Model)
+	if err != nil {
+		m, err = FindModel("", req.Model)
+	}
 	if err != nil {
 		// Unknown model: use sensible defaults so local/custom
 		// models still work without a catalog entry.
@@ -194,6 +196,7 @@ func (c *openaiClient) buildRequest(req Request) (*oaiRequest, error) {
 			MaxOutput:     8192,
 		}
 	}
+	reasoning := ClampReasoningForModel(m, req.Reasoning)
 	out := &oaiRequest{
 		Model:         req.Model,
 		Stream:        true,
@@ -246,13 +249,13 @@ func (c *openaiClient) buildRequest(req Request) (*oaiRequest, error) {
 		if maxTok > 0 {
 			out.MaxCompletionTok = &maxTok
 		}
-		effort := OpenAIReasoningEffort(req.Reasoning)
+		effort := OpenAIReasoningEffort(reasoning)
 		if usesAdaptiveThinking(m) {
 			// Some gateways expose adaptive-thinking Anthropic models through
 			// the OpenAI-compatible chat-completions wire. They accept the
 			// same reasoning_effort knob, including the top "xhigh" tier;
 			// don't clamp zot's "maximum" to "high" for those models.
-			effort = OpenAICompatAnthropicEffort(req.Reasoning)
+			effort = OpenAICompatAnthropicEffort(reasoning)
 		}
 		if effort != "" {
 			out.ReasoningEffort = effort

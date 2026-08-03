@@ -49,7 +49,7 @@ type Theme struct {
 	Error        int
 	Warning      int
 	Spinner      int // spinner + funny working line
-	ThinkingMax  int // status color for the opt-in max thinking level
+	ThinkingMax  int // status color for the opt-in max reasoning level
 	SelectionBG  int // background for highlighted rows
 	SelectionFG  int // foreground for highlighted rows
 

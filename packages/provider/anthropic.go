@@ -230,6 +230,7 @@ func (c *anthropicClient) buildRequest(req Request) (*anthRequest, error) {
 		maxTok = m.MaxOutput
 	}
 
+	reasoning := ClampReasoningForModel(m, req.Reasoning)
 	adaptive := usesAdaptiveThinking(m)
 	adaptiveEffort := adaptive && !m.AdaptiveThinkingCompat
 
@@ -284,19 +285,19 @@ func (c *anthropicClient) buildRequest(req Request) (*anthRequest, error) {
 		}}
 	}
 
-	if req.Reasoning != "" && m.Reasoning {
+	if reasoning != "" && m.Reasoning {
 		if adaptive {
 			// Adaptive-thinking models decide when and how much to think and
 			// reject explicit budgets. Anthropic models also accept the
 			// output_config.effort extension; compatible implementations may not.
 			out.Thinking = &anthThinking{Type: "adaptive"}
 			if adaptiveEffort {
-				if effort := AnthropicAdaptiveEffort(req.Reasoning); effort != "" {
+				if effort := AnthropicAdaptiveEffort(reasoning); effort != "" {
 					out.OutputConfig = &anthOutputConfig{Effort: effort}
 				}
 			}
 		} else {
-			budget := anthropicReasoningBudget(req.Reasoning)
+			budget := anthropicReasoningBudget(reasoning)
 			if budget > 0 {
 				// Reasoning requires max_tokens > budget. Keep at least a small
 				// answer budget while respecting the model's advertised output cap.

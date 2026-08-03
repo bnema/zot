@@ -57,6 +57,70 @@ func TestLoadUserModelsRegistersModelLevelBaseURLCustomProvider(t *testing.T) {
 	}
 }
 
+func TestLoadUserModelsReasoningLevelMap(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "models.json")
+	if err := os.WriteFile(path, []byte(`{
+		"providers": {
+			"company-proxy": {
+				"baseUrl": "https://llm.example.com/v1",
+				"api": "anthropic",
+				"models": [{
+					"id": "reasoning-model",
+					"reasoning": true,
+					"reasoningLevelMap": {"minimal": "low", "max": "off"}
+				}]
+			}
+		}
+	}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	models, warnings := LoadUserModelsWithWarnings(path)
+	if len(warnings) != 0 {
+		t.Fatalf("warnings = %v, want none", warnings)
+	}
+	if len(models) != 1 {
+		t.Fatalf("models = %d, want 1", len(models))
+	}
+	model := models[0]
+	if model.API != "anthropic" {
+		t.Fatalf("api = %q, want anthropic", model.API)
+	}
+	if model.ReasoningLevelMap["minimum"] != "low" {
+		t.Fatalf("minimum mapping = %q, want low", model.ReasoningLevelMap["minimum"])
+	}
+	if mapped, ok := model.ReasoningLevelMap["max"]; !ok || mapped != "" {
+		t.Fatalf("max mapping = %q, %v, want explicit removal", mapped, ok)
+	}
+}
+
+func TestLoadUserModelsWarnsOnInvalidReasoningLevelMap(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "models.json")
+	if err := os.WriteFile(path, []byte(`{
+		"providers": {
+			"custom": {
+				"models": [{
+					"id": "bad-map",
+					"reasoning": true,
+					"reasoningLevelMap": {"turbo": "high", "low": "extreme"}
+				}]
+			}
+		}
+	}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	models, warnings := LoadUserModelsWithWarnings(path)
+	if len(models) != 1 || len(models[0].ReasoningLevelMap) != 0 {
+		t.Fatalf("invalid map was not discarded: %#v", models)
+	}
+	if len(warnings) != 2 || !strings.Contains(strings.Join(warnings, "\n"), "reasoningLevelMap") {
+		t.Fatalf("warnings = %v, want two reasoningLevelMap warnings", warnings)
+	}
+}
+
 func TestLoadUserModelsAcceptsOpenAIResponsesAPI(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "models.json")

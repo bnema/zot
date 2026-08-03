@@ -155,7 +155,7 @@ Cross-provider swaps require relaunching `zot rpc` with the new `--provider`.
 
 ### `set_reasoning`
 
-Set the thinking level for subsequent prompts without restarting the process. Accepted values are `off`, `minimum`, `low`, `medium`, `high`, `xhigh`, and `max`.
+Set the reasoning level for subsequent prompts without restarting the process. Accepted values are `off`, `minimum`, `low`, `medium`, `high`, `xhigh`, and `max`.
 
 ```json
 {"id":"8","type":"set_reasoning","reasoning":"max"}

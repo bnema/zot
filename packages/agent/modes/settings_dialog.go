@@ -14,6 +14,7 @@ type settingsDialog struct {
 	items        []settingsItem
 	cursor       int
 	selecting    bool
+	direct       bool
 	optionCursor int
 	parentItems  []settingsItem
 	parentCursor int
@@ -57,7 +58,27 @@ func (d *settingsDialog) Open(items []settingsItem) bool {
 	d.items = items
 	d.cursor = 0
 	d.selecting = false
+	d.direct = false
 	d.optionCursor = 0
+	d.parentItems = nil
+	d.parentCursor = 0
+	d.active = true
+	return true
+}
+
+func (d *settingsDialog) OpenDirectOption(item settingsItem) bool {
+	if len(item.options) == 0 {
+		return false
+	}
+	d.title = item.label
+	d.items = []settingsItem{item}
+	d.cursor = 0
+	d.selecting = true
+	d.direct = true
+	d.optionCursor = item.choice
+	if d.optionCursor < 0 || d.optionCursor >= len(item.options) {
+		d.optionCursor = 0
+	}
 	d.parentItems = nil
 	d.parentCursor = 0
 	d.active = true
@@ -67,6 +88,7 @@ func (d *settingsDialog) Open(items []settingsItem) bool {
 func (d *settingsDialog) Close() {
 	d.active = false
 	d.selecting = false
+	d.direct = false
 	d.parentItems = nil
 }
 func (d *settingsDialog) Active() bool { return d != nil && d.active }
@@ -124,6 +146,10 @@ func (d *settingsDialog) handleOptionKey(k tui.Key) settingsAction {
 			d.optionCursor++
 		}
 	case tui.KeyEsc:
+		if d.direct {
+			d.Close()
+			return settingsAction{Close: true}
+		}
 		d.selecting = false
 	case tui.KeyEnter:
 		return d.selectCurrentOption()
@@ -194,7 +220,12 @@ func (d *settingsDialog) selectCurrentOption() settingsAction {
 	it.choice = d.optionCursor
 	d.items[d.cursor] = it
 	d.selecting = false
-	return settingsAction{Toggle: true, Key: it.key, StringValue: it.options[it.choice].value}
+	action := settingsAction{Toggle: true, Key: it.key, StringValue: it.options[it.choice].value}
+	if d.direct {
+		d.Close()
+		action.Close = true
+	}
+	return action
 }
 
 func (d *settingsDialog) Render(th tui.Theme, width int) []string {
@@ -253,7 +284,11 @@ func (d *settingsDialog) renderOptions(th tui.Theme, width int) []string {
 		return d.Render(th, width)
 	}
 	it := d.items[d.cursor]
-	lines := []string{frameHeader(th, "settings: "+it.label, width)}
+	title := "settings: " + it.label
+	if d.direct {
+		title = d.title
+	}
+	lines := []string{frameHeader(th, title, width)}
 	if it.desc != "" {
 		lines = append(lines, th.FG256(th.Muted, it.desc))
 	}

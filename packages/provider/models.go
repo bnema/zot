@@ -2,18 +2,20 @@ package provider
 
 import (
 	"fmt"
+	"maps"
 	"sync"
 )
 
 // Model describes a single LLM we know about.
 type Model struct {
-	Provider      string // "anthropic" | "openai"
-	ID            string // API id
-	DisplayName   string
-	API           string // wire API override for providers that support multiple protocols
-	ContextWindow int
-	MaxOutput     int
-	Reasoning     bool // supports reasoning/thinking
+	Provider          string // "anthropic" | "openai"
+	ID                string // API id
+	DisplayName       string
+	API               string // wire API override for providers that support multiple protocols
+	ContextWindow     int
+	MaxOutput         int
+	Reasoning         bool              // supports reasoning
+	ReasoningLevelMap map[string]string // optional level overrides; empty values remove a level
 
 	// AdaptiveThinking marks Anthropic models that only support the
 	// adaptive thinking mode (Opus 4.7+). These reject explicit
@@ -448,6 +450,9 @@ func Active() []Model {
 	}
 	out := make([]Model, len(src))
 	copy(out, src)
+	for i := range out {
+		out[i].ReasoningLevelMap = maps.Clone(out[i].ReasoningLevelMap)
+	}
 	if len(managedModels) == 0 {
 		return out
 	}
@@ -456,6 +461,7 @@ func Active() []Model {
 		index[model.Provider+"\x00"+model.ID] = i
 	}
 	for _, model := range managedModels {
+		model.ReasoningLevelMap = maps.Clone(model.ReasoningLevelMap)
 		key := model.Provider + "\x00" + model.ID
 		if i, ok := index[key]; ok {
 			out[i] = model

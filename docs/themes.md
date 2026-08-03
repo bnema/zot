@@ -191,7 +191,7 @@ Most color fields are xterm-256 indexes (`0`–`255`).
 - `error` — errors, refused calls, diff deletions.
 - `warning` — warnings and high context-usage state.
 - `spinner` — reserved spinner color slot.
-- `thinkingMax` or `thinking_max` — status color used when the opt-in `max` thinking level is active. Missing values inherit the built-in theme color.
+- `thinkingMax` or `thinking_max` (names retained for compatibility) - status color used when the opt-in `max` reasoning level is active. Missing values inherit the built-in theme color.
 - `selection_bg` — highlighted row background.
 - `selection_fg` — highlighted row foreground.
 

@@ -57,7 +57,7 @@ func TestStatusBarNoCWD(t *testing.T) {
 	}
 }
 
-func TestStatusBarThinkingLevelBetweenModelAndStats(t *testing.T) {
+func TestStatusBarReasoningLevelBetweenModelAndStats(t *testing.T) {
 	lines := StatusBar(StatusBarParams{
 		Theme:     Dark,
 		Provider:  "openai-codex",
@@ -75,17 +75,17 @@ func TestStatusBarThinkingLevelBetweenModelAndStats(t *testing.T) {
 	}
 	plain := stripANSI(lines[0])
 	modelIdx := strings.Index(plain, "(openai-codex) gpt-5.5")
-	thinkingIdx := strings.Index(plain, "thinking: minimal")
+	reasoningIdx := strings.Index(plain, "reasoning: minimal")
 	statsIdx := strings.Index(plain, "↑4.3M")
-	if modelIdx < 0 || thinkingIdx < 0 || statsIdx < 0 {
-		t.Fatalf("line should contain model, thinking level, and stats, got %q", plain)
+	if modelIdx < 0 || reasoningIdx < 0 || statsIdx < 0 {
+		t.Fatalf("line should contain model, reasoning level, and stats, got %q", plain)
 	}
-	if !(modelIdx < thinkingIdx && thinkingIdx < statsIdx) {
-		t.Fatalf("thinking level should sit between model and stats, got %q", plain)
+	if !(modelIdx < reasoningIdx && reasoningIdx < statsIdx) {
+		t.Fatalf("reasoning level should sit between model and stats, got %q", plain)
 	}
 }
 
-func TestStatusBarUsesThinkingMaxThemeColor(t *testing.T) {
+func TestStatusBarUsesReasoningMaxThemeColor(t *testing.T) {
 	th := Dark
 	th.ThinkingMax = 201
 	lines := StatusBar(StatusBarParams{
@@ -94,12 +94,12 @@ func TestStatusBarUsesThinkingMaxThemeColor(t *testing.T) {
 	if len(lines) != 1 {
 		t.Fatalf("lines = %d, want 1", len(lines))
 	}
-	if !strings.Contains(lines[0], "\x1b[38;5;201m") || !strings.Contains(stripANSI(lines[0]), "thinking: max") {
-		t.Fatalf("max thinking style missing: %q", lines[0])
+	if !strings.Contains(lines[0], "\x1b[38;5;201m") || !strings.Contains(stripANSI(lines[0]), "reasoning: max") {
+		t.Fatalf("max reasoning style missing: %q", lines[0])
 	}
 }
 
-func TestStatusBarNarrowKeepsModelAndThinkingTogetherWhenTheyFit(t *testing.T) {
+func TestStatusBarNarrowKeepsModelAndReasoningTogetherWhenTheyFit(t *testing.T) {
 	lines := StatusBar(StatusBarParams{
 		Theme:     Dark,
 		Provider:  "openai-codex",
@@ -121,10 +121,10 @@ func TestStatusBarNarrowKeepsModelAndThinkingTogetherWhenTheyFit(t *testing.T) {
 	for i, line := range lines {
 		plain[i] = stripANSI(line)
 	}
-	if !strings.Contains(plain[0], "(openai-codex) gpt-5.5  thinking: xhigh") {
-		t.Fatalf("line 1 should contain model and thinking level, got %q", plain[0])
+	if !strings.Contains(plain[0], "(openai-codex) gpt-5.5  reasoning: xhigh") {
+		t.Fatalf("line 1 should contain model and reasoning level, got %q", plain[0])
 	}
-	if !strings.Contains(plain[1], "$0.000 (sub)") || strings.Contains(plain[1], "thinking level") {
+	if !strings.Contains(plain[1], "$0.000 (sub)") || strings.Contains(plain[1], "reasoning level") {
 		t.Fatalf("line 2 should contain only stats, got %q", plain[1])
 	}
 	if !strings.Contains(plain[2], "/tmp/x") {
@@ -132,7 +132,7 @@ func TestStatusBarNarrowKeepsModelAndThinkingTogetherWhenTheyFit(t *testing.T) {
 	}
 }
 
-func TestStatusBarNarrowSplitsAfterThinkingLevel(t *testing.T) {
+func TestStatusBarNarrowSplitsAfterReasoningLevel(t *testing.T) {
 	lines := StatusBar(StatusBarParams{
 		Theme:     Dark,
 		Provider:  "openai-codex",
@@ -146,7 +146,7 @@ func TestStatusBarNarrowSplitsAfterThinkingLevel(t *testing.T) {
 		Cols: 40,
 	})
 	if len(lines) != 4 {
-		t.Fatalf("narrow status with thinking: want 4 lines, got %d: %q", len(lines), lines)
+		t.Fatalf("narrow status with reasoning: want 4 lines, got %d: %q", len(lines), lines)
 	}
 	plain := make([]string, len(lines))
 	for i, line := range lines {
@@ -155,8 +155,8 @@ func TestStatusBarNarrowSplitsAfterThinkingLevel(t *testing.T) {
 	if !strings.Contains(plain[0], "(openai-codex) gpt-5.5") {
 		t.Fatalf("line 1 should contain model info, got %q", plain[0])
 	}
-	if !strings.Contains(plain[1], "thinking: minimal") || strings.Contains(plain[1], "↑4.3M") {
-		t.Fatalf("line 2 should contain only thinking level, got %q", plain[1])
+	if !strings.Contains(plain[1], "reasoning: minimal") || strings.Contains(plain[1], "↑4.3M") {
+		t.Fatalf("line 2 should contain only reasoning level, got %q", plain[1])
 	}
 	if !strings.Contains(plain[2], "↑4.3M ↓2") {
 		t.Fatalf("line 3 should contain stats, got %q", plain[2])
@@ -166,7 +166,7 @@ func TestStatusBarNarrowSplitsAfterThinkingLevel(t *testing.T) {
 	}
 }
 
-func TestStatusBarVeryNarrowSplitsAfterThinkingLevel(t *testing.T) {
+func TestStatusBarVeryNarrowSplitsAfterReasoningLevel(t *testing.T) {
 	lines := StatusBar(StatusBarParams{
 		Theme:     Dark,
 		Provider:  "openai-codex",
@@ -180,7 +180,7 @@ func TestStatusBarVeryNarrowSplitsAfterThinkingLevel(t *testing.T) {
 		Cols: 32,
 	})
 	if len(lines) != 4 {
-		t.Fatalf("narrow status with thinking: want 4 lines, got %d: %q", len(lines), lines)
+		t.Fatalf("narrow status with reasoning: want 4 lines, got %d: %q", len(lines), lines)
 	}
 	plain := make([]string, len(lines))
 	for i, line := range lines {
@@ -189,8 +189,8 @@ func TestStatusBarVeryNarrowSplitsAfterThinkingLevel(t *testing.T) {
 	if !strings.Contains(plain[0], "(openai-codex) gpt-5.5") {
 		t.Fatalf("line 1 should contain model info, got %q", plain[0])
 	}
-	if !strings.Contains(plain[1], "thinking: minimal") {
-		t.Fatalf("line 2 should contain thinking level, got %q", plain[1])
+	if !strings.Contains(plain[1], "reasoning: minimal") {
+		t.Fatalf("line 2 should contain reasoning level, got %q", plain[1])
 	}
 	if !strings.Contains(plain[2], "↑4.3M ↓2") {
 		t.Fatalf("line 3 should contain stats, got %q", plain[2])

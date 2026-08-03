@@ -184,7 +184,7 @@ func (c *codexClient) buildRequest(req Request) (*codexRequest, error) {
 	if err != nil {
 		return nil, err
 	}
-	_ = m
+	reasoning := ClampReasoningForModel(m, req.Reasoning)
 
 	body := &codexRequest{
 		Model:             req.Model,
@@ -195,7 +195,7 @@ func (c *codexClient) buildRequest(req Request) (*codexRequest, error) {
 		Include:           []string{"reasoning.encrypted_content"},
 	}
 	if m.Reasoning {
-		if effort := OpenAICodexReasoningEffort(req.Reasoning, req.Model); effort != "" {
+		if effort := OpenAICodexReasoningEffort(reasoning, req.Model); effort != "" {
 			body.Reasoning = &codexReasoningConfig{Effort: effort}
 		}
 	}

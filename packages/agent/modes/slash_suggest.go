@@ -38,6 +38,7 @@ var slashCatalog = []slashCommand{
 	{Name: "/login", Desc: "log in via api key or subscription"},
 	{Name: "/logout", Desc: "clear a provider's credentials"},
 	{Name: "/model", Desc: "pick a model (or /model <id>)"},
+	{Name: "/reasoning", Desc: "set the reasoning level"},
 	{Name: "/llama", Desc: "manage llama.cpp router models"},
 	{Name: "/sessions", Desc: "resume a previous session for this directory"},
 	{Name: "/session", Desc: "export the current session to a .zotsession file, or import one"},

@@ -418,7 +418,7 @@ func PrintHelp(version string) {
 		row{"--api-key KEY", "api key for this run (env / auth.json fallback)"},
 		row{"--base-url URL", "override provider api base url"},
 		row{"--insecure", "skip TLS certificate verification (for self-signed-cert endpoints)"},
-		row{"--reasoning off|minimum|low|medium|high|xhigh|max", "set thinking level on supported models"},
+		row{"--reasoning off|minimum|low|medium|high|xhigh|max", "set reasoning level on supported models"},
 		row{"--temperature N", "sampling temperature, 0 to 2 (omit for provider default)"},
 	)
 	section("prompt and session flags",

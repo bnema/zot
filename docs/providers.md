@@ -211,7 +211,7 @@ Some Bedrock models require regional inference-profile IDs for on-demand
 throughput, such as `us.` or `eu.` prefixed model IDs. zot rewrites known
 families automatically where possible. Claude Opus 5 uses
 `global.anthropic.claude-opus-5`; zot maps the bare foundation-model ID to that
-global profile and supports its adaptive thinking levels. Explicit profile IDs
+global profile and supports its adaptive reasoning levels. Explicit profile IDs
 and ARNs are left unchanged.
 
 ### Google Vertex AI

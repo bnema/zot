@@ -210,7 +210,7 @@ Print-mode stats contain `provider`, `model`, `prompt_tokens`, `reasoning_tokens
 | `--insecure` | Skip TLS certificate verification for the explicit `--base-url` endpoint or a `baseUrl` defined for a user model in `models.json` (self-signed local/internal inference servers). Built-in providers, auth, and model discovery keep normal TLS verification. |
 | `--system-prompt <text>` | Replace the default system prompt for this run (also overrides `$ZOT_HOME/SYSTEM.md`). |
 | `--append-system-prompt <text>` | Append text to the system prompt (repeatable). |
-| `--reasoning off\|minimum\|low\|medium\|high\|xhigh\|max` | Set thinking level on supported models (default: off). `max` is a separate opt-in tier above `xhigh`. |
+| `--reasoning off\|minimum\|low\|medium\|high\|xhigh\|max` | Set the reasoning level on supported models (default: off). `max` is a separate opt-in tier above `xhigh`. |
 | `--stats <path>` | With `-p`/`--print`, write generation statistics as JSON. |
 | `-c`, `--continue` | Resume the latest session for this cwd. |
 | `-r`, `--resume` | Pick a session to resume. |
@@ -274,6 +274,7 @@ Slash command names are case-insensitive in the TUI and messaging backends; argu
 | `/login` | Log in via API key or subscription (opens a dialog). |
 | `/logout [provider]` | Clear credentials for any logged-in provider, or all when omitted. `/logout openai-codex` clears ChatGPT/Codex subscription auth while preserving a public OpenAI API key; `/logout kimi` also disables fallback to the official Kimi Code CLI token until you log in to Kimi through zot again. |
 | `/model` | Pick a model from a list (or `/model <id>` to set directly). |
+| `/reasoning` | Set the reasoning level for subsequent model calls. |
 | `/llama` | Connect to the configured llama.cpp router, load, unload, or remove cached models, and search/download GGUF models from Hugging Face with live progress. Shown after llama.cpp login is configured. |
 | `/sessions` | Resume a previous session for this directory. |
 | `/session` | Four ops on the current session: `export` to a portable `.zotsession` file, `import` one back in, `fork` from a past user message into a new branch, `tree` to switch between branches. Opens a picker without an argument; direct forms: `/session export [path]`, `/session import <path>`, `/session fork`, `/session tree`. Default export destination is `~/Downloads`. |
@@ -388,7 +389,7 @@ Opens a dialog with every persistent setting. `up`/`down` to navigate, `enter` o
 - **compact transcript rendering**: reduce visual chrome in the chat transcript. Tool calls render as a quiet header plus indented output instead of a bordered box, and sent messages render without padded background bubbles. Off by default. Changes apply immediately and persist to `config.json` as `compact_mode`.
 - **show loaded resources at startup**: list the active Zotfile agent (for `zot run`), loaded `AGENTS.md` paths, extensions, and user-installed skills in compact sections above the transcript. Built-in skills are omitted. Off by default. Changes apply immediately and persist to `config.json` as `show_instructions_at_startup`.
 - **TUI settings**: opens a sub-view for input layout and status placement. **Input style** can be `plain` (default prompt line), `lines` (separator lines above and below the input), or `block` (a user-bubble-style input block). **Status position** places model, usage, and working-directory information above or below the input. **Working spinner position** places the busy spinner above or below the input. Changes apply immediately and persist to `config.json` as `tui_input_style`, `tui_status_position`, and `tui_working_position` (`above_input` or `below_input` for the position fields).
-- **thinking level**: choose reasoning for supported models: off, minimum, low, medium, high, xhigh, or max. The `max` tier is opt-in and sent natively to GPT-5.6 and adaptive-thinking Claude models; unsupported backends clamp it to their highest accepted effort. The change is persisted to `config.json` and applied to the next model call.
+- **reasoning level**: choose reasoning for supported models: off, minimum, low, medium, high, xhigh, or max. The `max` tier is opt-in and sent natively to GPT-5.6 and adaptive-thinking Claude models; unsupported backends clamp it to their highest accepted effort. The change is persisted to `config.json` and applied to the next model call. Use `/reasoning` to open this selector directly. The selector only shows distinct levels supported by the active model; models without reasoning support only offer `off`.
 - **color theme** — choose the built-in auto/dark/light theme or any JSON theme discovered under `$ZOT_HOME/themes` or a loaded extension. Theme files can override any subset of UI colors, syntax colors, and spinner frames/messages. Changes apply immediately; if a selected theme file is deleted, zot resets to auto. See [docs/themes.md](docs/themes.md).
 - **model shortcuts** — opens a sub-view with nine slots (`model 1` ... `model 9`). `enter` on a slot opens the same `/model` selector and binds the chosen provider/model to that slot; `backspace` clears a slot. Once assigned, press `Ctrl+1` ... `Ctrl+9` from the editor to switch the active model instantly (the same cross-provider swap `/model` performs, transcript and cost carried over). Assigning a shortcut does not change the current model. Shortcuts are skipped while a turn is running.
 
@@ -458,6 +459,7 @@ Place a `models.json` in `$ZOT_HOME` (`$XDG_STATE_HOME/zot/` when set, otherwise
           "id": "gpt-5.5",
           "name": "GPT-5.5",
           "reasoning": true,
+          "reasoningLevelMap": {"minimum": "low", "max": ""},
           "contextWindow": 400000,
           "maxTokens": 128000
         }
@@ -467,7 +469,9 @@ Place a `models.json` in `$ZOT_HOME` (`$XDG_STATE_HOME/zot/` when set, otherwise
 }
 ```
 
-Supported fields per model: `id` (required), `name`, `reasoning`, `contextWindow`, `maxTokens`, `baseUrl`, `priceInput`, `priceOutput`, `priceCacheRead`, `priceCacheWrite`.
+Supported fields per model: `id` (required), `name`, `reasoning`, `reasoningLevelMap`, `contextWindow`, `maxTokens`, `baseUrl`, `priceInput`, `priceOutput`, `priceCacheRead`, `priceCacheWrite`.
+
+`reasoningLevelMap` is optional. Protocol defaults apply when it is omitted. Add only model-specific exceptions using `minimum`, `low`, `medium`, `high`, `xhigh`, or `max` as keys. Map a key to another level when both inputs are equivalent, or to an empty string or `off` to remove it. The same effective mapping drives `/reasoning` and provider requests.
 
 Provider keys are normalized: `openai-codex` and `openai-responses` map to `openai`, `anthropic-messages` maps to `anthropic`, `moonshot`, `moonshot-ai`, and `kimi-code` map to `kimi`, and `deepseek-chat` and `deepseek-ai` map to `deepseek`. Built-in provider ids such as `groq`, `openrouter`, `github-copilot`, `amazon-bedrock`, `google-vertex`, `azure-openai-responses`, `fireworks`, `vercel-ai-gateway`, `mistral`, and `xai` can also be used directly.
 
@@ -613,7 +617,7 @@ Use `/login` and pick **api key** to paste an AI Studio key. zot probes `/v1beta
 
 > **Free-tier rate limits.** AI Studio's free tier has tight per-minute and per-day caps that vary by model: `gemini-2.5-pro` is the strictest (a few requests per minute, ~50 per day), Flash and Flash-Lite are far more generous. If a Pro turn 429s with `"You exceeded your current quota"` while Flash on the same key still works, you've hit the Pro free-tier RPD. Either switch to Flash for agent loops, or [enable billing](https://aistudio.google.com/app/apikey) on your AI Studio project to flip the same key from free to pay-as-you-go pricing (`$1.25/M` input, `$10/M` output for Pro).
 
-Reasoning levels (`--reasoning off|minimum|low|medium|high|xhigh|max`, also configurable in `/settings` as **thinking level**) map differently per generation. `max` is a distinct opt-in tier above `xhigh`. GPT-5.6 and adaptive-thinking Claude models receive native `max`; unsupported providers clamp it to their highest accepted effort. Budget-based providers retain their provider/model caps. Gemini 3.x uses the `thinkingLevel` enum (`MINIMAL`/`LOW`/`MEDIUM`/`HIGH`), with Gemini-3-Pro pinned to `LOW` minimum and `HIGH` for any medium-or-higher request. `off` sends no reasoning config. Gemini 2.0 models have no thinking config.
+Reasoning levels (`--reasoning off|minimum|low|medium|high|xhigh|max`, also configurable through `/reasoning` or in `/settings` as **reasoning level**) map differently per generation. `max` is a distinct opt-in tier above `xhigh`. GPT-5.6 and adaptive-thinking Claude models receive native `max`; unsupported providers clamp it to their highest accepted effort. Budget-based providers retain their provider/model caps. Gemini 3.x uses the `thinkingLevel` enum (`MINIMAL`/`LOW`/`MEDIUM`/`HIGH`), with Gemini-3-Pro pinned to `LOW` minimum and `HIGH` for any medium-or-higher request. `off` sends no reasoning config. Gemini 2.0 models have no thinking config.
 
 You can add additional Gemini model IDs to `models.json` under the `google` provider.
 
@@ -836,7 +840,7 @@ You can keep typing while the agent is working. Pressing `enter` during a turn q
 
 To recover the most recently queued message back into the editor (to tweak it before it runs), press `Option+↑`. In VS Code's integrated terminal that chord doesn't survive xterm.js's macOS key handling — use `Option+Shift+↑` there. zot's hint line under the sliding-in queue adapts automatically based on `$TERM_PROGRAM`.
 
-Slash commands also work while the agent is busy. Read-only ones (`/help`, `/jump`, `/btw`, `/sessions`, `/skills`, `/settings`, `/jail`, `/unjail`, `/exit`) take effect immediately. Destructive ones (`/clear`, `/compact`, `/login`, `/logout`, `/model`, `/reload-ext`) cancel the active turn first and then run.
+Slash commands also work while the agent is busy. Non-destructive ones (`/help`, `/jump`, `/btw`, `/sessions`, `/skills`, `/reasoning`, `/settings`, `/jail`, `/unjail`, `/exit`) take effect immediately. Destructive ones (`/clear`, `/compact`, `/login`, `/logout`, `/model`, `/reload-ext`) cancel the active turn first and then run.
 
 
 ## Keys (interactive mode)

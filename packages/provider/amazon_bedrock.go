@@ -330,6 +330,7 @@ func (c *bedrockClient) buildRequest(req Request) (*bedrockRequest, error) {
 	if catalogModel, err := FindModel("amazon-bedrock", resolvedModel); err == nil {
 		model = catalogModel
 	}
+	reasoning := ClampReasoningForModel(model, req.Reasoning)
 	adaptive := usesAdaptiveThinking(model)
 
 	if req.System != "" {
@@ -345,10 +346,10 @@ func (c *bedrockClient) buildRequest(req Request) (*bedrockRequest, error) {
 	if !adaptive {
 		out.InferenceConfig.Temperature = req.Temperature
 	}
-	if adaptive && req.Reasoning != "" {
+	if adaptive && reasoning != "" {
 		out.AdditionalModelRequestFields = map[string]interface{}{
 			"thinking":      map[string]interface{}{"type": "adaptive"},
-			"output_config": map[string]interface{}{"effort": AnthropicAdaptiveEffort(req.Reasoning)},
+			"output_config": map[string]interface{}{"effort": AnthropicAdaptiveEffort(reasoning)},
 		}
 	}
 	out.InferenceConfig.MaxTokens = req.MaxTokens

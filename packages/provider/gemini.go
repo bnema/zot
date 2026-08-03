@@ -141,6 +141,7 @@ func (c *geminiClient) buildRequest(req Request) (*gemRequest, string, error) {
 		}
 	}
 
+	reasoning := ClampReasoningForModel(m, req.Reasoning)
 	out := &gemRequest{}
 
 	// System prompt → systemInstruction.parts[0].text.
@@ -178,8 +179,8 @@ func (c *geminiClient) buildRequest(req Request) (*gemRequest, string, error) {
 	if maxTok > 0 {
 		gc.MaxOutputTokens = &maxTok
 	}
-	if req.Reasoning != "" && m.Reasoning {
-		tc := geminiThinkingConfig(m.ID, req.Reasoning)
+	if reasoning != "" && m.Reasoning {
+		tc := geminiThinkingConfig(m.ID, reasoning)
 		if tc != nil {
 			gc.ThinkingConfig = tc
 		}

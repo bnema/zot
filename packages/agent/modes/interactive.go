@@ -3239,6 +3239,68 @@ func (i *Interactive) applyInputCursorColor() {
 	_, _ = i.cfg.Terminal.Write([]byte(tui.CursorColor256(15) + tui.CursorShapeBlock()))
 }
 
+func reasoningSettingOptions(levels []string) []settingsOption {
+	descriptions := map[string]string{
+		"":        "no reasoning",
+		"minimum": "very brief (~1k tokens)",
+		"low":     "light (~2k tokens)",
+		"medium":  "moderate (~8k tokens)",
+		"high":    "deep (~16k tokens)",
+		"xhigh":   "extra-high effort",
+		"max":     "unconstrained effort",
+	}
+	options := make([]settingsOption, 0, len(levels))
+	for _, level := range levels {
+		label := level
+		if label == "" {
+			label = "off"
+		}
+		options = append(options, settingsOption{value: level, label: label, desc: descriptions[level]})
+	}
+	return options
+}
+
+func (i *Interactive) reasoningSettingItem() settingsItem {
+	levels := []string{"", "minimum", "low", "medium", "high", "xhigh", "max"}
+	reasoning := provider.NormalizeReasoning(i.cfg.Reasoning)
+	desc := "reasoning depth for reasoning-capable models"
+	hint := ""
+	if m, err := provider.FindModel(i.cfg.Provider, i.cfg.Model); err == nil {
+		levels = provider.AvailableReasoningLevels(m)
+		reasoning = provider.ClampReasoningForModel(m, reasoning)
+		if !m.Reasoning {
+			hint = "current model does not support reasoning"
+			desc += "; current model does not support reasoning"
+		} else if len(levels) == 1 {
+			hint = "current model has no adjustable reasoning levels"
+			desc += "; current model has no adjustable reasoning levels"
+		} else {
+			desc += "; only levels supported by the current model are shown"
+		}
+	}
+	options := reasoningSettingOptions(levels)
+	choice := 0
+	for idx, opt := range options {
+		if opt.value == reasoning {
+			choice = idx
+			break
+		}
+	}
+
+	return settingsItem{
+		key:     "reasoning",
+		label:   "reasoning level",
+		desc:    desc,
+		options: options,
+		choice:  choice,
+		hint:    hint,
+	}
+}
+
+func (i *Interactive) openReasoningDialog() {
+	i.settingsDialog.OpenDirectOption(i.reasoningSettingItem())
+}
+
 func (i *Interactive) openSettingsDialog() {
 	detected := tui.DetectImageProtocol()
 	imgEnabled := detected != tui.ImageProtocolNone
@@ -3291,27 +3353,7 @@ func (i *Interactive) openSettingsDialog() {
 		}
 	}
 
-	reasoningOptions := []settingsOption{
-		{value: "", label: "off", desc: "no reasoning"},
-		{value: "minimum", label: "minimum", desc: "very brief (~1k tokens)"},
-		{value: "low", label: "low", desc: "light (~2k tokens)"},
-		{value: "medium", label: "medium", desc: "moderate (~8k tokens)"},
-		{value: "high", label: "high", desc: "deep (~16k tokens)"},
-		{value: "xhigh", label: "xhigh", desc: "extra-high effort"},
-		{value: "max", label: "max", desc: "unconstrained effort on supported models"},
-	}
-	reasoning := provider.NormalizeReasoning(i.cfg.Reasoning)
-	reasoningChoice := 0
-	for idx, opt := range reasoningOptions {
-		if opt.value == reasoning {
-			reasoningChoice = idx
-			break
-		}
-	}
-	reasoningHint := ""
-	if m, err := provider.FindModel(i.cfg.Provider, i.cfg.Model); err == nil && !m.Reasoning {
-		reasoningHint = "current model does not support thinking"
-	}
+	reasoningItem := i.reasoningSettingItem()
 
 	themeName := i.cfg.ThemeName
 	if themeName == "" {
@@ -3456,14 +3498,7 @@ func (i *Interactive) openSettingsDialog() {
 				},
 			},
 		},
-		{
-			key:     "reasoning",
-			label:   "thinking level",
-			desc:    "reasoning depth for thinking-capable models",
-			options: reasoningOptions,
-			choice:  reasoningChoice,
-			hint:    reasoningHint,
-		},
+		reasoningItem,
 		{
 			key:     "theme",
 			label:   "color theme",
@@ -3600,7 +3635,7 @@ func (i *Interactive) openQuickModelPicker(slot int) {
 	if i.cfg.LoggedInProviders != nil {
 		loggedIn = i.cfg.LoggedInProviders()
 	}
-	i.modelDialog.Open(current, loggedIn)
+	i.modelDialog.Open(current, loggedIn, i.cfg.Reasoning)
 }
 
 func (i *Interactive) applyQuickModelSelection(slot int, providerName, model string) {
@@ -4010,7 +4045,7 @@ func (i *Interactive) applyReasoningSetting(level string) {
 	if label == "" {
 		label = "off"
 	}
-	i.statusOK = "thinking level " + label
+	i.statusOK = "reasoning level " + label
 	i.statusErr = ""
 	i.mu.Unlock()
 }
@@ -4349,6 +4384,8 @@ func (i *Interactive) runSlash(ctx context.Context, cmd string) (done bool) {
 			i.statusOK = ""
 			i.mu.Unlock()
 		}
+	case "/reasoning":
+		i.openReasoningDialog()
 	case "/settings":
 		i.openSettingsDialog()
 	case "/sessions":
@@ -4508,7 +4545,7 @@ func (i *Interactive) openModelPickerAfterRefresh(refreshErr error) {
 	if i.cfg.LoggedInProviders != nil {
 		loggedIn = i.cfg.LoggedInProviders()
 	}
-	i.modelDialog.Open(i.cfg.Model, loggedIn)
+	i.modelDialog.Open(i.cfg.Model, loggedIn, i.cfg.Reasoning)
 	i.mu.Lock()
 	if refreshErr != nil {
 		i.statusErr = "llama.cpp model refresh: " + refreshErr.Error()

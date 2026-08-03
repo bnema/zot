@@ -2504,15 +2504,15 @@ func StatusBar(p StatusBarParams) []string {
 	const pad = "  " // 2 spaces
 
 	left := fmt.Sprintf("(%s) %s", p.Provider, p.Model)
-	thinking := thinkingLevelLabel(p.Reasoning)
-	thinkingText := ""
-	if thinking != "" {
-		thinkingText = "thinking: " + thinking
+	reasoning := reasoningLevelLabel(p.Reasoning)
+	reasoningText := ""
+	if reasoning != "" {
+		reasoningText = "reasoning: " + reasoning
 	}
 	statsText := strings.Join(stats, " ")
 	middleParts := make([]string, 0, 2)
-	if thinkingText != "" {
-		middleParts = append(middleParts, thinkingText)
+	if reasoningText != "" {
+		middleParts = append(middleParts, reasoningText)
 	}
 	if statsText != "" {
 		middleParts = append(middleParts, statsText)
@@ -2541,7 +2541,7 @@ func StatusBar(p StatusBarParams) []string {
 	if middle != "" {
 		leftBuilder.WriteString(pad)
 		// Highlight the opt-in max tier; other status information stays muted.
-		leftBuilder.WriteString(th.FG256(thinkingStatusColor(th, thinkingText), middle))
+		leftBuilder.WriteString(th.FG256(reasoningStatusColor(th, reasoningText), middle))
 	}
 
 	cwd := shortenHome(p.CWD)
@@ -2570,13 +2570,13 @@ func StatusBar(p StatusBarParams) []string {
 		modelLine := pad + th.FG256(th.Muted, left)
 		lines := []string{busyLine}
 		if middle != "" && visibleWidth(modelLine+pad+th.FG256(th.Muted, middle)) > p.Cols {
-			lines = appendWrappedStatusLines(lines, th, pad, left, thinkingText, statsText, p.Cols)
+			lines = appendWrappedStatusLines(lines, th, pad, left, reasoningText, statsText, p.Cols)
 		} else {
 			var infoBuilder strings.Builder
 			infoBuilder.WriteString(modelLine)
 			if middle != "" {
 				infoBuilder.WriteString(pad)
-				infoBuilder.WriteString(th.FG256(thinkingStatusColor(th, thinkingText), middle))
+				infoBuilder.WriteString(th.FG256(reasoningStatusColor(th, reasoningText), middle))
 			}
 			lines = append(lines, infoBuilder.String())
 		}
@@ -2592,7 +2592,7 @@ func StatusBar(p StatusBarParams) []string {
 	// into an awkward position on small widths.
 	if p.Cols > 0 && p.BusyPrefix == "" && middle != "" && visibleWidth(primary) > p.Cols {
 		var lines []string
-		lines = appendWrappedStatusLines(lines, th, pad, left, thinkingText, statsText, p.Cols)
+		lines = appendWrappedStatusLines(lines, th, pad, left, reasoningText, statsText, p.Cols)
 		if cwd != "" {
 			lines = append(lines, pad+th.FG256(th.Muted, cwd))
 		}
@@ -2609,9 +2609,9 @@ func StatusBar(p StatusBarParams) []string {
 	return []string{primary, cwdRendered}
 }
 
-func appendWrappedStatusLines(lines []string, th Theme, pad, modelText, thinkingText, statsText string, cols int) []string {
+func appendWrappedStatusLines(lines []string, th Theme, pad, modelText, reasoningText, statsText string, cols int) []string {
 	modelLine := pad + th.FG256(th.Muted, modelText)
-	if thinkingText == "" {
+	if reasoningText == "" {
 		lines = append(lines, modelLine)
 		if statsText != "" {
 			lines = append(lines, pad+th.FG256(th.Muted, statsText))
@@ -2619,13 +2619,13 @@ func appendWrappedStatusLines(lines []string, th Theme, pad, modelText, thinking
 		return lines
 	}
 
-	modelThinkingPlain := pad + modelText + pad + thinkingText
-	thinkingColor := thinkingStatusColor(th, thinkingText)
-	if cols <= 0 || visibleWidth(modelThinkingPlain) <= cols {
-		lines = append(lines, pad+th.FG256(thinkingColor, modelText+pad+thinkingText))
+	modelReasoningPlain := pad + modelText + pad + reasoningText
+	reasoningColor := reasoningStatusColor(th, reasoningText)
+	if cols <= 0 || visibleWidth(modelReasoningPlain) <= cols {
+		lines = append(lines, pad+th.FG256(reasoningColor, modelText+pad+reasoningText))
 	} else {
 		lines = append(lines, modelLine)
-		lines = append(lines, pad+th.FG256(thinkingColor, thinkingText))
+		lines = append(lines, pad+th.FG256(reasoningColor, reasoningText))
 	}
 	if statsText != "" {
 		lines = append(lines, pad+th.FG256(th.Muted, statsText))
@@ -2633,14 +2633,14 @@ func appendWrappedStatusLines(lines []string, th Theme, pad, modelText, thinking
 	return lines
 }
 
-func thinkingStatusColor(th Theme, thinkingText string) int {
-	if strings.HasSuffix(thinkingText, ": max") {
+func reasoningStatusColor(th Theme, reasoningText string) int {
+	if strings.HasSuffix(reasoningText, ": max") {
 		return th.ThinkingMax
 	}
 	return th.Muted
 }
 
-func thinkingLevelLabel(level string) string {
+func reasoningLevelLabel(level string) string {
 	switch strings.ToLower(strings.TrimSpace(level)) {
 	case "", "off", "none", "no", "false", "disabled":
 		return ""

@@ -3,6 +3,7 @@ package provider
 import (
 	"encoding/json"
 	"fmt"
+	"maps"
 	"os"
 	"strings"
 )
@@ -56,18 +57,46 @@ func CustomProviders() map[string]CustomProviderConfig { return customProviders 
 
 // UserModel is a single model entry in the user's models.json.
 type UserModel struct {
-	ID              string   `json:"id"`
-	Name            string   `json:"name"`
-	Reasoning       bool     `json:"reasoning"`
-	ContextWindow   int      `json:"contextWindow"`
-	MaxTokens       int      `json:"maxTokens"`
-	PriceInput      float64  `json:"priceInput"`
-	PriceOutput     float64  `json:"priceOutput"`
-	PriceCacheRead  float64  `json:"priceCacheRead"`
-	PriceCacheWrite float64  `json:"priceCacheWrite"`
-	BaseURL         string   `json:"baseUrl,omitempty"`
-	Input           []string `json:"input"` // informational only
-	API             string   `json:"api"`   // informational only
+	ID                string            `json:"id"`
+	Name              string            `json:"name"`
+	Reasoning         bool              `json:"reasoning"`
+	ReasoningLevelMap map[string]string `json:"reasoningLevelMap,omitempty"`
+	ContextWindow     int               `json:"contextWindow"`
+	MaxTokens         int               `json:"maxTokens"`
+	PriceInput        float64           `json:"priceInput"`
+	PriceOutput       float64           `json:"priceOutput"`
+	PriceCacheRead    float64           `json:"priceCacheRead"`
+	PriceCacheWrite   float64           `json:"priceCacheWrite"`
+	BaseURL           string            `json:"baseUrl,omitempty"`
+	Input             []string          `json:"input"` // informational only
+	API               string            `json:"api"`   // informational only
+}
+
+func normalizeReasoningLevelMap(levelMap map[string]string, modelRef string) (map[string]string, []string) {
+	if levelMap == nil {
+		return nil, nil
+	}
+	normalized := make(map[string]string, len(levelMap))
+	var warnings []string
+	for rawLevel, rawTarget := range levelMap {
+		level := NormalizeReasoning(rawLevel)
+		if reasoningLevelRank(level) == 0 {
+			warnings = append(warnings, fmt.Sprintf("models.json: %s reasoningLevelMap has unknown level %q; entry ignored", modelRef, rawLevel))
+			continue
+		}
+		target := NormalizeReasoning(rawTarget)
+		if rawTarget != "" && target == "" {
+			// Explicit off aliases remove the level just like an empty value.
+			normalized[level] = ""
+			continue
+		}
+		if target != "" && reasoningLevelRank(target) == 0 {
+			warnings = append(warnings, fmt.Sprintf("models.json: %s reasoningLevelMap has unknown target %q; entry ignored", modelRef, rawTarget))
+			continue
+		}
+		normalized[level] = target
+	}
+	return normalized, warnings
 }
 
 // LoadUserModels reads a models.json file and returns the models
@@ -166,24 +195,37 @@ func LoadUserModelsWithWarnings(path string) ([]Model, []string) {
 					um.MaxTokens = 0
 				}
 			}
+			levelMap, levelWarnings := normalizeReasoningLevelMap(um.ReasoningLevelMap, normalized+"/"+um.ID)
+			warnings = append(warnings, levelWarnings...)
+			if !um.Reasoning && len(levelMap) > 0 {
+				warnings = append(warnings, fmt.Sprintf("models.json: %s reasoningLevelMap ignored because reasoning is false", normalized+"/"+um.ID))
+				levelMap = nil
+			}
+
 			// Propagate provider-level BaseURL to models without their own.
 			modelBaseURL := um.BaseURL
 			if modelBaseURL == "" {
 				modelBaseURL = prov.BaseURL
 			}
+			modelAPI := ""
+			if cfg, ok := customProviders[normalized]; ok {
+				modelAPI = cfg.API
+			}
 			m := Model{
-				Provider:        normalized,
-				ID:              um.ID,
-				DisplayName:     um.Name,
-				ContextWindow:   um.ContextWindow,
-				MaxOutput:       um.MaxTokens,
-				Reasoning:       um.Reasoning,
-				PriceInput:      um.PriceInput,
-				PriceOutput:     um.PriceOutput,
-				PriceCacheRead:  um.PriceCacheRead,
-				PriceCacheWrite: um.PriceCacheWrite,
-				BaseURL:         modelBaseURL,
-				Source:          "user",
+				Provider:          normalized,
+				ID:                um.ID,
+				DisplayName:       um.Name,
+				API:               modelAPI,
+				ContextWindow:     um.ContextWindow,
+				MaxOutput:         um.MaxTokens,
+				Reasoning:         um.Reasoning,
+				ReasoningLevelMap: levelMap,
+				PriceInput:        um.PriceInput,
+				PriceOutput:       um.PriceOutput,
+				PriceCacheRead:    um.PriceCacheRead,
+				PriceCacheWrite:   um.PriceCacheWrite,
+				BaseURL:           modelBaseURL,
+				Source:            "user",
 			}
 			if m.DisplayName == "" {
 				m.DisplayName = m.ID
@@ -247,6 +289,12 @@ func SetUserModels(models []Model) {
 				existing.MaxOutput = um.MaxOutput
 			}
 			existing.Reasoning = um.Reasoning
+			if um.ReasoningLevelMap != nil {
+				existing.ReasoningLevelMap = maps.Clone(um.ReasoningLevelMap)
+			}
+			if um.API != "" {
+				existing.API = um.API
+			}
 			if um.BaseURL != "" {
 				existing.BaseURL = um.BaseURL
 			}

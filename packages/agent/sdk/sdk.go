@@ -297,7 +297,7 @@ func (r *Runtime) SetModel(model string) error {
 	return nil
 }
 
-// SetReasoning changes the thinking level used by subsequent prompts.
+// SetReasoning changes the reasoning level used by subsequent prompts.
 func (r *Runtime) SetReasoning(level string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()

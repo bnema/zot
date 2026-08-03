@@ -17,12 +17,14 @@ import (
 // Typing characters narrows the list via a fuzzy substring match that
 // ignores punctuation (e.g. "opus46" matches "claude-opus-4-6").
 type modelDialog struct {
-	active  bool
-	all     []provider.Model // full catalog, sorted
-	view    []provider.Model // filtered view shown to the user
-	cursor  int
-	current string // currently selected model id (highlighted)
-	query   string // live filter text typed by the user
+	active        bool
+	all           []provider.Model // full catalog, sorted
+	view          []provider.Model // filtered view shown to the user
+	cursor        int
+	current       string // currently selected model id (highlighted)
+	reasoning     string // current reasoning level, shown for discoverability
+	showReasoning bool   // whether this picker can route to /reasoning
+	query         string // live filter text typed by the user
 
 	// Column widths are computed once on Open() across the entire
 	// catalog so the layout stays stable while the user scrolls or
@@ -46,7 +48,7 @@ func newModelDialog() *modelDialog {
 
 // Open shows the dialog. current is the currently active model id so
 // it can be pre-selected.
-func (d *modelDialog) Open(current string, loggedInProviders []string) {
+func (d *modelDialog) Open(current string, loggedInProviders []string, reasoning ...string) {
 	d.active = true
 	// Only surface models the user can actually reach: a provider is
 	// shown only when it has a resolvable credential (api key, oauth
@@ -65,6 +67,11 @@ func (d *modelDialog) Open(current string, loggedInProviders []string) {
 	}
 	d.all = sortedModels(filtered)
 	d.current = current
+	d.reasoning = ""
+	d.showReasoning = len(reasoning) > 0
+	if d.showReasoning {
+		d.reasoning = provider.NormalizeReasoning(reasoning[0])
+	}
 	d.query = ""
 	d.provW, d.idW = columnWidths(d.all)
 	d.refilter()
@@ -147,6 +154,13 @@ func (d *modelDialog) Render(th tui.Theme, width int) []string {
 		hint += " - type to filter"
 	}
 	lines = append(lines, th.FG256(th.Muted, hint))
+	if d.showReasoning {
+		reasoning := d.reasoning
+		if reasoning == "" {
+			reasoning = "off"
+		}
+		lines = append(lines, th.FG256(th.Muted, "✦ supports reasoning; current reasoning: "+reasoning+"; change with /reasoning"))
+	}
 
 	if len(d.view) == 0 {
 		msg := "  no models match " + fmt.Sprintf("%q", d.query)
