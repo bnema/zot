@@ -1330,6 +1330,13 @@ func (i *Interactive) redraw() {
 	}
 	var suggest []string
 	currentInput := i.ed.Value()
+	if i.suggest.SkillInputStarted(currentInput) {
+		var list []*skills.Skill
+		if i.cfg.SkillSnapshot != nil {
+			list = i.cfg.SkillSnapshot()
+		}
+		i.suggest.SetSkills(list)
+	}
 	// Slash popup renders even while the agent is busy so the user
 	// can queue a destructive command (/clear, /compact, /logout,
 	// /model) or a read-only one (/help, /jump, /sessions, etc.)

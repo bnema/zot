@@ -1,6 +1,11 @@
 package modes
 
-import "testing"
+import (
+	"slices"
+	"testing"
+
+	"github.com/patriceckhart/zot/packages/agent/skills"
+)
 
 func TestSlashSuggesterHidesUnjailUntilJailed(t *testing.T) {
 	s := newSlashSuggester()
@@ -58,6 +63,57 @@ func TestSlashSuggesterBuiltinsShadowExtensionsCaseInsensitively(t *testing.T) {
 	matches := commandNames(s.matches("/exit"))
 	if len(matches) != 1 || matches[0] != "/exit" {
 		t.Fatalf("matches = %v, want only built-in /exit", matches)
+	}
+}
+
+func TestSlashSuggesterCompletesVisibleSkills(t *testing.T) {
+	s := newSlashSuggester()
+	s.SetSkills([]*skills.Skill{
+		{Name: "test-fix", Description: "Fix failing tests."},
+		{Name: "ai-development-workflow", Description: "Guide AI development."},
+		{Name: "manual-only", Description: "Explicit invocation only.", DisableModelInvocation: true},
+		{Name: "builtin", Description: "Internal.", Builtin: true},
+	})
+
+	if got, want := commandNames(s.matches("/skill:")), []string{
+		"/skill:ai-development-workflow",
+		"/skill:manual-only",
+		"/skill:test-fix",
+	}; !slices.Equal(got, want) {
+		t.Fatalf("matches = %v, want %v", got, want)
+	}
+	s.lastMatches = s.matches("/skill:")
+	if got := s.Selection("/skill:"); got != "/skill:ai-development-workflow" {
+		t.Fatalf("initial selection = %q", got)
+	}
+	s.Down()
+	if got := s.Selection("/skill:"); got != "/skill:manual-only" {
+		t.Fatalf("selection after down = %q", got)
+	}
+	if got := commandNames(s.matches("/SKILL:ai-dev")); !slices.Equal(got, []string{"/skill:ai-development-workflow"}) {
+		t.Fatalf("filtered matches = %v", got)
+	}
+	if got := s.Selection("/skill:ai-dev"); got != "/skill:ai-development-workflow" {
+		t.Fatalf("selection = %q", got)
+	}
+}
+
+func TestSlashSuggesterRefreshesSkillsOncePerInputSession(t *testing.T) {
+	s := newSlashSuggester()
+	if s.SkillInputStarted("/skill") {
+		t.Fatal("refresh started before colon")
+	}
+	if !s.SkillInputStarted("/skill:") {
+		t.Fatal("first /skill: did not request refresh")
+	}
+	if s.SkillInputStarted("/skill:review") {
+		t.Fatal("same input session requested another refresh")
+	}
+	if s.SkillInputStarted("") {
+		t.Fatal("leaving skill input requested refresh")
+	}
+	if !s.SkillInputStarted("/SKILL:") {
+		t.Fatal("new case-insensitive input session did not request refresh")
 	}
 }
 

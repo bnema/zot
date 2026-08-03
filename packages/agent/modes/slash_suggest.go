@@ -6,6 +6,7 @@ import (
 
 	"github.com/mattn/go-runewidth"
 
+	"github.com/patriceckhart/zot/packages/agent/skills"
 	"github.com/patriceckhart/zot/packages/tui"
 )
 
@@ -74,6 +75,12 @@ type slashSuggester struct {
 	// iteration order doesn't reshuffle the popup between frames.
 	extra []slashCommand
 
+	// skills are dynamic /skill:<name> entries. skillInputActive tracks
+	// whether the editor is already in one autocomplete session so the
+	// interactive mode can refresh discovery once instead of every frame.
+	skills           []slashCommand
+	skillInputActive bool
+
 	// lastMatches is the list shown in the most recent Render call.
 	// Up/Down read it so they know which indexes to skip across
 	// header rows.
@@ -87,14 +94,45 @@ type slashSuggester struct {
 // randomises).
 func (s *slashSuggester) SetExtra(cmds []slashCommand) {
 	sorted := append([]slashCommand(nil), cmds...)
-	sort.Slice(sorted, func(i, j int) bool {
-		left, right := strings.ToLower(sorted[i].Name), strings.ToLower(sorted[j].Name)
+	sortSlashCommands(sorted)
+	s.extra = sorted
+}
+
+// SetSkills updates the user-visible /skill:<name> completion entries.
+// Built-ins stay hidden, while skills that disable model invocation remain
+// available because explicit invocation is their intended entry point.
+func (s *slashSuggester) SetSkills(list []*skills.Skill) {
+	visible := skills.VisibleSkills(list)
+	commands := make([]slashCommand, 0, len(visible))
+	for _, skill := range visible {
+		commands = append(commands, slashCommand{
+			Name: skillCommandPrefix + skill.Name,
+			Desc: strings.TrimSpace(skill.Description),
+		})
+	}
+	sortSlashCommands(commands)
+	s.skills = commands
+	s.cursor = 0
+}
+
+func sortSlashCommands(commands []slashCommand) {
+	sort.Slice(commands, func(i, j int) bool {
+		left, right := strings.ToLower(commands[i].Name), strings.ToLower(commands[j].Name)
 		if left == right {
-			return sorted[i].Name < sorted[j].Name
+			return commands[i].Name < commands[j].Name
 		}
 		return left < right
 	})
-	s.extra = sorted
+}
+
+// SkillInputStarted reports the first frame of a /skill: autocomplete
+// session. Leaving the prefix resets it, so the next attempt refreshes skill
+// discovery while ordinary redraws reuse the existing list.
+func (s *slashSuggester) SkillInputStarted(input string) bool {
+	active := strings.HasPrefix(strings.ToLower(input), skillCommandPrefix)
+	started := active && !s.skillInputActive
+	s.skillInputActive = active
+	return started
 }
 
 // SetJailed updates the current sandbox state. Called once per render
@@ -239,8 +277,12 @@ func (s *slashSuggester) matches(input string) []slashCommand {
 		return nil
 	}
 	matchPrefix := strings.ToLower(input)
+	catalog := s.allCatalog()
+	if strings.HasPrefix(matchPrefix, skillCommandPrefix) {
+		catalog = s.skills
+	}
 	var out []slashCommand
-	for _, c := range s.allCatalog() {
+	for _, c := range catalog {
 		if c.Header {
 			// Headers ride along whenever there's at least one
 			// matching command from their group; we drop trailing

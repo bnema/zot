@@ -82,7 +82,7 @@ For normal skills, the system prompt tells the model the skill names and
 short descriptions. When a request matches, the model calls the `skill` tool
 to load the full instructions on demand.
 
-To force a specific skill, invoke it as a slash command:
+To force a specific skill, invoke it as a slash command. Typing `/skill:` opens a filtered list of discovered user skills. Use the arrow keys to select one, `tab` to complete its name, or `enter` to invoke the highlighted skill.
 
 ```text
 /skill:code-review
