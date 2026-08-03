@@ -237,6 +237,36 @@ type shellCommand struct {
 	isBash bool
 }
 
+type shellInvocation struct {
+	path string
+	args []string
+}
+
+func directShellInvocation(shell shellCommand, command string) shellInvocation {
+	return shellInvocation{path: shell.path, args: []string{shell.flag, command}}
+}
+
+func systemdScopeInvocation(systemdRun string, shell shellCommand, command string) shellInvocation {
+	// systemd-run expands $ in arguments even for scope units. Doubling it
+	// preserves the command exactly for the shell on all versions that support
+	// OOMPolicy, including versions before --expand-environment=no was added.
+	command = strings.ReplaceAll(command, "$", "$$")
+	return shellInvocation{
+		path: systemdRun,
+		args: []string{
+			"--user",
+			"--scope",
+			"--quiet",
+			"--collect",
+			"--property=OOMPolicy=continue",
+			"--",
+			shell.path,
+			shell.flag,
+			command,
+		},
+	}
+}
+
 func currentShell() shellCommand {
 	return resolveShell(runtime.GOOS, isExecutableFile, exec.LookPath)
 }
@@ -270,6 +300,6 @@ func shellDescription(shell shellCommand) string {
 }
 
 func newShellCmd(ctx context.Context, command string) *exec.Cmd {
-	shell := currentShell()
-	return exec.CommandContext(ctx, shell.path, shell.flag, command)
+	invocation := platformShellInvocation(currentShell(), command)
+	return exec.CommandContext(ctx, invocation.path, invocation.args...)
 }

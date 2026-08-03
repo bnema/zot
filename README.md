@@ -230,7 +230,7 @@ Print-mode stats contain `provider`, `model`, `prompt_tokens`, `reasoning_tokens
 - `read`: read text files, or inline images (PNG, JPEG, GIF, WebP).
 - `write`: create or overwrite files, making parent directories as needed.
 - `edit`: one or more exact-match replacements in an existing file.
-- `bash`: run a command in the session cwd with merged stdout/stderr and a timeout. On Unix, zot uses `/bin/bash -c` when available, then `bash -c` from `PATH`, and falls back to POSIX `/bin/sh -c` when Bash is unavailable. On Windows, it uses `cmd /C`. macOS ships Bash 3.2 by default, so newer Bash features may be unavailable.
+- `bash`: run a command in the session cwd with merged stdout/stderr and a timeout. On Unix, zot uses `/bin/bash -c` when available, then `bash -c` from `PATH`, and falls back to POSIX `/bin/sh -c` when Bash is unavailable. On Linux with a compatible systemd user manager, zot automatically places each command in a transient scope with `OOMPolicy=continue`, preventing systemd from killing zot and its surrounding terminal when the command is OOM-killed. If the scope cannot be created, zot uses normal direct execution. This does not impose a memory limit or protect the machine from system-wide memory exhaustion. On Windows, zot uses `cmd /C`. macOS ships Bash 3.2 by default, so newer Bash features may be unavailable.
 
 When the sandbox is on (see `/jail`), all four tools refuse paths outside the session cwd.
 

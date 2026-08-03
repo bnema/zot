@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 
@@ -334,6 +335,28 @@ func TestShellDescription(t *testing.T) {
 				t.Fatalf("shellDescription() = %q, want %q", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestSystemdScopeInvocation(t *testing.T) {
+	shell := shellCommand{path: "/bin/bash", flag: "-c", isBash: true}
+	got := systemdScopeInvocation("/usr/bin/systemd-run", shell, `printf '%s %s\n' "$HOME" "$$"`)
+	if got.path != "/usr/bin/systemd-run" {
+		t.Fatalf("path = %q", got.path)
+	}
+	wantArgs := []string{
+		"--user",
+		"--scope",
+		"--quiet",
+		"--collect",
+		"--property=OOMPolicy=continue",
+		"--",
+		"/bin/bash",
+		"-c",
+		`printf '%s %s\n' "$$HOME" "$$$$"`,
+	}
+	if !slices.Equal(got.args, wantArgs) {
+		t.Fatalf("args = %#v, want %#v", got.args, wantArgs)
 	}
 }
 
