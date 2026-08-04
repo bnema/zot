@@ -3014,21 +3014,17 @@ func (i *Interactive) emitAlertLocked(alert extproto.AlertRequest) {
 	_ = tui.WriteBell(i.cfg.Terminal)
 }
 
-// scheduleMainAlert emits a main-session alert now when no paced text remains,
-// or defers it until the pacer drains and the next redraw commits the final frame.
+// scheduleMainAlert defers a main-session alert until the next redraw
+// commits the final frame. Keeping this deferred even when no paced text is
+// pending avoids racing the pacer's final state transition.
 func (i *Interactive) scheduleMainAlert(reason string) {
 	if reason == "" {
 		return
 	}
 	i.mu.Lock()
-	if len(i.streamPending) > 0 {
-		i.pendingAlert = &extproto.AlertRequest{Kind: extproto.AlertKindBell, Reason: reason}
-		i.mu.Unlock()
-		i.invalidate()
-		return
-	}
-	i.emitAlertLocked(extproto.AlertRequest{Kind: extproto.AlertKindBell, Reason: reason})
+	i.pendingAlert = &extproto.AlertRequest{Kind: extproto.AlertKindBell, Reason: reason}
 	i.mu.Unlock()
+	i.invalidate()
 }
 
 // ClearNotes removes every note line owned by extName from the

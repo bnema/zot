@@ -30,17 +30,40 @@ import (
 
 // interactiveExtHooks is a tiny adapter that lets the extension
 // manager call back into the Interactive instance built later in
-// runInteractive. The forward-declared *modes.Interactive is filled
-// in immediately after manager construction.
+// runInteractive. Alerts are buffered until the instance is attached so
+// an extension that signals attention during startup is not silently lost.
 type interactiveExtHooks struct {
-	ivPtr **modes.Interactive
+	mu            sync.Mutex
+	interactive   *modes.Interactive
+	pendingAlerts []interactiveAlert
+}
+
+type interactiveAlert struct {
+	extName string
+	alert   extproto.AlertRequest
 }
 
 func (h *interactiveExtHooks) iv() *modes.Interactive {
-	if h == nil || h.ivPtr == nil {
+	if h == nil {
 		return nil
 	}
-	return *h.ivPtr
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.interactive
+}
+
+func (h *interactiveExtHooks) attachInteractive(iv *modes.Interactive) {
+	if h == nil || iv == nil {
+		return
+	}
+	h.mu.Lock()
+	h.interactive = iv
+	pending := h.pendingAlerts
+	h.pendingAlerts = nil
+	for _, item := range pending {
+		iv.Alert(item.extName, item.alert)
+	}
+	h.mu.Unlock()
 }
 
 func (h *interactiveExtHooks) Notify(extName, level, message string) {
@@ -49,9 +72,18 @@ func (h *interactiveExtHooks) Notify(extName, level, message string) {
 	}
 }
 func (h *interactiveExtHooks) Alert(extName string, alert extproto.AlertRequest) {
-	if iv := h.iv(); iv != nil {
-		iv.Alert(extName, alert)
+	if h == nil {
+		return
 	}
+	h.mu.Lock()
+	if h.interactive == nil {
+		h.pendingAlerts = append(h.pendingAlerts, interactiveAlert{extName: extName, alert: alert})
+		h.mu.Unlock()
+		return
+	}
+	iv := h.interactive
+	h.mu.Unlock()
+	iv.Alert(extName, alert)
 }
 func (h *interactiveExtHooks) Submit(text string) {
 	if iv := h.iv(); iv != nil {
@@ -659,10 +691,10 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 	sharedSandbox := r.Sandbox
 
 	// Build the extension manager BEFORE the agent so we can fold
-	// extension-defined tools into the registry. Forward-declare iv so
-	// the host hooks adapter can dereference it after construction.
+	// extension-defined tools into the registry. Attach the interactive
+	// host after constructing it below so startup alerts can be buffered.
 	var iv *modes.Interactive
-	extHooks := &interactiveExtHooks{ivPtr: &iv}
+	extHooks := &interactiveExtHooks{}
 	extMgr := extensions.New(ZotHome(), r.CWD, version, r.Provider, r.Model, extHooks)
 	var startupExtensionErrors []string
 	// --ext paths first so they win against installed extensions of
@@ -1447,6 +1479,7 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 			}
 		},
 	})
+	extHooks.attachInteractive(iv)
 
 	// Bind the interactive TUI as the Confirmer. We deferred this
 	// until now because the gate is constructed before the TUI
