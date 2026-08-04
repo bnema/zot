@@ -63,10 +63,10 @@ func (h *interactiveExtHooks) attachInteractive(iv *modes.Interactive) {
 	h.interactive = iv
 	pending := h.pendingAlerts
 	h.pendingAlerts = nil
+	h.mu.Unlock()
 	for _, item := range pending {
 		iv.Alert(item.extName, item.alert)
 	}
-	h.mu.Unlock()
 }
 
 func (h *interactiveExtHooks) Notify(extName, level, message string) {
