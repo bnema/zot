@@ -32,6 +32,9 @@ import (
 // manager call back into the Interactive instance built later in
 // runInteractive. Alerts are buffered until the instance is attached so
 // an extension that signals attention during startup is not silently lost.
+// Keep the startup buffer bounded because extensions can flood their host.
+const maxBufferedInteractiveAlerts = 64
+
 type interactiveExtHooks struct {
 	mu            sync.Mutex
 	interactive   *modes.Interactive
@@ -77,7 +80,9 @@ func (h *interactiveExtHooks) Alert(extName string, alert extproto.AlertRequest)
 	}
 	h.mu.Lock()
 	if h.interactive == nil {
-		h.pendingAlerts = append(h.pendingAlerts, interactiveAlert{extName: extName, alert: alert})
+		if len(h.pendingAlerts) < maxBufferedInteractiveAlerts {
+			h.pendingAlerts = append(h.pendingAlerts, interactiveAlert{extName: extName, alert: alert})
+		}
 		h.mu.Unlock()
 		return
 	}

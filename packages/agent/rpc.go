@@ -171,6 +171,8 @@ func (h *rpcExtHooks) OpenPanel(string, extproto.PanelSpec)                 {}
 func (h *rpcExtHooks) UpdatePanel(string, string, string, []string, string) {}
 func (h *rpcExtHooks) ClosePanel(string, string)                            {}
 
+const maxPendingRPCExtEvents = 64
+
 type rpcServer struct {
 	ctx      context.Context
 	args     Args
@@ -486,7 +488,9 @@ func (s *rpcServer) writeExtensionEvent(payload map[string]any) {
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
 	if !s.started || !s.authed {
-		s.pendingExtEvents = append(s.pendingExtEvents, b)
+		if len(s.pendingExtEvents) < maxPendingRPCExtEvents {
+			s.pendingExtEvents = append(s.pendingExtEvents, b)
+		}
 		return
 	}
 	s.writeLocked(b)

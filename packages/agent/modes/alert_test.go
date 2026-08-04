@@ -89,26 +89,36 @@ func TestCancelledMainTurnDoesNotBell(t *testing.T) {
 	i.startTurn(context.Background(), "question")
 
 	deadline := time.Now().Add(time.Second)
+	started := false
 	for time.Now().Before(deadline) {
 		i.mu.Lock()
 		busy := i.busy
 		i.mu.Unlock()
 		if busy {
+			started = true
 			break
 		}
 		time.Sleep(time.Millisecond)
 	}
+	if !started {
+		t.Fatal("turn did not enter busy state")
+	}
 	i.CancelTurn()
 
 	deadline = time.Now().Add(time.Second)
+	stopped := false
 	for time.Now().Before(deadline) {
 		i.mu.Lock()
 		busy := i.busy
 		i.mu.Unlock()
 		if !busy {
+			stopped = true
 			break
 		}
 		time.Sleep(time.Millisecond)
+	}
+	if !stopped {
+		t.Fatal("turn did not finish after cancellation")
 	}
 	if got := term.String(); got != "" {
 		t.Fatalf("cancelled main turn alert output = %q, want empty", got)

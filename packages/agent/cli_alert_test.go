@@ -10,12 +10,15 @@ import (
 func TestInteractiveExtHooksBufferStartupAlerts(t *testing.T) {
 	hooks := &interactiveExtHooks{}
 	hooks.Alert("question-ext", extproto.AlertRequest{Kind: extproto.AlertKindBell, Reason: "question_ready"})
+	for n := 0; n < maxBufferedInteractiveAlerts+8; n++ {
+		hooks.Alert("question-ext", extproto.AlertRequest{Kind: extproto.AlertKindBell, Reason: "flood"})
+	}
 
 	hooks.mu.Lock()
 	pending := len(hooks.pendingAlerts)
 	hooks.mu.Unlock()
-	if pending != 1 {
-		t.Fatalf("pending startup alerts = %d, want 1", pending)
+	if pending != maxBufferedInteractiveAlerts {
+		t.Fatalf("pending startup alerts = %d, want bounded capacity %d", pending, maxBufferedInteractiveAlerts)
 	}
 
 	iv := &modes.Interactive{}
