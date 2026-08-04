@@ -2,6 +2,16 @@ package agent
 
 import "testing"
 
+func TestParseArgsSubagentAndReasoning(t *testing.T) {
+	args, err := ParseArgs([]string{"--swarm-agent", "/tmp/in.sock", "--subagent", "reviewer", "--reasoning", "high", "task"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if args.Mode != ModeSwarmAgent || args.Subagent != "reviewer" || args.Reasoning != "high" || args.Prompt != "task" {
+		t.Fatalf("parsed args = mode=%q subagent=%q reasoning=%q prompt=%q", args.Mode, args.Subagent, args.Reasoning, args.Prompt)
+	}
+}
+
 func TestParseArgsTemperatureAllowsZero(t *testing.T) {
 	args, err := ParseArgs([]string{"--temperature", "0"})
 	if err != nil {

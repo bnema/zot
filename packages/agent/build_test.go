@@ -59,6 +59,118 @@ func TestReadAgentsContextLoadsGlobalAndAncestors(t *testing.T) {
 	}
 }
 
+func TestFindSubagentProfileReportsDiscoveryFailure(t *testing.T) {
+	profileSource := filepath.Join(t.TempDir(), "profiles.md")
+	if err := os.WriteFile(profileSource, []byte("not a directory"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("ZOT_AGENT_PROFILES", profileSource)
+
+	profile, err := findSubagentProfile("", "reviewer")
+	if profile != nil {
+		t.Fatalf("profile = %#v, want nil", profile)
+	}
+	if err == nil || !strings.Contains(err.Error(), "discover subagent profiles") {
+		t.Fatalf("error = %v, want discovery failure", err)
+	}
+	if strings.Contains(err.Error(), profileSource) {
+		t.Fatalf("error leaked profile path: %v", err)
+	}
+}
+
+func TestResolveIncludesNamedSubagentsListWhenAutoSwarmIsEnabled(t *testing.T) {
+	root := t.TempDir()
+	home := filepath.Join(root, "home")
+	zotHome := filepath.Join(root, "zot-home")
+	project := filepath.Join(root, "repo")
+	if err := os.MkdirAll(filepath.Join(home, ".agents", "agents"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(project, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", home)
+	t.Setenv("ZOT_HOME", zotHome)
+	t.Setenv("ZOT_AGENT_PROFILES", filepath.Join(home, ".agents", "agents"))
+	enabled := true
+	if err := SaveConfig(Config{Provider: "openai", Model: "gpt-5", AutoSwarmEnabled: &enabled}); err != nil {
+		t.Fatal(err)
+	}
+	profile := `---
+name: reviewer
+description: Read-only code reviewer
+thinking: high
+---
+Review without editing.
+`
+	if err := os.WriteFile(filepath.Join(home, ".agents", "agents", "reviewer.md"), []byte(profile), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	r, err := Resolve(Args{CWD: project}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"[subagents_list]", "reviewer", "Read-only code reviewer", "[/subagents_list]"} {
+		if !strings.Contains(r.SystemPrompt, want) {
+			t.Fatalf("system prompt missing %q:\n%s", want, r.SystemPrompt)
+		}
+	}
+}
+
+func TestResolveAppliesSelectedSubagentProfile(t *testing.T) {
+	root := t.TempDir()
+	home := filepath.Join(root, "home")
+	zotHome := filepath.Join(root, "zot-home")
+	project := filepath.Join(root, "repo")
+	if err := os.MkdirAll(filepath.Join(home, ".agents", "agents"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(project, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", home)
+	t.Setenv("ZOT_HOME", zotHome)
+	t.Setenv("ZOT_AGENT_PROFILES", filepath.Join(home, ".agents", "agents"))
+	if err := SaveConfig(Config{Provider: "openai", Model: "gpt-5", Reasoning: "high"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(zotHome, "AGENTS.md"), []byte("global context"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	profile := `---
+name: reviewer
+description: Read-only code reviewer
+tools: read
+thinking: off
+systemPromptMode: replace
+inheritProjectContext: false
+inheritSkills: false
+---
+You are a read-only reviewer.
+`
+	if err := os.WriteFile(filepath.Join(home, ".agents", "agents", "reviewer.md"), []byte(profile), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	r, err := Resolve(Args{CWD: project, Subagent: "reviewer"}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.Reasoning != "" {
+		t.Fatalf("profile thinking=off did not override config reasoning: %q", r.Reasoning)
+	}
+	if _, ok := r.ToolRegistry["read"]; !ok || len(r.ToolRegistry) != 1 {
+		t.Fatalf("profile tools = %#v, want only read", r.ToolRegistry)
+	}
+	if len(r.ContextFiles) != 0 {
+		t.Fatalf("profile inheritProjectContext=false loaded %#v", r.ContextFiles)
+	}
+	if !strings.Contains(r.SystemPrompt, "You are a read-only reviewer.") || strings.Contains(r.SystemPrompt, "global context") {
+		t.Fatalf("profile system prompt inheritance is wrong:\n%s", r.SystemPrompt)
+	}
+}
+
 func TestReadAgentsContextMissingFilesIsEmpty(t *testing.T) {
 	files := loadAgentsContext(t.TempDir(), t.TempDir())
 	if len(files) != 0 {

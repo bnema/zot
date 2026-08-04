@@ -54,11 +54,10 @@ type execRunner struct {
 	SessionPath string
 }
 
-// swarmAgentArgsOpts captures every dynamic input to swarmAgentArgs
-// so future per-agent overrides (e.g. tools, reasoning) can be added
-// without churning the signature. The fields map 1:1 onto child CLI
-// flags; empty values omit the flag entirely and let the child
-// resolve a default the same way a normal `zot` invocation does.
+// swarmAgentArgsOpts captures every dynamic input to swarmAgentArgs.
+// The fields map 1:1 onto child CLI flags; empty values omit the flag
+// entirely and let the child resolve a default the same way a normal
+// `zot` invocation does.
 type swarmAgentArgsOpts struct {
 	Exe         string
 	Dir         string
@@ -67,6 +66,8 @@ type swarmAgentArgsOpts struct {
 	Task        string
 	Model       string
 	Provider    string
+	Reasoning   string
+	Subagent    string
 }
 
 // defaultChildArgs builds the argv execRunner uses when its Command
@@ -96,6 +97,8 @@ func defaultChildArgs(exe string, a *Agent, sessionPath, inboxPath string) []str
 		Task:        task,
 		Model:       a.Model,
 		Provider:    a.Provider,
+		Reasoning:   a.Reasoning,
+		Subagent:    a.Subagent,
 	})
 }
 
@@ -114,6 +117,12 @@ func swarmAgentArgs(opts swarmAgentArgsOpts) []string {
 	}
 	if opts.Provider != "" {
 		args = append(args, "--provider", opts.Provider)
+	}
+	if opts.Reasoning != "" {
+		args = append(args, "--reasoning", opts.Reasoning)
+	}
+	if opts.Subagent != "" {
+		args = append(args, "--subagent", opts.Subagent)
 	}
 	if opts.Task != "" {
 		// First task is positional so the child treats it as the

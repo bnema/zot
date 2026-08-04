@@ -3,6 +3,7 @@ package modes
 import (
 	"context"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 
@@ -79,6 +80,19 @@ func TestRunSwarmSubcommandsDoNotPanic(t *testing.T) {
 			}()
 			iv.runSwarm(context.Background(), args)
 		}()
+	}
+}
+
+func TestRunSwarmRejectsNamedProfileWithoutResolver(t *testing.T) {
+	iv, f := newInteractiveForSwarmTest(t)
+	defer f.StopAll()
+
+	iv.runSwarm(context.Background(), []string{"new", "--agent", "reviewer", "review", "auth"})
+	if !strings.Contains(iv.statusErr, "named subagent profiles are unavailable") {
+		t.Fatalf("status error = %q, want unavailable profile resolver", iv.statusErr)
+	}
+	if got := len(f.List()); got != 0 {
+		t.Fatalf("spawned agents = %d, want 0", got)
 	}
 }
 
@@ -175,28 +189,58 @@ func TestRunSwarmSendDeliversToAgentInbox(t *testing.T) {
 	}
 }
 
+func TestNormalizeSpawnReasoning(t *testing.T) {
+	cases := []struct {
+		in, want string
+		ok       bool
+	}{
+		{in: "OFF", want: "off", ok: true},
+		{in: "minimal", want: "minimum", ok: true},
+		{in: "maximum", want: "xhigh", ok: true},
+		{in: "MAX", want: "max", ok: true},
+		{in: "bogus", ok: false},
+	}
+	for _, tc := range cases {
+		got, err := normalizeSpawnReasoning(tc.in)
+		if tc.ok {
+			if err != nil || got != tc.want {
+				t.Errorf("normalizeSpawnReasoning(%q) = %q, %v; want %q", tc.in, got, err, tc.want)
+			}
+			continue
+		}
+		if err == nil {
+			t.Errorf("normalizeSpawnReasoning(%q) succeeded with %q; want error", tc.in, got)
+		}
+	}
+}
+
 func TestParseSpawnFlags(t *testing.T) {
 	cases := []struct {
-		in                  string
-		wantModel, wantProv string
-		wantTask            string
+		in                          string
+		wantModel, wantProv         string
+		wantReasoning, wantSubagent string
+		wantTask                    string
 	}{
-		{"do x", "", "", "do x"},
-		{"--model claude do x", "claude", "", "do x"},
-		{"--model=claude do x", "claude", "", "do x"},
-		{"--provider openai --model gpt-5 do x", "gpt-5", "openai", "do x"},
-		{"--provider=openai --model=gpt-5 do x", "gpt-5", "openai", "do x"},
+		{"do x", "", "", "", "", "do x"},
+		{"--model claude do x", "claude", "", "", "", "do x"},
+		{"--model=claude do x", "claude", "", "", "", "do x"},
+		{"--provider openai --model gpt-5 do x", "gpt-5", "openai", "", "", "do x"},
+		{"--provider=openai --model=gpt-5 do x", "gpt-5", "openai", "", "", "do x"},
+		{"--agent reviewer --reasoning high review auth", "", "", "high", "reviewer", "review auth"},
+		{"--agent --reasoning high review auth", "", "", "high", "", "review auth"},
+		{"--reasoning --agent reviewer review auth", "", "", "", "reviewer", "review auth"},
+		{"--thinking=max do x", "", "", "max", "", "do x"},
 		// Only LEADING flags are consumed.
-		{"do --model x", "", "", "do --model x"},
+		{"do --model x", "", "", "", "", "do --model x"},
 		// Missing value: --model with no follow-up token leaves model empty
 		// and the next field starts the task.
-		{"--model", "", "", ""},
+		{"--model", "", "", "", "", ""},
 	}
 	for _, c := range cases {
-		m, p, task := parseSpawnFlags(c.in)
-		if m != c.wantModel || p != c.wantProv || task != c.wantTask {
-			t.Errorf("parseSpawnFlags(%q) = (%q,%q,%q); want (%q,%q,%q)",
-				c.in, m, p, task, c.wantModel, c.wantProv, c.wantTask)
+		m, p, r, a, task := parseSpawnFlags(c.in)
+		if m != c.wantModel || p != c.wantProv || r != c.wantReasoning || a != c.wantSubagent || task != c.wantTask {
+			t.Errorf("parseSpawnFlags(%q) = (%q,%q,%q,%q,%q); want (%q,%q,%q,%q,%q)",
+				c.in, m, p, r, a, task, c.wantModel, c.wantProv, c.wantReasoning, c.wantSubagent, c.wantTask)
 		}
 	}
 }

@@ -19,6 +19,7 @@ import (
 	"github.com/patriceckhart/zot/packages/agent/extproto"
 	"github.com/patriceckhart/zot/packages/agent/modes"
 	"github.com/patriceckhart/zot/packages/agent/skills"
+	"github.com/patriceckhart/zot/packages/agent/subagents"
 	"github.com/patriceckhart/zot/packages/agent/swarm"
 	"github.com/patriceckhart/zot/packages/agent/tools"
 	"github.com/patriceckhart/zot/packages/core"
@@ -729,6 +730,9 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 			iv.TrackSwarmAgent(a, task)
 		}
 	}
+	resolveSubagent := func(name string) (*subagents.Profile, error) {
+		return findSubagentProfile(r.CWD, name)
+	}
 
 	// Inject the swarm_spawn auto-swarm tool only when /settings ->
 	// auto-swarm is currently enabled. Registering it unconditionally
@@ -744,11 +748,13 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 			return reg
 		}
 		reg["swarm_spawn"] = &tools.SwarmSpawnTool{
-			Swarm:           swarmMgr,
-			Enabled:         AutoSwarmEnabled,
-			DefaultModel:    func() string { return r.Model },
-			DefaultProvider: func() string { return r.Provider },
-			OnSpawned:       onSpawnedSwarm,
+			Swarm:            swarmMgr,
+			Enabled:          AutoSwarmEnabled,
+			DefaultModel:     func() string { return r.Model },
+			DefaultProvider:  func() string { return r.Provider },
+			DefaultReasoning: func() string { return r.Reasoning },
+			ResolveSubagent:  resolveSubagent,
+			OnSpawned:        onSpawnedSwarm,
 		}
 		return reg
 	}
@@ -1048,17 +1054,10 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 	//
 	// Steps, in order:
 	//   1. resolve + validate the new path (~ expansion, abs/rel)
-	//   2. close the current session, flushing pending messages
-	//   3. mutate captured args.CWD + r.CWD so future buildAgent
-	//      calls bind to the new cwd
-	//   4. re-root the shared sandbox («·«) so /jail follows the
-	//      session into the new cwd instead of widening or silently
-	//      dropping
-	//   5. rebuild the agent via buildAgent() so tools, AGENTS.md
-	//      addendum, system prompt, sessions dir all bind correctly
-	//   6. open a fresh session in the new cwd's bucket
-	//   7. push the new state into the running Interactive
-	//   8. re-scope the swarm dashboard to the freshly-opened session
+	//   2. stage the candidate cwd, sandbox, and swarm state
+	//   3. rebuild the agent and allocate its new session
+	//   4. commit all new state together, closing the old session last
+	//   5. push the committed state into the running Interactive
 	//
 	// The /jail state is preserved verbatim: if the sandbox was locked
 	// to the old cwd, it stays locked, just re-pointed at the new one.
@@ -1098,30 +1097,51 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 			return fmt.Errorf("no agent running; log in first")
 		}
 
-		// Close the current session before we drop the reference.
-		// Per-message persistence keeps it current already; this is
-		// a defensive flush + final fsync via Close.
-		persistMu.Lock()
-		if sess != nil {
-			writeNewTranscriptLocked(currentAg, sess, sessBaselineMsgs)
-			_ = sess.Close()
-			sess = nil
+		// Stage the candidate state while retaining a complete rollback
+		// snapshot. A failed rebuild or session allocation must leave the
+		// current agent, session, sandbox, and swarm root usable.
+		oldCWD := args.CWD
+		oldResolvedCWD := r.CWD
+		oldPermissionSet := args.PermissionSet
+		oldSwarmRoot := ""
+		if swarmMgr != nil {
+			oldSwarmRoot = swarmMgr.RepoRoot()
 		}
-		sessBaselineMsgs = 0
-		persistMu.Unlock()
+		oldSandboxRoot := ""
+		oldSandboxLocked := false
+		if sharedSandbox != nil {
+			oldSandboxRoot = sharedSandbox.Root
+			oldSandboxLocked = sharedSandbox.Locked()
+		}
+		rollback := func() {
+			args.CWD = oldCWD
+			r.CWD = oldResolvedCWD
+			args.PermissionSet = oldPermissionSet
+			if swarmMgr != nil {
+				swarmMgr.SetRepoRoot(oldSwarmRoot)
+			}
+			if sharedSandbox != nil {
+				sharedSandbox.Root = oldSandboxRoot
+				if oldSandboxLocked {
+					sharedSandbox.Lock()
+				} else {
+					sharedSandbox.Unlock()
+				}
+			}
+		}
 
-		// Mutate captured state so subsequent agent rebuilds and
-		// session opens see the new cwd.
-		wasJailed := sharedSandbox != nil && sharedSandbox.Locked()
 		args.CWD = absPath
 		r.CWD = absPath
+		if swarmMgr != nil {
+			swarmMgr.SetRepoRoot(absPath)
+		}
 		if args.PermissionSet != nil {
 			expanded := args.PermissionSet.Expand(absPath, args.AgentDataDir)
 			args.PermissionSet = &expanded
 		}
 		if sharedSandbox != nil {
 			sharedSandbox.Root = absPath
-			if wasJailed {
+			if oldSandboxLocked {
 				sharedSandbox.Lock()
 			} else {
 				sharedSandbox.Unlock()
@@ -1132,26 +1152,37 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 		// re-bind to the new cwd. buildAgent() reads from args + r.
 		newAg, newProvider, newModel, berr := buildAgent()
 		if berr != nil {
-			return fmt.Errorf("rebuild agent: %v", berr)
+			rollback()
+			return fmt.Errorf("rebuild agent: %w", berr)
 		}
-		ag = newAg
 
 		// Fresh session in the new cwd's bucket. We bypass
 		// openOrCreateSession's --continue / --resume branches
 		// because /cd's semantics are "start fresh here", matching
 		// what relaunching `zot --cwd <path>` would do today.
+		var newSess *core.Session
 		if !args.NoSess {
 			newRoot := agentSessionsRoot(ZotHome(), args)
 			core.PruneEmptySessions(newRoot, absPath)
-			newSess, serr := core.NewSession(newRoot, absPath, newProvider, newModel, version)
+			var serr error
+			newSess, serr = core.NewSession(newRoot, absPath, newProvider, newModel, version)
 			if serr != nil {
-				return fmt.Errorf("open session in %s: %v", absPath, serr)
+				rollback()
+				return fmt.Errorf("open session in %s: %w", absPath, serr)
 			}
-			persistMu.Lock()
-			sess = newSess
-			sessBaselineMsgs = 0
-			persistMu.Unlock()
 		}
+
+		// Commit only after every fallible operation has succeeded. Close
+		// the old session last so rollback never has to resurrect it.
+		persistMu.Lock()
+		if sess != nil {
+			writeNewTranscriptLocked(currentAg, sess, sessBaselineMsgs)
+			_ = sess.Close()
+		}
+		sess = newSess
+		sessBaselineMsgs = 0
+		persistMu.Unlock()
+		ag = newAg
 
 		// Push the new state into the running Interactive.
 		if iv != nil {
@@ -1160,8 +1191,8 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 		}
 
 		// Re-scope the swarm dashboard to the new session.
-		if swarmMgr != nil && sess != nil {
-			swarmMgr.SetActiveSession(sess.ID)
+		if swarmMgr != nil && newSess != nil {
+			swarmMgr.SetActiveSession(newSess.ID)
 		}
 		return nil
 	}
@@ -1247,6 +1278,9 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 	if r.SkillTool != nil {
 		startupSkills = r.SkillTool.Skills()
 	}
+	homeDir, _ := os.UserHomeDir()
+	discoveredSubagents, _ := subagents.Discover(r.CWD, homeDir)
+	subagentsAddendum := subagents.SystemPromptAddendum(discoveredSubagents)
 
 	iv = modes.NewInteractive(modes.InteractiveConfig{
 		Terminal:                  term,
@@ -1267,6 +1301,7 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 		CompactUser:               initialCfg.CompactUserInput(),
 		ExtensionThemes:           extMgr.ThemeOptions,
 		AutoSwarmSystemAddendum:   AutoSwarmSystemAddendum,
+		SubagentsSystemAddendum:   subagentsAddendum,
 		SettingsStore:             configSettingsStore{},
 		Model:                     r.Model,
 		Provider:                  r.Provider,
@@ -1360,9 +1395,10 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 			writeNewTranscriptLocked(currentAg, sess, sessBaselineMsgs)
 			sessBaselineMsgs = len(currentAg.Messages())
 		},
-		Extensions:    extMgr,
-		Swarm:         swarmMgr,
-		ChangelogChan: changelogCh,
+		Extensions:      extMgr,
+		Swarm:           swarmMgr,
+		ResolveSubagent: resolveSubagent,
+		ChangelogChan:   changelogCh,
 		OnChangelogDismiss: func() {
 			// For dev builds (0.0.0) store the actual release version
 			// so the same changelog doesn't show again next launch.

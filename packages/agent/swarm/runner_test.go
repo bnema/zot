@@ -113,6 +113,8 @@ func TestSwarmAgentArgs(t *testing.T) {
 		SessionPath: "/tmp/state/session.json",
 		InboxPath:   "/tmp/state/in.sock",
 		Task:        "do the thing",
+		Reasoning:   "high",
+		Subagent:    "reviewer",
 	})
 	if len(args) < 7 {
 		t.Fatalf("argv unexpectedly short: %v", args)
@@ -130,6 +132,8 @@ func TestSwarmAgentArgs(t *testing.T) {
 		"--swarm-agent": "/tmp/state/in.sock",
 		"--session":     "/tmp/state/session.json",
 		"--cwd":         "/tmp/worktree",
+		"--reasoning":   "high",
+		"--subagent":    "reviewer",
 	}
 	for flag, value := range mustHave {
 		i := indexOf(args, flag)
@@ -166,6 +170,11 @@ func TestSwarmAgentArgsEmptyTaskOmitsPositional(t *testing.T) {
 	// last arg should be a real flag value, not a stray positional
 	if a := args[len(args)-1]; strings.HasPrefix(a, "--") {
 		t.Fatalf("argv ends on a flag with no value: %v", args)
+	}
+	for _, flag := range []string{"--reasoning", "--subagent"} {
+		if indexOf(args, flag) >= 0 {
+			t.Fatalf("empty child options should omit %s: %v", flag, args)
+		}
 	}
 }
 

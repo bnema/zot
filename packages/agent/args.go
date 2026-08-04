@@ -119,6 +119,12 @@ type Args struct {
 	// --swarm-agent <path>; presence flips Mode to ModeSwarmAgent.
 	SwarmAgent string
 
+	// Subagent selects a named markdown profile for a swarm child.
+	// It is intentionally an internal child flag; the parent swarm tool
+	// passes only the profile name and the child discovers the definition
+	// locally.
+	Subagent string
+
 	// AgentName/AgentDataDir/PermissionSet are populated by `zot run`
 	// for local zotfile agents. They scope sessions and enforce the
 	// manifest's declared file/bash permissions.
@@ -273,6 +279,12 @@ func ParseArgs(in []string) (Args, error) {
 			}
 			a.SwarmAgent = v
 			a.Mode = ModeSwarmAgent
+		case "--subagent":
+			v, err := want(&i, arg)
+			if err != nil {
+				return a, err
+			}
+			a.Subagent = v
 		case "--tools":
 			v, err := want(&i, arg)
 			if err != nil {

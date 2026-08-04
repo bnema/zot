@@ -275,6 +275,12 @@ func (d *swarmDialog) transcriptEditorCursorRow(width, popupRows, editorRowOffse
 	if a.Model != "" {
 		row++
 	}
+	if a.Subagent != "" {
+		row++
+	}
+	if a.Reasoning != "" {
+		row++
+	}
 	if a.Err != "" {
 		row++
 	}
@@ -1094,6 +1100,12 @@ func (d *swarmDialog) renderTranscript(th tui.Theme, width int) []string {
 			modelLine += " (" + a.Provider + ")"
 		}
 		header = append(header, "  "+th.FG256(th.Muted, modelLine))
+	}
+	if a.Subagent != "" {
+		header = append(header, "  "+th.FG256(th.Muted, "agent:  "+a.Subagent))
+	}
+	if a.Reasoning != "" {
+		header = append(header, "  "+th.FG256(th.Muted, "reasoning:  "+a.Reasoning))
 	}
 	if a.Err != "" {
 		header = append(header, "  "+th.FG256(th.Muted, "error:  "+a.Err))
