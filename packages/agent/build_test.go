@@ -59,6 +59,25 @@ func TestReadAgentsContextLoadsGlobalAndAncestors(t *testing.T) {
 	}
 }
 
+func TestFindSubagentProfileReportsDiscoveryFailure(t *testing.T) {
+	profileSource := filepath.Join(t.TempDir(), "profiles.md")
+	if err := os.WriteFile(profileSource, []byte("not a directory"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("ZOT_AGENT_PROFILES", profileSource)
+
+	profile, err := findSubagentProfile("", "reviewer")
+	if profile != nil {
+		t.Fatalf("profile = %#v, want nil", profile)
+	}
+	if err == nil || !strings.Contains(err.Error(), "discover subagent profiles") {
+		t.Fatalf("error = %v, want discovery failure", err)
+	}
+	if strings.Contains(err.Error(), profileSource) {
+		t.Fatalf("error leaked profile path: %v", err)
+	}
+}
+
 func TestResolveIncludesNamedSubagentsListWhenAutoSwarmIsEnabled(t *testing.T) {
 	root := t.TempDir()
 	home := filepath.Join(root, "home")

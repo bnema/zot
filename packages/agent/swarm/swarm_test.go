@@ -78,6 +78,22 @@ func TestSpawnAgentSharesRepoRoot(t *testing.T) {
 	}
 }
 
+func TestSetRepoRootAffectsSubsequentSpawns(t *testing.T) {
+	f := newTestSwarm(t, func(a *Agent) Runner {
+		return RunnerFunc(func(ctx context.Context, sink Sink) error { return nil })
+	})
+	want := t.TempDir()
+	f.SetRepoRoot(want)
+	a, err := f.Spawn(context.Background(), "use new root")
+	if err != nil {
+		t.Fatal(err)
+	}
+	a.Wait()
+	if a.Dir != want {
+		t.Fatalf("Dir = %q; want updated RepoRoot %q", a.Dir, want)
+	}
+}
+
 func TestSpawnEmptyTaskFails(t *testing.T) {
 	f := newTestSwarm(t, func(a *Agent) Runner {
 		return RunnerFunc(func(ctx context.Context, sink Sink) error { return nil })

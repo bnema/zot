@@ -309,7 +309,10 @@ func findSubagentProfile(cwd, name string) (*subagents.Profile, error) {
 		return nil, nil
 	}
 	home, _ := os.UserHomeDir()
-	profiles, _ := subagents.Discover(cwd, home)
+	profiles, discoveryErrors := subagents.Discover(cwd, home)
+	if len(discoveryErrors) > 0 {
+		return nil, fmt.Errorf("discover subagent profiles: %d profile discovery error(s)", len(discoveryErrors))
+	}
 	profile := subagents.Find(profiles, name)
 	if profile == nil {
 		return nil, fmt.Errorf("subagent profile %q not found (looked in ~/.agents/agents and compatibility locations)", name)

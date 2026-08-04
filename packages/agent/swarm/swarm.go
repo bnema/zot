@@ -139,6 +139,15 @@ func New(cfg Config) *Swarm {
 	}
 }
 
+// SetRepoRoot updates the shared working directory for subsequently
+// spawned agents. Existing agents keep the directory they were started
+// with; callers use this when the host session changes cwd.
+func (f *Swarm) SetRepoRoot(root string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.cfg.RepoRoot = root
+}
+
 // SetActiveSession scopes the dashboard view (and Spawn stamping)
 // to a particular host zot session id. Pass empty to clear the
 // scope and revert to "show every agent" (the original behaviour).
@@ -213,7 +222,13 @@ func (f *Swarm) SpawnReq(ctx context.Context, req SpawnRequest) (*Agent, error) 
 		return nil, errors.New("swarm: empty task")
 	}
 	id := newAgentID(task, f.cfg.Now())
+
+	// Snapshot the shared cwd together with the active session so a
+	// concurrent /cd cannot race a spawn or produce a mixed snapshot.
+	f.mu.Lock()
 	dir := f.cfg.RepoRoot
+	sessionID := f.activeSession
+	f.mu.Unlock()
 
 	stateDir := f.agentStateDir(id)
 	if err := os.MkdirAll(stateDir, 0o755); err != nil {
@@ -228,13 +243,6 @@ func (f *Swarm) SpawnReq(ctx context.Context, req SpawnRequest) (*Agent, error) 
 	if err != nil {
 		return nil, fmt.Errorf("swarm inbox path: %w", err)
 	}
-
-	// Snapshot activeSession under the lock; we use it twice (struct
-	// init below + persistence). Reading it without the lock would
-	// race a concurrent SetActiveSession call.
-	f.mu.Lock()
-	sessionID := f.activeSession
-	f.mu.Unlock()
 
 	a := &Agent{
 		ID:           id,

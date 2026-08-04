@@ -175,6 +175,31 @@ func TestRunSwarmSendDeliversToAgentInbox(t *testing.T) {
 	}
 }
 
+func TestNormalizeSpawnReasoning(t *testing.T) {
+	cases := []struct {
+		in, want string
+		ok       bool
+	}{
+		{in: "OFF", want: "off", ok: true},
+		{in: "minimal", want: "minimum", ok: true},
+		{in: "maximum", want: "xhigh", ok: true},
+		{in: "MAX", want: "max", ok: true},
+		{in: "bogus", ok: false},
+	}
+	for _, tc := range cases {
+		got, err := normalizeSpawnReasoning(tc.in)
+		if tc.ok {
+			if err != nil || got != tc.want {
+				t.Errorf("normalizeSpawnReasoning(%q) = %q, %v; want %q", tc.in, got, err, tc.want)
+			}
+			continue
+		}
+		if err == nil {
+			t.Errorf("normalizeSpawnReasoning(%q) succeeded with %q; want error", tc.in, got)
+		}
+	}
+}
+
 func TestParseSpawnFlags(t *testing.T) {
 	cases := []struct {
 		in                          string

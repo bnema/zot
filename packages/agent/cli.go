@@ -1121,6 +1121,9 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 		wasJailed := sharedSandbox != nil && sharedSandbox.Locked()
 		args.CWD = absPath
 		r.CWD = absPath
+		if swarmMgr != nil {
+			swarmMgr.SetRepoRoot(absPath)
+		}
 		if args.PermissionSet != nil {
 			expanded := args.PermissionSet.Expand(absPath, args.AgentDataDir)
 			args.PermissionSet = &expanded

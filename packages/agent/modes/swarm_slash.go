@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/patriceckhart/zot/packages/agent/swarm"
+	"github.com/patriceckhart/zot/packages/provider"
 	"github.com/patriceckhart/zot/packages/tui"
 )
 
@@ -126,6 +127,14 @@ func (i *Interactive) runSwarm(ctx context.Context, args []string) {
 		if reasoning == "" {
 			reasoning = i.cfg.Reasoning
 		}
+		if reasoning != "" {
+			normalizedReasoning, err := normalizeSpawnReasoning(reasoning)
+			if err != nil {
+				i.swarmStatus("", "spawn: "+err.Error())
+				return
+			}
+			reasoning = normalizedReasoning
+		}
 		a, err := i.cfg.Swarm.SpawnReq(ctx, swarm.SpawnRequest{
 			Task: task, Model: model, Provider: provider, Reasoning: reasoning, Subagent: subagent,
 		})
@@ -243,22 +252,23 @@ func (i *Interactive) runSwarm(ctx context.Context, args []string) {
 	}
 }
 
+// normalizeSpawnReasoning validates and canonicalizes the reasoning levels
+// accepted by ParseArgs before a child process is launched.
+func normalizeSpawnReasoning(value string) (string, error) {
+	raw := strings.ToLower(strings.TrimSpace(value))
+	switch raw {
+	case "", "off":
+		return raw, nil
+	case "minimal", "minimum", "low", "medium", "high", "xhigh", "maximum", "max":
+		return provider.NormalizeReasoning(raw), nil
+	default:
+		return "", fmt.Errorf("reasoning must be off|minimum|low|medium|high|xhigh|max")
+	}
+}
+
 // parseSpawnFlags consumes leading profile/model/provider/reasoning flags
-// from s and returns them along with the remaining task body.
-// We deliberately only honour LEADING flags so a task like "check
-// --model lookup" doesn't accidentally swallow part of its prose as
-// the model name.
-//
-// Recognised forms:
-//
-//	--agent X            two-token form
-//	--agent=X            single-token form
-//	--model X            two-token form
-//	--model=X            single-token form
-//	--provider X         two-token form
-//	--provider=X         single-token form
-//	--reasoning X        two-token form (also --thinking)
-//	--reasoning=X        single-token form
+// using both separate-value and equals forms. Flags after the task remain
+// part of the task text.
 func parseSpawnFlags(s string) (model, provider, reasoning, subagent, task string) {
 	fields := strings.Fields(s)
 	i := 0

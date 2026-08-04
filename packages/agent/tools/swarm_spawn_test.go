@@ -104,6 +104,38 @@ func TestSwarmSpawnSelectsProfileAndReasoning(t *testing.T) {
 	if len(agents) != 1 || agents[0].Subagent != "reviewer" || agents[0].Reasoning != "high" {
 		t.Fatalf("agent profile/reasoning = %#v", agents)
 	}
+	if agents[0].Model != "gpt-5.6-luna" || agents[0].Provider != "openai-codex" {
+		t.Fatalf("agent model/provider = %q/%q, want gpt-5.6-luna/openai-codex", agents[0].Model, agents[0].Provider)
+	}
+}
+
+func TestSwarmSpawnUsesProfileReasoningWhenOmitted(t *testing.T) {
+	tool := &SwarmSpawnTool{
+		Swarm:   newTestSwarm(t),
+		Enabled: func() bool { return true },
+		ResolveSubagent: func(name string) (*subagents.Profile, error) {
+			if name != "reviewer" {
+				return nil, nil
+			}
+			return &subagents.Profile{
+				Name:     "reviewer",
+				Model:    "openai-codex/gpt-5.6-luna",
+				Thinking: "low",
+			}, nil
+		},
+	}
+
+	res, err := tool.Execute(context.Background(), json.RawMessage(`{"task":"review auth","agent":"reviewer"}`), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.IsError {
+		t.Fatalf("unexpected tool error: %s", textResult(res.Content))
+	}
+	agents := tool.Swarm.List()
+	if len(agents) != 1 || agents[0].Reasoning != "low" {
+		t.Fatalf("agent reasoning = %#v, want low", agents)
+	}
 }
 
 func TestSwarmSpawnRejectsUnknownProfile(t *testing.T) {
