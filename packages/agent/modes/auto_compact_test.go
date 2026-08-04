@@ -1,6 +1,10 @@
 package modes
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/patriceckhart/zot/packages/provider"
+)
 
 func TestNormalizeAutoCompactThreshold(t *testing.T) {
 	tests := []struct {
@@ -22,6 +26,56 @@ func TestNormalizeAutoCompactThreshold(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			if got := normalizeAutoCompactThreshold(tt.value); got != tt.want {
 				t.Fatalf("normalizeAutoCompactThreshold(%v) = %d, want %d", tt.value, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestShouldAutoContinueAfterCompaction(t *testing.T) {
+	tests := []struct {
+		name string
+		msgs []provider.Message
+		want bool
+	}{
+		{
+			name: "completed text answer",
+			msgs: []provider.Message{{
+				Role:    provider.RoleAssistant,
+				Content: []provider.Content{provider.TextBlock{Text: "done"}},
+			}},
+			want: false,
+		},
+		{
+			name: "reasoning only",
+			msgs: []provider.Message{{
+				Role:    provider.RoleAssistant,
+				Content: []provider.Content{provider.ReasoningBlock{Summary: "still working"}},
+			}},
+			want: true,
+		},
+		{
+			name: "tool call",
+			msgs: []provider.Message{{
+				Role:    provider.RoleAssistant,
+				Content: []provider.Content{provider.ToolCallBlock{Name: "read"}},
+			}},
+			want: true,
+		},
+		{
+			name: "user tail",
+			msgs: []provider.Message{{
+				Role:    provider.RoleUser,
+				Content: []provider.Content{provider.TextBlock{Text: "continue"}},
+			}},
+			want: true,
+		},
+		{name: "empty", want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := shouldAutoContinueAfterCompaction(tt.msgs); got != tt.want {
+				t.Fatalf("shouldAutoContinueAfterCompaction() = %t, want %t", got, tt.want)
 			}
 		})
 	}

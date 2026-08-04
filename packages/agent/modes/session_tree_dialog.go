@@ -36,11 +36,11 @@ func (b sessionTreeBoundary) String() string {
 }
 
 // sessionTreeTarget is the stable description of a row in the dialog.
-// EffectiveIndex is an index into SourcePath's effective transcript (the
-// snapshot returned by core.OpenSession), while SelectionBoundary is the
-// message count to pass to core.BranchSessionHidden. Keeping both values is
-// important for a user row: selecting it branches before that row so the
-// complete draft can be put back in the editor.
+// EffectiveIndex and SelectionBoundary refer to the row's provider-valid
+// segment. Ordinary rows use SourcePath's effective transcript; historical
+// rows use the pre-compaction segment identified by HistorySegment. Keeping
+// both values is important for a user row: selecting it branches before that
+// row so the complete draft can be put back in the editor.
 type sessionTreeTarget struct {
 	SourcePath        string
 	EffectiveIndex    int
@@ -48,6 +48,8 @@ type sessionTreeTarget struct {
 	Role              provider.Role
 	UserDraft         string
 	Boundary          sessionTreeBoundary
+	Historical        bool
+	HistorySegment    int
 }
 
 func (t sessionTreeTarget) IsBoundary() bool {
@@ -112,6 +114,7 @@ type sessionTreeAction struct {
 type sessionTreeSnapshot struct {
 	path     string
 	messages []provider.Message
+	history  []core.SessionHistorySegment
 }
 
 const defaultSessionTreeRows = 12
@@ -296,7 +299,7 @@ func (d *sessionTreeDialog) Render(th tui.Theme, width int) []string {
 		return lines
 	}
 	lines = append(lines, line(th.FG256(th.Muted,
-		"session branches (↑/↓, pgup/pgdn, home/end, enter checkout, esc cancel):")))
+		"session history and branches (↑/↓, pgup/pgdn, home/end, enter checkout, esc cancel):")))
 
 	d.followCursor()
 	start := d.viewTop
@@ -387,12 +390,16 @@ func preflightSessionTreeFamily(root *core.TreeNode) (map[string]sessionTreeSnap
 			return nil
 		}
 		visiting[path] = true
-		snapshot, err := core.ReadSessionSnapshot(path)
+		history, err := core.ReadSessionHistory(path)
 		if err != nil {
 			delete(visiting, path)
 			return fmt.Errorf("session tree: read %q: %w", path, err)
 		}
-		snapshots[path] = sessionTreeSnapshot{path: path, messages: snapshot.Messages}
+		var messages []provider.Message
+		if len(history.Segments) > 0 {
+			messages = history.Segments[len(history.Segments)-1].Messages
+		}
+		snapshots[path] = sessionTreeSnapshot{path: path, messages: messages, history: history.Segments}
 		for _, child := range node.Children {
 			if err := walk(child); err != nil {
 				delete(visiting, path)
@@ -478,7 +485,13 @@ func flattenSessionNode(node *core.TreeNode, currentPath string, snapshots map[s
 		selectionBoundary = len(msgs)
 	}
 
-	all := buildSessionTreeItems(snapshot.path, msgs, depth, snapshot.path == currentPath)
+	historyItems := buildSessionTreeHistoryItems(snapshot.path, snapshot.history, depth, snapshot.path == currentPath)
+	allByIndex := make(map[int]sessionTreeItem, len(msgs))
+	for _, item := range historyItems {
+		if !item.target.Historical {
+			allByIndex[item.target.EffectiveIndex] = item
+		}
+	}
 	childrenAt := make(map[int][]*core.TreeNode)
 	var stale []*core.TreeNode
 	for _, child := range node.Children {
@@ -506,6 +519,11 @@ func flattenSessionNode(node *core.TreeNode, currentPath string, snapshots map[s
 	}
 
 	var out []sessionTreeItem
+	for _, item := range historyItems {
+		if item.target.Historical {
+			out = append(out, item)
+		}
+	}
 	if boundary != sessionTreeMessageBoundary {
 		turn := treeTurnAtBoundary(msgs, selectionBoundary)
 		boundaryCurrent := snapshot.path == currentPath && (len(msgs) == 0 || boundary == sessionTreeEmptyBoundary)
@@ -522,8 +540,10 @@ func flattenSessionNode(node *core.TreeNode, currentPath string, snapshots map[s
 	// children that forked in the hidden copied prefix are normalized to its
 	// first visible index above, so they remain discoverable too.
 	emitChildren(childrenAt[start], false)
-	for idx := start; idx < len(all); idx++ {
-		out = append(out, all[idx])
+	for idx := start; idx < len(msgs); idx++ {
+		if item, ok := allByIndex[idx]; ok {
+			out = append(out, item)
+		}
 		emitChildren(childrenAt[idx+1], false)
 	}
 	// Stale children are attached after the current effective snapshot. Their
@@ -581,10 +601,32 @@ func treeTurnAtBoundary(msgs []provider.Message, boundary int) int {
 }
 
 func buildSessionTreeItems(path string, msgs []provider.Message, depth int, currentPath bool) []sessionTreeItem {
+	return buildSessionTreeSegmentItems(path, msgs, depth, currentPath, false, -1, nil)
+}
+
+func buildSessionTreeHistoryItems(path string, segments []core.SessionHistorySegment, depth int, currentPath bool) []sessionTreeItem {
+	var out []sessionTreeItem
+	for segmentIdx, segment := range segments {
+		historical := segmentIdx < len(segments)-1
+		skip := compactionTailIndices(segments, segmentIdx)
+		out = append(out, buildSessionTreeSegmentItems(path, segment.Messages, depth, currentPath && !historical, historical, segmentIdx, skip)...)
+	}
+	return out
+}
+
+func buildSessionTreeSegmentItems(path string, msgs []provider.Message, depth int, currentPath, historical bool, historySegment int, skip map[int]bool) []sessionTreeItem {
 	out := make([]sessionTreeItem, 0, len(msgs))
 	turn := 0
 	lastTurn := 0
+	visible := make([]int, 0, len(msgs))
 	for idx, msg := range msgs {
+		if skip[idx] || !isForkableSessionTreeMessage(msg) {
+			continue
+		}
+		visible = append(visible, idx)
+	}
+	for visibleIndex, idx := range visible {
+		msg := msgs[idx]
 		if msg.Role == provider.RoleUser {
 			turn++
 			lastTurn = turn
@@ -606,6 +648,8 @@ func buildSessionTreeItems(path string, msgs []provider.Message, depth int, curr
 			Role:              msg.Role,
 			UserDraft:         draft,
 			Boundary:          sessionTreeMessageBoundary,
+			Historical:        historical,
+			HistorySegment:    historySegment,
 		}
 		out = append(out, sessionTreeItem{
 			label:      fmt.Sprintf("%s: %s", roleLabel, preview),
@@ -615,11 +659,81 @@ func buildSessionTreeItems(path string, msgs []provider.Message, depth int, curr
 			prompt:     draft,
 			path:       path,
 			depth:      depth,
-			current:    currentPath && idx == len(msgs)-1,
+			current:    currentPath && visibleIndex == len(visible)-1,
 			target:     target,
 		})
 	}
 	return out
+}
+
+func compactionTailIndices(segments []core.SessionHistorySegment, segmentIdx int) map[int]bool {
+	if segmentIdx <= 0 || segmentIdx >= len(segments) || !segments[segmentIdx].Compacted {
+		return nil
+	}
+	current := segments[segmentIdx].Messages
+	previous := segments[segmentIdx-1].Messages
+	if len(current) < 2 || len(previous) == 0 || !isCompactionSummaryMessage(current[0]) && current[0].Meta["compaction"] != "true" {
+		return nil
+	}
+	maxTail := len(current) - 1
+	if len(previous) < maxTail {
+		maxTail = len(previous)
+	}
+	for tailLen := maxTail; tailLen > 0; tailLen-- {
+		if !reflect.DeepEqual(previous[len(previous)-tailLen:], current[1:1+tailLen]) {
+			continue
+		}
+		skip := make(map[int]bool, tailLen)
+		for idx := 1; idx <= tailLen; idx++ {
+			skip[idx] = true
+		}
+		return skip
+	}
+	return nil
+}
+
+func isForkableSessionTreeMessage(msg provider.Message) bool {
+	if isHiddenTranscriptMessage(msg) || msg.Meta[shellEscapeMetaKey] == "true" || msg.Meta[autoCompactContinueMetaKey] == "true" || msg.Meta["compaction"] == "true" || isCompactionSummaryMessage(msg) {
+		return false
+	}
+	switch msg.Role {
+	case provider.RoleUser:
+		return isForkableUserMessage(msg)
+	case provider.RoleAssistant:
+		if messageHasToolCall(msg) {
+			return false
+		}
+		for _, content := range msg.Content {
+			switch block := content.(type) {
+			case provider.TextBlock:
+				if strings.TrimSpace(block.Text) != "" {
+					return true
+				}
+			case provider.ImageBlock:
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func isForkableUserMessage(msg provider.Message) bool {
+	if msg.Role != provider.RoleUser || isHiddenTranscriptMessage(msg) || msg.Meta[shellEscapeMetaKey] == "true" || msg.Meta[autoCompactContinueMetaKey] == "true" || msg.Meta["compaction"] == "true" || isCompactionSummaryMessage(msg) {
+		return false
+	}
+	return sessionTreePreview(msg) != "(empty)"
+}
+
+func isCompactionSummaryMessage(msg provider.Message) bool {
+	if msg.Role != provider.RoleUser {
+		return false
+	}
+	for _, content := range msg.Content {
+		if block, ok := content.(provider.TextBlock); ok && strings.HasPrefix(strings.TrimSpace(block.Text), "## Context Summary (compacted)") {
+			return true
+		}
+	}
+	return false
 }
 
 func completeUserDraft(msg provider.Message) string {

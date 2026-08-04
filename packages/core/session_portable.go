@@ -308,6 +308,36 @@ func branchSession(parentPath, root, cwd, version string, upToMessageIdx int, hi
 		limit++
 	}
 
+	return writeBranchSession(root, cwd, version, snapshot.Meta, snapshot.Messages, snapshot.UsageCheckpoints, limit, hideFromSessions)
+}
+
+// BranchSessionHiddenFromHistory creates a hidden tree branch from a
+// pre-compaction transcript segment. The segment is already repaired and is
+// kept separate from the effective snapshot so normal resume semantics remain
+// unchanged while older fork points stay usable.
+func BranchSessionHiddenFromHistory(parentPath, root, cwd, version string, segment SessionHistorySegment, upToMessageIdx int) (string, error) {
+	if parentPath == "" {
+		return "", errors.New("branch: parent path is empty")
+	}
+	if upToMessageIdx < 0 {
+		return "", errors.New("branch: upToMessageIdx must be >= 0")
+	}
+	if upToMessageIdx > len(segment.Messages) {
+		return "", fmt.Errorf("branch: upToMessageIdx %d exceeds historical message count %d", upToMessageIdx, len(segment.Messages))
+	}
+
+	snapshot, err := ReadSessionSnapshot(parentPath)
+	if err != nil {
+		return "", fmt.Errorf("branch: read parent snapshot: %w", err)
+	}
+	limit := upToMessageIdx
+	if limit > 0 && limit < len(segment.Messages) && messageHasToolCalls(segment.Messages[limit-1]) && segment.Messages[limit].Role == provider.RoleTool {
+		limit++
+	}
+	return writeBranchSession(root, cwd, version, snapshot.Meta, segment.Messages, segment.UsageCheckpoints, limit, true)
+}
+
+func writeBranchSession(root, cwd, version string, parent SessionMeta, messages []provider.Message, checkpoints []SessionUsageCheckpoint, limit int, hideFromSessions bool) (string, error) {
 	dir := SessionsDir(root, cwd)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", err
@@ -341,11 +371,11 @@ func branchSession(parentPath, root, cwd, version string, upToMessageIdx int, hi
 	branchMeta := SessionMeta{
 		ID:               newID,
 		CWD:              cwd,
-		Model:            snapshot.Meta.Model,
-		Provider:         snapshot.Meta.Provider,
+		Model:            parent.Model,
+		Provider:         parent.Provider,
 		Started:          time.Now().UTC(),
 		Version:          version,
-		Parent:           snapshot.Meta.ID,
+		Parent:           parent.ID,
 		ForkPoint:        limit,
 		HideFromSessions: hideFromSessions,
 	}
@@ -360,11 +390,8 @@ func branchSession(parentPath, root, cwd, version string, upToMessageIdx int, hi
 		return "", err
 	}
 
-	// Always materialize the shared effective prefix. Replaying raw rows here
-	// would lose compaction replacement or synthetic tool results and make the
-	// child differ from the transcript that was displayed and selected.
 	for idx := 0; idx < limit; idx++ {
-		msg := snapshot.Messages[idx]
+		msg := messages[idx]
 		line, err := json.Marshal(sessionLine{Type: "message", Message: &msg})
 		if err != nil {
 			return "", fmt.Errorf("branch: marshal message %d: %w", idx, err)
@@ -378,10 +405,8 @@ func branchSession(parentPath, root, cwd, version string, upToMessageIdx int, hi
 	}
 
 	// Preserve every cumulative checkpoint that belongs to this prefix. The
-	// final two rows are needed to reconstruct LastTurnUsage as a delta; a
-	// branch containing only the latest row would incorrectly report the
-	// whole cumulative total as its final turn.
-	for _, checkpoint := range snapshot.UsageCheckpoints {
+	// final two rows are needed to reconstruct LastTurnUsage as a delta.
+	for _, checkpoint := range checkpoints {
 		if checkpoint.MessageCount > limit {
 			continue
 		}

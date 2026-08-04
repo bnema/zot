@@ -64,6 +64,40 @@ func TestInputHistorySkipsShellEscapeContext(t *testing.T) {
 	}
 }
 
+func TestInputHistorySkipsCompactionContext(t *testing.T) {
+	ag := core.NewAgent(nil, "", "", nil)
+	ag.SetMessages([]provider.Message{
+		{Role: provider.RoleUser, Content: []provider.Content{provider.TextBlock{Text: "prompt"}}},
+		{Role: provider.RoleUser, Meta: map[string]string{"compaction": "true"}, Content: []provider.Content{provider.TextBlock{Text: "## Context Summary (compacted)"}}},
+		{Role: provider.RoleUser, Meta: map[string]string{autoCompactContinueMetaKey: "true"}, Content: []provider.Content{provider.TextBlock{Text: "resume internally"}}},
+		{Role: provider.RoleUser, Content: []provider.Content{provider.TextBlock{Text: "new prompt"}}},
+	})
+	i := &Interactive{agent: ag}
+
+	history := i.inputHistory()
+	if len(history) != 2 || history[0] != "prompt" || history[1] != "new prompt" {
+		t.Fatalf("inputHistory() = %q, want [prompt new prompt]", history)
+	}
+}
+
+func TestJumpTargetsSkipInternalUserContext(t *testing.T) {
+	msgs := []provider.Message{
+		{Role: provider.RoleUser, Content: []provider.Content{provider.TextBlock{Text: "prompt"}}},
+		{Role: provider.RoleAssistant, Content: []provider.Content{provider.ToolCallBlock{ID: "call-1", Name: "read"}}},
+		{Role: provider.RoleTool, Content: []provider.Content{provider.ToolResultBlock{CallID: "call-1"}}},
+		{Role: provider.RoleUser, Meta: map[string]string{"compaction": "true"}, Content: []provider.Content{provider.TextBlock{Text: "## Context Summary (compacted)"}}},
+		{Role: provider.RoleUser, Content: []provider.Content{provider.TextBlock{Text: "new prompt"}}},
+	}
+
+	targets := buildJumpTargets(msgs)
+	if len(targets) != 2 {
+		t.Fatalf("jump target count = %d, want 2", len(targets))
+	}
+	if targets[0].TurnNo != 1 || targets[0].ToolCount != 1 || targets[1].TurnNo != 2 {
+		t.Fatalf("jump targets = %+v, want real turns and tool count", targets)
+	}
+}
+
 func TestInputHistoryNoLongerUsesLeftRight(t *testing.T) {
 	ag := core.NewAgent(nil, "", "", nil)
 	ag.SetMessages([]provider.Message{

@@ -1889,6 +1889,7 @@ func snapViewportStartToImageBlock(chat []string, start int) int {
 
 const (
 	hiddenOpenAIImageMirrorPrefix = "Tool output included the following image content:"
+	autoCompactContinueMetaKey    = "auto_compact_continue"
 	shellEscapeMetaKey            = "shell_escape"
 )
 
@@ -1907,6 +1908,9 @@ func filterHiddenTranscriptMessages(msgs []provider.Message) []provider.Message 
 }
 
 func isHiddenTranscriptMessage(m provider.Message) bool {
+	if m.Meta[autoCompactContinueMetaKey] == "true" {
+		return true
+	}
 	if m.Role != provider.RoleUser || len(m.Content) == 0 {
 		return false
 	}
@@ -3029,7 +3033,7 @@ func (i *Interactive) inputHistory() []string {
 	msgs := i.agent.Messages()
 	hist := make([]string, 0, len(msgs))
 	for _, m := range msgs {
-		if m.Role != provider.RoleUser || isHiddenTranscriptMessage(m) || m.Meta[shellEscapeMetaKey] == "true" {
+		if !isForkableUserMessage(m) {
 			continue
 		}
 		text := userMessageText(m)
@@ -5793,6 +5797,32 @@ func (i *Interactive) clearPendingCompactTurnLocked() {
 	i.pendingPostCompactNote = ""
 }
 
+const autoCompactContinuationPrompt = `Resume work on the user's most recent intent. Re-read the kept recent messages after the summary to confirm what the user asked for last. If their latest request supersedes earlier plans recorded in the summary, follow the latest request. If there is nothing left to do, say so briefly instead of inventing further work.`
+
+// startAutoCompactContinuation adds an internal user turn that tells the
+// model to resume the task after threshold compaction. Provider requests
+// cannot continue from an assistant tail on every supported API, so the
+// continuation must be represented as a user message. It is hidden from
+// the rendered transcript but remains in the persisted/model context.
+func (i *Interactive) startAutoCompactContinuation(parent context.Context) {
+	i.mu.Lock()
+	ag := i.agent
+	i.mu.Unlock()
+	if ag == nil {
+		i.mu.Lock()
+		i.busy = false
+		i.mu.Unlock()
+		i.invalidate()
+		return
+	}
+	if ag.QueuedMessageCount() == 0 {
+		ag.AppendUserContext(autoCompactContinuationPrompt, map[string]string{
+			autoCompactContinueMetaKey: "true",
+		})
+	}
+	i.startTurnRequest(parent, "", nil, true, false)
+}
+
 // runCompact invokes core.Agent.Compact and reflects the progress in
 // the tui. It runs in a goroutine so the ui stays responsive; esc/ctrl+c
 // cancel via the same cancelTurn channel used for normal turns.
@@ -5831,7 +5861,18 @@ func (i *Interactive) runCompact(parent context.Context, auto bool) {
 	go func() {
 		// Sink discards deltas — we don't stream the summary to the UI.
 		sink := func(delta string) {}
-		summary, err := i.agent.Compact(ctx, 4, sink)
+		msgsBefore := i.agent.Messages()
+		autoContinue := auto && shouldAutoContinueAfterCompaction(msgsBefore)
+		// Keep the usual recent tail when possible, but never let it cover
+		// the whole transcript. A short session can still be at 70–90% of
+		// a model's window because one prompt or tool result is large; the
+		// automatic path must summarize that session instead of failing
+		// before it reaches the compaction provider.
+		keepTail := 4
+		if n := len(msgsBefore); n > 0 && keepTail >= n {
+			keepTail = n - 1
+		}
+		summary, err := i.agent.Compact(ctx, keepTail, sink)
 		_ = summary
 		i.mu.Lock()
 		i.busy = false
@@ -5848,6 +5889,7 @@ func (i *Interactive) runCompact(parent context.Context, auto bool) {
 		var nextImages []provider.ImageBlock
 		var hasNext bool
 		var continueExisting bool
+		var continueAutomatically bool
 
 		switch {
 		case err != nil && ctx.Err() != nil:
@@ -5907,20 +5949,35 @@ func (i *Interactive) runCompact(parent context.Context, auto bool) {
 			case len(i.queued) > 0:
 				next, i.queued = i.queued[0], i.queued[1:]
 				hasNext = true
+			case autoContinue:
+				// A successful threshold compaction must hand control back to
+				// an unfinished model turn. Completed text answers should settle
+				// without an invented extra request; the user can still prompt
+				// again normally.
+				continueAutomatically = true
 			}
+		}
+		if hasNext || continueExisting || continueAutomatically {
+			// Keep the host busy while handing the next turn back to the
+			// agent. Prompts submitted in this hand-off window then enter
+			// the agent queue instead of racing a second startTurn call.
+			i.busy = true
 		}
 		i.mu.Unlock()
 		i.invalidate()
 
-		if hasNext || continueExisting {
+		if hasNext || continueExisting || continueAutomatically {
 			p := i.runCtx
 			if p == nil {
 				p = context.Background()
 			}
-			if continueExisting {
-				i.startTurnRequest(p, "", nil, true)
-			} else {
+			switch {
+			case continueExisting:
+				i.startTurnRequest(p, "", nil, true, true)
+			case hasNext:
 				i.startTurnWithImages(p, next, nextImages)
+			case continueAutomatically:
+				i.startAutoCompactContinuation(p)
 			}
 		}
 	}()
@@ -6055,10 +6112,16 @@ func (i *Interactive) startTurn(parent context.Context, prompt string) {
 }
 
 func (i *Interactive) startTurnWithImages(parent context.Context, prompt string, images []provider.ImageBlock) {
-	i.startTurnRequest(parent, prompt, images, false)
+	i.startTurnRequest(parent, prompt, images, false, false)
 }
 
-func (i *Interactive) startTurnRequest(parent context.Context, prompt string, images []provider.ImageBlock, overflowRecoveryAttempted bool) {
+// startTurnRequest starts a new prompt or continues an existing user turn.
+// continueExisting selects Agent.Continue so callers can retry a transcript
+// message without appending it twice. overflowRecoveryAttempted suppresses
+// the pre-turn threshold guard and the one-shot overflow recovery path; a
+// normal post-compaction continuation leaves it false so a still-too-large
+// rebuilt context can recover once more.
+func (i *Interactive) startTurnRequest(parent context.Context, prompt string, images []provider.ImageBlock, continueExisting, overflowRecoveryAttempted bool) {
 	if i.agent == nil {
 		// Text startup pre cannot run without credentials; continue so
 		// deferred InitialInput (pre-fill or auto-submit) still applies.
@@ -6148,7 +6211,7 @@ func (i *Interactive) startTurnRequest(parent context.Context, prompt string, im
 
 	go func() {
 		var err error
-		if overflowRecoveryAttempted {
+		if continueExisting {
 			err = i.agent.Continue(ctx, sink)
 		} else {
 			err = i.agent.Prompt(ctx, prompt, images, sink)
@@ -6400,6 +6463,36 @@ func shouldAutoCompact(inputTokens, contextWindow, thresholdPercent int) bool {
 		return false
 	}
 	return float64(inputTokens)/float64(contextWindow) >= float64(thresholdPercent)/100
+}
+
+// shouldAutoContinueAfterCompaction reports whether the transcript tail looks
+// unfinished. A complete assistant text answer should not cause an extra
+// model turn merely because its context was compacted; tool calls, reasoning-
+// only replies, and non-assistant tails still need the model to resume.
+func shouldAutoContinueAfterCompaction(msgs []provider.Message) bool {
+	if len(msgs) == 0 {
+		return false
+	}
+	last := msgs[len(msgs)-1]
+	if last.Role != provider.RoleAssistant {
+		return true
+	}
+	hasText := false
+	for _, content := range last.Content {
+		switch block := content.(type) {
+		case provider.ToolCallBlock:
+			return true
+		case provider.TextBlock:
+			if strings.TrimSpace(block.Text) != "" {
+				hasText = true
+			}
+		case provider.ReasoningBlock:
+			// Reasoning without a visible answer is not terminal.
+		default:
+			return true
+		}
+	}
+	return !hasText
 }
 
 // shouldAutoCompactLocked reports whether the last turn pushed context
@@ -7469,13 +7562,32 @@ func (i *Interactive) applySessionTreeTarget(target sessionTreeTarget, turnNo in
 
 	// Read and validate the selected row before flushing or creating anything.
 	// This gives tool-call/result pairs an atomic boundary and prevents a
-	// malformed selection from changing the active session.
-	sess, msgs, err := core.OpenSession(src)
-	if err != nil {
-		i.setSessionTreeError("tree: read selection: " + err.Error())
-		return
+	// malformed selection from changing the active session. Historical rows
+	// come from a pre-compaction segment; current rows use the effective
+	// snapshot that the running agent resumes from.
+	var msgs []provider.Message
+	var historicalSegment core.SessionHistorySegment
+	if target.Historical {
+		history, err := core.ReadSessionHistory(src)
+		if err != nil {
+			i.setSessionTreeError("tree: read selection: " + err.Error())
+			return
+		}
+		if target.HistorySegment < 0 || target.HistorySegment >= len(history.Segments) {
+			i.setSessionTreeError("tree: selected history segment is unavailable")
+			return
+		}
+		historicalSegment = history.Segments[target.HistorySegment]
+		msgs = historicalSegment.Messages
+	} else {
+		sess, current, err := core.OpenSession(src)
+		if err != nil {
+			i.setSessionTreeError("tree: read selection: " + err.Error())
+			return
+		}
+		_ = sess.Close()
+		msgs = current
 	}
-	_ = sess.Close()
 	selection, err := sessionTreeSelection(msgs, target)
 	if err != nil {
 		i.setSessionTreeError("tree: " + err.Error())
@@ -7484,7 +7596,12 @@ func (i *Interactive) applySessionTreeTarget(target sessionTreeTarget, turnNo in
 	if i.cfg.FlushSession != nil {
 		i.cfg.FlushSession()
 	}
-	newPath, err := core.BranchSessionHidden(src, i.sessionsRoot(), i.cfg.CWD, i.cfg.Version, selection.upTo)
+	var newPath string
+	if target.Historical {
+		newPath, err = core.BranchSessionHiddenFromHistory(src, i.sessionsRoot(), i.cfg.CWD, i.cfg.Version, historicalSegment, selection.upTo)
+	} else {
+		newPath, err = core.BranchSessionHidden(src, i.sessionsRoot(), i.cfg.CWD, i.cfg.Version, selection.upTo)
+	}
 	if err != nil {
 		i.setSessionTreeError("tree: " + err.Error())
 		return
