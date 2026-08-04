@@ -357,6 +357,29 @@ func TestApplyWorkspaceEditUsesUTF16AndRejectsOutside(t *testing.T) {
 	}
 }
 
+func TestWorkspaceEditPreflightsAllTargets(t *testing.T) {
+	root := t.TempDir()
+	inside := filepath.Join(root, "inside.txt")
+	outside := filepath.Join(t.TempDir(), "outside.txt")
+	if err := os.WriteFile(inside, []byte("old\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(outside, []byte("old\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	rootReal, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = prepareEditTargets(rootReal, map[string][]TextEdit{
+		URIForPath(inside):  {{Range: Range{}, NewText: "inside"}},
+		URIForPath(outside): {{Range: Range{}, NewText: "outside"}},
+	})
+	if err == nil {
+		t.Fatal("workspace edit accepted an unsafe target after a safe target")
+	}
+}
+
 func TestApplyWorkspaceEditFollowsInWorkspaceSymlink(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("symlink permissions vary on Windows")

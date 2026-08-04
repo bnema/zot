@@ -43,26 +43,44 @@ func ApplyWorkspaceEdit(root string, edit WorkspaceEdit) error {
 		}
 		all[change.TextDocument.URI] = append(all[change.TextDocument.URI], change.Edits...)
 	}
-	for uri, changes := range all {
-		path, err := uriToPath(uri)
-		if err != nil {
-			return err
-		}
-		if err := safeWorkspacePath(rootReal, path); err != nil {
-			return err
-		}
-		target, err := filepath.EvalSymlinks(path)
-		if err != nil {
-			return fmt.Errorf("workspace edit target %q: %w", path, err)
-		}
-		if err := safeWorkspacePath(rootReal, target); err != nil {
-			return err
-		}
-		if err := applyTextEdits(target, changes); err != nil {
-			return fmt.Errorf("apply edit to %s: %w", path, err)
+	targets, err := prepareEditTargets(rootReal, all)
+	if err != nil {
+		return err
+	}
+	for _, location := range targets {
+		if err := applyTextEdits(location.target, location.changes); err != nil {
+			return fmt.Errorf("apply edit to %s: %w", location.path, err)
 		}
 	}
 	return nil
+}
+
+type editTarget struct {
+	path    string
+	target  string
+	changes []TextEdit
+}
+
+func prepareEditTargets(rootReal string, all map[string][]TextEdit) ([]editTarget, error) {
+	targets := make([]editTarget, 0, len(all))
+	for uri, changes := range all {
+		path, err := uriToPath(uri)
+		if err != nil {
+			return nil, err
+		}
+		if err := safeWorkspacePath(rootReal, path); err != nil {
+			return nil, err
+		}
+		target, err := filepath.EvalSymlinks(path)
+		if err != nil {
+			return nil, fmt.Errorf("workspace edit target %q: %w", path, err)
+		}
+		if err := safeWorkspacePath(rootReal, target); err != nil {
+			return nil, err
+		}
+		targets = append(targets, editTarget{path: path, target: target, changes: changes})
+	}
+	return targets, nil
 }
 
 func safeWorkspacePath(root, path string) error {
