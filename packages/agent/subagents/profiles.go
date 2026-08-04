@@ -204,9 +204,16 @@ func load(path, source string) (*Profile, error) {
 	if name == "" {
 		name = strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
 	}
-	thinking := unquote(values["thinking"])
+	thinking, err := parseThinkingValue(values["thinking"], "thinking")
+	if err != nil {
+		return nil, err
+	}
+	reasoning, err := parseThinkingValue(values["reasoning"], "reasoning")
+	if err != nil {
+		return nil, err
+	}
 	if thinking == "" {
-		thinking = unquote(values["reasoning"])
+		thinking = reasoning
 	}
 	profile := &Profile{
 		Name:         strings.TrimSpace(name),
@@ -220,13 +227,27 @@ func load(path, source string) (*Profile, error) {
 		Source:       source,
 	}
 	profile.SystemPromptMode = "append"
-	if strings.EqualFold(unquote(values["systempromptmode"]), "replace") {
-		profile.SystemPromptMode = "replace"
+	if mode, ok := values["systempromptmode"]; ok {
+		switch strings.ToLower(strings.TrimSpace(unquote(mode))) {
+		case "", "append":
+		case "replace":
+			profile.SystemPromptMode = "replace"
+		default:
+			return nil, fmt.Errorf("systemPromptMode must be append or replace")
+		}
 	}
-	if value, ok := parseOptionalBool(values["inheritprojectcontext"]); ok {
+	if raw, ok := values["inheritprojectcontext"]; ok {
+		value, parsed := parseOptionalBool(raw)
+		if !parsed {
+			return nil, fmt.Errorf("inheritProjectContext must be true or false")
+		}
 		profile.InheritProjectContext = &value
 	}
-	if value, ok := parseOptionalBool(values["inheritskills"]); ok {
+	if raw, ok := values["inheritskills"]; ok {
+		value, parsed := parseOptionalBool(raw)
+		if !parsed {
+			return nil, fmt.Errorf("inheritSkills must be true or false")
+		}
 		profile.InheritSkills = &value
 	}
 	return profile, nil
@@ -321,6 +342,23 @@ func parseList(value string) []string {
 		}
 	}
 	return out
+}
+
+func parseThinkingValue(value, field string) (string, error) {
+	switch strings.ToLower(strings.TrimSpace(unquote(value))) {
+	case "":
+		return "", nil
+	case "off":
+		return "off", nil
+	case "minimal", "minimum":
+		return "minimum", nil
+	case "low", "medium", "high", "xhigh", "max":
+		return strings.ToLower(strings.TrimSpace(unquote(value))), nil
+	case "maximum":
+		return "xhigh", nil
+	default:
+		return "", fmt.Errorf("%s must be off|minimum|low|medium|high|xhigh|max", field)
+	}
 }
 
 func parseOptionalBool(value string) (bool, bool) {

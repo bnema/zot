@@ -353,6 +353,7 @@ func (f *Swarm) Resume(ctx context.Context, id string) (*Agent, error) {
 		Dir: existing.Dir, Started: existing.Started,
 		Model: existing.Model, Provider: existing.Provider,
 		Reasoning: existing.Reasoning, Subagent: existing.Subagent,
+		SessionID: existing.SessionID,
 		InboxPath: inboxPath, EventLogPath: existing.EventLogPath,
 		SessionPath: existing.SessionPath,
 	}
@@ -366,6 +367,7 @@ func (f *Swarm) Resume(ctx context.Context, id string) (*Agent, error) {
 		Provider:     m.Provider,
 		Reasoning:    m.Reasoning,
 		Subagent:     m.Subagent,
+		SessionID:    m.SessionID,
 		InboxPath:    m.InboxPath,
 		EventLogPath: m.EventLogPath,
 		SessionPath:  m.SessionPath,

@@ -171,6 +171,11 @@ func TestSwarmAgentArgsEmptyTaskOmitsPositional(t *testing.T) {
 	if a := args[len(args)-1]; strings.HasPrefix(a, "--") {
 		t.Fatalf("argv ends on a flag with no value: %v", args)
 	}
+	for _, flag := range []string{"--reasoning", "--subagent"} {
+		if indexOf(args, flag) >= 0 {
+			t.Fatalf("empty child options should omit %s: %v", flag, args)
+		}
+	}
 }
 
 // TestDefaultChildArgsSpawnIncludesTask pins the spawn shape: a

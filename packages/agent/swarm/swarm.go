@@ -148,6 +148,14 @@ func (f *Swarm) SetRepoRoot(root string) {
 	f.cfg.RepoRoot = root
 }
 
+// RepoRoot returns the working directory used by subsequently spawned
+// agents.
+func (f *Swarm) RepoRoot() string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.cfg.RepoRoot
+}
+
 // SetActiveSession scopes the dashboard view (and Spawn stamping)
 // to a particular host zot session id. Pass empty to clear the
 // scope and revert to "show every agent" (the original behaviour).

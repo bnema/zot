@@ -101,10 +101,10 @@ func (t *SwarmSpawnTool) Schema() json.RawMessage { return json.RawMessage(swarm
 
 func (t *SwarmSpawnTool) Execute(ctx context.Context, raw json.RawMessage, progress func(string)) (core.ToolResult, error) {
 	if t.Swarm == nil {
-		return toolErr("swarm_spawn: swarm supervisor not available in this mode"), nil
+		return protocolToolError("swarm_spawn: swarm supervisor not available in this mode")
 	}
 	if t.Enabled == nil || !t.Enabled() {
-		return toolErr("swarm_spawn: auto-swarm is disabled. Ask the user to enable it from /settings before delegating sub-tasks."), nil
+		return protocolToolError("swarm_spawn: auto-swarm is disabled. Ask the user to enable it from /settings before delegating sub-tasks.")
 	}
 	var a swarmSpawnArgs
 	if err := json.Unmarshal(raw, &a); err != nil {
@@ -112,22 +112,22 @@ func (t *SwarmSpawnTool) Execute(ctx context.Context, raw json.RawMessage, progr
 	}
 	task := strings.TrimSpace(a.Task)
 	if task == "" {
-		return toolErr("swarm_spawn: task is required"), nil
+		return protocolToolError("swarm_spawn: task is required")
 	}
 
 	agentName := strings.TrimSpace(a.Agent)
 	var profile *subagents.Profile
 	if agentName != "" {
 		if t.ResolveSubagent == nil {
-			return toolErr("swarm_spawn: named subagent profiles are unavailable"), nil
+			return protocolToolError("swarm_spawn: named subagent profiles are unavailable")
 		}
 		var err error
 		profile, err = t.ResolveSubagent(agentName)
 		if err != nil {
-			return toolErr("swarm_spawn: " + err.Error()), nil
+			return protocolToolError("swarm_spawn: " + err.Error())
 		}
 		if profile == nil {
-			return toolErr("swarm_spawn: unknown subagent profile " + agentName), nil
+			return protocolToolError("swarm_spawn: unknown subagent profile " + agentName)
 		}
 		agentName = profile.Name
 	}
@@ -135,7 +135,7 @@ func (t *SwarmSpawnTool) Execute(ctx context.Context, raw json.RawMessage, progr
 	model := strings.TrimSpace(a.Model)
 	providerID := strings.TrimSpace(a.Provider)
 	if (model == "") != (providerID == "") {
-		return toolErr("swarm_spawn: omit both model/provider to inherit the host or profile, or provide both explicitly"), nil
+		return protocolToolError("swarm_spawn: omit both model/provider to inherit the host or profile, or provide both explicitly")
 	}
 	if model == "" && providerID == "" && profile != nil {
 		// A fully-qualified profile model is useful metadata for the
@@ -158,18 +158,18 @@ func (t *SwarmSpawnTool) Execute(ctx context.Context, raw json.RawMessage, progr
 
 	reasoning, err := reasoningOverride(a.Reasoning, a.Thinking)
 	if err != nil {
-		return toolErr("swarm_spawn: " + err.Error()), nil
+		return protocolToolError("swarm_spawn: " + err.Error())
 	}
 	if reasoning == "" && profile != nil && strings.TrimSpace(profile.Thinking) != "" {
 		reasoning, err = reasoningOverride(profile.Thinking, "")
 		if err != nil {
-			return toolErr("swarm_spawn: profile " + profile.Name + ": " + err.Error()), nil
+			return protocolToolError("swarm_spawn: profile " + profile.Name + ": " + err.Error())
 		}
 	}
 	if reasoning == "" && t.DefaultReasoning != nil {
 		reasoning, err = reasoningOverride(t.DefaultReasoning(), "")
 		if err != nil {
-			return toolErr("swarm_spawn: host " + err.Error()), nil
+			return protocolToolError("swarm_spawn: host " + err.Error())
 		}
 	}
 
@@ -239,6 +239,13 @@ func reasoningOverride(reasoning, thinking string) (string, error) {
 	default:
 		return "", fmt.Errorf("reasoning must be off|minimum|low|medium|high|xhigh|max")
 	}
+}
+
+// protocolToolError keeps model-visible validation failures in the
+// ToolResult channel rather than treating them as host execution errors.
+func protocolToolError(msg string) (core.ToolResult, error) {
+	//nolint:nilerr // ToolResult.IsError is the established tool protocol.
+	return toolErr(msg), nil
 }
 
 func toolErr(msg string) core.ToolResult {

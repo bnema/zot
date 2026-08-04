@@ -1,6 +1,7 @@
 package subagents
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -96,6 +97,28 @@ No.
 	}
 	if len(profiles) != 1 || profiles[0].Description != "Configured reviewer" {
 		t.Fatalf("configured precedence = %#v", profiles)
+	}
+}
+
+func TestLoadRejectsInvalidClosedSchemaMetadata(t *testing.T) {
+	cases := []struct {
+		name  string
+		field string
+	}{
+		{name: "invalid-thinking", field: "thinking: extreme"},
+		{name: "invalid-reasoning", field: "reasoning: extreme"},
+		{name: "invalid-prompt-mode", field: "systemPromptMode: merge"},
+		{name: "invalid-project-context", field: "inheritProjectContext: sometimes"},
+		{name: "invalid-skills", field: "inheritSkills: sometimes"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "profile.md")
+			writeProfile(t, path, fmt.Sprintf("---\nname: test\n%s\n---\nInstructions.\n", tc.field))
+			if _, err := load(path, "test"); err == nil {
+				t.Fatalf("load succeeded for invalid metadata %q", tc.field)
+			}
+		})
 	}
 }
 
