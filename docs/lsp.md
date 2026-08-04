@@ -10,13 +10,12 @@ zot loads JSON configuration from the following layers, in increasing
 precedence:
 
 - `$ZOT_HOME/lsp.json`
-- `<cwd>/.pi/lsp-bridge.json`, `<cwd>/.pi/lsp.json`
+- `<cwd>/.pi/lsp.json`
 - `<cwd>/.omp/lsp.json`
-- `<cwd>/pi-lsp-bridge.json`
 - `<cwd>/lsp.json`, `<cwd>/.lsp.json`, and `<cwd>/.zot/lsp.json`
 
 A file may put providers below `servers`, `lspServers`, or `linters`, use a
-flat provider map, or use the `providers` array from pi-lsp-bridge:
+flat provider map, or use the `providers` array:
 
 ```json
 {
@@ -39,9 +38,9 @@ flat provider map, or use the `providers` array from pi-lsp-bridge:
 }
 ```
 
-The pi-lsp-bridge array accepts built-in names and objects with `id`, `kind`,
+The `providers` array accepts built-in names and objects with `id`, `kind`,
 `command`, `args`, selectors, root markers, and nested `lsp`/`cli` options.
-Unknown bridge-specific metadata is ignored. Set `autoDetect` to `false` to
+Unknown provider metadata is ignored. Set `autoDetect` to `false` to
 keep only providers named or defined by the configuration file.
 
 Server overrides merge onto zot's built-in definitions. Built-ins cover common

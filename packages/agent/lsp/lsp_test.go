@@ -212,7 +212,7 @@ func TestLoadConfigMergesGlobalProjectAndBuiltins(t *testing.T) {
 	}
 }
 
-func TestLoadConfigAcceptsPiLSPBridgeProviders(t *testing.T) {
+func TestLoadConfigAcceptsProviderArrays(t *testing.T) {
 	root := t.TempDir()
 	zotHome := t.TempDir()
 	t.Setenv("ZOT_HOME", zotHome)
@@ -220,15 +220,14 @@ func TestLoadConfigAcceptsPiLSPBridgeProviders(t *testing.T) {
 		t.Fatal(err)
 	}
 	configFile := `{
-		"$schema": "./node_modules/pi-lsp-bridge/schema.json",
 		"autoDetect": true,
 		"providers": [
 			"gopls",
 			{"id":"gopls","args":["serve"]},
-			{"id":"bridge-lint","kind":"cli","command":"bridge-lint","fileTypes":[".go"],"rootMarkers":["go.mod"],"cli":{"parser":"generic","mode":"files"}}
+			{"id":"custom-lint","kind":"cli","command":"custom-lint","fileTypes":[".go"],"rootMarkers":["go.mod"],"cli":{"parser":"generic","mode":"files"}}
 		]
 	}`
-	if err := os.WriteFile(filepath.Join(root, "pi-lsp-bridge.json"), []byte(configFile), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(root, "lsp.json"), []byte(configFile), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	config, err := LoadConfig(root)
@@ -238,9 +237,9 @@ func TestLoadConfigAcceptsPiLSPBridgeProviders(t *testing.T) {
 	if got := config.Servers["gopls"].Args; len(got) != 1 || got[0] != "serve" {
 		t.Fatalf("gopls provider override = %#v", got)
 	}
-	lint := config.Servers["bridge-lint"]
+	lint := config.Servers["custom-lint"]
 	if lint.Kind != "cli" || lint.Parser != "generic" || lint.Mode != "files" {
-		t.Fatalf("bridge provider = %#v", lint)
+		t.Fatalf("custom provider = %#v", lint)
 	}
 }
 

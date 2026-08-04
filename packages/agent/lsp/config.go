@@ -39,7 +39,7 @@ type Config struct {
 	AutoDetect bool
 	// Explicit contains servers named or defined by a config file. When
 	// auto-detection is disabled, only these configured providers remain
-	// eligible, matching pi-lsp-bridge's providers/autoDetect behavior.
+	// eligible, matching the providers/autoDetect configuration behavior.
 	Explicit map[string]bool
 	Files    []string
 }
@@ -75,10 +75,8 @@ func LoadConfig(cwd string) (Config, error) {
 		files = append(files, filepath.Join(home, "lsp.json"))
 	}
 	files = append(files,
-		filepath.Join(cwd, ".pi", "lsp-bridge.json"),
 		filepath.Join(cwd, ".pi", "lsp.json"),
 		filepath.Join(cwd, ".omp", "lsp.json"),
-		filepath.Join(cwd, "pi-lsp-bridge.json"),
 		filepath.Join(cwd, "lsp.json"),
 		filepath.Join(cwd, ".lsp.json"),
 		filepath.Join(cwd, ".zot", "lsp.json"),
@@ -411,8 +409,8 @@ func readConfigFile(path string) (map[string]map[string]json.RawMessage, bool, [
 	}
 	root := top
 	if raw, ok := top["providers"]; ok {
-		// pi-lsp-bridge uses a providers array. Preserve its compact
-		// string entries (built-ins are already in the default registry)
+		// A providers array may contain compact string entries. Preserve
+		// them (built-ins are already in the default registry)
 		// and turn object entries into the map shape used internally.
 		var providers []json.RawMessage
 		if err := json.Unmarshal(raw, &providers); err != nil {
@@ -481,8 +479,8 @@ func strconvQuote(s string) string {
 	return string(b)
 }
 
-// flattenProviderObject adapts pi-lsp-bridge's nested provider shape to the
-// flat ServerConfig fields used by zot. Unknown provider metadata remains
+// flattenProviderObject adapts nested provider shapes to the flat
+// ServerConfig fields used by zot. Unknown provider metadata remains
 // harmless JSON and is ignored by decodeServer.
 func flattenProviderObject(object map[string]json.RawMessage) {
 	if _, exists := object["command"]; !exists {
