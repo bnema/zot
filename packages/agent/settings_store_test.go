@@ -44,6 +44,27 @@ func TestConfigSettingsStorePersistsTerminalAlerts(t *testing.T) {
 	}
 }
 
+func TestConfigSettingsStorePersistsTerminalTitle(t *testing.T) {
+	t.Setenv("ZOT_HOME", t.TempDir())
+	if err := SaveConfig(Config{Theme: "dark"}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := (configSettingsStore{}).SetTerminalTitleEnabled(false); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.TerminalTitleEnabled == nil || *cfg.TerminalTitleEnabled {
+		t.Fatal("terminal_title_enabled was not persisted as disabled")
+	}
+	if cfg.Theme != "dark" {
+		t.Fatalf("unrelated config changed: theme = %q, want dark", cfg.Theme)
+	}
+}
+
 func TestConfigSettingsStorePersistsJailByDefault(t *testing.T) {
 	t.Setenv("ZOT_HOME", t.TempDir())
 	if err := SaveConfig(Config{Theme: "dark"}); err != nil {

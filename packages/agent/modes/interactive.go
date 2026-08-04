@@ -63,6 +63,10 @@ type InteractiveConfig struct {
 	// agent and extensions. nil means enabled; false disables them.
 	TerminalAlertsEnabled *bool
 
+	// TerminalTitleEnabled controls the hidden title request and terminal
+	// title updates. nil means enabled; false disables both.
+	TerminalTitleEnabled *bool
+
 	// AutoSwarmEnabled mirrors the persisted config flag at startup so
 	// the /settings dialog can render the current state without
 	// re-reading config.json on every open.
@@ -267,6 +271,29 @@ type InteractiveConfig struct {
 	// write a new meta row so resume picks up the same model.
 	PersistModel func(providerName, model string)
 
+	// InitialSessionTitle is the persisted title of the session loaded before
+	// the TUI starts. It is shown in the terminal without another model call.
+	InitialSessionTitle string
+	// InitialSessionTitlePending is true for a newly forked branch that only
+	// contains its copied prefix. The copied user messages must not prevent a
+	// new title after the branch's first real prompt.
+	InitialSessionTitlePending bool
+
+	// CurrentSessionTitle returns the title of the session currently owned by
+	// the host. It is used after /sessions and import switches.
+	CurrentSessionTitle func() string
+	// CurrentSessionTitlePending reports whether the loaded session is a new
+	// branch that has not received a post-fork prompt yet.
+	CurrentSessionTitlePending func() bool
+
+	// PersistTitle stores an automatically generated title without adding a
+	// user or assistant message to the transcript. It returns persistence
+	// errors without affecting the main turn.
+	PersistTitle func(title string) error
+	// OnSessionTitleChanged updates host-side in-memory title bookkeeping
+	// after a manual rename has already been written to disk.
+	OnSessionTitleChanged func(title string)
+
 	OnAssistant  func(m provider.Message)
 	OnToolResult func(id string, r core.ToolResult)
 
@@ -371,6 +398,10 @@ type SettingsStore interface {
 
 type terminalAlertsSettingsStore interface {
 	SetTerminalAlertsEnabled(enabled bool) error
+}
+
+type terminalTitleSettingsStore interface {
+	SetTerminalTitleEnabled(enabled bool) error
 }
 
 type showInstructionsSettingsStore interface {
@@ -569,6 +600,18 @@ type Interactive struct {
 	// after this point and reverts to plain text after.
 	welcomeStart time.Time
 
+	// interactiveStarted gates session-title generation so tests and
+	// embedders that call Submit before Run do not issue a hidden request.
+	interactiveStarted bool
+	// titleRealPromptSeen prevents a fresh session from generating more than
+	// one title. It is reset only when a fork or a new cwd starts a new branch.
+	titleRealPromptSeen    bool
+	titleGenerationStarted bool
+	firstRealPrompt        string
+	titleVersion           uint64
+	titleCancel            context.CancelFunc
+	sessionTitle           string
+
 	// extNotes are one-shot styled lines pushed by extensions via
 	// Notify / Display. They live above the editor (just below the
 	// transcript) until cleared by /clear or another reset.
@@ -721,6 +764,15 @@ func NewInteractive(cfg InteractiveConfig) *Interactive {
 			i.view.TailLimit = initialResumeTailLimit
 		}
 	}
+	i.sessionTitle = core.NormalizeSessionTitle(cfg.InitialSessionTitle)
+	if cfg.InitialSessionTitlePending {
+		i.sessionTitle = ""
+		i.titleRealPromptSeen = false
+		i.titleGenerationStarted = false
+	} else {
+		i.titleRealPromptSeen = i.sessionTitle != "" || hasRealUserPrompt(i.view.Messages)
+		i.titleGenerationStarted = i.titleRealPromptSeen
+	}
 	if cfg.AutoSwarmEnabled != nil && *cfg.AutoSwarmEnabled {
 		i.applyAutoSwarmTool(true)
 	}
@@ -736,6 +788,8 @@ func (i *Interactive) Run(ctx context.Context) error {
 		return err
 	}
 	defer restore()
+	i.markInteractiveStarted()
+	defer i.cancelSessionTitle()
 	defer func() {
 		if i.telegramBridge != nil {
 			i.telegramBridge.Stop()
@@ -2254,9 +2308,28 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 			i.sessionDialog.Close()
 			return false
 		}
+		manualRenameCurrent := false
+		if k.Kind == tui.KeyEnter && i.sessionDialog.renaming && core.NormalizeSessionTitle(i.sessionDialog.rename) != "" && i.sessionDialog.cursor >= 0 && i.sessionDialog.cursor < len(i.sessionDialog.sessions) && i.cfg.CurrentSessionPath != nil {
+			path := i.sessionDialog.sessions[i.sessionDialog.cursor].Path
+			manualRenameCurrent = i.cfg.CurrentSessionPath() == path
+			if manualRenameCurrent {
+				i.markSessionTitleSwitching()
+			}
+		}
 		act := i.sessionDialog.HandleKey(k)
 		if act.Select {
 			i.applySessionSelection(act.Path)
+		}
+		if act.Err != nil {
+			if manualRenameCurrent {
+				i.restoreFailedSessionTitle()
+			}
+			i.mu.Lock()
+			i.statusErr = "rename: " + act.Err.Error()
+			i.statusOK = ""
+			i.mu.Unlock()
+		} else if act.Renamed && act.Path != "" && i.cfg.CurrentSessionPath != nil && i.cfg.CurrentSessionPath() == act.Path {
+			i.setManualSessionTitle(act.RenameTitle)
 		}
 		// Always request a redraw after handling a key here: when esc
 		// closes the picker, the overlay-close detection in the render
@@ -2836,6 +2909,7 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 		if i.telegramBridge != nil && i.telegramBridge.Active() {
 			go i.telegramBridge.OnUserTyped(text)
 		}
+		i.maybeStartSessionTitle(ctx, text)
 		// If a turn is already in flight, queue this prompt inside the
 		// agent loop so it is delivered at the next safe model-call
 		// boundary instead of waiting for the whole run to finish.
@@ -3145,7 +3219,17 @@ func (i *Interactive) Submit(text string) {
 		i.startShellEscape(i.runCtx, cmd)
 		return
 	}
-	i.startTurn(i.runCtx, text)
+	parent := i.runCtx
+	if parent == nil {
+		parent = context.Background()
+	}
+	i.mu.Lock()
+	awaitingStartupPre := i.awaitingStartupPre
+	i.mu.Unlock()
+	if !awaitingStartupPre {
+		i.maybeStartSessionTitle(parent, text)
+	}
+	i.startTurn(parent, text)
 }
 
 // completeStartupPre applies deferred InitialInput after entry.pre finishes.
@@ -3259,6 +3343,13 @@ func (i *Interactive) applyChangedCWD(ag *core.Agent, provider, model, cwd strin
 	}
 	i.cfg.Provider = provider
 	i.cfg.Model = model
+	titleCancel := i.titleCancel
+	i.titleCancel = nil
+	i.titleVersion++
+	i.sessionTitle = ""
+	i.titleRealPromptSeen = false
+	i.titleGenerationStarted = false
+	i.writeTerminalTitleLocked("")
 	i.toolCalls = map[string]*tui.ToolCallView{}
 	i.toolOrder = nil
 	i.toolGate = map[string]int{}
@@ -3266,6 +3357,9 @@ func (i *Interactive) applyChangedCWD(ag *core.Agent, provider, model, cwd strin
 	i.parkedTurn = 0
 	i.statusErr = ""
 	i.mu.Unlock()
+	if titleCancel != nil {
+		titleCancel()
+	}
 	i.fileSuggest.Reset()
 	i.fileSuggest.SetCWD(cwd)
 	i.invalidate()
@@ -3312,6 +3406,9 @@ func (i *Interactive) SubmitOrQueue(text string, images []provider.ImageBlock) {
 		i.invalidate()
 		return
 	}
+	i.mu.Unlock()
+	i.maybeStartSessionTitle(i.runCtx, text)
+	i.mu.Lock()
 	if i.busy {
 		// Queue text only; images are dropped for queued prompts. Compaction
 		// uses the host queue because it has no active agent loop to drain
@@ -3513,6 +3610,7 @@ func (i *Interactive) openSettingsDialog() {
 	}
 
 	terminalAlerts := terminalAlertsEnabled(i.cfg.TerminalAlertsEnabled)
+	terminalTitles := terminalTitleEnabled(i.cfg.TerminalTitleEnabled)
 	autoSwarm := false
 	if i.cfg.AutoSwarmEnabled != nil {
 		autoSwarm = *i.cfg.AutoSwarmEnabled
@@ -3633,6 +3731,12 @@ func (i *Interactive) openSettingsDialog() {
 			label: "terminal alerts",
 			desc:  "ring the terminal when the main session needs attention or an extension raises an alert",
 			value: terminalAlerts,
+		},
+		{
+			key:   "terminal_title_enabled",
+			label: "AI terminal titles",
+			desc:  "ask the active model for a concise title after the first prompt; uses one extra hidden request",
+			value: terminalTitles,
 		},
 		{
 			key:      "auto_swarm_enabled",
@@ -4003,6 +4107,35 @@ func (i *Interactive) applySettingToggle(key string, value bool) {
 		}
 		i.mu.Lock()
 		i.statusOK = "terminal alerts " + onOff(value)
+		i.statusErr = ""
+		i.mu.Unlock()
+	case "terminal_title_enabled":
+		val := value
+		var cancel context.CancelFunc
+		i.mu.Lock()
+		i.cfg.TerminalTitleEnabled = &val
+		if value {
+			i.writeTerminalTitleLocked(i.sessionTitle)
+		} else {
+			cancel = i.titleCancel
+			i.titleCancel = nil
+			i.titleVersion++
+			i.writeTerminalTitleLocked("")
+		}
+		i.mu.Unlock()
+		if cancel != nil {
+			cancel()
+		}
+		if store, ok := i.cfg.SettingsStore.(terminalTitleSettingsStore); ok {
+			if err := store.SetTerminalTitleEnabled(value); err != nil {
+				i.mu.Lock()
+				i.statusErr = "settings: " + err.Error()
+				i.mu.Unlock()
+				return
+			}
+		}
+		i.mu.Lock()
+		i.statusOK = "AI terminal titles " + onOff(value)
 		i.statusErr = ""
 		i.mu.Unlock()
 	case "auto_swarm_enabled":
@@ -5367,18 +5500,23 @@ func (i *Interactive) applySessionSelection(path string) {
 	i.statusErr = ""
 	i.mu.Unlock()
 	i.invalidate()
+	i.markSessionTitleSwitching()
 
 	go func() {
 		err := i.cfg.LoadSession(path)
-		i.mu.Lock()
-		defer i.mu.Unlock()
-		i.sessionLoading = false
 		if err != nil {
+			i.restoreFailedSessionTitle()
+			i.mu.Lock()
+			i.sessionLoading = false
 			i.statusErr = err.Error()
 			i.statusOK = ""
+			i.mu.Unlock()
 			i.invalidate()
 			return
 		}
+		i.restoreLoadedSessionTitle()
+		i.mu.Lock()
+		i.sessionLoading = false
 		i.statusOK = "resumed session: " + path
 		i.statusErr = ""
 		i.parkedTurn = 0
@@ -5408,6 +5546,7 @@ func (i *Interactive) applySessionSelection(path string) {
 				i.view.TailLimit = 0
 			}
 		}
+		i.mu.Unlock()
 		i.invalidate()
 	}()
 }
@@ -7151,13 +7290,16 @@ func (i *Interactive) doSessionImport(src string) {
 		i.invalidate()
 		return
 	}
+	i.markSessionTitleSwitching()
 	if err := i.cfg.LoadSession(newPath); err != nil {
+		i.restoreFailedSessionTitle()
 		i.mu.Lock()
 		i.statusErr = "import: load failed: " + err.Error()
 		i.mu.Unlock()
 		i.invalidate()
 		return
 	}
+	i.restoreLoadedSessionTitle()
 	i.mu.Lock()
 	i.statusOK = "imported and switched to session " + friendlyPath(newPath)
 	i.statusErr = ""
@@ -7347,7 +7489,9 @@ func (i *Interactive) applySessionTreeTarget(target sessionTreeTarget, turnNo in
 		i.setSessionTreeError("tree: " + err.Error())
 		return
 	}
+	i.markSessionTitleSwitching()
 	if err := i.cfg.LoadSession(newPath); err != nil {
+		i.restoreFailedSessionTitle()
 		i.setSessionTreeError("tree: checkout failed: " + err.Error())
 		return
 	}
@@ -7355,6 +7499,8 @@ func (i *Interactive) applySessionTreeTarget(target sessionTreeTarget, turnNo in
 	// LoadSession is intentionally the old func(string) error callback: the
 	// CLI and embedders already own agent/session swapping. Refresh the view
 	// from the swapped agent here instead of requiring a new callback result.
+	i.resetSessionTitleForFreshBranch()
+	i.scrollToBottom()
 	i.mu.Lock()
 	i.lastCtxInput = 0
 	if i.agent != nil {
@@ -7422,13 +7568,16 @@ func (i *Interactive) applyForkSelection(msgIdx int) {
 		i.invalidate()
 		return
 	}
+	i.markSessionTitleSwitching()
 	if err := i.cfg.LoadSession(newPath); err != nil {
+		i.restoreFailedSessionTitle()
 		i.mu.Lock()
 		i.statusErr = "fork: switch failed: " + err.Error()
 		i.mu.Unlock()
 		i.invalidate()
 		return
 	}
+	i.resetSessionTitleForFreshBranch()
 	i.mu.Lock()
 	i.statusOK = "forked and switched to new branch at " + friendlyPath(newPath)
 	i.statusErr = ""

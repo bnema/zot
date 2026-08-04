@@ -63,6 +63,11 @@ type Config struct {
 	// alerts. Toggle from /settings.
 	TerminalAlertsEnabled *bool `json:"terminal_alerts_enabled,omitempty"`
 
+	// TerminalTitleEnabled controls the hidden title request and OSC 0 title
+	// updates in interactive mode. nil/missing means enabled; false disables
+	// both so no extra provider request is made. Toggle from /settings.
+	TerminalTitleEnabled *bool `json:"terminal_title_enabled,omitempty"`
+
 	// AutoSwarmEnabled lets the main agent spawn background sub-agents
 	// for parallel sub-tasks via a built-in swarm_spawn tool. Off by
 	// default; nil/missing means disabled. Toggle from /settings.

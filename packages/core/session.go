@@ -21,9 +21,12 @@ import (
 
 // Session is a JSONL-backed conversation transcript tied to a cwd.
 type Session struct {
-	ID     string
-	Path   string
-	Meta   SessionMeta
+	ID   string
+	Path string
+	Meta SessionMeta
+	// Title is the effective title after applying append-only rename rows.
+	// Meta.Title remains the original meta-line value for compatibility.
+	Title  string
 	writer *os.File
 	buf    *bufio.Writer
 
@@ -71,6 +74,8 @@ type SessionMeta struct {
 // regular provider.Message value.
 type sessionLine struct {
 	Type       string              `json:"type"`
+	Title      string              `json:"title,omitempty"`
+	Generated  bool                `json:"generated,omitempty"`
 	Meta       *SessionMeta        `json:"meta,omitempty"`
 	Message    *provider.Message   `json:"message,omitempty"`
 	Messages   *[]provider.Message `json:"messages,omitempty"`
@@ -96,6 +101,7 @@ type SessionUsageCheckpoint struct {
 // indices used by tree navigation and branching must agree.
 type SessionSnapshot struct {
 	Meta             SessionMeta
+	Title            string
 	Messages         []provider.Message
 	UsageCheckpoints []SessionUsageCheckpoint
 }
@@ -243,6 +249,7 @@ func ReadSessionSnapshot(path string) (SessionSnapshot, error) {
 		generation   int
 	}
 	var rawCheckpoints []rawCheckpoint
+	titleFromRename := false
 
 	err = forEachStrictJSONLLine(f, func(line []byte, lineNo int) error {
 		var head sessionLineHead
@@ -266,6 +273,9 @@ func ReadSessionSnapshot(path string) (SessionSnapshot, error) {
 				return fmt.Errorf("line %d: meta row has no session id", lineNo)
 			}
 			snapshot.Meta = *row.Meta
+			if !titleFromRename && row.Meta.Title != "" {
+				snapshot.Title = row.Meta.Title
+			}
 			sawMeta = true
 
 		case "message":
@@ -310,6 +320,8 @@ func ReadSessionSnapshot(path string) (SessionSnapshot, error) {
 			if row.Title == nil {
 				return fmt.Errorf("line %d: rename row has no title", lineNo)
 			}
+			titleFromRename = true
+			snapshot.Title = *row.Title
 
 		default:
 			return fmt.Errorf("line %d: unknown row type %q", lineNo, head.Type)
@@ -542,6 +554,7 @@ func OpenSession(path string) (*Session, []provider.Message, error) {
 		ID:     snapshot.Meta.ID,
 		Path:   path,
 		Meta:   snapshot.Meta,
+		Title:  NormalizeSessionTitle(snapshot.Title),
 		writer: out,
 		buf:    bufio.NewWriter(out),
 	}
@@ -599,13 +612,14 @@ type SessionSummary struct {
 	BranchDepth   int
 }
 
-// RenameSession updates the title field in the session's meta line.
-// It rewrites the first line of the file (the meta line) with the
-// updated title.
-// RenameSession appends a rename line to the session file. This is
-// safe even for the currently active session because it opens the
-// file independently and appends (doesn't rewrite).
+// RenameSession appends a sanitized rename line to the session file. This is
+// safe even for the currently active session because it opens the file
+// independently and appends (doesn't rewrite).
 func RenameSession(path, title string) error {
+	title = NormalizeSessionTitle(title)
+	if title == "" {
+		return errors.New("session title is empty")
+	}
 	f, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND, 0o644)
 	if err != nil {
 		return err
@@ -679,7 +693,7 @@ func describeSession(path string) SessionSummary {
 	s.Started = snapshot.Meta.Started
 	s.Model = snapshot.Meta.Model
 	s.Provider = snapshot.Meta.Provider
-	s.Title = snapshot.Meta.Title
+	s.Title = NormalizeSessionTitle(snapshot.Title)
 	s.MessageCount = len(snapshot.Messages)
 	s.FirstUserText = firstUserTextFromMessages(snapshot.Messages)
 	lastUser := lastUserText(snapshot.Messages)
@@ -696,6 +710,7 @@ func describeSession(path string) SessionSummary {
 	// explicit rename after divergence keeps priority.
 	messageIdx := 0
 	renameMessageIdx := -1
+	renameGenerated := false
 	_ = func() error {
 		f, err := os.Open(path)
 		if err != nil {
@@ -716,11 +731,13 @@ func describeSession(path string) SessionSummary {
 				}
 			case "rename":
 				var row struct {
-					Title string `json:"title"`
+					Title     string `json:"title"`
+					Generated bool   `json:"generated"`
 				}
 				if err := json.Unmarshal(line, &row); err == nil && row.Title != "" {
-					s.Title = row.Title
+					s.Title = NormalizeSessionTitle(row.Title)
 					renameMessageIdx = messageIdx
+					renameGenerated = row.Generated
 				}
 			}
 			return nil
@@ -730,9 +747,14 @@ func describeSession(path string) SessionSummary {
 		// A rename written after the branch has diverged is user intent
 		// and must win. Older generated branch titles were written at
 		// fork creation time, before any post-fork prompt, so those are
-		// allowed to be replaced by the branch prompt fallback.
-		userRenamedAfterFork := renameMessageIdx > forkPoint
-		if !userRenamedAfterFork && branchPrompt != "" {
+		// allowed to be replaced by the branch prompt fallback. Current
+		// generated titles are marked so a fast hidden request that writes
+		// before the first post-fork message still wins.
+		explicitRename := !renameGenerated && renameMessageIdx > forkPoint
+		if !renameGenerated && renameMessageIdx == forkPoint && s.Title != lastUser {
+			explicitRename = true
+		}
+		if !renameGenerated && !explicitRename && branchPrompt != "" {
 			s.Title = branchPrompt
 		} else if s.Title == "" && lastUser != "" {
 			s.Title = lastUser
@@ -907,6 +929,24 @@ func (s *Session) UpdateModel(providerName, model string) error {
 		s.Meta.Model = oldModel
 		return err
 	}
+	return nil
+}
+
+// UpdateTitle records a session title without adding anything to the
+// conversation transcript. The title is kept in memory as well so the live
+// session can restore it when the user switches sessions in the TUI.
+func (s *Session) UpdateTitle(title string) error {
+	if s == nil {
+		return nil
+	}
+	title = NormalizeSessionTitle(title)
+	if title == "" {
+		return nil
+	}
+	if err := s.writeLine(sessionLine{Type: "rename", Title: title, Generated: true}); err != nil {
+		return fmt.Errorf("update session title: %w", err)
+	}
+	s.Title = title
 	return nil
 }
 

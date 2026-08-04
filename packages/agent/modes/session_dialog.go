@@ -34,10 +34,12 @@ type sessionDialog struct {
 
 // sessionDialogAction is returned by HandleKey.
 type sessionDialogAction struct {
-	Select  bool
-	Path    string
-	Close   bool
-	Renamed bool
+	Select      bool
+	Path        string
+	Close       bool
+	Renamed     bool
+	RenameTitle string
+	Err         error
 }
 
 func newSessionDialog() *sessionDialog { return &sessionDialog{} }
@@ -239,15 +241,22 @@ func (d *sessionDialog) HandleKey(k tui.Key) sessionDialogAction {
 	if d.renaming {
 		switch k.Kind {
 		case tui.KeyEnter:
-			title := strings.TrimSpace(d.rename)
-			if title != "" && d.cursor < len(d.sessions) {
-				path := d.sessions[d.cursor].Path
-				_ = core.RenameSession(path, title)
-				d.sessions[d.cursor].Title = title
+			title := core.NormalizeSessionTitle(d.rename)
+			path := ""
+			renamed := false
+			var renameErr error
+			if title != "" && d.cursor >= 0 && d.cursor < len(d.sessions) {
+				path = d.sessions[d.cursor].Path
+				if err := core.RenameSession(path, title); err != nil {
+					renameErr = err
+				} else {
+					d.sessions[d.cursor].Title = title
+					renamed = true
+				}
 			}
 			d.renaming = false
 			d.rename = ""
-			return sessionDialogAction{Renamed: true}
+			return sessionDialogAction{Renamed: renamed, Path: path, RenameTitle: title, Err: renameErr}
 		case tui.KeyEsc:
 			d.renaming = false
 			d.rename = ""
