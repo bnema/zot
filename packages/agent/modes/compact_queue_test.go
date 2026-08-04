@@ -94,6 +94,93 @@ func TestPromptSubmittedDuringCompactionStartsFollowUpTurn(t *testing.T) {
 	}
 }
 
+type thresholdAutoCompactClient struct {
+	compactionStarted chan struct{}
+	releaseCompaction chan struct{}
+	followUpRequest   chan provider.Request
+
+	mu    sync.Mutex
+	calls int
+}
+
+func (c *thresholdAutoCompactClient) Name() string { return "threshold-auto-compact-test" }
+
+func (c *thresholdAutoCompactClient) Stream(ctx context.Context, req provider.Request) (<-chan provider.Event, error) {
+	c.mu.Lock()
+	c.calls++
+	call := c.calls
+	c.mu.Unlock()
+
+	out := make(chan provider.Event, 3)
+	go func() {
+		defer close(out)
+		switch call {
+		case 1:
+			out <- provider.EventUsage{Usage: provider.Usage{InputTokens: 150000}}
+			out <- provider.EventDone{
+				Stop: provider.StopEnd,
+				Message: provider.Message{
+					Role:    provider.RoleAssistant,
+					Content: []provider.Content{provider.ReasoningBlock{Summary: "still working"}},
+				},
+			}
+		case 2:
+			close(c.compactionStarted)
+			select {
+			case <-ctx.Done():
+				out <- provider.EventDone{Stop: provider.StopAborted, Err: ctx.Err()}
+			case <-c.releaseCompaction:
+				out <- provider.EventTextDelta{Delta: "summary"}
+				out <- provider.EventDone{Stop: provider.StopEnd}
+			}
+		default:
+			c.followUpRequest <- req
+			out <- provider.EventDone{
+				Stop: provider.StopEnd,
+				Message: provider.Message{
+					Role:    provider.RoleAssistant,
+					Content: []provider.Content{provider.TextBlock{Text: "continued"}},
+				},
+			}
+		}
+	}()
+	return out, nil
+}
+
+func TestThresholdAutoCompactionContinuesMostRecentIntent(t *testing.T) {
+	client := &thresholdAutoCompactClient{
+		compactionStarted: make(chan struct{}),
+		releaseCompaction: make(chan struct{}),
+		followUpRequest:   make(chan provider.Request, 1),
+	}
+	agent := core.NewAgent(client, "test-model", "", nil)
+	threshold := 70
+	interactive := NewInteractive(InteractiveConfig{
+		Agent:                agent,
+		Provider:             "anthropic",
+		Model:                "claude-sonnet-4-5-20250929",
+		AutoCompactThreshold: &threshold,
+	})
+	interactive.runCtx = context.Background()
+
+	interactive.startTurn(context.Background(), "initial request")
+	select {
+	case <-client.compactionStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("threshold auto-compaction did not start")
+	}
+	close(client.releaseCompaction)
+
+	select {
+	case req := <-client.followUpRequest:
+		if got := requestUserTextCount(req, autoCompactContinuationPrompt); got != 1 {
+			t.Fatalf("continuation request contains auto-continue prompt %d times, want 1: %#v", got, req.Messages)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("threshold auto-compaction did not continue the most recent intent")
+	}
+}
+
 func TestPreTurnCompactionPreservesPromptImages(t *testing.T) {
 	client := &compactQueueClient{
 		compactionStarted: make(chan struct{}),
@@ -101,13 +188,10 @@ func TestPreTurnCompactionPreservesPromptImages(t *testing.T) {
 		followUpRequest:   make(chan provider.Request, 1),
 	}
 	agent := core.NewAgent(client, "test-model", "", nil)
-	agent.SetMessages([]provider.Message{
-		{Role: provider.RoleUser, Content: []provider.Content{provider.TextBlock{Text: "one"}}},
-		{Role: provider.RoleAssistant, Content: []provider.Content{provider.TextBlock{Text: "two"}}},
-		{Role: provider.RoleUser, Content: []provider.Content{provider.TextBlock{Text: "three"}}},
-		{Role: provider.RoleAssistant, Content: []provider.Content{provider.TextBlock{Text: "four"}}},
-		{Role: provider.RoleUser, Content: []provider.Content{provider.TextBlock{Text: "five"}}},
-	})
+	agent.SetMessages([]provider.Message{{
+		Role:    provider.RoleUser,
+		Content: []provider.Content{provider.TextBlock{Text: "one"}},
+	}})
 	threshold := 70
 	interactive := NewInteractive(InteractiveConfig{
 		Agent:                agent,

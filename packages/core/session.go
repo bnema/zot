@@ -91,8 +91,9 @@ type sessionLineHead struct {
 // row was written. MessageCount uses the effective transcript (after the
 // latest compaction and tool-pair repair), not the number of raw JSONL rows.
 type SessionUsageCheckpoint struct {
-	MessageCount int
-	Cumulative   provider.Usage
+	MessageCount         int
+	Cumulative           provider.Usage
+	CompactionGeneration int
 }
 
 // SessionSnapshot is the effective, in-memory view of a session file.
@@ -100,10 +101,29 @@ type SessionUsageCheckpoint struct {
 // JSONL audit history is deliberately not exposed here because message
 // indices used by tree navigation and branching must agree.
 type SessionSnapshot struct {
-	Meta             SessionMeta
-	Title            string
+	Meta                 SessionMeta
+	Title                string
+	Messages             []provider.Message
+	UsageCheckpoints     []SessionUsageCheckpoint
+	CompactionGeneration int
+}
+
+// SessionHistorySegment is one provider-valid transcript era. A compaction
+// starts a new segment containing the replacement summary and preserved tail;
+// earlier segments remain available for session-tree checkout without being
+// used to resume the live agent.
+type SessionHistorySegment struct {
+	Compacted        bool
 	Messages         []provider.Message
 	UsageCheckpoints []SessionUsageCheckpoint
+}
+
+// SessionHistory contains every persisted transcript era in chronological
+// order. Unlike SessionSnapshot, it intentionally retains segments replaced by
+// compaction so navigation can fork from older user and assistant messages.
+type SessionHistory struct {
+	Meta     SessionMeta
+	Segments []SessionHistorySegment
 }
 
 // SessionsDir returns the per-cwd sessions directory under root.
@@ -204,7 +224,14 @@ func SessionUsageDetail(path string) (cumulative, lastTurn provider.Usage, err e
 	if len(snapshot.UsageCheckpoints) == 0 {
 		return provider.Usage{}, provider.Usage{}, nil
 	}
-	last := snapshot.UsageCheckpoints[len(snapshot.UsageCheckpoints)-1].Cumulative
+	latestCheckpoint := snapshot.UsageCheckpoints[len(snapshot.UsageCheckpoints)-1]
+	if latestCheckpoint.CompactionGeneration < snapshot.CompactionGeneration {
+		// The latest usage row belongs to the pre-compaction context. Keep
+		// cumulative cost and totals, but reset the live context gauge until
+		// a usage row from the rebuilt transcript is persisted.
+		return latestCheckpoint.Cumulative, provider.Usage{}, nil
+	}
+	last := latestCheckpoint.Cumulative
 	var prev provider.Usage
 	if len(snapshot.UsageCheckpoints) > 1 {
 		prev = snapshot.UsageCheckpoints[len(snapshot.UsageCheckpoints)-2].Cumulative
@@ -335,6 +362,8 @@ func ReadSessionSnapshot(path string) (SessionSnapshot, error) {
 		return SessionSnapshot{}, fmt.Errorf("session snapshot %q: file is empty", path)
 	}
 
+	snapshot.CompactionGeneration = generation
+
 	// Repair only after compaction replacement. This makes synthetic tool
 	// results and the removal of orphaned results part of the same indexed
 	// stream that OpenSession returns and that BranchSession materializes.
@@ -353,11 +382,134 @@ func ReadSessionSnapshot(path string) (SessionSnapshot, error) {
 			count = len(rawMessages)
 		}
 		snapshot.UsageCheckpoints = append(snapshot.UsageCheckpoints, SessionUsageCheckpoint{
-			MessageCount: count,
-			Cumulative:   checkpoint.cumulative,
+			MessageCount:         count,
+			Cumulative:           checkpoint.cumulative,
+			CompactionGeneration: checkpoint.generation,
 		})
 	}
 	return snapshot, nil
+}
+
+// ReadSessionHistory reads every provider-valid transcript era in a session.
+// The effective snapshot remains the source of truth for resume and ordinary
+// branching; this audit projection exists for session-tree navigation so a
+// compaction cannot make earlier fork points disappear.
+func ReadSessionHistory(path string) (SessionHistory, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return SessionHistory{}, fmt.Errorf("session history: open %q: %w", path, err)
+	}
+	defer f.Close()
+
+	var history SessionHistory
+	var sawMeta bool
+	type rawCheckpoint struct {
+		messageCount int
+		cumulative   provider.Usage
+	}
+	type rawSegment struct {
+		compacted   bool
+		messages    []provider.Message
+		checkpoints []rawCheckpoint
+	}
+	current := rawSegment{}
+
+	appendCurrent := func() {
+		repaired := repairSessionMessages(current.messages)
+		segment := SessionHistorySegment{
+			Compacted: current.compacted,
+			Messages:  repaired.messages,
+		}
+		for _, checkpoint := range current.checkpoints {
+			segment.UsageCheckpoints = append(segment.UsageCheckpoints, SessionUsageCheckpoint{
+				MessageCount: repaired.prefixCount(checkpoint.messageCount),
+				Cumulative:   checkpoint.cumulative,
+			})
+		}
+		if segment.Compacted || len(segment.Messages) > 0 || len(segment.UsageCheckpoints) > 0 {
+			history.Segments = append(history.Segments, segment)
+		}
+		current = rawSegment{}
+	}
+
+	err = forEachStrictJSONLLine(f, func(line []byte, lineNo int) error {
+		var head sessionLineHead
+		if err := json.Unmarshal(line, &head); err != nil {
+			return fmt.Errorf("line %d: invalid JSON: %w", lineNo, err)
+		}
+		if head.Type == "" {
+			return fmt.Errorf("line %d: missing row type", lineNo)
+		}
+		if !sawMeta && head.Type != "meta" {
+			return fmt.Errorf("line %d: first row is not meta", lineNo)
+		}
+
+		switch head.Type {
+		case "meta":
+			var row sessionLine
+			if err := json.Unmarshal(line, &row); err != nil {
+				return fmt.Errorf("line %d: invalid meta row: %w", lineNo, err)
+			}
+			if row.Meta == nil || row.Meta.ID == "" {
+				return fmt.Errorf("line %d: meta row has no session id", lineNo)
+			}
+			history.Meta = *row.Meta
+			sawMeta = true
+
+		case "message":
+			message, err := hydrateMessage(line)
+			if err != nil {
+				return fmt.Errorf("line %d: invalid message row: %w", lineNo, err)
+			}
+			current.messages = append(current.messages, message)
+
+		case "compaction":
+			compacted, err := hydrateCompaction(line)
+			if err != nil {
+				return fmt.Errorf("line %d: invalid compaction row: %w", lineNo, err)
+			}
+			appendCurrent()
+			current = rawSegment{compacted: true, messages: compacted}
+
+		case "usage":
+			var row struct {
+				Cumulative *provider.Usage `json:"cumulative"`
+			}
+			if err := json.Unmarshal(line, &row); err != nil {
+				return fmt.Errorf("line %d: invalid usage row: %w", lineNo, err)
+			}
+			if row.Cumulative == nil {
+				return fmt.Errorf("line %d: usage row has no cumulative usage", lineNo)
+			}
+			current.checkpoints = append(current.checkpoints, rawCheckpoint{
+				messageCount: len(current.messages),
+				cumulative:   *row.Cumulative,
+			})
+
+		case "rename":
+			var row struct {
+				Title *string `json:"title"`
+			}
+			if err := json.Unmarshal(line, &row); err != nil {
+				return fmt.Errorf("line %d: invalid rename row: %w", lineNo, err)
+			}
+			if row.Title == nil {
+				return fmt.Errorf("line %d: rename row has no title", lineNo)
+			}
+
+		default:
+			return fmt.Errorf("line %d: unknown row type %q", lineNo, head.Type)
+		}
+		return nil
+	})
+	if err != nil {
+		return SessionHistory{}, fmt.Errorf("session history %q: %w", path, err)
+	}
+	if !sawMeta {
+		return SessionHistory{}, fmt.Errorf("session history %q: file is empty", path)
+	}
+	appendCurrent()
+	return history, nil
 }
 
 // forEachStrictJSONLLine is the complete-read counterpart to

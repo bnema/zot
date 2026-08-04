@@ -1,0 +1,84 @@
+package core
+
+import (
+	"testing"
+	"time"
+
+	"github.com/patriceckhart/zot/packages/provider"
+)
+
+func TestSessionUsageDetailResetsContextAfterCompaction(t *testing.T) {
+	t.Run("compaction is latest row", func(t *testing.T) {
+		sess := newUsageTestSession(t)
+		before := provider.Usage{
+			InputTokens:     180,
+			OutputTokens:    20,
+			CacheReadTokens: 10,
+			CostUSD:         1.25,
+		}
+		if err := sess.AppendUsage(before, before); err != nil {
+			t.Fatal(err)
+		}
+		if err := sess.AppendCompaction([]provider.Message{{
+			Role:    provider.RoleUser,
+			Content: []provider.Content{provider.TextBlock{Text: "summary"}},
+			Time:    time.Now().UTC(),
+		}}); err != nil {
+			t.Fatal(err)
+		}
+		if err := sess.Close(); err != nil {
+			t.Fatal(err)
+		}
+
+		cumulative, lastTurn, err := SessionUsageDetail(sess.Path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if cumulative.InputTokens != before.InputTokens || cumulative.CostUSD != before.CostUSD {
+			t.Fatalf("cumulative usage = %+v, want %+v", cumulative, before)
+		}
+		if lastTurn != (provider.Usage{}) {
+			t.Fatalf("last turn after compaction = %+v, want zero context usage", lastTurn)
+		}
+	})
+
+	t.Run("post-compaction usage wins", func(t *testing.T) {
+		sess := newUsageTestSession(t)
+		before := provider.Usage{InputTokens: 180, OutputTokens: 20, CacheReadTokens: 10}
+		if err := sess.AppendUsage(before, before); err != nil {
+			t.Fatal(err)
+		}
+		if err := sess.AppendCompaction([]provider.Message{{
+			Role:    provider.RoleUser,
+			Content: []provider.Content{provider.TextBlock{Text: "summary"}},
+			Time:    time.Now().UTC(),
+		}}); err != nil {
+			t.Fatal(err)
+		}
+		after := provider.Usage{InputTokens: 20, OutputTokens: 5, CacheReadTokens: 30}
+		cumulative := provider.Usage{InputTokens: 200, OutputTokens: 25, CacheReadTokens: 30}
+		if err := sess.AppendUsage(after, cumulative); err != nil {
+			t.Fatal(err)
+		}
+		if err := sess.Close(); err != nil {
+			t.Fatal(err)
+		}
+
+		_, lastTurn, err := SessionUsageDetail(sess.Path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if lastTurn.InputTokens != after.InputTokens || lastTurn.OutputTokens != after.OutputTokens {
+			t.Fatalf("post-compaction last turn = %+v, want input/output %+v", lastTurn, after)
+		}
+	})
+}
+
+func newUsageTestSession(t *testing.T) *Session {
+	t.Helper()
+	sess, err := NewSession(t.TempDir(), "/workspace", "anthropic", "test-model", "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return sess
+}

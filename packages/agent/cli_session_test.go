@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"testing"
 
@@ -30,6 +31,35 @@ func TestTrimMessagesForResumeCarriesDeferredToolActivation(t *testing.T) {
 	}
 	if len(trimmed[0].AddedToolNames) != 1 || trimmed[0].AddedToolNames[0] != "lookup_weather" {
 		t.Fatalf("trimmed activation markers = %v, want lookup_weather", trimmed[0].AddedToolNames)
+	}
+}
+
+func TestTrimMessagesForResumeKeepsCompactionSummaryAtTailBoundary(t *testing.T) {
+	for _, total := range []int{100, 101, 102} {
+		t.Run(fmt.Sprintf("%d messages", total), func(t *testing.T) {
+			msgs := make([]provider.Message, 0, total)
+			msgs = append(msgs, provider.Message{
+				Role: provider.RoleUser,
+				Meta: map[string]string{"compaction": "true"},
+				Content: []provider.Content{
+					provider.TextBlock{Text: "## Context Summary (compacted)"},
+				},
+			})
+			for idx := 1; idx < total; idx++ {
+				msgs = append(msgs, provider.Message{
+					Role:    provider.RoleUser,
+					Content: []provider.Content{provider.TextBlock{Text: fmt.Sprintf("message-%d", idx)}},
+				})
+			}
+
+			trimmed := trimMessagesForResume(msgs, 100)
+			if len(trimmed) > 100 {
+				t.Fatalf("trimmed message count = %d, want at most 100", len(trimmed))
+			}
+			if len(trimmed) == 0 || trimmed[0].Meta["compaction"] != "true" {
+				t.Fatalf("trimmed transcript lost compaction summary: %+v", trimmed)
+			}
+		})
 	}
 }
 

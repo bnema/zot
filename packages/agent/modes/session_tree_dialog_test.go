@@ -46,6 +46,155 @@ func TestSessionTreeTargetCarriesEffectiveBoundaryAndDraft(t *testing.T) {
 	}
 }
 
+func TestSessionTreeRetainsPreCompactionMessagesAndHidesToolRows(t *testing.T) {
+	root := t.TempDir()
+	cwd := "/workspace/tree-history"
+	session, err := core.NewSession(root, cwd, "test", "model", "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, message := range []provider.Message{
+		treeTestMessage(provider.RoleUser, provider.TextBlock{Text: "old prompt"}),
+		treeTestMessage(provider.RoleAssistant, provider.TextBlock{Text: "old answer"}),
+		{Role: provider.RoleAssistant, Content: []provider.Content{provider.ToolCallBlock{ID: "call-1", Name: "bash"}}},
+		{Role: provider.RoleTool, Content: []provider.Content{provider.ToolResultBlock{CallID: "call-1", Content: []provider.Content{provider.TextBlock{Text: "tool output"}}}}},
+		treeTestMessage(provider.RoleAssistant, provider.TextBlock{Text: "old final"}),
+	} {
+		if err := session.AppendMessage(message); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := session.AppendCompaction([]provider.Message{
+		{
+			Role:    provider.RoleUser,
+			Meta:    map[string]string{"compaction": "true"},
+			Content: []provider.Content{provider.TextBlock{Text: "summary"}},
+		},
+		treeTestMessage(provider.RoleAssistant, provider.TextBlock{Text: "old final"}),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := session.AppendMessage(treeTestMessage(provider.RoleAssistant, provider.TextBlock{Text: "new answer"})); err != nil {
+		t.Fatal(err)
+	}
+	if err := session.AppendMessage(provider.Message{
+		Role:    provider.RoleUser,
+		Meta:    map[string]string{shellEscapeMetaKey: "true"},
+		Content: []provider.Content{provider.TextBlock{Text: "shell output"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	path := session.Path
+	if err := session.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	d := newSessionTreeDialog()
+	if !d.OpenSessionFamily(root, cwd, path) {
+		t.Fatal("OpenSessionFamily returned false")
+	}
+	var oldPrompt, newAnswer *sessionTreeItem
+	oldFinalRows := 0
+	for idx := range d.items {
+		item := &d.items[idx]
+		if strings.Contains(item.label, "old prompt") {
+			oldPrompt = item
+		}
+		if strings.Contains(item.label, "new answer") {
+			newAnswer = item
+		}
+		if strings.Contains(item.label, "old final") {
+			oldFinalRows++
+		}
+		if strings.Contains(item.label, "tool") || strings.Contains(item.label, "result") || strings.Contains(item.label, "summary") || strings.Contains(item.label, "shell output") {
+			t.Fatalf("internal/tool row leaked into fork picker: %q", item.label)
+		}
+	}
+	if oldPrompt == nil || !oldPrompt.target.Historical {
+		t.Fatalf("old pre-compaction prompt target = %+v, want historical target", oldPrompt)
+	}
+	if newAnswer == nil || newAnswer.target.Historical {
+		t.Fatalf("current answer target = %+v, want effective target", newAnswer)
+	}
+	if oldFinalRows != 1 {
+		t.Fatalf("preserved compaction-tail row rendered %d times, want once", oldFinalRows)
+	}
+}
+
+func TestSessionTreeHistoricalSelectionCreatesBranchFromOldSegment(t *testing.T) {
+	root := t.TempDir()
+	cwd := "/workspace/tree-history-branch"
+	session, err := core.NewSession(root, cwd, "test", "model", "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := session.AppendMessage(treeTestMessage(provider.RoleUser, provider.TextBlock{Text: "old prompt"})); err != nil {
+		t.Fatal(err)
+	}
+	if err := session.AppendMessage(treeTestMessage(provider.RoleAssistant, provider.TextBlock{Text: "old answer"})); err != nil {
+		t.Fatal(err)
+	}
+	if err := session.AppendCompaction([]provider.Message{{
+		Role:    provider.RoleUser,
+		Meta:    map[string]string{"compaction": "true"},
+		Content: []provider.Content{provider.TextBlock{Text: "summary"}},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := session.AppendMessage(treeTestMessage(provider.RoleAssistant, provider.TextBlock{Text: "new answer"})); err != nil {
+		t.Fatal(err)
+	}
+	path := session.Path
+	if err := session.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	d := newSessionTreeDialog()
+	if !d.OpenSessionFamily(root, cwd, path) {
+		t.Fatal("OpenSessionFamily returned false")
+	}
+	var target sessionTreeTarget
+	found := false
+	for _, item := range d.items {
+		if strings.Contains(item.label, "old answer") {
+			target = item.target
+			found = true
+			break
+		}
+	}
+	if !found || !target.Historical {
+		t.Fatalf("old target = %+v, found=%v", target, found)
+	}
+
+	ag := core.NewAgent(nil, "model", "", nil)
+	var loaded string
+	i := NewInteractive(InteractiveConfig{
+		Agent:              ag,
+		CWD:                cwd,
+		SessionsRoot:       root,
+		Version:            "test",
+		CurrentSessionPath: func() string { return path },
+		LoadSession: func(newPath string) error {
+			loaded = newPath
+			return nil
+		},
+	})
+	i.applySessionTreeTarget(target, 1)
+	if loaded == "" {
+		t.Fatalf("historical selection did not load a branch; status=%q", i.statusErr)
+	}
+	branch, messages, err := core.OpenSession(loaded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := branch.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if len(messages) != 2 || userMessageText(messages[0]) != "old prompt" || userMessageText(messages[1]) != "old answer" {
+		t.Fatalf("historical branch messages = %+v, want old prompt and answer", messages)
+	}
+}
+
 func TestSessionTreeUsesCurrentFamilyAndNoRootFallback(t *testing.T) {
 	root := t.TempDir()
 	cwd := "/workspace/current-family"

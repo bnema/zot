@@ -244,7 +244,7 @@ func buildJumpTargets(msgs []provider.Message) []jumpTarget {
 	var out []jumpTarget
 	turn := 0
 	for i, m := range msgs {
-		if m.Role != provider.RoleUser {
+		if !isForkableUserMessage(m) {
 			continue
 		}
 		turn++
@@ -286,7 +286,7 @@ func firstLineOfUserMessage(m provider.Message) string {
 func countToolsUntilNextUser(msgs []provider.Message, i int) int {
 	n := 0
 	for j := i + 1; j < len(msgs); j++ {
-		if msgs[j].Role == provider.RoleUser {
+		if isForkableUserMessage(msgs[j]) {
 			break
 		}
 		if msgs[j].Role == provider.RoleAssistant {

@@ -201,9 +201,11 @@ func trimMessagesForResume(msgs []provider.Message, keepTail int) []provider.Mes
 		addToolNames(msg.AddedToolNames)
 	}
 	// Preserve the synthetic compaction summary when present so an
-	// already-compacted session stays compacted after resume.
-	if len(msgs) > 0 && msgs[0].Meta["compaction"] == "true" && start > 1 {
+	// already-compacted session stays compacted after resume. Count it
+	// within the tail budget instead of dropping it at the exact boundary.
+	if len(msgs) > 0 && msgs[0].Meta["compaction"] == "true" && start > 0 {
 		out = append(out, msgs[0])
+		start++
 	}
 	// Avoid hydrating a tail that starts with orphan tool_result rows;
 	// provider APIs require those to be paired with an earlier tool_use.
