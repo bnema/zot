@@ -60,8 +60,19 @@ func runSwarmAgentMode(ctx context.Context, args Args, version string) error {
 
 	ag := r.NewAgent()
 	wireNonInteractiveAgentExtHooks(ctx, ag, extMgr)
-	sess, _ := openOrCreateSession(args, r, ag, version)
-	defer sess.Close()
+	sess, err := openOrCreateSession(args, r, ag, version)
+	if err != nil {
+		return err
+	}
+	if sess != nil {
+		var providerName, model string
+		sess, ag, providerName, model, err = applyInitialSessionResume(ctx, args, r, extMgr, sess, ag)
+		if err != nil {
+			return err
+		}
+		r.Provider, r.Model = providerName, model
+		defer sess.Close()
+	}
 
 	// Open the inbox listener BEFORE emitting agent_ready so the
 	// supervisor can dial through on the very first send. The

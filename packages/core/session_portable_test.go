@@ -82,9 +82,84 @@ func TestSessionExportImportRoundTrip(t *testing.T) {
 	}
 }
 
-// TestExportToFilePath writes to an explicit file path (no
-// directory guessing) and checks the .zotsession extension is
-// appended when missing.
+func TestExportImportUsesLatestProviderModelMetadata(t *testing.T) {
+	root := t.TempDir()
+	session, err := NewSession(root, "/source", "old-provider", "old-model", "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = session.AppendMessage(provider.Message{
+		Role:    provider.RoleUser,
+		Content: []provider.Content{provider.TextBlock{Text: "metadata prompt"}},
+	})
+	if err := session.UpdateModel("new-provider", "new-model"); err != nil {
+		t.Fatal(err)
+	}
+	path := session.Path
+	if err := session.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	exportPath, err := ExportSession(path, filepath.Join(t.TempDir(), "latest"+PortableExt))
+	if err != nil {
+		t.Fatalf("ExportSession: %v", err)
+	}
+	exported, err := ReadSessionSnapshot(exportPath)
+	if err != nil {
+		t.Fatalf("Read exported snapshot: %v", err)
+	}
+	if exported.Meta.Provider != "new-provider" || exported.Meta.Model != "new-model" {
+		t.Fatalf("export metadata = provider %q model %q, want latest values", exported.Meta.Provider, exported.Meta.Model)
+	}
+
+	importedPath, err := ImportSession(exportPath, t.TempDir(), "/destination", "test")
+	if err != nil {
+		t.Fatalf("ImportSession: %v", err)
+	}
+	imported, _, err := OpenSession(importedPath)
+	if err != nil {
+		t.Fatalf("Open imported session: %v", err)
+	}
+	defer imported.Close()
+	if imported.Meta.Provider != "new-provider" || imported.Meta.Model != "new-model" {
+		t.Fatalf("import metadata = provider %q model %q, want latest values", imported.Meta.Provider, imported.Meta.Model)
+	}
+}
+
+// TestScanSessionMetaReturnsLatestRowWithoutHydratingMessages verifies that
+// metadata lookup follows append-only model updates without reconstructing the
+// transcript.
+func TestScanSessionMetaReturnsLatestRowWithoutHydratingMessages(t *testing.T) {
+	root := t.TempDir()
+	session, err := NewSession(root, "/workspace", "old-provider", "old-model", "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := session.AppendMessage(provider.Message{
+		Role:    provider.RoleUser,
+		Content: []provider.Content{provider.TextBlock{Text: strings.Repeat("large transcript ", 1000)}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := session.UpdateModel("new-provider", "new-model"); err != nil {
+		t.Fatal(err)
+	}
+	path := session.Path
+	if err := session.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	meta, err := scanSessionMeta(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if meta.Provider != "new-provider" || meta.Model != "new-model" {
+		t.Fatalf("scanned metadata = %q/%q, want latest values", meta.Provider, meta.Model)
+	}
+}
+
+// TestExportToFilePath writes to an explicit file path (no directory
+// guessing) and checks the .zotsession extension is appended when missing.
 func TestExportToFilePath(t *testing.T) {
 	root := t.TempDir()
 	sess, err := NewSession(root, "/cwd", "anthropic", "claude-opus-4-7", "0.0.0-test")

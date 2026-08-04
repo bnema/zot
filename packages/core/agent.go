@@ -322,6 +322,9 @@ func (a *Agent) fireMessageAppended(m provider.Message) {
 // stops or an error occurs. Events are delivered via sink in order.
 // sink must not block the caller for long; buffer as needed.
 func (a *Agent) Prompt(ctx context.Context, text string, images []provider.ImageBlock, sink func(AgentEvent)) error {
+	if text == "" && len(images) == 0 {
+		return errors.New("prompt is empty")
+	}
 	if sink == nil {
 		sink = func(AgentEvent) {}
 	}

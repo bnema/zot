@@ -52,8 +52,17 @@ func TestSlashCommandsAreCaseInsensitive(t *testing.T) {
 	if !isKnownSlashCommand("/Exit") {
 		t.Fatal("/Exit was not recognized as a built-in command")
 	}
+	if !isKnownSlashCommand("/Fork") {
+		t.Fatal("/Fork was not recognized as a built-in command")
+	}
 	if !slashCancelsTurn("/CLEAR") {
 		t.Fatal("/CLEAR did not retain /clear cancellation semantics")
+	}
+	if !slashCommandCancelsTurn("/fork") || !slashCommandCancelsTurn("/session fork") {
+		t.Fatal("fork commands did not retain idle-transition cancellation semantics")
+	}
+	if slashCommandCancelsTurn("/session tree") {
+		t.Fatal("/session tree should use its fail-closed gate instead of cancelling a turn")
 	}
 }
 

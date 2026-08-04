@@ -277,8 +277,9 @@ Slash command names are case-insensitive in the TUI and messaging backends; argu
 | `/model` | Pick a model from a list (or `/model <id>` to set directly). |
 | `/reasoning` | Set the reasoning level for subsequent model calls. |
 | `/llama` | Connect to the configured llama.cpp router, load, unload, or remove cached models, and search/download GGUF models from Hugging Face with live progress. Shown after llama.cpp login is configured. |
-| `/sessions` | Resume a previous session for this directory. |
-| `/session` | Four ops on the current session: `export` to a portable `.zotsession` file, `import` one back in, `fork` from a past user message into a new branch, `tree` to switch between branches. Opens a picker without an argument; direct forms: `/session export [path]`, `/session import <path>`, `/session fork`, `/session tree`. Default export destination is `~/Downloads`. |
+| `/sessions` | Resume a previous session for this directory. The picker omits branches created only for tree navigation. |
+| `/fork` | Pick a previous user message and fork the current session after that turn. The selected turn becomes branch context and no provider turn starts during the checkout. |
+| `/session` | Four ops on the current session: `export` to a portable `.zotsession` file, `import` one back in, `fork` from a past user message into a new branch, `tree` to switch between branches. Opens a picker without an argument; direct forms: `/session export [path]`, `/session import <path>`, `/session fork`, `/session tree`. Default export destination is `~/Downloads`. `Esc` `Esc` from an idle, empty editor is a shortcut for `/session tree` when the terminal supplies two parsed bare Escape events. |
 | `/jump` | Scroll the chat to a previous turn (or `/jump <text>` to filter). |
 | `/btw` | Side chat with full context that doesn't add to the main thread. |
 | `/swarm` | Spawn, monitor, and chat with background subagents. Each runs in parallel with your main session and shares its working directory. Named profiles can be selected with `agent`; see [docs/subagents.md](docs/subagents.md). |
@@ -301,7 +302,7 @@ Type `!` followed by a command to run it directly without going through the mode
 
 ### `/sessions`
 
-Shows previous sessions for the current working directory, newest first, with timestamp, model, message count, cost, and the first user prompt. Pick one with `up`/`down`, `enter` to resume, `esc` to cancel. zot swaps the current session file for the selected one and replays the full transcript (including tool calls) into the agent. Sessions remember the model they ended on, so resuming picks up on that exact model even if your global default changed.
+Shows previous sessions for the current working directory, newest first, with timestamp, model, message count, cost, and the first user prompt. Pick one with `up`/`down`, `enter` to resume, `esc` to cancel. zot swaps the current session file for the selected one and replays the full transcript (including tool calls) into the agent. Sessions remember their stored provider and model: resuming rebuilds the live agent when necessary instead of silently using a different model; if that rebuild fails, the current session is left unchanged. Branches created for tree navigation remain available to `/session tree` but are hidden from this flat picker.
 
 ### `/session`
 
@@ -310,9 +311,13 @@ Four ops on the current session. `/session` alone opens a picker; each is also r
 - **`/session export [path]`**. Writes the running transcript to a portable `.zotsession` file. Default destination is `~/Downloads/<timestamp>-<session-id>-<prompt-slug>.zotsession`. Pass a path to override; a directory is fine (a dated name is built inside), a bare name gets `.zotsession` appended. The meta's cwd is stripped on the way out so the recipient doesn't see your filesystem layout.
 
   **What's included.** Only the main chat thread of the running session — messages, tool calls, tool results, compactions, and usage. **`/swarm` subagents are NOT included.** Their transcripts, unix-socket inboxes, and per-agent session files are all machine-local; a `.zotsession` is just a chat transcript and has no way to revive a unix socket on another box. If you want the conversation, copy it out of the dashboard manually.
-- **`/session import <path>`**. Copies a `.zotsession` file into `$ZOT_HOME/sessions/<cwd-hash>/` with a fresh id and the current cwd, then switches the running agent onto it. Imported sessions are first-class: they show up in `/sessions`, `/jump`, and the tree. Drag-drop paths in the editor are accepted (zot strips the surrounding quotes automatically).
-- **`/session fork`**. Opens a turn picker (same shape as `/jump`). Pick any past user message; zot copies every message up to and including that turn into a new session, records `parent` + `fork_point` in the new meta, and switches onto the branch. The parent session stays on disk. Use it to try a different question without polluting the original transcript, or to rewind after the agent went down the wrong path.
-- **`/session tree`**. Shows every session in the current cwd arranged by parent/child relationships, depth-first with indent per level. The current session is tagged `[current]`. Pick any entry to switch into it. Parentless sessions are roots; branches created via `/session fork` nest under whichever session they were forked from. Orphaned children (whose parent file was deleted) still show as roots so they stay discoverable.
+- **`/session import <path>`**. Copies a `.zotsession` file into `$ZOT_HOME/sessions/<cwd-hash>/` with a fresh id and the current cwd, then switches the running agent onto it. Imported sessions are first-class: they show up in `/sessions` and `/jump`, and in the current-family tree when they are part of that family. Drag-drop paths in the editor are accepted (zot strips the surrounding quotes automatically).
+- **`/fork`** (also available as **`/session fork`**). Opens a turn picker (same shape as `/jump`). Pick any past user message; zot copies the transcript through that turn into a new branch and switches to it without starting a provider request. The parent session stays on disk. Use it to try a different question without polluting the original transcript, or to rewind after the agent went down the wrong path. Use a user-message row in `/session tree` when you want the prompt restored for editing, including image attachments.
+- **`/session tree`**. Shows the current session's family: its root ancestor and descendants, not unrelated root sessions in the same cwd. Use `up`/`down` and `enter` to choose a row; `esc` closes the tree. Message rows are indented at their branch points and the current endpoint is tagged `[current]`. Empty and detached branch points are represented by visible boundary rows. A child whose historical fork point no longer matches after compaction stays discoverable as a detached branch under the parent's current tail rather than disappearing. Parentless sessions are roots; orphaned children (whose parent file was deleted) remain roots.
+
+  Selecting a user-message row creates a navigation branch before that message and restores the complete editable draft, including text blocks and image attachments; no provider request is made until you submit it. Selecting an assistant/tool row checks out a safe message boundary, and selecting an empty or detached boundary checks out that branch point with an empty editor. Navigation branches are hidden from `/sessions` but remain in the tree.
+
+  `/session tree` and the double-Escape shortcut use the same checks: a complete current session family must be readable, and no turn, shell escape, compaction, startup/session load, dialog, picker, suggestion, or queued message may be active. The shortcut is two parsed, unmodified bare `Esc` events within 500 ms from an idle editor with no visible text or pending image. Dialogs, confirmations, panels, pickers, and suggestions keep their existing Escape behavior; busy Escape still cancels, modified Escape is not part of the gesture, and any intervening key or timeout resets it. The shortcut depends on the terminal input path producing those parsed events; `/session tree` is the explicit equivalent when it is unavailable.
 
 ### `/jump`
 
@@ -420,7 +425,7 @@ This is a guardrail against accidents, not a hard security boundary. If you need
 
 ## Sessions
 
-Every interactive or print/json run (unless `--no-session`) writes a JSONL transcript under `$ZOT_HOME/sessions/<cwd-hash>/`. Resume any of them with `--continue`, `--resume`, `--session <path>`, or interactively via `/sessions` inside the TUI. Empty sessions (the user exited without prompting) are deleted on close so the list stays tidy.
+Every interactive or print/json run (unless `--no-session`) writes a JSONL transcript under `$ZOT_HOME/sessions/<cwd-hash>/`. Resume any of them with `--continue`, `--resume`, `--session <path>`, or interactively via `/sessions` inside the TUI. Session metadata stores the provider and model used by that session; resume honors that pair, rebuilding the active agent when it differs and refusing the switch without discarding the current session if rebuilding fails. Empty sessions (the user exited without prompting) are deleted on close so the list stays tidy.
 
 ## Providers
 
@@ -865,7 +870,7 @@ Slash commands also work while the agent is busy. Non-destructive ones (`/help`,
 | `enter` | Submit (queued if the agent is busy). |
 | `alt+enter` | Newline. |
 | `tab` | Complete the selected slash command. |
-| `esc` | Cancel the current turn (while busy); clear input (while idle). |
+| `esc` | Cancel the current turn (while busy); clear input (while idle). Two parsed bare `Esc` presses within 500 ms open `/session tree` only when the editor is idle and empty; dialogs, busy/queued work, and modified keys keep their existing precedence. |
 | `ctrl+c` | Clear the input and queue (while idle) or arm the exit hint (while busy). Press again within 2s to exit. Use `esc` to cancel a running turn. |
 | `ctrl+d` | Exit on empty input. |
 | `ctrl+l` | Redraw the screen. |

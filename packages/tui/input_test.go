@@ -1,6 +1,10 @@
 package tui
 
-import "testing"
+import (
+	"io"
+	"testing"
+	"time"
+)
 
 func TestReaderParsesCSIUShiftEnter(t *testing.T) {
 	k := readKey(t, "\x1b[13;2u")
@@ -91,6 +95,111 @@ func TestReaderParsesCSIUTabAndBackspace(t *testing.T) {
 	}
 }
 
+func TestReaderParsesRawEscapeEscapeAsTwoEscapes(t *testing.T) {
+	r := newPeekReader("\x1b\x1b")
+	if k := readReaderKey(t, r); k.Kind != KeyEsc {
+		t.Fatalf("first Read kind=%v, want esc", k.Kind)
+	}
+	if k := readReaderKey(t, r); k.Kind != KeyEsc {
+		t.Fatalf("second Read kind=%v, want esc", k.Kind)
+	}
+}
+
+func TestReaderParsesRawEscapeEscapeCSIAsEscapeThenUp(t *testing.T) {
+	r := newPeekReader("\x1b\x1b[A")
+	if k := readReaderKey(t, r); k.Kind != KeyEsc {
+		t.Fatalf("first Read kind=%v, want esc", k.Kind)
+	}
+	if k := readReaderKey(t, r); k.Kind != KeyUp {
+		t.Fatalf("second Read kind=%v, want up", k.Kind)
+	}
+}
+
+func TestReaderPreservesDoubleEscapePrintableAmbiguity(t *testing.T) {
+	r := newPeekReader("\x1b\x1bx")
+	if got := readReaderKey(t, r); got.Kind != KeyEsc {
+		t.Fatalf("first Read = %+v, want bare escape", got)
+	}
+	if got := readReaderKey(t, r); got.Kind != KeyRune || got.Rune != 'x' || !got.Alt {
+		t.Fatalf("second Read = %+v, want Alt+x after the documented ambiguity", got)
+	}
+}
+
+func TestReaderPreservesAmbiguousAltEscapeMappings(t *testing.T) {
+	cases := []struct {
+		name string
+		seq  string
+		want Key
+	}{
+		{name: "printable", seq: "\x1bx", want: Key{Kind: KeyRune, Rune: 'x', Alt: true}},
+		{name: "delete", seq: "\x1b\x7f", want: Key{Kind: KeyBackspace, Alt: true}},
+		{name: "word-left", seq: "\x1bb", want: Key{Kind: KeyLeft, Alt: true}},
+		{name: "word-right", seq: "\x1bf", want: Key{Kind: KeyRight, Alt: true}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := readReaderKey(t, newPeekReader(tc.seq))
+			if got != tc.want {
+				t.Fatalf("Read(%q) = %+v, want %+v", tc.seq, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestReaderWithoutPeekDoesNotBlockBareEscapeOrStartAnotherPump(t *testing.T) {
+	release := make(chan struct{})
+	lookaheadStarted := make(chan struct{})
+	calls := 0
+	r := NewReader(func() (byte, error) {
+		calls++
+		if calls == 1 {
+			return 0x1b, nil
+		}
+		if calls == 2 {
+			close(lookaheadStarted)
+			<-release
+			return 'x', nil
+		}
+		return 0, io.EOF
+	})
+
+	readDone := make(chan struct{})
+	var got Key
+	var err error
+	go func() {
+		got, err = r.Read()
+		close(readDone)
+	}()
+	select {
+	case <-lookaheadStarted:
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("lookahead source was not started")
+	}
+	select {
+	case <-readDone:
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("Read blocked while disambiguating bare escape")
+	}
+	if err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	if got.Kind != KeyEsc {
+		t.Fatalf("Read kind=%v, want esc", got.Kind)
+	}
+
+	// The timed-out source call is still the sole owner of the next byte.
+	// Releasing it must make that byte available to the next Read without
+	// starting a second blocked callback.
+	close(release)
+	got, err = r.Read()
+	if err != nil {
+		t.Fatalf("Read after lookahead: %v", err)
+	}
+	if got.Kind != KeyRune || got.Rune != 'x' || calls != 2 {
+		t.Fatalf("Read after lookahead = %+v with %d source calls, want x with 2 calls", got, calls)
+	}
+}
+
 func TestReaderParsesSGRMouseWheel(t *testing.T) {
 	cases := []struct {
 		seq  string
@@ -109,15 +218,42 @@ func TestReaderParsesSGRMouseWheel(t *testing.T) {
 
 func readKey(t *testing.T, seq string) Key {
 	t.Helper()
+	return readReaderKey(t, NewReader(func() (byte, error) {
+		if len(seq) == 0 {
+			return 0, io.EOF
+		}
+		b := seq[0]
+		seq = seq[1:]
+		return b, nil
+	}))
+}
+
+func newPeekReader(seq string) *Reader {
 	idx := 0
-	r := NewReader(func() (byte, error) {
+	read := func() (byte, error) {
+		if idx >= len(seq) {
+			return 0, io.EOF
+		}
 		b := seq[idx]
 		idx++
 		return b, nil
-	})
+	}
+	peek := func(time.Duration) (byte, bool, error) {
+		if idx >= len(seq) {
+			return 0, false, nil
+		}
+		b := seq[idx]
+		idx++
+		return b, true, nil
+	}
+	return NewReaderWithPeek(read, peek)
+}
+
+func readReaderKey(t *testing.T, r *Reader) Key {
+	t.Helper()
 	k, err := r.Read()
 	if err != nil {
-		t.Fatalf("Read(%q): %v", seq, err)
+		t.Fatalf("Read: %v", err)
 	}
 	return k
 }

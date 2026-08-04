@@ -56,6 +56,43 @@ const (
 type Reader struct {
 	src  func() (byte, error)
 	peek func(time.Duration) (byte, bool, error) // optional; may be nil
+
+	// pending contains bytes consumed while deciding whether an Esc was
+	// bare. In particular, a second Esc belongs to the next Read, not to
+	// the Alt+<char> case handled by readEscape.
+	pending []byte
+
+	// A Reader without a peek callback still needs to preserve the old
+	// NewReader API and parse Alt/CSI input. The pump lets its bounded
+	// lookahead wait without calling the blocking source on the Read caller's
+	// goroutine. There is never more than one outstanding source call: after a
+	// timeout that call is reused by the next Read rather than replaced.
+	//
+	// The source callback has no cancellation contract, so an implementation
+	// that blocks forever can keep this one goroutine alive forever. That
+	// limitation is intentional; starting another goroutine for each isolated
+	// Esc would leak an unbounded number of blocked goroutines and could also
+	// reorder bytes from an uncancellable source.
+	pump    *readerPump
+	pumpErr error
+}
+
+type readerResult struct {
+	b   byte
+	err error
+}
+
+type readerPump struct {
+	result chan readerResult
+}
+
+func newReaderPump(read func() (byte, error)) *readerPump {
+	p := &readerPump{result: make(chan readerResult, 1)}
+	go func() {
+		b, err := read()
+		p.result <- readerResult{b: b, err: err}
+	}()
+	return p
 }
 
 // NewReader returns a Reader that pulls bytes from read.
@@ -67,9 +104,65 @@ func NewReaderWithPeek(read func() (byte, error), peek func(time.Duration) (byte
 	return &Reader{src: read, peek: peek}
 }
 
+// readByte returns the next source byte, including any byte held back after
+// an escape lookahead.
+func (r *Reader) readByte() (byte, error) {
+	if len(r.pending) != 0 {
+		b := r.pending[0]
+		r.pending = r.pending[1:]
+		return b, nil
+	}
+	if r.pumpErr != nil {
+		return 0, r.pumpErr
+	}
+	if r.pump == nil {
+		return r.src()
+	}
+	result := <-r.pump.result
+	r.pump = nil
+	if result.err != nil {
+		r.pumpErr = result.err
+	}
+	return result.b, result.err
+}
+
+// readByteTimeout returns one source byte without waiting longer than d. A
+// source call left outstanding after a timeout is consumed by the next Read.
+func (r *Reader) readByteTimeout(d time.Duration) (byte, bool, error) {
+	if r.pumpErr != nil {
+		return 0, false, r.pumpErr
+	}
+	if r.pump == nil {
+		r.pump = newReaderPump(r.src)
+	}
+
+	var result readerResult
+	if d <= 0 {
+		select {
+		case result = <-r.pump.result:
+		default:
+			return 0, false, nil
+		}
+	} else {
+		timer := time.NewTimer(d)
+		defer timer.Stop()
+		select {
+		case result = <-r.pump.result:
+		case <-timer.C:
+			return 0, false, nil
+		}
+	}
+	r.pump = nil
+	if result.err != nil {
+		r.pumpErr = result.err
+		return 0, false, result.err
+	}
+	return result.b, true, nil
+}
+
 // Read returns the next parsed Key.
 func (r *Reader) Read() (Key, error) {
-	b, err := r.src()
+	b, err := r.readByte()
 	if err != nil {
 		return Key{}, err
 	}
@@ -113,7 +206,7 @@ func (r *Reader) Read() (Key, error) {
 	n := utf8Len(b)
 	buf := []byte{b}
 	for i := 1; i < n; i++ {
-		bb, err := r.src()
+		bb, err := r.readByte()
 		if err != nil {
 			return Key{}, err
 		}
@@ -161,12 +254,19 @@ func (r *Reader) readEscape() (Key, error) {
 	if err != nil || !have {
 		return Key{Kind: KeyEsc}, nil
 	}
+	if b == 0x1b {
+		// A second raw ESC is a separate key, not Alt+ESC. Keep it for the
+		// next Read so Esc Esc produces two bare KeyEsc events. This is the
+		// one lookahead case that is not intentionally treated as Alt input.
+		r.pending = append(r.pending, b)
+		return Key{Kind: KeyEsc}, nil
+	}
 	switch b {
 	case '[':
 		return r.readCSI()
 	case 'O':
 		// SS3 sequences (function keys in some terminals).
-		c, err := r.src()
+		c, err := r.readByte()
 		if err != nil {
 			return Key{}, err
 		}
@@ -199,24 +299,23 @@ func (r *Reader) readEscape() (Key, error) {
 }
 
 // readEscapeNext tries to read one byte within d. If peek is available
-// we use it (true non-blocking). Otherwise we fall back to a blocking
-// read, which means bare Esc is only detected after the next keystroke.
+// we use it. NewReader's source pump supplies the same bounded behavior
+// when no peek callback is provided, so a bare Esc never waits forever for
+// a second byte. A follow-on printable byte, DEL, b, or f remains
+// intentionally ambiguous with Alt input and keeps the historical mapping
+// in readEscape.
 func (r *Reader) readEscapeNext(d time.Duration) (byte, bool, error) {
 	if r.peek != nil {
 		return r.peek(d)
 	}
-	b, err := r.src()
-	if err != nil {
-		return 0, false, err
-	}
-	return b, true, nil
+	return r.readByteTimeout(d)
 }
 
 // readCSI parses a CSI sequence after ESC [.
 func (r *Reader) readCSI() (Key, error) {
 	var params []byte
 	for {
-		c, err := r.src()
+		c, err := r.readByte()
 		if err != nil {
 			return Key{}, err
 		}
@@ -411,7 +510,7 @@ func (r *Reader) readPaste() Key {
 	const end = "\x1b[201~"
 	tail := make([]byte, 0, len(end))
 	for {
-		b, err := r.src()
+		b, err := r.readByte()
 		if err != nil {
 			break
 		}

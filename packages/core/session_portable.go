@@ -40,6 +40,13 @@ func ExportSession(srcPath, dstPath string) (string, error) {
 		return "", errors.New("export: destination path is empty")
 	}
 
+	// Read the effective snapshot so a later model/provider update is not
+	// replaced by the stale metadata in the first row.
+	snapshot, err := ReadSessionSnapshot(srcPath)
+	if err != nil {
+		return "", fmt.Errorf("export: read session snapshot: %w", err)
+	}
+
 	// Read the source meta up-front so we can name the output sensibly
 	// when dstPath is a directory, and so we can validate it's a real
 	// session before starting to write.
@@ -103,7 +110,7 @@ func ExportSession(srcPath, dstPath string) (string, error) {
 	// Rewrite the meta row: strip the cwd (the importing user has
 	// their own) and keep everything else identical. ID stays so the
 	// export is traceable; the importer will rotate to a fresh ID.
-	exportMeta := *head.Meta
+	exportMeta := snapshot.Meta
 	exportMeta.CWD = ""
 	metaLine, err := json.Marshal(sessionLine{Type: "meta", Meta: &exportMeta})
 	if err != nil {
@@ -167,6 +174,14 @@ func ImportSession(srcPath, root, cwd, version string) (string, error) {
 	}
 	defer src.Close()
 
+	// Read the effective metadata before committing to a destination. Meta
+	// rows are append-only, so the first row may describe an older provider or
+	// model after a runtime switch.
+	snapshot, err := ReadSessionSnapshot(srcPath)
+	if err != nil {
+		return "", fmt.Errorf("import: read session snapshot: %w", err)
+	}
+
 	// Validate the file header before committing to a destination.
 	sc := bufio.NewScanner(src)
 	sc.Buffer(make([]byte, 0, 64*1024), 20*1024*1024)
@@ -201,8 +216,8 @@ func ImportSession(srcPath, root, cwd, version string) (string, error) {
 	importMeta := SessionMeta{
 		ID:       newID,
 		CWD:      cwd,
-		Model:    head.Meta.Model,
-		Provider: head.Meta.Provider,
+		Model:    snapshot.Meta.Model,
+		Provider: snapshot.Meta.Provider,
 		Started:  time.Now().UTC(),
 		Version:  version,
 	}
@@ -245,14 +260,16 @@ func ImportSession(srcPath, root, cwd, version string) (string, error) {
 // parent's messages 0..upToMessageIdx-1 (i.e. the first N user+
 // assistant+tool rows). The new meta records Parent=<parent id> and
 // ForkPoint=N so /session tree can rebuild the branch topology
-// later. All non-message rows (usage) are preserved up to the cut
-// point so the running cost tracker stays accurate.
+// later. The effective repaired prefix is materialized, and all eligible
+// usage checkpoints at or before the cut are preserved so the running cost
+// tracker can reconstruct the final-turn delta. A boundary that ends on a
+// tool call is extended through its paired tool result.
 //
 // upToMessageIdx is a count over the flat message stream as
 // returned by OpenSession. To "branch at user turn 3" the caller
 // passes the index of that user message in msgs + 1 (so the
 // message itself is included). The caller figures that out; this
-// helper just copies the first N message rows.
+// helper rejects a count outside the current effective snapshot.
 //
 // Returns the path of the new session file, ready for OpenSession.
 func BranchSession(parentPath, root, cwd, version string, upToMessageIdx int) (string, error) {
@@ -273,29 +290,23 @@ func branchSession(parentPath, root, cwd, version string, upToMessageIdx int, hi
 		return "", errors.New("branch: upToMessageIdx must be >= 0")
 	}
 
-	src, err := os.Open(parentPath)
+	snapshot, err := ReadSessionSnapshot(parentPath)
 	if err != nil {
-		return "", fmt.Errorf("branch: open parent: %w", err)
+		return "", fmt.Errorf("branch: read parent snapshot: %w", err)
 	}
-	defer src.Close()
+	if upToMessageIdx > len(snapshot.Messages) {
+		return "", fmt.Errorf("branch: upToMessageIdx %d exceeds effective message count %d", upToMessageIdx, len(snapshot.Messages))
+	}
 
-	// Read the parent meta so we can copy model/provider and record
-	// the parent id on the child.
-	sc := bufio.NewScanner(src)
-	sc.Buffer(make([]byte, 0, 64*1024), 20*1024*1024)
-	if !sc.Scan() {
-		return "", errors.New("branch: parent session is empty")
+	// A tool-call row is not a safe provider boundary by itself. Accept the
+	// convenient row index used by existing callers, but extend it through the
+	// immediately paired tool result when necessary. Orphan calls already have
+	// a synthetic result in the shared snapshot.
+	limit := upToMessageIdx
+	if limit > 0 && limit < len(snapshot.Messages) && messageHasToolCalls(snapshot.Messages[limit-1]) && snapshot.Messages[limit].Role == provider.RoleTool {
+		limit++
 	}
-	var head sessionLine
-	if err := json.Unmarshal(sc.Bytes(), &head); err != nil {
-		return "", fmt.Errorf("branch: parse parent meta: %w", err)
-	}
-	if head.Type != "meta" || head.Meta == nil {
-		return "", errors.New("branch: parent first line is not a meta row")
-	}
-	parentMeta := *head.Meta
 
-	// Build the destination file.
 	dir := SessionsDir(root, cwd)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", err
@@ -303,23 +314,38 @@ func branchSession(parentPath, root, cwd, version string, upToMessageIdx int, hi
 	newID := uuid.NewString()
 	name := fmt.Sprintf("%s-%s.jsonl", time.Now().UTC().Format("20060102-150405"), newID[:8])
 	outPath := filepath.Join(dir, name)
-	dst, err := os.OpenFile(outPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
+	// Build in a same-directory temporary file. Rename is atomic only when
+	// the temporary and final paths share a directory; closing the file first
+	// also ensures no buffered writer or descriptor can expose a partial branch.
+	dst, err := os.CreateTemp(dir, ".zot-branch-*.tmp")
 	if err != nil {
-		return "", fmt.Errorf("branch: create dst: %w", err)
+		return "", fmt.Errorf("branch: create temp: %w", err)
 	}
-	defer dst.Close()
+	tmpPath := dst.Name()
+	if err := dst.Chmod(0o644); err != nil {
+		_ = dst.Close()
+		_ = os.Remove(tmpPath)
+		return "", fmt.Errorf("branch: chmod temp: %w", err)
+	}
+	committed := false
+	defer func() {
+		_ = dst.Close()
+		if !committed {
+			_ = os.Remove(tmpPath)
+			_ = os.Remove(outPath)
+		}
+	}()
 	bw := bufio.NewWriter(dst)
 
-	// Write the branch meta.
 	branchMeta := SessionMeta{
 		ID:               newID,
 		CWD:              cwd,
-		Model:            parentMeta.Model,
-		Provider:         parentMeta.Provider,
+		Model:            snapshot.Meta.Model,
+		Provider:         snapshot.Meta.Provider,
 		Started:          time.Now().UTC(),
 		Version:          version,
-		Parent:           parentMeta.ID,
-		ForkPoint:        upToMessageIdx,
+		Parent:           snapshot.Meta.ID,
+		ForkPoint:        limit,
 		HideFromSessions: hideFromSessions,
 	}
 	metaLine, err := json.Marshal(sessionLine{Type: "meta", Meta: &branchMeta})
@@ -333,79 +359,52 @@ func branchSession(parentPath, root, cwd, version string, upToMessageIdx int, hi
 		return "", err
 	}
 
-	// Reconstruct the effective transcript the same way OpenSession
-	// does: message rows append, and compaction rows replace everything
-	// before them. The fork index is defined over that effective stream,
-	// not over the raw audit rows kept on disk before a compaction.
-	if _, err := src.Seek(0, io.SeekStart); err != nil {
-		return "", fmt.Errorf("branch: rewind parent: %w", err)
-	}
-	var effective []provider.Message
-	var nonCompactedRows [][]byte
-	effectiveCount := 0
-	sawCompaction := false
-	if err := forEachJSONLLine(src, func(line []byte) error {
-		var h sessionLineHead
-		if err := json.Unmarshal(line, &h); err != nil {
-			return nil
+	// Always materialize the shared effective prefix. Replaying raw rows here
+	// would lose compaction replacement or synthetic tool results and make the
+	// child differ from the transcript that was displayed and selected.
+	for idx := 0; idx < limit; idx++ {
+		msg := snapshot.Messages[idx]
+		line, err := json.Marshal(sessionLine{Type: "message", Message: &msg})
+		if err != nil {
+			return "", fmt.Errorf("branch: marshal message %d: %w", idx, err)
 		}
-		switch h.Type {
-		case "message":
-			if msg, err := hydrateMessage(line); err == nil && len(msg.Content) > 0 {
-				effective = append(effective, msg)
-				if !sawCompaction && effectiveCount < upToMessageIdx {
-					raw := append([]byte(nil), line...)
-					nonCompactedRows = append(nonCompactedRows, raw)
-				}
-				effectiveCount++
-			}
-		case "compaction":
-			if compacted, err := hydrateCompaction(line); err == nil {
-				effective = compacted
-				effectiveCount = len(effective)
-				sawCompaction = true
-			}
-		case "usage":
-			if !sawCompaction && effectiveCount < upToMessageIdx {
-				raw := append([]byte(nil), line...)
-				nonCompactedRows = append(nonCompactedRows, raw)
-			}
+		if _, err := bw.Write(line); err != nil {
+			return "", err
 		}
-		return nil
-	}); err != nil && err != io.EOF {
-		return "", fmt.Errorf("branch: read parent: %w", err)
-	}
-	limit := upToMessageIdx
-	if limit > len(effective) {
-		limit = len(effective)
-	}
-	branchTitle := lastUserText(effective[:limit])
-	if sawCompaction {
-		for i := 0; i < limit; i++ {
-			msg := effective[i]
-			line, err := json.Marshal(sessionLine{Type: "message", Message: &msg})
-			if err != nil {
-				return "", fmt.Errorf("branch: marshal message: %w", err)
-			}
-			if _, err := bw.Write(line); err != nil {
-				return "", err
-			}
-			if err := bw.WriteByte('\n'); err != nil {
-				return "", err
-			}
-		}
-	} else {
-		for _, row := range nonCompactedRows {
-			if _, err := bw.Write(row); err != nil {
-				return "", err
-			}
-			if err := bw.WriteByte('\n'); err != nil {
-				return "", err
-			}
+		if err := bw.WriteByte('\n'); err != nil {
+			return "", err
 		}
 	}
-	if branchTitle != "" {
-		line, _ := json.Marshal(map[string]string{"type": "rename", "title": branchTitle})
+
+	// Preserve every cumulative checkpoint that belongs to this prefix. The
+	// final two rows are needed to reconstruct LastTurnUsage as a delta; a
+	// branch containing only the latest row would incorrectly report the
+	// whole cumulative total as its final turn.
+	for _, checkpoint := range snapshot.UsageCheckpoints {
+		if checkpoint.MessageCount > limit {
+			continue
+		}
+		usageLine, err := json.Marshal(sessionLine{
+			Type:       "usage",
+			Usage:      &checkpoint.Cumulative,
+			Cumulative: &checkpoint.Cumulative,
+		})
+		if err != nil {
+			return "", fmt.Errorf("branch: marshal usage: %w", err)
+		}
+		if _, err := bw.Write(usageLine); err != nil {
+			return "", err
+		}
+		if err := bw.WriteByte('\n'); err != nil {
+			return "", err
+		}
+	}
+
+	if branchTitle := lastUserText(snapshot.Messages[:limit]); branchTitle != "" {
+		line, err := json.Marshal(map[string]string{"type": "rename", "title": branchTitle})
+		if err != nil {
+			return "", fmt.Errorf("branch: marshal title: %w", err)
+		}
 		if _, err := bw.Write(line); err != nil {
 			return "", err
 		}
@@ -416,6 +415,16 @@ func branchSession(parentPath, root, cwd, version string, upToMessageIdx int, hi
 	if err := bw.Flush(); err != nil {
 		return "", err
 	}
+	if err := dst.Sync(); err != nil {
+		return "", fmt.Errorf("branch: sync temp: %w", err)
+	}
+	if err := dst.Close(); err != nil {
+		return "", fmt.Errorf("branch: close temp: %w", err)
+	}
+	if err := os.Rename(tmpPath, outPath); err != nil {
+		return "", fmt.Errorf("branch: commit: %w", err)
+	}
+	committed = true
 	return outPath, nil
 }
 
@@ -464,6 +473,183 @@ func BuildSessionTree(root, cwd string) []*TreeNode {
 		nodes[meta.ID] = &TreeNode{Summary: summary, Meta: meta}
 		order = append(order, meta.ID)
 	}
+	return linkSessionTreeNodes(nodes, order)
+}
+
+// BuildSessionTreeStrict is the complete-read counterpart to the permissive
+// forest builder. It validates every session file before linking any node, so
+// callers that need a complete forest cannot silently omit malformed members.
+func BuildSessionTreeStrict(root, cwd string) ([]*TreeNode, error) {
+	dir := SessionsDir(root, cwd)
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("build session tree: read directory: %w", err)
+	}
+	nodes := make(map[string]*TreeNode)
+	order := make([]string, 0, len(entries))
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".jsonl") {
+			continue
+		}
+		path := filepath.Join(dir, e.Name())
+		snapshot, err := ReadSessionSnapshot(path)
+		if err != nil {
+			return nil, fmt.Errorf("build session tree: read %q: %w", path, err)
+		}
+		if snapshot.Meta.ID == "" {
+			return nil, fmt.Errorf("build session tree: %q has no session id", path)
+		}
+		summary := SessionSummary{
+			Path:          path,
+			Started:       snapshot.Meta.Started,
+			Model:         snapshot.Meta.Model,
+			Provider:      snapshot.Meta.Provider,
+			MessageCount:  len(snapshot.Messages),
+			FirstUserText: firstUserTextFromMessages(snapshot.Messages),
+			Title:         snapshot.Meta.Title,
+		}
+		if len(snapshot.UsageCheckpoints) > 0 {
+			summary.TotalCost = snapshot.UsageCheckpoints[len(snapshot.UsageCheckpoints)-1].Cumulative.CostUSD
+		}
+		if _, exists := nodes[snapshot.Meta.ID]; exists {
+			return nil, fmt.Errorf("build session tree: duplicate session id %q", snapshot.Meta.ID)
+		}
+		nodes[snapshot.Meta.ID] = &TreeNode{Summary: summary, Meta: snapshot.Meta}
+		order = append(order, snapshot.Meta.ID)
+	}
+	return linkSessionTreeNodes(nodes, order), nil
+}
+
+// BuildSessionTreeFamilyStrict locates the current session using lightweight
+// metadata headers, then strictly validates only that root and its descendants.
+// A corrupt unrelated root in the same cwd bucket must not hide an otherwise
+// readable current family, while a corrupt member of the selected family still
+// fails the whole preflight.
+func BuildSessionTreeFamilyStrict(root, cwd, currentPath string) ([]*TreeNode, error) {
+	if currentPath == "" {
+		return nil, errors.New("build session family: current path is empty")
+	}
+	dir := SessionsDir(root, cwd)
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("build session family: read directory: %w", err)
+	}
+	cleanCurrent := filepath.Clean(currentPath)
+	nodes := make(map[string]*TreeNode)
+	order := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".jsonl") {
+			continue
+		}
+		path := filepath.Join(dir, entry.Name())
+		meta, err := readSessionMetaHeader(path)
+		if err != nil {
+			if filepath.Clean(path) == cleanCurrent {
+				return nil, fmt.Errorf("build session family: read current metadata %q: %w", path, err)
+			}
+			// A file whose header is unreadable cannot be associated with the
+			// selected family. Valid descendants are linked below and fully
+			// preflighted; unrelated corrupt roots stay out of this family.
+			continue
+		}
+		if _, exists := nodes[meta.ID]; exists {
+			return nil, fmt.Errorf("build session family: duplicate session id %q", meta.ID)
+		}
+		nodes[meta.ID] = &TreeNode{
+			Summary: SessionSummary{Path: path, Started: meta.Started, Model: meta.Model, Provider: meta.Provider},
+			Meta:    meta,
+		}
+		order = append(order, meta.ID)
+	}
+	roots := linkSessionTreeNodes(nodes, order)
+	var familyRoot *TreeNode
+	for _, candidate := range roots {
+		if treeNodeContainsPath(candidate, cleanCurrent) {
+			familyRoot = candidate
+			break
+		}
+	}
+	if familyRoot == nil {
+		return nil, fmt.Errorf("build session family: current path %q is not in the session forest", currentPath)
+	}
+	var validate func(*TreeNode) error
+	validate = func(node *TreeNode) error {
+		snapshot, err := ReadSessionSnapshot(node.Summary.Path)
+		if err != nil {
+			return fmt.Errorf("build session family: read %q: %w", node.Summary.Path, err)
+		}
+		if snapshot.Meta.ID != node.Meta.ID {
+			return fmt.Errorf("build session family: session id changed in %q", node.Summary.Path)
+		}
+		node.Meta = snapshot.Meta
+		node.Summary = SessionSummary{
+			Path:          node.Summary.Path,
+			Started:       snapshot.Meta.Started,
+			Model:         snapshot.Meta.Model,
+			Provider:      snapshot.Meta.Provider,
+			MessageCount:  len(snapshot.Messages),
+			FirstUserText: firstUserTextFromMessages(snapshot.Messages),
+			Title:         snapshot.Meta.Title,
+		}
+		if len(snapshot.UsageCheckpoints) > 0 {
+			node.Summary.TotalCost = snapshot.UsageCheckpoints[len(snapshot.UsageCheckpoints)-1].Cumulative.CostUSD
+		}
+		for _, child := range node.Children {
+			if err := validate(child); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	if err := validate(familyRoot); err != nil {
+		return nil, err
+	}
+	return []*TreeNode{familyRoot}, nil
+}
+
+func readSessionMetaHeader(path string) (SessionMeta, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return SessionMeta{}, err
+	}
+	defer f.Close()
+	line, err := bufio.NewReader(f).ReadBytes('\n')
+	if err != nil && len(line) == 0 {
+		return SessionMeta{}, err
+	}
+	line = bytes.TrimSpace(line)
+	var row sessionLine
+	if err := json.Unmarshal(line, &row); err != nil {
+		return SessionMeta{}, err
+	}
+	if row.Type != "meta" || row.Meta == nil || row.Meta.ID == "" {
+		return SessionMeta{}, errors.New("first row is not a valid meta row")
+	}
+	return *row.Meta, nil
+}
+
+func treeNodeContainsPath(node *TreeNode, path string) bool {
+	if node == nil {
+		return false
+	}
+	if filepath.Clean(node.Summary.Path) == filepath.Clean(path) {
+		return true
+	}
+	for _, child := range node.Children {
+		if treeNodeContainsPath(child, path) {
+			return true
+		}
+	}
+	return false
+}
+
+func linkSessionTreeNodes(nodes map[string]*TreeNode, order []string) []*TreeNode {
 	var roots []*TreeNode
 	for _, id := range order {
 		n := nodes[id]
@@ -474,35 +660,71 @@ func BuildSessionTree(root, cwd string) []*TreeNode {
 		if parent, ok := nodes[n.Meta.Parent]; ok {
 			parent.Children = append(parent.Children, n)
 		} else {
-			// Parent file missing (was manually deleted). Treat as
-			// a root so it still shows up in the tree.
+			// Parent file missing (was manually deleted). Treat as a root so it
+			// still shows up in the tree.
 			roots = append(roots, n)
 		}
 	}
 	return roots
 }
 
-// readSessionMeta opens path, reads the meta row, and returns it.
-// Empty SessionMeta when the file is missing or not a valid session.
-func readSessionMeta(path string) (SessionMeta, error) {
+// scanSessionMeta reads JSONL rows without hydrating transcript content and
+// returns the latest valid metadata row. Listing and ID lookup only need this
+// small projection; full snapshot validation remains the responsibility of
+// resume, export, branching, and tree preflight callers.
+func scanSessionMeta(path string) (meta SessionMeta, err error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return SessionMeta{}, err
 	}
 	defer f.Close()
-	sc := bufio.NewScanner(f)
-	sc.Buffer(make([]byte, 0, 64*1024), 20*1024*1024)
-	if !sc.Scan() {
-		return SessionMeta{}, errors.New("empty file")
+
+	var sawMeta bool
+	err = forEachStrictJSONLLine(f, func(line []byte, lineNo int) error {
+		var head sessionLineHead
+		if err := json.Unmarshal(line, &head); err != nil {
+			return fmt.Errorf("line %d: invalid JSON: %w", lineNo, err)
+		}
+		if head.Type == "" {
+			return fmt.Errorf("line %d: missing row type", lineNo)
+		}
+		if !sawMeta && head.Type != "meta" {
+			return fmt.Errorf("line %d: first row is not meta", lineNo)
+		}
+		switch head.Type {
+		case "meta":
+			var row struct {
+				Meta *SessionMeta `json:"meta"`
+			}
+			if err := json.Unmarshal(line, &row); err != nil {
+				return fmt.Errorf("line %d: invalid meta row: %w", lineNo, err)
+			}
+			if row.Meta == nil || row.Meta.ID == "" {
+				return fmt.Errorf("line %d: meta row has no session id", lineNo)
+			}
+			meta = *row.Meta
+			sawMeta = true
+		case "message", "compaction", "usage", "rename":
+			// These rows are intentionally not hydrated here.
+		default:
+			return fmt.Errorf("line %d: unknown row type %q", lineNo, head.Type)
+		}
+		return nil
+	})
+	if err != nil {
+		return SessionMeta{}, fmt.Errorf("session metadata %q: %w", path, err)
 	}
-	var line sessionLine
-	if err := json.Unmarshal(sc.Bytes(), &line); err != nil {
-		return SessionMeta{}, err
+	if !sawMeta {
+		return SessionMeta{}, fmt.Errorf("session metadata %q: file is empty", path)
 	}
-	if line.Type != "meta" || line.Meta == nil {
-		return SessionMeta{}, errors.New("first line is not meta")
-	}
-	return *line.Meta, nil
+	return meta, nil
+}
+
+// readSessionMeta returns the latest validated metadata for path without
+// reconstructing its transcript. Full snapshot validation is performed by
+// callers that need messages rather than listing metadata.
+func readSessionMeta(path string) (SessionMeta, error) {
+	return scanSessionMeta(path)
 }
 
 // FindSessionByID looks up a session file in root/cwd whose meta id
@@ -519,7 +741,7 @@ func FindSessionByID(root, cwd, id string) string {
 			continue
 		}
 		path := filepath.Join(dir, e.Name())
-		meta, err := readSessionMeta(path)
+		meta, err := scanSessionMeta(path)
 		if err != nil {
 			continue
 		}

@@ -26,10 +26,21 @@ type slashCommand struct {
 // the streaming response without trouble.
 func slashCancelsTurn(head string) bool {
 	switch strings.ToLower(head) {
-	case "/clear", "/compact", "/logout", "/login", "/model", "/llama", "/reload-ext", "/cd":
+	case "/clear", "/compact", "/logout", "/login", "/model", "/llama", "/reload-ext", "/cd", "/fork":
 		return true
 	}
 	return false
+}
+
+func slashCommandCancelsTurn(cmd string) bool {
+	parts := strings.Fields(cmd)
+	if len(parts) == 0 {
+		return false
+	}
+	if slashCancelsTurn(parts[0]) {
+		return true
+	}
+	return strings.EqualFold(parts[0], "/session") && len(parts) > 1 && strings.EqualFold(parts[1], "fork")
 }
 
 // slashCatalog lists every slash command the interactive mode handles.
@@ -42,7 +53,8 @@ var slashCatalog = []slashCommand{
 	{Name: "/reasoning", Desc: "set the reasoning level"},
 	{Name: "/llama", Desc: "manage llama.cpp router models"},
 	{Name: "/sessions", Desc: "resume a previous session for this directory"},
-	{Name: "/session", Desc: "export the current session to a .zotsession file, or import one"},
+	{Name: "/fork", Desc: "pick a user message and fork the current session"},
+	{Name: "/session", Desc: "export/import, fork, or browse the current session tree"},
 	{Name: "/jump", Desc: "scroll the chat to a previous turn (or /jump <text>)"},
 	{Name: "/compact", Desc: "summarize and replace the transcript to free up context"},
 	{Name: "/study", Desc: "read every file in the cwd (or a passed file/dir) so the agent has full context"},

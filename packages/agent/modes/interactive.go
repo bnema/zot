@@ -256,6 +256,12 @@ type InteractiveConfig struct {
 	// file that only has the meta row.
 	FlushSession func()
 
+	// SessionTransition serializes a state-changing session/model
+	// operation with the host's session load. It is optional for embedders;
+	// the CLI uses it to prevent a slow provider rebuild from being replaced
+	// by a concurrent resume (or vice versa).
+	SessionTransition func(func())
+
 	// PersistModel is called whenever the user switches model or provider.
 	// It should update config.json and (if there's an active session)
 	// write a new meta row so resume picks up the same model.
@@ -433,6 +439,7 @@ type Interactive struct {
 	busy             bool
 	dirty            chan struct{}
 	modelRefresh     chan modelRefreshResult
+	modelRefreshing  bool
 	startupPreDone   chan startupPreResult
 	cancelTurn       context.CancelFunc
 	scrollOffset     int // rows from the bottom; 0 = pinned to latest
@@ -551,6 +558,11 @@ type Interactive struct {
 	// clears the editor / cancels a turn / shows a hint; a second press
 	// within ctrlCExitWindow exits. Mirrors the python-repl convention.
 	lastCtrlC time.Time
+
+	// doubleEscape tracks the optional bare-Escape session-tree gesture.
+	// clock is injectable so the gesture can be tested without sleeping.
+	doubleEscape doubleEscapeTracker
+	clock        func() time.Time
 
 	// welcomeStart is when the interactive run began. The welcome
 	// banner shows the binary version for welcomeVersionDuration
@@ -680,6 +692,7 @@ func NewInteractive(cfg InteractiveConfig) *Interactive {
 		fileSuggest:       newFileSuggester(),
 		spin:              newSpinner(cfg.Theme),
 		inputHistoryIndex: -1,
+		clock:             time.Now,
 		reloadErrors:      append([]string(nil), cfg.StartupExtensionErrors...),
 	}
 	i.fileSuggest.SetRecursive(cfg.RecursiveFileSuggest != nil && *cfg.RecursiveFileSuggest)
@@ -924,6 +937,9 @@ func (i *Interactive) Run(ctx context.Context) error {
 			i.handleAuthEvent(ev)
 			i.invalidate()
 		case result := <-i.modelRefresh:
+			i.mu.Lock()
+			i.modelRefreshing = false
+			i.mu.Unlock()
 			i.openModelPickerAfterRefresh(result.err)
 			i.invalidate()
 		case result := <-i.startupPreDone:
@@ -1332,6 +1348,14 @@ func (i *Interactive) redraw() {
 	case i.sessionOpsDialog.Active():
 		dialog = i.sessionOpsDialog.Render(i.cfg.Theme, cols)
 	case i.sessionTreeDialog.Active():
+		// Reserve rows for the editor, status, and tree chrome while using
+		// the same budget for rendering and PageUp/PageDown movement.
+		_, rows := i.cfg.Terminal.Size()
+		avail := rows - 12
+		if avail < 3 {
+			avail = 3
+		}
+		i.sessionTreeDialog.MaxRows = avail
 		dialog = i.sessionTreeDialog.Render(i.cfg.Theme, cols)
 	}
 	if len(dialog) > 0 {
@@ -2083,6 +2107,15 @@ func (i *Interactive) restoreConfirmFocus() {
 func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 	defer i.restoreConfirmFocus()
 
+	// A bare Escape is eligible for the session-tree gesture only while the
+	// main input owns the key. Any other key, modified Escape, or visible
+	// child interaction resets the pending first tap before normal routing.
+	if !isUnmodifiedEscape(k) || i.sessionTreeEscapeBlocked() {
+		i.mu.Lock()
+		i.doubleEscape.Reset()
+		i.mu.Unlock()
+	}
+
 	// Dialogs route keys before the main clipboard handler below. Resolve text
 	// here when a child interaction owns input so every editor and filter sees
 	// the same KeyPaste event as terminal-native bracketed paste. Main chat is
@@ -2312,7 +2345,13 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 		}
 		act := i.sessionTreeDialog.HandleKey(k)
 		if act.Select {
-			i.applySessionTreeMessageSelection(act.Path, act.MessageIdx, act.TurnNo, act.Role, act.Prompt)
+			if act.Target.Role != "" || act.Target.SourcePath != "" || act.Target.IsBoundary() || act.Target.UserDraft != "" {
+				i.applySessionTreeTarget(act.Target, act.TurnNo)
+			} else {
+				// Keep package embedders that still return the scalar action
+				// source-compatible while the dialog migrates to Target.
+				i.applySessionTreeMessageSelection(act.Path, act.MessageIdx, act.TurnNo, act.Role, act.Prompt)
+			}
 		}
 		i.invalidate()
 		return false
@@ -2391,6 +2430,35 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 	if slot := quickModelShortcutSlot(k); slot > 0 {
 		i.applyQuickModelShortcut(slot)
 		return false
+	}
+
+	// The first eligible bare Escape is deliberately left to the existing
+	// Escape path (which clears idle input or cancels a turn). A second tap
+	// within the gesture window only gets first refusal while the cheap,
+	// local eligibility rules still hold. If a turn started, a message was
+	// queued, or the input became ineligible between taps, reset the detector
+	// and fall through so Escape retains its normal cancellation behavior.
+	// Once those rules still hold, the full tree gate owns the second tap:
+	// family/read failures are fail-closed but are nevertheless consumed so
+	// they cannot fall through into ordinary editor handling.
+	if isUnmodifiedEscape(k) {
+		now := i.sessionTreeEscapeNow()
+		i.mu.Lock()
+		consumed := i.doubleEscape.Consume(now)
+		i.mu.Unlock()
+		if consumed {
+			if i.canArmSessionTreeEscape() {
+				i.openSessionTree()
+				return false
+			}
+			i.mu.Lock()
+			i.doubleEscape.Reset()
+			i.mu.Unlock()
+		} else if i.canArmSessionTreeEscape() {
+			i.mu.Lock()
+			i.doubleEscape.Arm(now)
+			i.mu.Unlock()
+		}
 	}
 
 	// Global keys.
@@ -2699,18 +2767,27 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 		if text == "" && len(images) == 0 {
 			return false
 		}
-		i.clipboardImages = nil
-		i.ed.Clear()
-		i.inputHistoryIndex = -1
-		i.suggest.Reset()
-		i.fileSuggest.Reset()
-
-		if cmd, ok := shellEscapeCommand(text); ok {
-			i.startShellEscape(ctx, cmd)
-			return false
+		clearSubmittedInput := func() {
+			i.clipboardImages = nil
+			i.ed.Clear()
+			i.inputHistoryIndex = -1
+			i.suggest.Reset()
+			i.fileSuggest.Reset()
 		}
 
-		if looksLikeSlashCommand(text) {
+		// Shell escapes and slash commands are text-only. An image-bearing
+		// draft remains a normal provider prompt instead of silently dropping
+		// its attachments.
+		if len(images) == 0 {
+			if cmd, ok := shellEscapeCommand(text); ok {
+				clearSubmittedInput()
+				i.startShellEscape(ctx, cmd)
+				return false
+			}
+		}
+
+		if len(images) == 0 && looksLikeSlashCommand(text) {
+			clearSubmittedInput()
 			head := text
 			rest := ""
 			if idx := strings.IndexAny(text, " \t"); idx >= 0 {
@@ -2733,12 +2810,13 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 			}
 			// Slash commands run regardless of busy state. Commands that
 			// would mutate the transcript or replace the agent (/clear,
-			// /compact, /logout, /login, /model) cancel the active turn
+			// /compact, /logout, /login, /model, /fork, /session fork)
+			// cancel the active turn
 			// first and wait for the goroutine to wind down so they don't
 			// race with a streaming response. Safe commands (/help,
 			// /jump, /sessions, /jail, /unjail, /exit) run immediately
 			// without disturbing the active turn.
-			if slashCancelsTurn(head) {
+			if slashCommandCancelsTurn(text) {
 				i.cancelAndWaitForIdle()
 			}
 			return i.runSlash(ctx, text)
@@ -2774,6 +2852,7 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 				i.invalidate()
 				return false
 			}
+			clearSubmittedInput()
 			if ag != nil && !compacting {
 				ag.QueueMessage(text)
 			} else {
@@ -2784,6 +2863,7 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 			i.invalidate()
 			return false
 		}
+		clearSubmittedInput()
 		i.startTurnWithImages(ctx, text, images)
 	}
 	return false
@@ -3107,6 +3187,38 @@ func (i *Interactive) applyStartupPreResult(result startupPreResult) {
 	}
 }
 
+// ApplySessionAgent swaps the live agent after a validated session resume.
+// Unlike ApplyChangedCWD it does not mutate cwd-scoped resources or startup
+// context; the session loader is changing the transcript/provider only.
+func (i *Interactive) ApplySessionAgent(ag *core.Agent, providerName, model string) {
+	if ag == nil {
+		return
+	}
+	i.mu.Lock()
+	i.agent = ag
+	i.cfg.Provider = providerName
+	i.cfg.Model = model
+	i.view.Messages = filterHiddenTranscriptMessages(ag.Messages())
+	i.cumUsage = ag.Cost()
+	last := ag.LastTurnUsage()
+	i.lastCtxInput = last.InputTokens + last.CacheReadTokens + last.CacheWriteTokens
+	if len(i.view.Messages) > initialResumeTailLimit {
+		i.view.TailLimit = initialResumeTailLimit
+	} else {
+		i.view.TailLimit = 0
+	}
+	i.view.InvalidateRenderCache()
+	i.toolCalls = map[string]*tui.ToolCallView{}
+	i.toolOrder = nil
+	i.toolGate = map[string]int{}
+	i.helpBlock = nil
+	i.extNotes = nil
+	i.parkedTurn = 0
+	i.parkedTotal = 0
+	i.mu.Unlock()
+	i.invalidate()
+}
+
 // ApplyChangedCWD is called by hosts after a successful /cd hook that do
 // not provide startup context metadata.
 func (i *Interactive) ApplyChangedCWD(ag *core.Agent, provider, model, cwd string) {
@@ -3167,15 +3279,14 @@ func (i *Interactive) applyChangedCWD(ag *core.Agent, provider, model, cwd strin
 // agent cancel the active turn first via the same path the editor
 // uses for typed slash commands.
 func (i *Interactive) SubmitSlash(text string) {
+	i.mu.Lock()
+	i.doubleEscape.Reset()
+	i.mu.Unlock()
 	text = strings.TrimSpace(text)
 	if !strings.HasPrefix(text, "/") {
 		return
 	}
-	head := text
-	if idx := strings.IndexAny(text, " \t"); idx >= 0 {
-		head = text[:idx]
-	}
-	if slashCancelsTurn(head) {
+	if slashCommandCancelsTurn(text) {
 		i.cancelAndWaitForIdle()
 	}
 	i.runSlash(i.runCtx, text)
@@ -4519,6 +4630,7 @@ func (i *Interactive) runSlash(ctx context.Context, cmd string) (done bool) {
 			i.applyModelSelection("", parts[1])
 		} else if i.llamaConfigured && i.cfg.RefreshLlamaCPPModels != nil {
 			i.mu.Lock()
+			i.modelRefreshing = true
 			i.statusOK = "refreshing models"
 			i.statusErr = ""
 			i.mu.Unlock()
@@ -4554,6 +4666,8 @@ func (i *Interactive) runSlash(ctx context.Context, cmd string) (done bool) {
 		i.openSettingsDialog()
 	case "/sessions":
 		i.sessionDialog.Open(i.sessionsRoot(), i.cfg.CWD)
+	case "/fork":
+		i.doSessionFork()
 	case "/jump":
 		i.openJumpDialog(parts[1:])
 	case "/btw":
@@ -5393,6 +5507,16 @@ func (i *Interactive) applyRescueModelSelection(prov, model string) {
 // the supplied builder. rescue=true tags the success message so the
 // user can see that launch-time overrides were ignored.
 func (i *Interactive) swapModel(prov, model string, builder func(string, string) (*core.Agent, string, string, error), rescue bool) {
+	if i.cfg.SessionTransition != nil {
+		i.cfg.SessionTransition(func() {
+			i.swapModelUnserialized(prov, model, builder, rescue)
+		})
+		return
+	}
+	i.swapModelUnserialized(prov, model, builder, rescue)
+}
+
+func (i *Interactive) swapModelUnserialized(prov, model string, builder func(string, string) (*core.Agent, string, string, error), rescue bool) {
 	if model == "" {
 		return
 	}
@@ -5495,15 +5619,27 @@ func (i *Interactive) handleAuthEvent(ev auth.Event) {
 			i.dialog.ShowResult(false, err.Error())
 			return
 		}
-		i.mu.Lock()
-		i.agent = ag
-		i.cfg.Provider = prov
-		i.cfg.Model = model
-		i.statusErr = ""
-		i.statusOK = "logged in to " + ev.Provider + " via " + ev.Method
-		i.mu.Unlock()
-		i.applyAutoSwarmTool(i.autoSwarmEnabled())
-		i.applyTelegramTools(i.telegramBridge != nil && i.telegramBridge.Active())
+		commitLogin := func() {
+			i.mu.Lock()
+			i.agent = ag
+			i.cfg.Provider = prov
+			i.cfg.Model = model
+			i.statusErr = ""
+			i.statusOK = "logged in to " + ev.Provider + " via " + ev.Method
+			i.mu.Unlock()
+			i.applyAutoSwarmTool(i.autoSwarmEnabled())
+			i.applyTelegramTools(i.telegramBridge != nil && i.telegramBridge.Active())
+			// Authentication can change the provider used by the live
+			// agent. Persist it on the active session just like /model.
+			if i.cfg.PersistModel != nil {
+				i.cfg.PersistModel(prov, model)
+			}
+		}
+		if i.cfg.SessionTransition != nil {
+			i.cfg.SessionTransition(commitLogin)
+		} else {
+			commitLogin()
+		}
 		i.dialog.ShowResult(true, "")
 	}
 }
@@ -6942,14 +7078,7 @@ func (i *Interactive) doSessionOp(action, arg string) {
 // the user's home directory if it doesn't exist). The helper
 // expands a leading `~` and creates any missing parent directories.
 func (i *Interactive) doSessionExport(dst string) {
-	if i.cfg.CurrentSessionPath == nil {
-		i.mu.Lock()
-		i.statusErr = "export: no session is active (running with --no-session?)"
-		i.mu.Unlock()
-		i.invalidate()
-		return
-	}
-	src := i.cfg.CurrentSessionPath()
+	src := i.currentSessionPath()
 	if src == "" {
 		i.mu.Lock()
 		i.statusErr = "export: no session is active (running with --no-session?)"
@@ -7104,17 +7233,38 @@ func friendlyPath(p string) string {
 // next selection branches the current session at that user turn
 // instead of scrolling the viewport to it.
 func (i *Interactive) doSessionFork() {
-	if i.cfg.CurrentSessionPath == nil || i.cfg.CurrentSessionPath() == "" {
+	path := i.currentSessionPath()
+	if path == "" {
 		i.mu.Lock()
 		i.statusErr = "fork: no session is active (running with --no-session?)"
 		i.mu.Unlock()
 		i.invalidate()
 		return
 	}
-	msgs := []provider.Message{}
-	if i.agent != nil {
-		msgs = i.agent.Messages()
+	i.mu.Lock()
+	busy := i.busy || i.shellRunning || i.compacting || i.autoCompacting || i.sessionLoading
+	queued := len(i.queued) != 0
+	ag := i.agent
+	i.mu.Unlock()
+	if busy || queued || ag == nil || ag.QueuedMessageCount() != 0 {
+		i.mu.Lock()
+		i.statusErr = "fork: wait until the current turn and queued messages finish"
+		i.mu.Unlock()
+		i.invalidate()
+		return
 	}
+	if i.cfg.FlushSession != nil {
+		i.cfg.FlushSession()
+	}
+	snapshot, err := core.ReadSessionSnapshot(path)
+	if err != nil {
+		i.mu.Lock()
+		i.statusErr = "fork: " + err.Error()
+		i.mu.Unlock()
+		i.invalidate()
+		return
+	}
+	msgs := snapshot.Messages
 	if len(msgs) == 0 {
 		i.mu.Lock()
 		i.statusErr = "fork: transcript is empty; nothing to fork from"
@@ -7127,91 +7277,112 @@ func (i *Interactive) doSessionFork() {
 	i.invalidate()
 }
 
-// doSessionTree shows the current session family as an inline branch tree.
-// Pick an entry to check out that point into a new branch. Subsequent
-// prompts use only context up to the selected message.
+// doSessionTree opens the current session family after the shared
+// fail-closed gate succeeds. It intentionally does not fall back to the
+// in-memory transcript: a tree that cannot be persisted and reloaded cannot
+// safely create a navigation branch.
 func (i *Interactive) doSessionTree() {
-	current := ""
-	if i.cfg.CurrentSessionPath != nil {
-		current = i.cfg.CurrentSessionPath()
-	}
-	if current != "" && i.sessionTreeDialog.OpenSessionFamily(i.sessionsRoot(), i.cfg.CWD, current) {
-		i.invalidate()
-		return
-	}
-	msgs := []provider.Message{}
-	if i.agent != nil {
-		msgs = i.agent.Messages()
-	}
-	if len(msgs) == 0 {
-		i.mu.Lock()
-		i.statusErr = "tree: no messages in this session yet"
-		i.mu.Unlock()
-		i.invalidate()
-		return
-	}
-	if !i.sessionTreeDialog.OpenMessages(msgs) {
-		i.mu.Lock()
-		i.statusErr = "tree: no messages to show"
-		i.mu.Unlock()
-	}
-	i.invalidate()
+	i.openSessionTree()
 }
 
-// applySessionTreeMessageSelection checks out the selected message into a
-// new branch, then switches the running agent to that branch. Unlike /jump,
-// this changes future model context: only messages up to the selected row are
-// sent on subsequent turns.
+// applySessionTreeMessageSelection keeps the old scalar integration
+// source-compatible for package consumers. New dialog selections use the
+// structured sessionTreeTarget path below.
 func (i *Interactive) applySessionTreeMessageSelection(src string, msgIdx, turnNo int, role provider.Role, prompt string) {
-	if i.cfg.CurrentSessionPath == nil || i.cfg.LoadSession == nil {
-		i.mu.Lock()
-		i.statusErr = "tree: session branching is not available in this build"
-		i.mu.Unlock()
-		i.invalidate()
+	target := sessionTreeTarget{
+		SourcePath:        src,
+		EffectiveIndex:    msgIdx,
+		SelectionBoundary: msgIdx + 1,
+		Role:              role,
+		UserDraft:         prompt,
+		Boundary:          sessionTreeMessageBoundary,
+	}
+	if role == provider.RoleUser {
+		target.SelectionBoundary = msgIdx
+	}
+	i.applySessionTreeTarget(target, turnNo)
+}
+
+// applySessionTreeTarget checks out a structured dialog target. The target's
+// source and effective indices come from the same preflight snapshot the
+// dialog rendered, while the live read below preserves compatibility with
+// the existing LoadSession(path) error callback.
+func (i *Interactive) applySessionTreeTarget(target sessionTreeTarget, turnNo int) {
+	// Selection is a state-changing operation too. Use the selection gate so
+	// a queued/busy turn cannot race the hidden branch or accidentally submit
+	// a provider turn while the session is being swapped. The open gate cannot
+	// be reused here because the tree dialog itself owns the keyboard.
+	if !i.canCommitSessionTreeSelection() {
+		i.setSessionTreeError("tree: session branching is not available in this build")
 		return
 	}
+	src := target.SourcePath
 	if src == "" {
-		src = i.cfg.CurrentSessionPath()
+		src = i.currentSessionPath()
 	}
 	if src == "" {
-		i.mu.Lock()
-		i.statusErr = "tree: no session is active"
-		i.mu.Unlock()
-		i.invalidate()
+		i.setSessionTreeError("tree: no session is active")
+		return
+	}
+
+	// Read and validate the selected row before flushing or creating anything.
+	// This gives tool-call/result pairs an atomic boundary and prevents a
+	// malformed selection from changing the active session.
+	sess, msgs, err := core.OpenSession(src)
+	if err != nil {
+		i.setSessionTreeError("tree: read selection: " + err.Error())
+		return
+	}
+	_ = sess.Close()
+	selection, err := sessionTreeSelection(msgs, target)
+	if err != nil {
+		i.setSessionTreeError("tree: " + err.Error())
 		return
 	}
 	if i.cfg.FlushSession != nil {
 		i.cfg.FlushSession()
 	}
-	upTo := msgIdx + 1
-	if role == provider.RoleUser {
-		upTo = msgIdx
-	}
-	newPath, err := core.BranchSessionHidden(src, i.sessionsRoot(), i.cfg.CWD, i.cfg.Version, upTo)
+	newPath, err := core.BranchSessionHidden(src, i.sessionsRoot(), i.cfg.CWD, i.cfg.Version, selection.upTo)
 	if err != nil {
-		i.mu.Lock()
-		i.statusErr = "tree: " + err.Error()
-		i.mu.Unlock()
-		i.invalidate()
+		i.setSessionTreeError("tree: " + err.Error())
 		return
 	}
 	if err := i.cfg.LoadSession(newPath); err != nil {
-		i.mu.Lock()
-		i.statusErr = "tree: checkout failed: " + err.Error()
-		i.mu.Unlock()
-		i.invalidate()
+		i.setSessionTreeError("tree: checkout failed: " + err.Error())
 		return
 	}
-	i.scrollToBottom()
+
+	// LoadSession is intentionally the old func(string) error callback: the
+	// CLI and embedders already own agent/session swapping. Refresh the view
+	// from the swapped agent here instead of requiring a new callback result.
 	i.mu.Lock()
-	if role == provider.RoleUser {
-		i.ed.SetValue(prompt)
+	i.lastCtxInput = 0
+	if i.agent != nil {
+		i.view.Messages = filterHiddenTranscriptMessages(i.agent.Messages())
+		i.cumUsage = i.agent.Cost()
+		last := i.agent.LastTurnUsage()
+		i.lastCtxInput = last.InputTokens + last.CacheReadTokens + last.CacheWriteTokens
+		i.view.InvalidateRenderCache()
+	}
+	i.toolCalls = map[string]*tui.ToolCallView{}
+	i.toolOrder = nil
+	i.toolGate = map[string]int{}
+	i.extNotes = nil
+	if selection.restoreDraft {
+		i.ed.SetValue(selection.draftText)
+		i.clipboardImages = selection.images
 		i.statusOK = fmt.Sprintf("checked out before turn %d; edit and send to branch", turnNo)
 	} else {
+		i.ed.Clear()
+		i.clipboardImages = nil
 		i.statusOK = fmt.Sprintf("checked out turn %d into a new branch", turnNo)
 	}
 	i.statusErr = ""
 	i.mu.Unlock()
+	i.scrollToBottom()
+	// Selection only changes local/session state. In particular, do not call
+	// Submit, startTurn, or queue a message here; the restored user draft is
+	// submitted only by a later explicit Enter.
 	i.invalidate()
 }
 
@@ -7221,14 +7392,7 @@ func (i *Interactive) applySessionTreeMessageSelection(src string, msgIdx, turnN
 // file. Called from the jump-dialog handler when pendingFork=true.
 func (i *Interactive) applyForkSelection(msgIdx int) {
 	i.pendingFork = false
-	if i.cfg.CurrentSessionPath == nil {
-		i.mu.Lock()
-		i.statusErr = "fork: no session is active"
-		i.mu.Unlock()
-		i.invalidate()
-		return
-	}
-	src := i.cfg.CurrentSessionPath()
+	src := i.currentSessionPath()
 	if src == "" {
 		i.mu.Lock()
 		i.statusErr = "fork: no session is active"
