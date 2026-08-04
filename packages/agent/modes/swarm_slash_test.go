@@ -213,6 +213,8 @@ func TestParseSpawnFlags(t *testing.T) {
 		{"--provider openai --model gpt-5 do x", "gpt-5", "openai", "", "", "do x"},
 		{"--provider=openai --model=gpt-5 do x", "gpt-5", "openai", "", "", "do x"},
 		{"--agent reviewer --reasoning high review auth", "", "", "high", "reviewer", "review auth"},
+		{"--agent --reasoning high review auth", "", "", "high", "", "review auth"},
+		{"--reasoning --agent reviewer review auth", "", "", "", "reviewer", "review auth"},
 		{"--thinking=max do x", "", "", "max", "", "do x"},
 		// Only LEADING flags are consumed.
 		{"do --model x", "", "", "", "", "do --model x"},

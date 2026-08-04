@@ -100,6 +100,16 @@ No.
 	}
 }
 
+func TestLoadRejectsUnclosedFrontmatter(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "profile.md")
+	if err := os.WriteFile(path, []byte("---\nname: reviewer\nInstructions without a closing delimiter.\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := load(path, "test"); err == nil || !strings.Contains(err.Error(), "missing closing delimiter") {
+		t.Fatalf("load error = %v, want missing closing delimiter", err)
+	}
+}
+
 func TestLoadRejectsInvalidClosedSchemaMetadata(t *testing.T) {
 	cases := []struct {
 		name  string

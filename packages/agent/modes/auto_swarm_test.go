@@ -36,6 +36,28 @@ func TestAutoSwarmSystemPromptTogglesProfileManifestWithDelegationGuidance(t *te
 	}
 }
 
+func TestAutoSwarmTogglePreservesMatchingBasePromptBlocks(t *testing.T) {
+	manifest := "[subagents_list]\n- reviewer\n[/subagents_list]"
+	guidance := "auto-swarm guidance"
+	base := "base system\n\n" + manifest + "\n\n" + guidance
+	iv := &Interactive{
+		agent: &core.Agent{System: base},
+		cfg: InteractiveConfig{
+			AutoSwarmSystemAddendum: guidance,
+			SubagentsSystemAddendum: manifest,
+		},
+	}
+
+	iv.applyAutoSwarmSystemPrompt(true)
+	if strings.Count(iv.agent.System, manifest) != 2 || strings.Count(iv.agent.System, guidance) != 2 {
+		t.Fatalf("enabling should append owned duplicate blocks: %q", iv.agent.System)
+	}
+	iv.applyAutoSwarmSystemPrompt(false)
+	if got := strings.TrimSpace(iv.agent.System); got != base {
+		t.Fatalf("disabling changed matching base prompt: %q; want %q", got, base)
+	}
+}
+
 func TestAutoSwarmSummaryIncludesCompleteFinalResponseAfterLongTask(t *testing.T) {
 	response := "first response line\n" + strings.Repeat("result ", 150) + "final marker"
 	mgr := swarm.New(swarm.Config{

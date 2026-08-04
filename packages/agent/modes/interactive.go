@@ -368,10 +368,14 @@ type Interactive struct {
 	ed   *tui.Editor
 	rend *tui.Renderer
 
-	mu        sync.Mutex
-	agent     *core.Agent
-	streaming strings.Builder // what's currently painted on screen
-	streamOn  bool
+	mu    sync.Mutex
+	agent *core.Agent
+	// managedAutoSwarmAddenda records exact prompt blocks appended by
+	// auto-swarm. Disable only removes these owned occurrences, leaving
+	// identical text that came from the user's base prompt untouched.
+	managedAutoSwarmAddenda []string
+	streaming               strings.Builder // what's currently painted on screen
+	streamOn                bool
 
 	// streamPending is the runes buffered after each EvTextDelta that
 	// haven't yet been promoted into `streaming` for rendering. It
@@ -665,6 +669,9 @@ func NewInteractive(cfg InteractiveConfig) *Interactive {
 	if cfg.LlamaCPPConfig != nil {
 		baseURL, _, err := cfg.LlamaCPPConfig()
 		i.llamaConfigured = err == nil && baseURL != ""
+	}
+	if cfg.AutoSwarmEnabled != nil && *cfg.AutoSwarmEnabled {
+		i.managedAutoSwarmAddenda = autoSwarmAddenda(cfg)
 	}
 	if cfg.Agent != nil {
 		i.agent = cfg.Agent
@@ -3070,6 +3077,11 @@ func (i *Interactive) applyChangedCWD(ag *core.Agent, provider, model, cwd strin
 	i.agent = ag
 	i.cfg.CWD = cwd
 	i.cfg.SubagentsSystemAddendum = subagentsAddendum
+	if i.autoSwarmEnabled() {
+		i.managedAutoSwarmAddenda = autoSwarmAddenda(i.cfg)
+	} else {
+		i.managedAutoSwarmAddenda = nil
+	}
 	i.cfg.StartupContextPaths = append([]string(nil), startupContextPaths...)
 	i.view.StartupContextPaths = nil
 	if i.cfg.ShowInstructionsAtStartup != nil && *i.cfg.ShowInstructionsAtStartup {
@@ -6501,6 +6513,39 @@ func truncateForSummary(s string, n int) string {
 	return s[:n-3] + "..."
 }
 
+// autoSwarmAddenda returns the prompt blocks owned by the auto-swarm
+// toggle, in the same order Resolve appends them to a new agent.
+func autoSwarmAddenda(cfg InteractiveConfig) []string {
+	addenda := make([]string, 0, 2)
+	if addendum := strings.TrimSpace(cfg.SubagentsSystemAddendum); addendum != "" {
+		addenda = append(addenda, addendum)
+	}
+	if addendum := strings.TrimSpace(cfg.AutoSwarmSystemAddendum); addendum != "" {
+		addenda = append(addenda, addendum)
+	}
+	return addenda
+}
+
+func containsAutoSwarmAddendum(addenda []string, want string) bool {
+	for _, addendum := range addenda {
+		if addendum == want {
+			return true
+		}
+	}
+	return false
+}
+
+// removeLastAutoSwarmAddendum removes one occurrence of a block known to
+// have been appended by auto-swarm. Resolve appends owned blocks at the
+// end, so removing the last occurrence preserves an identical base block.
+func removeLastAutoSwarmAddendum(system, addendum string) (string, bool) {
+	idx := strings.LastIndex(system, addendum)
+	if idx < 0 {
+		return system, false
+	}
+	return system[:idx] + system[idx+len(addendum):], true
+}
+
 // applyAutoSwarmSystemPrompt appends (active=true) or strips
 // (active=false) the auto-swarm prompt blocks on the running agent.
 // The profile manifest and delegation guidance are managed together so
@@ -6509,39 +6554,31 @@ func (i *Interactive) applyAutoSwarmSystemPrompt(active bool) {
 	if i.agent == nil {
 		return
 	}
-	addenda := make([]string, 0, 2)
-	if addendum := strings.TrimSpace(i.cfg.SubagentsSystemAddendum); addendum != "" {
-		addenda = append(addenda, addendum)
-	}
-	if addendum := strings.TrimSpace(i.cfg.AutoSwarmSystemAddendum); addendum != "" {
-		addenda = append(addenda, addendum)
-	}
-	if len(addenda) == 0 {
-		return
-	}
-
-	sys := i.agent.System
+	addenda := autoSwarmAddenda(i.cfg)
 	if active {
+		sys := i.agent.System
 		for _, addendum := range addenda {
-			if strings.Contains(sys, addendum) {
+			if containsAutoSwarmAddendum(i.managedAutoSwarmAddenda, addendum) {
 				continue
 			}
 			if sys != "" && !strings.HasSuffix(sys, "\n\n") {
 				sys += "\n\n"
 			}
 			sys += addendum
+			i.managedAutoSwarmAddenda = append(i.managedAutoSwarmAddenda, addendum)
 		}
 		i.agent.System = sys
 		return
 	}
 
+	sys := i.agent.System
 	changed := false
-	for _, addendum := range addenda {
-		if strings.Contains(sys, addendum) {
-			changed = true
-			sys = strings.ReplaceAll(sys, addendum, "")
-		}
+	for idx := len(i.managedAutoSwarmAddenda) - 1; idx >= 0; idx-- {
+		var removed bool
+		sys, removed = removeLastAutoSwarmAddendum(sys, i.managedAutoSwarmAddenda[idx])
+		changed = changed || removed
 	}
+	i.managedAutoSwarmAddenda = nil
 	if changed {
 		i.agent.System = strings.TrimRight(sys, "\n") + "\n"
 	}

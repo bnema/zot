@@ -198,7 +198,10 @@ func load(path, source string) (*Profile, error) {
 	if err != nil {
 		return nil, err
 	}
-	front, body := splitFrontmatter(string(raw))
+	front, body, err := splitFrontmatter(string(raw))
+	if err != nil {
+		return nil, err
+	}
 	values, lists := parseFrontmatter(front)
 	name := unquote(values["name"])
 	if name == "" {
@@ -253,11 +256,11 @@ func load(path, source string) (*Profile, error) {
 	return profile, nil
 }
 
-func splitFrontmatter(raw string) (front, body string) {
+func splitFrontmatter(raw string) (front, body string, err error) {
 	rest := strings.TrimLeft(raw, " \t\r\n")
 	firstEnd := strings.IndexByte(rest, '\n')
 	if firstEnd < 0 || strings.TrimSpace(rest[:firstEnd]) != "---" {
-		return "", raw
+		return "", raw, nil
 	}
 	rest = rest[firstEnd+1:]
 	for offset := 0; offset <= len(rest); {
@@ -265,16 +268,16 @@ func splitFrontmatter(raw string) (front, body string) {
 		if rel < 0 {
 			// A document that starts a frontmatter block but never closes
 			// it is malformed, not a body-only profile.
-			return "", ""
+			return "", "", fmt.Errorf("frontmatter: missing closing delimiter")
 		}
 		end := offset + rel
 		after := end + len("\n---")
 		if after == len(rest) || rest[after] == '\n' || rest[after] == '\r' {
-			return rest[:end], strings.TrimLeft(rest[after:], " \t\r\n")
+			return rest[:end], strings.TrimLeft(rest[after:], " \t\r\n"), nil
 		}
 		offset = after
 	}
-	return "", raw
+	return "", raw, nil
 }
 
 func parseFrontmatter(front string) (map[string]string, map[string][]string) {

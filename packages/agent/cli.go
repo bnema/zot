@@ -1153,7 +1153,7 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 		newAg, newProvider, newModel, berr := buildAgent()
 		if berr != nil {
 			rollback()
-			return fmt.Errorf("rebuild agent: %v", berr)
+			return fmt.Errorf("rebuild agent: %w", berr)
 		}
 
 		// Fresh session in the new cwd's bucket. We bypass
@@ -1168,7 +1168,7 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 			newSess, serr = core.NewSession(newRoot, absPath, newProvider, newModel, version)
 			if serr != nil {
 				rollback()
-				return fmt.Errorf("open session in %s: %v", absPath, serr)
+				return fmt.Errorf("open session in %s: %w", absPath, serr)
 			}
 		}
 

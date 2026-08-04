@@ -276,7 +276,7 @@ func parseSpawnFlags(s string) (model, provider, reasoning, subagent, task strin
 		f := fields[i]
 		switch {
 		case f == "--agent":
-			if i+1 < len(fields) {
+			if i+1 < len(fields) && !strings.HasPrefix(fields[i+1], "--") {
 				subagent = fields[i+1]
 				i += 2
 			} else {
@@ -291,7 +291,7 @@ func parseSpawnFlags(s string) (model, provider, reasoning, subagent, task strin
 			// Consume the flag even when no value follows so a
 			// dangling "--model" doesn't leak into the task. The
 			// caller surfaces "missing task" instead.
-			if i+1 < len(fields) {
+			if i+1 < len(fields) && !strings.HasPrefix(fields[i+1], "--") {
 				model = fields[i+1]
 				i += 2
 			} else {
@@ -303,7 +303,7 @@ func parseSpawnFlags(s string) (model, provider, reasoning, subagent, task strin
 			i++
 			continue
 		case f == "--provider":
-			if i+1 < len(fields) {
+			if i+1 < len(fields) && !strings.HasPrefix(fields[i+1], "--") {
 				provider = fields[i+1]
 				i += 2
 			} else {
@@ -315,7 +315,7 @@ func parseSpawnFlags(s string) (model, provider, reasoning, subagent, task strin
 			i++
 			continue
 		case f == "--reasoning" || f == "--thinking":
-			if i+1 < len(fields) {
+			if i+1 < len(fields) && !strings.HasPrefix(fields[i+1], "--") {
 				reasoning = fields[i+1]
 				i += 2
 			} else {

@@ -91,6 +91,7 @@ func TestResolveIncludesNamedSubagentsListWhenAutoSwarmIsEnabled(t *testing.T) {
 	}
 	t.Setenv("HOME", home)
 	t.Setenv("ZOT_HOME", zotHome)
+	t.Setenv("ZOT_AGENT_PROFILES", filepath.Join(home, ".agents", "agents"))
 	enabled := true
 	if err := SaveConfig(Config{Provider: "openai", Model: "gpt-5", AutoSwarmEnabled: &enabled}); err != nil {
 		t.Fatal(err)
@@ -130,6 +131,7 @@ func TestResolveAppliesSelectedSubagentProfile(t *testing.T) {
 	}
 	t.Setenv("HOME", home)
 	t.Setenv("ZOT_HOME", zotHome)
+	t.Setenv("ZOT_AGENT_PROFILES", filepath.Join(home, ".agents", "agents"))
 	if err := SaveConfig(Config{Provider: "openai", Model: "gpt-5", Reasoning: "high"}); err != nil {
 		t.Fatal(err)
 	}
