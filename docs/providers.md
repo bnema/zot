@@ -115,6 +115,16 @@ show instructions and should be configured with environment variables.
 | Cloudflare AI Gateway | `CLOUDFLARE_API_KEY` | `cloudflare-ai-gateway` |
 | Azure OpenAI Responses | `AZURE_OPENAI_API_KEY` | `azure-openai-responses` |
 
+### OpenAI Fast mode
+
+OpenAI, OpenAI Responses, and OpenAI Codex requests can opt into OpenAI's
+Fast service tier from `/settings` by enabling **fast mode**. The setting is
+off by default and is stored as `fast_mode` in `$ZOT_HOME/config.json`.
+
+Fast mode is currently limited to those OpenAI provider IDs. Enabling it while
+using another provider returns an error instead of silently changing that
+provider's request. Swarm children inherit the setting from their parent.
+
 Example:
 
 ```bash

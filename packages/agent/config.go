@@ -30,6 +30,11 @@ type Config struct {
 	Temperature *float32 `json:"temperature,omitempty"`
 	Theme       string   `json:"theme"`
 
+	// FastMode requests OpenAI's fast service tier. Off by default;
+	// nil/missing means disabled. Other providers reject fast-mode
+	// requests at the provider boundary.
+	FastMode *bool `json:"fast_mode,omitempty"`
+
 	// ToolRender selects how tool calls are drawn in interactive mode.
 	// "box" (default, or empty) wraps each call in a bordered panel;
 	// "flat" drops the frame for a quiet header line plus indented,

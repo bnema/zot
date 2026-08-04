@@ -163,6 +163,7 @@ type codexRequest struct {
 	Include           []string              `json:"include,omitempty"`
 	Reasoning         *codexReasoningConfig `json:"reasoning,omitempty"`
 	PromptCacheKey    string                `json:"prompt_cache_key,omitempty"`
+	ServiceTier       string                `json:"service_tier,omitempty"`
 }
 
 // ---- Request building ----
@@ -180,6 +181,13 @@ func (c *codexClient) findModel(id string) (Model, error) {
 }
 
 func (c *codexClient) buildRequest(req Request) (*codexRequest, error) {
+	providerName := c.providerName
+	if providerName == "" {
+		providerName = "openai-codex"
+	}
+	if err := ValidateFastMode(providerName, req.FastMode); err != nil {
+		return nil, err
+	}
 	m, err := c.findModel(req.Model)
 	if err != nil {
 		return nil, err
@@ -193,6 +201,9 @@ func (c *codexClient) buildRequest(req Request) (*codexRequest, error) {
 		Instructions:      req.System,
 		ParallelToolCalls: true,
 		Include:           []string{"reasoning.encrypted_content"},
+	}
+	if req.FastMode {
+		body.ServiceTier = fastModeServiceTier
 	}
 	if m.Reasoning {
 		if effort := OpenAICodexReasoningEffort(reasoning, req.Model); effort != "" {

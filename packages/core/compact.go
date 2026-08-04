@@ -40,6 +40,11 @@ func (a *Agent) Compact(ctx context.Context, keepTail int, sink func(delta strin
 		return "", fmt.Errorf("nothing to compact: keep-tail covers the whole transcript")
 	}
 
+	fastMode := a.FastModeEnabled()
+	if err := provider.ValidateFastMode(a.Client.Name(), fastMode); err != nil {
+		return "", err
+	}
+
 	// Serialize the summarizable transcript to text and wrap it in tags
 	// so the model treats it as material to summarize, not to continue.
 	transcript := serializeTranscript(summarizable)
@@ -51,6 +56,7 @@ func (a *Agent) Compact(ctx context.Context, keepTail int, sink func(delta strin
 		System:      summarizationSystem,
 		MaxTokens:   4096,
 		Temperature: a.Temperature,
+		FastMode:    fastMode,
 		Messages: []provider.Message{
 			{
 				Role:    provider.RoleUser,

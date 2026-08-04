@@ -137,7 +137,7 @@ All data lives under `$ZOT_HOME`:
 
 ```
 $ZOT_HOME/
-├── config.json         # last-used provider/model/theme, saved automatically
+├── config.json         # last-used provider/model/theme and persistent settings
 ├── auth.json           # api keys and oauth tokens (mode 0600)
 ├── sessions/           # jsonl transcripts, one dir per cwd
 ├── models-cache.json   # live /v1/models discovery cache (6h ttl)
@@ -289,7 +289,7 @@ Slash command names are case-insensitive in the TUI and messaging backends; argu
 | `/unjail` | Allow tools to touch paths outside again. |
 | `/reload-ext` | Hot-reload all extensions (re-read manifests, respawn subprocesses, rebuild tool registry). |
 | `/telegram` | Connect, disconnect, or show status of the Telegram bridge (takes `connect` / `disconnect` / `status` as an optional argument; opens a picker without one). When connected, DMs from the paired user become prompts in the running session and the assistant's replies are mirrored back to Telegram. Alias: `/tg`. |
-| `/settings` | Change persistent settings, including inline images, terminal alerts, auto-swarm, and the auto-compact threshold. Saved to `$ZOT_HOME/config.json`; takes effect immediately. |
+| `/settings` | Change persistent settings, including inline images, terminal alerts, auto-swarm, fast mode, and the auto-compact threshold. Saved to `$ZOT_HOME/config.json`; takes effect immediately. |
 | `/clear` | Clear the chat transcript. |
 | `/exit` | Exit zot. |
 
@@ -392,6 +392,7 @@ Opens a dialog with every persistent setting. `up`/`down` to navigate, `enter` o
 - **render images when supported** — draw screenshots / `read`-returned images inline using the terminal's image protocol, or fall back to a text placeholder. Auto-detected from `TERM_PROGRAM`; the toggle overrides the detection. The row is greyed out and forced off on terminals that don't speak any image protocol.
 - **terminal alerts** — emit a terminal bell when the main session stops with work that may need attention, or when an extension raises a structured alert. Enabled by default; changes apply immediately and persist as `terminal_alerts_enabled`. Terminal emulators may render the bell audibly, visually, or not at all.
 - **auto-swarm** — let the main agent spawn background sub-agents in parallel via a built-in `swarm_spawn` tool. Off by default. When on, the tool is registered with the running agent, the system prompt gains a short addendum telling the model to delegate independent sub-tasks proactively, and available named profiles are rendered in `[subagents_list]`. The tool accepts a profile name through `agent` and a per-child `reasoning`/`thinking` override. zot watches every sub-agent the main agent spawns. As soon as the last sub-agent in a batch finishes its initial task, an `[auto-swarm update]` message is injected back into the chat with each agent's status / task / transcript tail, so the main agent can summarise the collective outcome. Flipping off mid-session removes the tool from the live agent and strips the addendum on the next turn — the model stops trying to delegate. See `/swarm` and [docs/subagents.md](docs/subagents.md) for details.
+- **fast mode** — request OpenAI's Fast service tier for OpenAI, OpenAI Responses, and OpenAI Codex models. Off by default; changes apply on the next model call and persist as `fast_mode`. Other providers return an unsupported-provider error. Fast mode may cost more and depends on the selected OpenAI model/account.
 - **auto-compact threshold** — choose `off`, `70%`, `80%`, `85%` (default), or `90%` of the model's advertised context window. The selected percentage controls automatic compaction before and after interactive turns and persists as `auto_compact_threshold`. `off` disables percentage-based triggers but keeps manual `/compact` and automatic recovery from context-window and payload-too-large responses.
 - **jail new sessions by default**: start every new agent with tools confined to its working directory. Off by default. The setting applies to interactive, print, JSON, RPC, and background-agent runs, persists as `jail_by_default`, and immediately updates the current interactive session. `/jail` and `/unjail` remain session-scoped overrides and do not change this default.
 - **compact transcript rendering**: reduce visual chrome in the chat transcript. Tool calls render as a quiet header plus indented output instead of a bordered box, and sent messages render without padded background bubbles. Off by default. Changes apply immediately and persist to `config.json` as `compact_mode`.

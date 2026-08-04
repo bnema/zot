@@ -22,6 +22,9 @@ type Agent struct {
 	MaxSteps    int
 	Reasoning   string
 	Temperature *float32
+	// FastMode requests the OpenAI fast service tier. The provider boundary
+	// rejects it for providers that do not support that contract.
+	FastMode bool
 
 	// MaxTokens caps the model's output tokens per turn. Zero leaves
 	// the field unset on the provider request, letting each provider
@@ -118,6 +121,22 @@ func NewAgent(client provider.Client, model, system string, tools Registry) *Age
 		MaxRetries:     3,
 		RetryBaseDelay: 2 * time.Second,
 	}
+}
+
+// SetFastMode changes the service-tier preference for the next model call.
+// It is safe to use while a turn is in flight; the active turn keeps the
+// value it already captured.
+func (a *Agent) SetFastMode(enabled bool) {
+	a.mu.Lock()
+	a.FastMode = enabled
+	a.mu.Unlock()
+}
+
+// FastModeEnabled returns the service-tier preference for a model call.
+func (a *Agent) FastModeEnabled() bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.FastMode
 }
 
 // QueueMessage queues text to be injected as a user message at the
@@ -540,6 +559,10 @@ func (a *Agent) dropLastAssistantMessage() {
 // oneTurn calls the LLM once, forwards events, returns the stop reason
 // and the assembled assistant message (already appended to the transcript).
 func (a *Agent) oneTurn(ctx context.Context, sink func(AgentEvent)) (provider.StopReason, provider.Message, error) {
+	fastMode := a.FastModeEnabled()
+	if err := provider.ValidateFastMode(a.Client.Name(), fastMode); err != nil {
+		return provider.StopError, provider.Message{}, err
+	}
 	req := provider.Request{
 		Model:  a.Model,
 		System: a.System,
@@ -554,6 +577,7 @@ func (a *Agent) oneTurn(ctx context.Context, sink func(AgentEvent)) (provider.St
 		Messages:    repairToolUseResultPairs(a.Messages()),
 		Tools:       a.Tools.Specs(),
 		Reasoning:   a.Reasoning,
+		FastMode:    fastMode,
 		MaxTokens:   a.MaxTokens,
 		Temperature: a.Temperature,
 	}

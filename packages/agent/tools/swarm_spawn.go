@@ -202,6 +202,9 @@ func (t *SwarmSpawnTool) Execute(ctx context.Context, raw json.RawMessage, progr
 	if reasoning != "" {
 		fmt.Fprintf(&sb, "reasoning: %s\n", reasoning)
 	}
+	if agent.FastMode {
+		sb.WriteString("fast mode: enabled\n")
+	}
 	sb.WriteString("\nThe sub-agent is running in the background. Use /swarm in the TUI to monitor it. ")
 	sb.WriteString("This conversation continues immediately; do not wait for the sub-agent to finish before working on the next thing.")
 	return core.ToolResult{
@@ -213,6 +216,7 @@ func (t *SwarmSpawnTool) Execute(ctx context.Context, raw json.RawMessage, progr
 			"model":     model,
 			"provider":  providerID,
 			"reasoning": reasoning,
+			"fast_mode": agent.FastMode,
 		},
 	}, nil
 }

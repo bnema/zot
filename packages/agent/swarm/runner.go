@@ -67,6 +67,8 @@ type swarmAgentArgsOpts struct {
 	Model       string
 	Provider    string
 	Reasoning   string
+	FastMode    bool
+	FastModeSet bool
 	Subagent    string
 }
 
@@ -98,6 +100,8 @@ func defaultChildArgs(exe string, a *Agent, sessionPath, inboxPath string) []str
 		Model:       a.Model,
 		Provider:    a.Provider,
 		Reasoning:   a.Reasoning,
+		FastMode:    a.FastMode,
+		FastModeSet: true,
 		Subagent:    a.Subagent,
 	})
 }
@@ -120,6 +124,13 @@ func swarmAgentArgs(opts swarmAgentArgsOpts) []string {
 	}
 	if opts.Reasoning != "" {
 		args = append(args, "--reasoning", opts.Reasoning)
+	}
+	if opts.FastModeSet {
+		if opts.FastMode {
+			args = append(args, "--fast-mode")
+		} else {
+			args = append(args, "--no-fast-mode")
+		}
 	}
 	if opts.Subagent != "" {
 		args = append(args, "--subagent", opts.Subagent)

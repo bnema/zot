@@ -233,6 +233,9 @@ type unimplementedClient struct {
 func (c *unimplementedClient) Name() string { return c.name }
 
 func (c *unimplementedClient) Stream(ctx context.Context, req Request) (<-chan Event, error) {
+	if err := ValidateFastMode(c.Name(), req.FastMode); err != nil {
+		return nil, err
+	}
 	return nil, fmt.Errorf("provider %q not yet implemented: %s", c.name, c.hint)
 }
 

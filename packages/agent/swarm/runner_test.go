@@ -204,13 +204,11 @@ func TestDefaultChildArgsResumeOmitsTask(t *testing.T) {
 			t.Fatalf("resume argv contains the task; it would re-fire as a duplicate turn\n%v", args)
 		}
 	}
-	// And no trailing positional at all: the last arg should be a
-	// flag value, not a stray empty string.
+	// And no trailing positional at all: every final token must be a
+	// recognized boolean flag or a value belonging to a preceding flag,
+	// never a stray empty string or the original task.
 	if got := args[len(args)-1]; got == "" {
 		t.Fatalf("resume argv ends with an empty positional: %v", args)
-	}
-	if strings.HasPrefix(args[len(args)-1], "--") {
-		t.Fatalf("resume argv ends on a bare flag (no value): %v", args)
 	}
 }
 

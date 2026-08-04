@@ -468,6 +468,9 @@ func geminiThinkingConfig(modelID, level string) *gemThinkingConfig {
 // ---- streaming ----
 
 func (c *geminiClient) Stream(ctx context.Context, req Request) (<-chan Event, error) {
+	if err := ValidateFastMode(c.Name(), req.FastMode); err != nil {
+		return nil, err
+	}
 	wire, modelID, err := c.buildRequest(req)
 	if err != nil {
 		return nil, err

@@ -48,6 +48,14 @@ type Args struct {
 	Reasoning          string
 	Temperature        *float32
 
+	// FastMode is an internal swarm-child propagation flag. Normal users
+	// enable fast mode through the persisted config /settings toggle.
+	FastMode bool
+	// FastModeSet distinguishes an explicit child override (including
+	// --no-fast-mode) from an omitted flag so persisted swarm settings
+	// survive a parent config change.
+	FastModeSet bool
+
 	Continue bool
 	Resume   bool
 	Session  string
@@ -254,6 +262,12 @@ func ParseArgs(in []string) (Args, error) {
 			}
 			t := float32(f)
 			a.Temperature = &t
+		case "--fast-mode":
+			a.FastMode = true
+			a.FastModeSet = true
+		case "--no-fast-mode":
+			a.FastMode = false
+			a.FastModeSet = true
 		case "--stats":
 			v, err := want(&i, arg)
 			if err != nil {

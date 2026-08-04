@@ -743,6 +743,7 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 	swarmMgr = swarm.New(swarm.Config{
 		Root:     filepath.Join(ZotHome(), "swarm"),
 		RepoRoot: r.CWD,
+		FastMode: r.FastMode,
 		ResolveCredential: func(ctx context.Context, providerID string) (swarm.Credential, error) {
 			if providerID == "ollama" {
 				return swarm.Credential{Value: "ollama", Method: "apikey"}, nil
@@ -1291,6 +1292,7 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 	}()
 
 	initialCfg, _ := LoadConfig()
+	fastMode := r.FastMode
 	quickModelShortcuts := make([]modes.QuickModelShortcut, len(initialCfg.QuickModelShortcuts))
 	for idx, s := range initialCfg.QuickModelShortcuts {
 		quickModelShortcuts[idx] = modes.QuickModelShortcut{Provider: s.Provider, Model: s.Model}
@@ -1331,6 +1333,7 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 		InlineImagesEnabled:       initialCfg.InlineImagesEnabled,
 		TerminalAlertsEnabled:     initialCfg.TerminalAlertsEnabled,
 		AutoSwarmEnabled:          initialCfg.AutoSwarmEnabled,
+		FastMode:                  &fastMode,
 		AutoCompactThreshold:      initialCfg.AutoCompactThreshold,
 		JailByDefault:             initialCfg.JailByDefault,
 		QuickModelShortcuts:       quickModelShortcuts,

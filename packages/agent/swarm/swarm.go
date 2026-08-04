@@ -58,6 +58,10 @@ type Config struct {
 	// per-agent isolation: agents edit the host's files directly.
 	RepoRoot string
 
+	// FastMode is copied to every newly spawned child and persisted so
+	// child subprocesses use the same OpenAI service-tier setting.
+	FastMode bool
+
 	// NewRunner produces the Runner for an Agent. If nil, the default
 	// `zot --swarm-agent ...` exec runner is used. Tests inject a fake
 	// here.
@@ -156,6 +160,22 @@ func (f *Swarm) RepoRoot() string {
 	return f.cfg.RepoRoot
 }
 
+// SetFastMode updates the fast-mode setting for subsequently spawned
+// children. Existing agents keep the setting captured at their spawn
+// boundary so resumes remain deterministic.
+func (f *Swarm) SetFastMode(enabled bool) {
+	f.mu.Lock()
+	f.cfg.FastMode = enabled
+	f.mu.Unlock()
+}
+
+// FastMode reports the setting used for subsequently spawned children.
+func (f *Swarm) FastMode() bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.cfg.FastMode
+}
+
 // SetActiveSession scopes the dashboard view (and Spawn stamping)
 // to a particular host zot session id. Pass empty to clear the
 // scope and revert to "show every agent" (the original behaviour).
@@ -235,6 +255,7 @@ func (f *Swarm) SpawnReq(ctx context.Context, req SpawnRequest) (*Agent, error) 
 	// concurrent /cd cannot race a spawn or produce a mixed snapshot.
 	f.mu.Lock()
 	dir := f.cfg.RepoRoot
+	fastMode := f.cfg.FastMode
 	sessionID := f.activeSession
 	f.mu.Unlock()
 
@@ -260,6 +281,7 @@ func (f *Swarm) SpawnReq(ctx context.Context, req SpawnRequest) (*Agent, error) 
 		Model:        strings.TrimSpace(req.Model),
 		Provider:     strings.TrimSpace(req.Provider),
 		Reasoning:    strings.TrimSpace(req.Reasoning),
+		FastMode:     fastMode,
 		Subagent:     strings.TrimSpace(req.Subagent),
 		SessionID:    sessionID,
 		InboxPath:    inboxPath,
@@ -475,6 +497,7 @@ type AgentSnapshot struct {
 	Model     string
 	Provider  string
 	Reasoning string
+	FastMode  bool
 	Subagent  string
 
 	// Paths to the agent's durable state. Surface them in the
@@ -506,6 +529,7 @@ func (a *Agent) Snapshot() AgentSnapshot {
 		Model:         a.Model,
 		Provider:      a.Provider,
 		Reasoning:     a.Reasoning,
+		FastMode:      a.FastMode,
 		Subagent:      a.Subagent,
 		InboxPath:     a.InboxPath,
 		EventLogPath:  a.EventLogPath,

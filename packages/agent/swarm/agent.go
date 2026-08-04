@@ -25,6 +25,7 @@ type Agent struct {
 	Model     string
 	Provider  string
 	Reasoning string
+	FastMode  bool
 	Subagent  string
 
 	// SessionID, when non-empty, scopes the agent to a particular

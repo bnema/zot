@@ -82,4 +82,4 @@ The interactive command also supports the same selection explicitly:
 /swarm new --agent implementer --reasoning high Implement the parser change
 ```
 
-All swarm children still share the host working directory. Named profiles change the child's instructions and configuration; they do not create a worktree, branch, or security sandbox.
+All swarm children still share the host working directory. Named profiles change the child's instructions and configuration; they do not create a worktree, branch, or security sandbox. When the host has **fast mode** enabled, every child inherits it; non-OpenAI child providers return an unsupported-provider error instead of silently ignoring the setting.

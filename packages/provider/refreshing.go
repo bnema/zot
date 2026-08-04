@@ -41,6 +41,9 @@ func (c *RefreshingClient) Name() string {
 }
 
 func (c *RefreshingClient) Stream(ctx context.Context, req Request) (<-chan Event, error) {
+	if err := ValidateFastMode(c.Name(), req.FastMode); err != nil {
+		return nil, err
+	}
 	if c.refresh != nil {
 		if newToken, err := c.refresh(ctx); err == nil && newToken != "" {
 			c.mu.Lock()

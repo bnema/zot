@@ -30,6 +30,9 @@ func NewModelRouter(name string, fallback Client, byAPI map[string]Client) Clien
 func (c *modelRouter) Name() string { return c.name }
 
 func (c *modelRouter) Stream(ctx context.Context, req Request) (<-chan Event, error) {
+	if err := ValidateFastMode(c.Name(), req.FastMode); err != nil {
+		return nil, err
+	}
 	client := c.fallback
 	if model, err := FindModel(c.name, req.Model); err == nil && model.API != "" {
 		routed := c.byAPI[model.API]
