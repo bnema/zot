@@ -15,6 +15,7 @@ import (
 	"github.com/patriceckhart/zot/packages/agent/extensions"
 	"github.com/patriceckhart/zot/packages/agent/extproto"
 	"github.com/patriceckhart/zot/packages/agent/modes"
+	"github.com/patriceckhart/zot/packages/agent/tools"
 	"github.com/patriceckhart/zot/packages/core"
 	"github.com/patriceckhart/zot/packages/provider"
 )
@@ -112,7 +113,9 @@ func runRPCMode(ctx context.Context, args Args, version string) error {
 			return
 		}
 		resolved.MergeExtensionTools(adapter)
+		oldTools := ag.Tools
 		ag.SetTools(resolved.ToolRegistry)
+		_ = tools.CloseLSPManagers(oldTools)
 	})
 
 	extMgr.EmitEvent(extproto.EventFromHost{Event: "session_start"})

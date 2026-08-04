@@ -4228,8 +4228,6 @@ func (i *Interactive) applySettingToggle(key string, value bool) {
 		i.statusErr = ""
 		i.mu.Unlock()
 	case "lsp_enabled":
-		val := value
-		i.cfg.LSPEnabled = &val
 		if store, ok := i.cfg.SettingsStore.(lspSettingsStore); ok {
 			if err := store.SetLSPEnabled(value); err != nil {
 				i.mu.Lock()
@@ -4238,6 +4236,8 @@ func (i *Interactive) applySettingToggle(key string, value bool) {
 				return
 			}
 		}
+		val := value
+		i.cfg.LSPEnabled = &val
 		if i.cfg.RefreshTools != nil {
 			i.cfg.RefreshTools()
 		}
@@ -4246,8 +4246,6 @@ func (i *Interactive) applySettingToggle(key string, value bool) {
 		i.statusErr = ""
 		i.mu.Unlock()
 	case "subagent_lsp_enabled":
-		val := value
-		i.cfg.SubagentLSPEnabled = &val
 		if store, ok := i.cfg.SettingsStore.(lspSettingsStore); ok {
 			if err := store.SetSubagentLSPEnabled(value); err != nil {
 				i.mu.Lock()
@@ -4256,6 +4254,8 @@ func (i *Interactive) applySettingToggle(key string, value bool) {
 				return
 			}
 		}
+		val := value
+		i.cfg.SubagentLSPEnabled = &val
 		i.mu.Lock()
 		i.statusOK = "lsp in sub-agents " + onOff(value)
 		i.statusErr = ""

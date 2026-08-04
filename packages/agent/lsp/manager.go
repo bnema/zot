@@ -3,6 +3,8 @@ package lsp
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -33,6 +35,7 @@ type Response struct {
 
 type workspace struct {
 	cwd            string
+	rootReal       string
 	config         Config
 	clients        map[string]*Client
 	starting       map[string]chan struct{}
@@ -52,7 +55,10 @@ type Manager struct {
 	mu         sync.Mutex
 	workspaces map[string]*workspace
 	options    ManagerOptions
+	closed     bool
 }
+
+var errManagerClosed = errors.New("LSP manager is closed")
 
 func NewManager() *Manager {
 	return NewManagerWithOptions(ManagerOptions{})
@@ -77,6 +83,10 @@ func (m *Manager) workspace(cwd string) (*workspace, error) {
 		return nil, err
 	}
 	m.mu.Lock()
+	if m.closed {
+		m.mu.Unlock()
+		return nil, errManagerClosed
+	}
 	if value := m.workspaces[cwd]; value != nil {
 		m.mu.Unlock()
 		return value, nil
@@ -86,14 +96,21 @@ func (m *Manager) workspace(cwd string) (*workspace, error) {
 	if err != nil {
 		return nil, err
 	}
-	value := &workspace{cwd: cwd, config: config, clients: make(map[string]*Client), starting: make(map[string]chan struct{}), statuses: make(map[string]string), errors: make(map[string]string), diagnostics: make(map[string]map[string][]Diagnostic), cliDiagnostics: make(map[string][]Diagnostic), opened: make(map[string]map[string]string), surfaced: make(map[string]map[string]bool)}
+	rootReal := cwd
+	if resolved, resolveErr := filepath.EvalSymlinks(cwd); resolveErr == nil {
+		rootReal = resolved
+	}
+	value := &workspace{cwd: cwd, rootReal: rootReal, config: config, clients: make(map[string]*Client), starting: make(map[string]chan struct{}), statuses: make(map[string]string), errors: make(map[string]string), diagnostics: make(map[string]map[string][]Diagnostic), cliDiagnostics: make(map[string][]Diagnostic), opened: make(map[string]map[string]string), surfaced: make(map[string]map[string]bool)}
 	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.closed {
+		return nil, errManagerClosed
+	}
 	if existing := m.workspaces[cwd]; existing != nil {
 		value = existing
 	} else {
 		m.workspaces[cwd] = value
 	}
-	m.mu.Unlock()
 	return value, nil
 }
 
@@ -116,6 +133,10 @@ func (m *Manager) ensureClient(ctx context.Context, ws *workspace, spec ServerCo
 	}
 	for {
 		m.mu.Lock()
+		if m.closed || m.workspaces[ws.cwd] != ws {
+			m.mu.Unlock()
+			return nil, errManagerClosed
+		}
 		if client := ws.clients[spec.ID]; client != nil {
 			m.mu.Unlock()
 			return client, nil
@@ -151,10 +172,19 @@ func (m *Manager) ensureClient(ctx context.Context, ws *workspace, spec ServerCo
 		delete(ws.starting, spec.ID)
 		close(starting)
 		if err != nil {
+			if m.closed || m.workspaces[ws.cwd] != ws {
+				m.mu.Unlock()
+				return nil, errManagerClosed
+			}
 			ws.statuses[spec.ID] = "missing"
 			ws.errors[spec.ID] = err.Error()
 			m.mu.Unlock()
 			return nil, err
+		}
+		if m.closed || m.workspaces[ws.cwd] != ws {
+			m.mu.Unlock()
+			_ = client.Close()
+			return nil, errManagerClosed
 		}
 		if existing := ws.clients[spec.ID]; existing != nil {
 			m.mu.Unlock()
@@ -186,7 +216,7 @@ func wsSettings(global, local map[string]any) map[string]any {
 func (m *Manager) storeDiagnostics(ws *workspace, server string, diagnostics []Diagnostic) {
 	byPath := make(map[string][]Diagnostic)
 	for _, diagnostic := range diagnostics {
-		if diagnostic.Path == "" || !diagnosticInWorkspace(ws.cwd, diagnostic.Path) {
+		if diagnostic.Path == "" || !diagnosticInWorkspace(ws.rootReal, diagnostic.Path) {
 			continue
 		}
 		byPath[diagnostic.Path] = append(byPath[diagnostic.Path], diagnostic)
@@ -249,7 +279,7 @@ func (m *Manager) Open(ctx context.Context, cwd, path string) error {
 			}
 			continue
 		}
-		hash := string(text)
+		hash := contentHash(text)
 		m.mu.Lock()
 		if ws.opened[spec.ID] == nil {
 			ws.opened[spec.ID] = make(map[string]string)
@@ -574,6 +604,10 @@ func (m *Manager) Reload(cwd string) error {
 		return err
 	}
 	m.mu.Lock()
+	if m.closed {
+		m.mu.Unlock()
+		return errManagerClosed
+	}
 	ws := m.workspaces[cwd]
 	delete(m.workspaces, cwd)
 	m.mu.Unlock()
@@ -597,6 +631,11 @@ func (m *Manager) clientsSnapshot(ws *workspace) []*Client {
 
 func (m *Manager) Close() error {
 	m.mu.Lock()
+	if m.closed {
+		m.mu.Unlock()
+		return nil
+	}
+	m.closed = true
 	workspaces := make([]*workspace, 0, len(m.workspaces))
 	for _, ws := range m.workspaces {
 		workspaces = append(workspaces, ws)
@@ -657,7 +696,13 @@ func (m *Manager) RunLinters(ctx context.Context, cwd, path string) error {
 			}
 			if strings.Contains(arg, "{files}") {
 				containsFiles = true
-				args = append(args, strings.ReplaceAll(arg, "{files}", strings.Join(relative, " ")))
+				if len(relative) == 0 {
+					args = append(args, strings.ReplaceAll(arg, "{files}", ""))
+				} else {
+					for _, file := range relative {
+						args = append(args, strings.ReplaceAll(arg, "{files}", file))
+					}
+				}
 				continue
 			}
 			args = append(args, arg)
@@ -667,7 +712,7 @@ func (m *Manager) RunLinters(ctx context.Context, cwd, path string) error {
 				args = append(args, ".")
 			}
 		} else if !containsFiles {
-			args = append(args, relativeFiles(ws.cwd, files)...)
+			args = append(args, relative...)
 		}
 		commandCtx, cancel := context.WithTimeout(ctx, m.options.LinterTimeout)
 		cmd := exec.CommandContext(commandCtx, command, args...)
@@ -690,7 +735,7 @@ func (m *Manager) RunLinters(ctx context.Context, cwd, path string) error {
 		diagnostics := ParseDiagnostics(spec.Parser, spec.ID, ws.cwd, text)
 		filtered := diagnostics[:0]
 		for _, diagnostic := range diagnostics {
-			if diagnostic.Path != "" && diagnosticInWorkspace(ws.cwd, diagnostic.Path) {
+			if diagnostic.Path != "" && diagnosticInWorkspace(ws.rootReal, diagnostic.Path) {
 				filtered = append(filtered, diagnostic)
 			}
 		}
@@ -710,6 +755,11 @@ func (m *Manager) RunLinters(ctx context.Context, cwd, path string) error {
 		}
 	}
 	return firstErr
+}
+
+func contentHash(data []byte) string {
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:])
 }
 
 func displayWorkspacePath(root, path string) string {
@@ -747,14 +797,7 @@ func absoluteFile(cwd, path string) (string, error) {
 	}
 	return filepath.Abs(path)
 }
-func diagnosticInWorkspace(root, path string) bool {
-	rootReal, err := filepath.EvalSymlinks(root)
-	if err != nil {
-		rootReal, err = filepath.Abs(root)
-		if err != nil {
-			return false
-		}
-	}
+func diagnosticInWorkspace(rootReal, path string) bool {
 	return safeWorkspacePath(rootReal, path) == nil
 }
 
@@ -765,19 +808,23 @@ func samePath(a, b string) bool {
 }
 
 type limitedBuffer struct {
-	bytes.Buffer
-	limit int
+	buffer bytes.Buffer
+	limit  int
 }
+
+func (b *limitedBuffer) Len() int { return b.buffer.Len() }
+
+func (b *limitedBuffer) String() string { return b.buffer.String() }
 
 func (b *limitedBuffer) Write(p []byte) (int, error) {
 	original := len(p)
-	if b.limit <= b.Len() {
+	if b.limit <= b.buffer.Len() {
 		return original, nil
 	}
-	room := b.limit - b.Len()
+	room := b.limit - b.buffer.Len()
 	if len(p) > room {
 		p = p[:room]
 	}
-	_, _ = b.Buffer.Write(p)
+	_, _ = b.buffer.Write(p)
 	return original, nil
 }

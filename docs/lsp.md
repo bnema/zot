@@ -68,8 +68,9 @@ Useful server fields are:
 | `initializationOptions` | Values sent during LSP initialization |
 | `env` | Extra environment variables for the child process |
 
-CLI providers may use `{files}` in an argument. It is replaced with the
-project-relative paths touched by the diagnostics request. CLI output is capped
+CLI providers may use `{files}` as an argument or inside an argument. It is
+expanded to project-relative paths touched by the diagnostics request; an
+embedded placeholder produces one argument per path. CLI output is capped
 before parsing.
 
 ## Tool actions

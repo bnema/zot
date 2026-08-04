@@ -5,8 +5,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -78,6 +80,42 @@ func TestClientFakeStdioRPC(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for fake diagnostics")
+	}
+}
+
+func TestFileURIPathRoundTrip(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "space name", "main.go")
+	uri, err := pathToURI(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(uri, "file:///") {
+		t.Fatalf("URI = %q, want an absolute file URI", uri)
+	}
+	got, err := uriToPath(uri)
+	if err != nil {
+		t.Fatal(err)
+	}
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if filepath.Clean(got) != filepath.Clean(abs) {
+		t.Fatalf("round-trip path = %q, want %q", got, abs)
+	}
+	if runtime.GOOS == "windows" {
+		unc := `\\server\share\main.go`
+		uncURI, err := pathToURI(unc)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.HasPrefix(uncURI, "file://server/") {
+			t.Fatalf("UNC URI = %q", uncURI)
+		}
+		uncPath, err := uriToPath(uncURI)
+		if err != nil || filepath.Clean(uncPath) != filepath.Clean(unc) {
+			t.Fatalf("UNC round trip = %q, err = %v", uncPath, err)
+		}
 	}
 }
 
@@ -186,6 +224,9 @@ func TestLoadConfigAutoDetectFalseKeepsExplicitProviders(t *testing.T) {
 }
 
 func TestResolveCommandPrefersWorkspaceTools(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("executable bits are not represented on Windows")
+	}
 	root := t.TempDir()
 	bin := filepath.Join(root, "node_modules", ".bin")
 	if err := os.MkdirAll(bin, 0o755); err != nil {
@@ -225,6 +266,9 @@ func TestParsers(t *testing.T) {
 	}
 	if got = ParseDiagnostics("generic", "lint", root, "a.go:5:6: warning: bad"); len(got) != 1 || got[0].Severity != "warning" {
 		t.Fatalf("generic = %#v", got)
+	}
+	if got = ParseDiagnostics("generic", "lint", root, "a.go:5:6: cannot find name"); len(got) != 1 || got[0].Message != "cannot find name" {
+		t.Fatalf("generic message = %#v", got)
 	}
 }
 
@@ -278,6 +322,51 @@ func TestApplyWorkspaceEditUsesUTF16AndRejectsOutside(t *testing.T) {
 	}
 }
 
+func TestApplyWorkspaceEditFollowsInWorkspaceSymlink(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink permissions vary on Windows")
+	}
+	root := t.TempDir()
+	target := filepath.Join(root, "target.txt")
+	link := filepath.Join(root, "link.txt")
+	if err := os.WriteFile(target, []byte("old\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+	edit := WorkspaceEdit{Changes: map[string][]TextEdit{URIForPath(link): {{Range: Range{Start: Position{Line: 0, Character: 0}, End: Position{Line: 0, Character: 3}}, NewText: "new"}}}}
+	if err := ApplyWorkspaceEdit(root, edit); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "new\n" {
+		t.Fatalf("target data = %q", data)
+	}
+	info, err := os.Lstat(link)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode()&os.ModeSymlink == 0 {
+		t.Fatal("workspace edit replaced the symlink")
+	}
+}
+
+func TestLimitedBufferCapsReaderCopy(t *testing.T) {
+	var buffer limitedBuffer
+	buffer.limit = 4
+	copied, err := io.Copy(&buffer, strings.NewReader("123456"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if copied != 6 || buffer.String() != "1234" {
+		t.Fatalf("copied %d bytes into %q", copied, buffer.String())
+	}
+}
+
 func TestDiagnosticJSONCodeNumber(t *testing.T) {
 	var diagnostic Diagnostic
 	if err := json.Unmarshal([]byte(`{"range":{"start":{"line":0,"character":0},"end":{"line":0,"character":1}},"severity":2,"code":123,"message":"warning"}`), &diagnostic); err != nil {
@@ -285,6 +374,23 @@ func TestDiagnosticJSONCodeNumber(t *testing.T) {
 	}
 	if diagnostic.Code != "123" || diagnostic.Severity != "warning" {
 		t.Fatalf("diagnostic = %#v", diagnostic)
+	}
+}
+
+func TestManagerClosePreventsNewWorkspaces(t *testing.T) {
+	manager := NewManager()
+	root := t.TempDir()
+	if err := manager.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.Config(root); err == nil {
+		t.Fatal("closed manager accepted a new workspace")
+	}
+	if err := manager.Reload(root); err == nil {
+		t.Fatal("closed manager accepted a reload")
 	}
 }
 

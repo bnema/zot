@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/url"
 	"path/filepath"
+	"runtime"
 	"strings"
 )
 
@@ -120,7 +121,17 @@ func pathToURI(path string) (string, error) {
 		return "", err
 	}
 	// url.URL escapes spaces and non-ASCII while retaining path separators.
-	u := &url.URL{Scheme: "file", Path: filepath.ToSlash(abs)}
+	uriPath := filepath.ToSlash(abs)
+	if runtime.GOOS == "windows" && strings.HasPrefix(uriPath, "//") {
+		unc := strings.TrimPrefix(uriPath, "//")
+		if host, rest, ok := strings.Cut(unc, "/"); ok {
+			return (&url.URL{Scheme: "file", Host: host, Path: "/" + rest}).String(), nil
+		}
+	}
+	if !strings.HasPrefix(uriPath, "/") {
+		uriPath = "/" + uriPath
+	}
+	u := &url.URL{Scheme: "file", Path: uriPath}
 	return u.String(), nil
 }
 

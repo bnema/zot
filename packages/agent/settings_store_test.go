@@ -149,4 +149,10 @@ func TestConfigLSPEnabledForDefaultsToTrue(t *testing.T) {
 	if cfg.LSPEnabledFor(false) || cfg.LSPEnabledFor(true) {
 		t.Fatal("explicitly disabled LSP settings were ignored")
 	}
+	write, edit := true, true
+	cfg.LSPDiagnosticsOnWrite = &write
+	cfg.LSPDiagnosticsOnEdit = &edit
+	if cfg.LSPDiagnosticsOnWriteEnabled() || cfg.LSPDiagnosticsOnEditEnabled() {
+		t.Fatal("diagnostics remained enabled with main-session LSP disabled")
+	}
 }

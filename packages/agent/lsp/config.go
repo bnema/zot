@@ -87,7 +87,10 @@ func LoadConfig(cwd string) (Config, error) {
 	explicit := make(map[string]bool)
 	autoDetect := true
 	for _, path := range files {
-		data, _ := os.ReadFile(path)
+		entries, exists, data, err := readConfigFile(path)
+		if err != nil {
+			return Config{}, err
+		}
 		if len(data) > 0 {
 			var metadata struct {
 				AutoDetect *bool `json:"autoDetect"`
@@ -95,10 +98,6 @@ func LoadConfig(cwd string) (Config, error) {
 			if json.Unmarshal(data, &metadata) == nil && metadata.AutoDetect != nil {
 				autoDetect = *metadata.AutoDetect
 			}
-		}
-		entries, exists, err := readConfigFile(path)
-		if err != nil {
-			return Config{}, err
 		}
 		if !exists {
 			continue
@@ -123,24 +122,24 @@ func LoadConfig(cwd string) (Config, error) {
 		merged[server.ID] = server
 	}
 	for id, raw := range objects {
-		server, err := decodeServer(id, raw)
-		if err != nil {
-			return Config{}, fmt.Errorf("lsp server %q: %w", id, err)
-		}
+		decodeRaw := raw
+		_, hasBuiltin := merged[id]
 		if base, ok := merged[id]; ok {
 			// Decode the already-merged JSON over the built-in by marshaling the
 			// built-in first. This retains fields that were omitted in the file.
 			baseRaw, _ := json.Marshal(base)
 			baseMap := map[string]json.RawMessage{}
 			_ = json.Unmarshal(baseRaw, &baseMap)
-			mergedRaw := mergeRawObjects(baseMap, raw)
-			server, err = decodeServer(id, mergedRaw)
-			if err != nil {
-				return Config{}, fmt.Errorf("lsp server %q: %w", id, err)
-			}
-			// A parser/mode is an explicit CLI declaration even when the
-			// overridden built-in was an LSP. This makes {"parser":"sarif"}
-			// sufficient for a linter override.
+			decodeRaw = mergeRawObjects(baseMap, raw)
+		}
+		server, err := decodeServer(id, decodeRaw)
+		if err != nil {
+			return Config{}, fmt.Errorf("lsp server %q: %w", id, err)
+		}
+		// A parser/mode is an explicit CLI declaration even when the
+		// overridden built-in was an LSP. This makes {"parser":"sarif"}
+		// sufficient for a linter override.
+		if hasBuiltin {
 			if _, hasKind := raw["kind"]; !hasKind {
 				if _, hasParser := raw["parser"]; hasParser {
 					server.Kind = "cli"
@@ -210,28 +209,17 @@ func serverMatchesPath(cwd, path string, server ServerConfig) bool {
 		if len(server.RootMarkers) > 0 && !hasRootMarker(cwd, server.RootMarkers) {
 			return false
 		}
-		ext := strings.ToLower(filepath.Ext(path))
-		base := strings.ToLower(filepath.Base(path))
-		lang := languageForExtension(ext)
-		for _, typ := range server.FileTypes {
-			typ = strings.ToLower(strings.TrimSpace(typ))
-			if typ == ext || typ == "."+strings.TrimPrefix(ext, ".") || typ == base || typ == lang || strings.TrimPrefix(typ, ".") == strings.TrimPrefix(ext, ".") {
-				return true
-			}
-			if strings.HasPrefix(typ, "*.") && strings.HasSuffix(base, strings.TrimPrefix(typ, "*")) {
-				return true
-			}
-		}
-		return false
+		return fileTypeMatches(path, server.FileTypes)
 	}
 	return hasRootMarker(cwd, server.RootMarkers) || hasMatchingFile(cwd, server.FileTypes)
 }
 
 func hasMatchingFile(cwd string, types []string) bool {
+	normalizedTypes := normalizeFileTypes(types)
 	var found bool
 	_ = filepath.WalkDir(cwd, func(path string, entry os.DirEntry, err error) error {
 		if err != nil || found {
-			return filepath.SkipDir
+			return filepath.SkipAll
 		}
 		if entry.IsDir() {
 			if path != cwd && (entry.Name() == ".git" || entry.Name() == "node_modules" || entry.Name() == ".venv") {
@@ -239,10 +227,40 @@ func hasMatchingFile(cwd string, types []string) bool {
 			}
 			return nil
 		}
-		found = serverMatchesPath(cwd, path, ServerConfig{FileTypes: types})
+		found = fileTypeMatchesNormalized(path, normalizedTypes)
+		if found {
+			return filepath.SkipAll
+		}
 		return nil
 	})
 	return found
+}
+
+func fileTypeMatches(path string, types []string) bool {
+	return fileTypeMatchesNormalized(path, normalizeFileTypes(types))
+}
+
+func normalizeFileTypes(types []string) []string {
+	normalized := make([]string, 0, len(types))
+	for _, typ := range types {
+		normalized = append(normalized, strings.ToLower(strings.TrimSpace(typ)))
+	}
+	return normalized
+}
+
+func fileTypeMatchesNormalized(path string, types []string) bool {
+	ext := strings.ToLower(filepath.Ext(path))
+	base := strings.ToLower(filepath.Base(path))
+	lang := languageForExtension(ext)
+	for _, typ := range types {
+		if typ == ext || typ == "."+strings.TrimPrefix(ext, ".") || typ == base || typ == lang || strings.TrimPrefix(typ, ".") == strings.TrimPrefix(ext, ".") {
+			return true
+		}
+		if strings.HasPrefix(typ, "*.") && strings.HasSuffix(base, strings.TrimPrefix(typ, "*")) {
+			return true
+		}
+	}
+	return false
 }
 
 func hasRootMarker(cwd string, markers []string) bool {
@@ -363,17 +381,17 @@ func providerIDs(data []byte) map[string]struct{} {
 	return ids
 }
 
-func readConfigFile(path string) (map[string]map[string]json.RawMessage, bool, error) {
+func readConfigFile(path string) (map[string]map[string]json.RawMessage, bool, []byte, error) {
 	data, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
-		return nil, false, nil
+		return nil, false, nil, nil
 	}
 	if err != nil {
-		return nil, true, err
+		return nil, true, nil, err
 	}
 	var top map[string]json.RawMessage
 	if err := json.Unmarshal(data, &top); err != nil {
-		return nil, true, fmt.Errorf("read %s: %w", path, err)
+		return nil, true, data, fmt.Errorf("read %s: %w", path, err)
 	}
 	root := top
 	if raw, ok := top["providers"]; ok {
@@ -382,7 +400,7 @@ func readConfigFile(path string) (map[string]map[string]json.RawMessage, bool, e
 		// and turn object entries into the map shape used internally.
 		var providers []json.RawMessage
 		if err := json.Unmarshal(raw, &providers); err != nil {
-			return nil, true, fmt.Errorf("%s.providers must be an array: %w", path, err)
+			return nil, true, data, fmt.Errorf("%s.providers must be an array: %w", path, err)
 		}
 		root = make(map[string]json.RawMessage)
 		for index, provider := range providers {
@@ -392,11 +410,11 @@ func readConfigFile(path string) (map[string]map[string]json.RawMessage, bool, e
 			}
 			var object map[string]json.RawMessage
 			if err := json.Unmarshal(provider, &object); err != nil {
-				return nil, true, fmt.Errorf("%s.providers[%d] must be a string or object: %w", path, index, err)
+				return nil, true, data, fmt.Errorf("%s.providers[%d] must be a string or object: %w", path, index, err)
 			}
 			idRaw, ok := object["id"]
 			if !ok || json.Unmarshal(idRaw, &id) != nil || strings.TrimSpace(id) == "" {
-				return nil, true, fmt.Errorf("%s.providers[%d] is missing id", path, index)
+				return nil, true, data, fmt.Errorf("%s.providers[%d] is missing id", path, index)
 			}
 			id = strings.TrimSpace(id)
 			delete(object, "id")
@@ -404,15 +422,22 @@ func readConfigFile(path string) (map[string]map[string]json.RawMessage, bool, e
 			root[id] = mustJSON(object)
 		}
 	} else {
+		wrappedRoot := make(map[string]json.RawMessage)
+		wrapped := false
 		for _, key := range []string{"servers", "lspServers", "linters"} {
 			if raw, ok := top[key]; ok {
-				var wrapped map[string]json.RawMessage
-				if err := json.Unmarshal(raw, &wrapped); err != nil {
-					return nil, true, fmt.Errorf("%s.%s must be an object: %w", path, key, err)
+				var section map[string]json.RawMessage
+				if err := json.Unmarshal(raw, &section); err != nil {
+					return nil, true, data, fmt.Errorf("%s.%s must be an object: %w", path, key, err)
 				}
-				root = wrapped
-				break
+				wrapped = true
+				for id, value := range section {
+					wrappedRoot[id] = value
+				}
 			}
+		}
+		if wrapped {
+			root = wrappedRoot
 		}
 	}
 	out := make(map[string]map[string]json.RawMessage)
@@ -427,12 +452,12 @@ func readConfigFile(path string) (map[string]map[string]json.RawMessage, bool, e
 			if json.Unmarshal(raw, &command) == nil {
 				object = map[string]json.RawMessage{"command": json.RawMessage(strconvQuote(command))}
 			} else {
-				return nil, true, fmt.Errorf("%s.%s must be an object", path, id)
+				return nil, true, data, fmt.Errorf("%s.%s must be an object", path, id)
 			}
 		}
 		out[id] = object
 	}
-	return out, true, nil
+	return out, true, data, nil
 }
 
 func strconvQuote(s string) string {

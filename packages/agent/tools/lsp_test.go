@@ -8,6 +8,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/patriceckhart/zot/packages/agent/lsp"
 	"github.com/patriceckhart/zot/packages/provider"
@@ -65,5 +66,9 @@ func TestBoundLSPText(t *testing.T) {
 	value := boundLSPText(strings.Repeat("x", maxLSPToolOutput+10))
 	if len(value) <= maxLSPToolOutput || !strings.Contains(value, "truncated") {
 		t.Fatalf("bound output = %d bytes", len(value))
+	}
+	unicodeValue := boundLSPText(strings.Repeat("界", maxLSPToolOutput/3+10))
+	if !utf8.ValidString(unicodeValue) {
+		t.Fatal("bound output split a UTF-8 sequence")
 	}
 }

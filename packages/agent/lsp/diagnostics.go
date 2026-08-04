@@ -13,7 +13,7 @@ const DefaultDiagnosticCap = 50
 var missingModulePatterns = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)cannot find module ["']([^"']+)["']`),
 	regexp.MustCompile(`(?i)could not find (?:a declaration file for )?module ["']([^"']+)["']`),
-	regexp.MustCompile(`(?i)cannot resolve ["']?([^"' ]+)["']?`),
+	regexp.MustCompile(`(?i)(?:cannot|could not) resolve (?:module|import|package) ["']?([^"' ]+)["']?`),
 	regexp.MustCompile(`(?i)import .*?(["'][^"']+["']).*could not be resolved`),
 }
 
@@ -199,10 +199,7 @@ func formatRepeated(bucket []Diagnostic, root string) string {
 	if len(paths) == 1 && len(lines) > 0 {
 		where += fmt.Sprintf(" (lines: %s)", joinInts(lines, 3))
 	}
-	message := compactWhitespace(bucket[0].Message)
-	if len(message) > 220 {
-		message = message[:219] + "…"
-	}
+	message := truncateText(compactWhitespace(bucket[0].Message), 220)
 	return fmt.Sprintf("%s: repeated %s%s %s%s", strings.ToUpper(defaultSeverity(bucket[0].Severity)), where, code, message, extra)
 }
 

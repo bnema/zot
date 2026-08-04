@@ -51,7 +51,14 @@ func ApplyWorkspaceEdit(root string, edit WorkspaceEdit) error {
 		if err := safeWorkspacePath(rootReal, path); err != nil {
 			return err
 		}
-		if err := applyTextEdits(path, changes); err != nil {
+		target, err := filepath.EvalSymlinks(path)
+		if err != nil {
+			return fmt.Errorf("workspace edit target %q: %w", path, err)
+		}
+		if err := safeWorkspacePath(rootReal, target); err != nil {
+			return err
+		}
+		if err := applyTextEdits(target, changes); err != nil {
 			return fmt.Errorf("apply edit to %s: %w", path, err)
 		}
 	}

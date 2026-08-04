@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/patriceckhart/zot/packages/agent/lsp"
 	"github.com/patriceckhart/zot/packages/core"
@@ -336,5 +337,9 @@ func boundLSPText(value string) string {
 	if len(value) <= maxLSPToolOutput {
 		return value
 	}
-	return value[:maxLSPToolOutput] + fmt.Sprintf("\n... [truncated at %d bytes]", maxLSPToolOutput)
+	cut := value[:maxLSPToolOutput]
+	for len(cut) > 0 && !utf8.ValidString(cut) {
+		cut = cut[:len(cut)-1]
+	}
+	return cut + fmt.Sprintf("\n... [truncated at %d bytes]", maxLSPToolOutput)
 }

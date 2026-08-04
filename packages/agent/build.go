@@ -1054,7 +1054,7 @@ func buildToolRegistry(args Args, cwd string, sandbox *tools.Sandbox, lspEnabled
 		return core.Registry{}
 	}
 	var manager *lsp.Manager
-	if lspEnabled {
+	if lspEnabled && lspManagerNeeded(args, diagnosticsOnWrite, diagnosticsOnEdit) {
 		manager = lsp.NewManager()
 	}
 	all := map[string]core.Tool{
@@ -1081,6 +1081,27 @@ func buildToolRegistry(args Args, cwd string, sandbox *tools.Sandbox, lspEnabled
 		}
 	}
 	return reg
+}
+
+func lspManagerNeeded(args Args, diagnosticsOnWrite, diagnosticsOnEdit bool) bool {
+	if len(args.Tools) == 0 {
+		return true
+	}
+	for _, name := range args.Tools {
+		switch name {
+		case "lsp":
+			return true
+		case "write":
+			if diagnosticsOnWrite {
+				return true
+			}
+		case "edit":
+			if diagnosticsOnEdit {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func toolSummaries(reg core.Registry, args Args) []ToolSummary {

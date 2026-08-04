@@ -95,6 +95,7 @@ func NewClientWithOptions(spec ServerConfig, root string, options ClientOptions)
 		return nil, fmt.Errorf("%s: %w", spec.ID, err)
 	}
 	cmd := exec.Command(command, spec.Args...)
+	cmd.WaitDelay = 2 * time.Second
 	cmd.Dir = root
 	cmd.Env = mergedEnvironment(spec.Env)
 	stdin, err := cmd.StdinPipe()
@@ -542,8 +543,13 @@ func (c *Client) Close() error {
 		}
 		waitErr = c.cmd.Wait()
 		if killed {
-			// The kill was part of normal cleanup, not a failed operation.
-			waitErr = nil
+			// A process terminated by this cleanup path normally returns an
+			// ExitError; preserve unrelated wait failures such as pipe
+			// errors so callers still get useful lifecycle diagnostics.
+			var exitErr *exec.ExitError
+			if errors.As(waitErr, &exitErr) {
+				waitErr = nil
+			}
 		}
 		_ = c.stdout.Close()
 		_ = c.stderr.Close()

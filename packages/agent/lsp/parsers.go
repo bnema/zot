@@ -175,7 +175,7 @@ func parseSARIF(provider, cwd, output string) []Diagnostic {
 	return out
 }
 
-var genericDiagnosticPattern = regexp.MustCompile(`^\s*(.+?):([0-9]+):([0-9]+)(?::\s*([A-Za-z]+))?\s*[-:]?\s*(.*)$`)
+var genericDiagnosticPattern = regexp.MustCompile(`(?i)^\s*(.+?):([0-9]+):([0-9]+)(?::\s*(error|err|fatal|failure|warning|warn|info|hint|note)\b)?\s*[-:]?\s*(.*)$`)
 
 func parseGeneric(provider, cwd, output string) []Diagnostic {
 	var out []Diagnostic
@@ -259,10 +259,7 @@ func FormatDiagnostic(d Diagnostic, root string) string {
 	if d.Code != "" {
 		code = " [" + d.Code + "]"
 	}
-	message := compactWhitespace(d.Message)
-	if len(message) > 220 {
-		message = message[:219] + "…"
-	}
+	message := truncateText(compactWhitespace(d.Message), 220)
 	return fmt.Sprintf("%s: %s:%d:%d%s %s", strings.ToUpper(defaultSeverity(d.Severity)), filepath.ToSlash(path), d.Range.Start.Line+1, d.Range.Start.Character+1, code, message)
 }
 
@@ -274,3 +271,17 @@ func defaultSeverity(value string) string {
 }
 
 func compactWhitespace(value string) string { return strings.Join(strings.Fields(value), " ") }
+
+func truncateText(value string, limit int) string {
+	if limit <= 0 {
+		return ""
+	}
+	runes := []rune(value)
+	if len(runes) <= limit {
+		return value
+	}
+	if limit == 1 {
+		return "…"
+	}
+	return string(runes[:limit-1]) + "…"
+}
