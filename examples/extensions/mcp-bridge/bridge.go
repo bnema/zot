@@ -5,7 +5,7 @@
 //	mcp__<server>__<tool>
 //
 // The double underscore separates the server name from the tool name,
-// avoiding collisions with zot's built-in tools (read, write, edit, bash, skill).
+// avoiding collisions with zot's built-in tools (read, write, edit, bash, lsp, skill).
 package main
 
 import (

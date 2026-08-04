@@ -179,6 +179,16 @@ func liveInteractiveAgent(iv *modes.Interactive, fallback *core.Agent) *core.Age
 	return fallback
 }
 
+func closeAgentLSP(ag *core.Agent) {
+	if ag != nil {
+		_ = tools.CloseLSPManagers(ag.Tools)
+	}
+}
+
+func closeResolvedLSP(r Resolved) {
+	_ = tools.CloseLSPManagers(r.ToolRegistry)
+}
+
 func trimMessagesForResume(msgs []provider.Message, keepTail int) []provider.Message {
 	if keepTail <= 0 || len(msgs) <= keepTail {
 		return provider.RepairOrphanedToolResults(msgs)
@@ -648,6 +658,7 @@ func runPrintMode(ctx context.Context, args Args, version string) error {
 	defer stopExt()
 
 	ag := r.NewAgent()
+	defer closeAgentLSP(ag)
 	wireNonInteractiveAgentExtHooks(ctx, ag, extMgr)
 	sess, err := openOrCreateSession(args, r, ag, version)
 	if err != nil {
@@ -702,6 +713,7 @@ func runStreamMode(ctx context.Context, args Args, version string) error {
 	defer stopExt()
 
 	ag := r.NewAgent()
+	defer closeAgentLSP(ag)
 	wireNonInteractiveAgentExtHooks(ctx, ag, extMgr)
 	sess, err := openOrCreateSession(args, r, ag, version)
 	if err != nil {
@@ -795,6 +807,7 @@ func runJSONMode(ctx context.Context, args Args, version string) error {
 	defer stopExt()
 
 	ag := r.NewAgent()
+	defer closeAgentLSP(ag)
 	wireNonInteractiveAgentExtHooks(ctx, ag, extMgr)
 	sess, err := openOrCreateSession(args, r, ag, version)
 	if err != nil {
@@ -915,8 +928,10 @@ func refreshAgentToolsAndPrompt(args Args, sharedSandbox *tools.Sandbox, extTool
 	if mutateRegistry != nil {
 		reg = mutateRegistry(reg)
 	}
+	oldTools := ag.Tools
 	ag.SetTools(reg)
 	ag.System = resolved.SystemPrompt
+	_ = tools.CloseLSPManagers(oldTools)
 }
 
 // reloadResourcesAfterStartupPre reloads extensions (if any) and
@@ -1152,6 +1167,7 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 		return a
 	}
 
+	var ag *core.Agent
 	buildAgent := func() (*core.Agent, string, string, error) {
 		resolved, err := Resolve(args, true)
 		if err != nil {
@@ -1209,7 +1225,6 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 		return wireAgentExt(resolved.NewAgent()), resolved.Provider, resolved.Model, nil
 	}
 
-	var ag *core.Agent
 	if r.HasCredential() {
 		ag = wireAgentExt(r.NewAgent())
 	}
@@ -1321,6 +1336,10 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 		return a
 	}
 	wireAgentPersist(ag)
+	defer func() {
+		closeAgentLSP(liveInteractiveAgent(iv, ag))
+		closeResolvedLSP(r)
+	}()
 
 	// Re-wrap the build closures so any agent constructed by the TUI
 	// (login, /model swap to a different provider) also gets the
@@ -1601,6 +1620,7 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 		activeModel = newModel
 		persistMu.Unlock()
 		ag = newAg
+		closeAgentLSP(currentAg)
 
 		// Push the new state into the running Interactive.
 		if iv != nil {
@@ -1709,6 +1729,8 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 		TerminalTitleEnabled:      initialCfg.TerminalTitleEnabled,
 		AutoSwarmEnabled:          initialCfg.AutoSwarmEnabled,
 		FastMode:                  &fastMode,
+		LSPEnabled:                initialCfg.LSPEnabled,
+		SubagentLSPEnabled:        initialCfg.SubagentLSPEnabled,
 		AutoCompactThreshold:      initialCfg.AutoCompactThreshold,
 		JailByDefault:             initialCfg.JailByDefault,
 		QuickModelShortcuts:       quickModelShortcuts,
@@ -1765,6 +1787,10 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 			if current != nil {
 				refreshAgentToolsAndPrompt(args, sharedSandbox, extToolAdapter, current, injectSwarmSpawn)
 			}
+		},
+		RefreshTools: func() {
+			current := liveInteractiveAgent(iv, ag)
+			refreshAgentToolsAndPrompt(args, sharedSandbox, extToolAdapter, current, injectSwarmSpawn)
 		},
 		AuthManager:                mgr,
 		LlamaCPPConfig:             ResolveLlamaCPPConfig,
@@ -1977,7 +2003,8 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 		if !ok {
 			return
 		}
-		if finalAg := iv.Agent(); finalAg != nil {
+		finalAg := iv.Agent()
+		if finalAg != nil {
 			persistMu.Lock()
 			if sess != nil {
 				writeNewTranscriptLocked(finalAg, sess, sessBaselineMsgs)
@@ -1987,6 +2014,8 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 			}
 			persistMu.Unlock()
 		}
+		closeAgentLSP(finalAg)
+		closeResolvedLSP(r)
 		// Exit cleanly. Re-raising the signal would skip os.Exit's
 		// at-exit hooks; explicit exit is fine because we've already
 		// flushed the only at-risk state (the session file).

@@ -1,0 +1,310 @@
+package lsp
+
+import (
+	"bufio"
+	"bytes"
+	"context"
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+)
+
+func TestFakeLSPProcess(t *testing.T) {
+	if os.Getenv("ZOT_FAKE_LSP") != "1" {
+		return
+	}
+	reader := bufio.NewReader(os.Stdin)
+	for {
+		payload, err := ReadMessage(reader)
+		if err != nil {
+			return
+		}
+		var message rpcEnvelope
+		if json.Unmarshal(payload, &message) != nil {
+			continue
+		}
+		switch message.Method {
+		case "initialize":
+			response := []byte(`{"jsonrpc":"2.0","id":` + string(message.ID) + `,"result":{"capabilities":{"definitionProvider":true}}}`)
+			_ = WriteMessage(os.Stdout, response)
+		case "test/echo":
+			response := []byte(`{"jsonrpc":"2.0","id":` + string(message.ID) + `,"result":{"echo":true}}`)
+			_ = WriteMessage(os.Stdout, response)
+		case "shutdown":
+			response := []byte(`{"jsonrpc":"2.0","id":` + string(message.ID) + `,"result":null}`)
+			_ = WriteMessage(os.Stdout, response)
+		case "textDocument/didOpen":
+			var params struct {
+				TextDocument struct {
+					URI string `json:"uri"`
+				} `json:"textDocument"`
+			}
+			_ = json.Unmarshal(message.Params, &params)
+			response := map[string]any{"jsonrpc": "2.0", "method": "textDocument/publishDiagnostics", "params": map[string]any{"uri": params.TextDocument.URI, "diagnostics": []any{map[string]any{"range": map[string]any{"start": map[string]int{"line": 0, "character": 0}, "end": map[string]int{"line": 0, "character": 1}}, "severity": 1, "code": "FAKE", "message": "fake problem"}}}}
+			data, _ := json.Marshal(response)
+			_ = WriteMessage(os.Stdout, data)
+		}
+	}
+}
+
+func TestClientFakeStdioRPC(t *testing.T) {
+	root := t.TempDir()
+	script := os.Args[0]
+	spec := ServerConfig{ID: "fake", Kind: "lsp", Command: script, Args: []string{"-test.run=TestFakeLSPProcess"}, Env: map[string]string{"ZOT_FAKE_LSP": "1"}}
+	diagnostics := make(chan []Diagnostic, 1)
+	client, err := NewClientWithContext(context.Background(), spec, root, ClientOptions{OnDiagnostics: func(value []Diagnostic) { diagnostics <- value }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = client.Close() })
+	result, err := client.Request(context.Background(), "test/echo", map[string]any{})
+	if err != nil || !bytes.Contains(result, []byte(`"echo":true`)) {
+		t.Fatalf("echo result = %s, err = %v", result, err)
+	}
+	path := filepath.Join(root, "main.go")
+	if err := os.WriteFile(path, []byte("package main\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := client.DidOpen(path, "go", "package main\n"); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case values := <-diagnostics:
+		if len(values) != 1 || values[0].Code != "FAKE" || values[0].Path != path {
+			t.Fatalf("diagnostics = %#v", values)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for fake diagnostics")
+	}
+}
+
+func TestFramingRoundTripWithAdditionalHeader(t *testing.T) {
+	payload := []byte(`{"jsonrpc":"2.0","id":7,"result":{"ok":true}}`)
+	wire := append([]byte("Content-Type: application/vscode-jsonrpc; charset=utf-8\r\n"), Frame(payload)...)
+	got, err := ReadMessage(bufio.NewReader(bytes.NewReader(wire)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, payload) {
+		t.Fatalf("payload = %q, want %q", got, payload)
+	}
+}
+
+func TestLoadConfigMergesGlobalProjectAndBuiltins(t *testing.T) {
+	root := t.TempDir()
+	zotHome := t.TempDir()
+	t.Setenv("ZOT_HOME", zotHome)
+	if err := os.WriteFile(filepath.Join(zotHome, "lsp.json"), []byte(`{"servers":{"gopls":{"settings":{"global":true},"args":["--global"]}}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "go.mod"), []byte("module example\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "lsp.json"), []byte(`{"gopls":{"command":"local-gopls","args":["--local"],"settings":{"local":true}},"sarif-lint":{"command":"reviewdog","kind":"cli","parser":"sarif","fileTypes":[".go"]}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	config, err := LoadConfig(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gopls := config.Servers["gopls"]
+	if gopls.Command != "local-gopls" || len(gopls.Args) != 1 || gopls.Args[0] != "--local" {
+		t.Fatalf("gopls override = %#v", gopls)
+	}
+	if len(gopls.FileTypes) == 0 || len(gopls.RootMarkers) == 0 {
+		t.Fatalf("builtin selectors were not retained: %#v", gopls)
+	}
+	if gopls.Settings["global"] != true || gopls.Settings["local"] != true {
+		t.Fatalf("settings did not merge: %#v", gopls.Settings)
+	}
+	if config.Servers["sarif-lint"].Kind != "cli" || config.Servers["sarif-lint"].Parser != "sarif" {
+		t.Fatalf("custom linter = %#v", config.Servers["sarif-lint"])
+	}
+	selected := config.ApplicableServers(root, filepath.Join(root, "main.go"))
+	var foundGopls, foundSarif bool
+	for _, server := range selected {
+		foundGopls = foundGopls || server.ID == "gopls"
+		foundSarif = foundSarif || server.ID == "sarif-lint"
+	}
+	if !foundGopls || !foundSarif {
+		t.Fatalf("selected servers = %#v", selected)
+	}
+}
+
+func TestLoadConfigAcceptsPiLSPBridgeProviders(t *testing.T) {
+	root := t.TempDir()
+	zotHome := t.TempDir()
+	t.Setenv("ZOT_HOME", zotHome)
+	if err := os.WriteFile(filepath.Join(root, "go.mod"), []byte("module example\\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	configFile := `{
+		"$schema": "./node_modules/pi-lsp-bridge/schema.json",
+		"autoDetect": true,
+		"providers": [
+			"gopls",
+			{"id":"gopls","args":["serve"]},
+			{"id":"bridge-lint","kind":"cli","command":"bridge-lint","fileTypes":[".go"],"rootMarkers":["go.mod"],"cli":{"parser":"generic","mode":"files"}}
+		]
+	}`
+	if err := os.WriteFile(filepath.Join(root, "pi-lsp-bridge.json"), []byte(configFile), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	config, err := LoadConfig(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := config.Servers["gopls"].Args; len(got) != 1 || got[0] != "serve" {
+		t.Fatalf("gopls provider override = %#v", got)
+	}
+	lint := config.Servers["bridge-lint"]
+	if lint.Kind != "cli" || lint.Parser != "generic" || lint.Mode != "files" {
+		t.Fatalf("bridge provider = %#v", lint)
+	}
+}
+
+func TestLoadConfigAutoDetectFalseKeepsExplicitProviders(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("ZOT_HOME", t.TempDir())
+	if err := os.WriteFile(filepath.Join(root, "go.mod"), []byte("module example\\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "lsp.json"), []byte(`{"autoDetect":false,"providers":["gopls"]}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	config, err := LoadConfig(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	selected := config.ApplicableServers(root, filepath.Join(root, "main.go"))
+	if len(selected) != 1 || selected[0].ID != "gopls" {
+		t.Fatalf("explicit providers with autoDetect=false = %#v", selected)
+	}
+}
+
+func TestResolveCommandPrefersWorkspaceTools(t *testing.T) {
+	root := t.TempDir()
+	bin := filepath.Join(root, "node_modules", ".bin")
+	if err := os.MkdirAll(bin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	command := filepath.Join(bin, "fake-lsp")
+	if err := os.WriteFile(command, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	got, err := ResolveCommand(root, "fake-lsp")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != command {
+		t.Fatalf("resolved %q, want %q", got, command)
+	}
+}
+
+func TestParsers(t *testing.T) {
+	root := t.TempDir()
+	eslint := `[ {"filePath":"src/a.js","messages":[{"ruleId":"no-x","severity":2,"message":"bad","line":2,"column":3}] } ]`
+	got := ParseDiagnostics("eslint-json", "eslint", root, eslint)
+	if len(got) != 1 || got[0].Severity != "error" || got[0].Range.Start.Line != 1 {
+		t.Fatalf("eslint = %#v", got)
+	}
+	golangci := `{"Issues":[{"FromLinter":"govet","Text":"bad","Severity":"warning","Pos":{"Filename":"a.go","Line":3,"Column":4}}]}`
+	if got = ParseDiagnostics("golangci-lint-json", "golangci", root, golangci); len(got) != 1 || got[0].Severity != "warning" {
+		t.Fatalf("golangci = %#v", got)
+	}
+	ruff := `[{"code":"F401","message":"unused","filename":"a.py","location":{"row":1,"column":2}}]`
+	if got = ParseDiagnostics("ruff-json", "ruff", root, ruff); len(got) != 1 || got[0].Code != "F401" {
+		t.Fatalf("ruff = %#v", got)
+	}
+	sarif := `{"runs":[{"results":[{"ruleId":"R1","level":"error","message":{"text":"bad"},"locations":[{"physicalLocation":{"artifactLocation":{"uri":"a.c"},"region":{"startLine":4,"startColumn":2}}}]}]}]}`
+	if got = ParseDiagnostics("sarif", "scan", root, sarif); len(got) != 1 || got[0].Range.Start.Line != 3 {
+		t.Fatalf("sarif = %#v", got)
+	}
+	if got = ParseDiagnostics("generic", "lint", root, "a.go:5:6: warning: bad"); len(got) != 1 || got[0].Severity != "warning" {
+		t.Fatalf("generic = %#v", got)
+	}
+}
+
+func TestDiagnosticDedupUsesCodeAndStartPosition(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "main.go")
+	base := Diagnostic{Path: path, Severity: "error", Code: "E1", Message: "same", Range: Range{Start: Position{Line: 1, Character: 2}, End: Position{Line: 1, Character: 3}}}
+	endChanged := base
+	endChanged.Range.End.Character = 20
+	otherCode := base
+	otherCode.Code = "E2"
+	otherStart := base
+	otherStart.Range.Start.Line++
+	if got := DeduplicateDiagnostics([]Diagnostic{base, endChanged, otherCode, otherStart}); len(got) != 3 {
+		t.Fatalf("deduplicated diagnostics = %#v, want three reports", got)
+	}
+}
+
+func TestDiagnosticsDedupAndGrouping(t *testing.T) {
+	root := t.TempDir()
+	makeDiag := func(path, message string, line int, server string) Diagnostic {
+		return Diagnostic{Path: filepath.Join(root, path), Severity: "error", Code: "E", Message: message, Server: server, Range: Range{Start: Position{Line: line}}}
+	}
+	input := []Diagnostic{makeDiag("a.go", "same", 0, "gopls"), makeDiag("a.go", "same", 0, "eslint"), makeDiag("a.go", `Cannot find module "missing"`, 1, "gopls"), makeDiag("a.go", "cascade one", 2, "gopls"), makeDiag("a.go", "cascade two", 3, "gopls"), makeDiag("b.go", "repeat", 1, "a"), makeDiag("c.go", "repeat", 2, "b"), makeDiag("d.go", "repeat", 3, "c")}
+	if got := DeduplicateDiagnostics(input); len(got) != len(input)-1 {
+		t.Fatalf("dedup count = %d", len(got))
+	}
+	text := SummarizeDiagnostics(input, root, 50)
+	if !strings.Contains(text, "repeated") || !strings.Contains(text, "SECONDARY") {
+		t.Fatalf("summary lacks grouping:\n%s", text)
+	}
+}
+
+func TestApplyWorkspaceEditUsesUTF16AndRejectsOutside(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "a.txt")
+	if err := os.WriteFile(path, []byte("a😀b\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	uri := URIForPath(path)
+	ed := WorkspaceEdit{Changes: map[string][]TextEdit{uri: {{Range: Range{Start: Position{Line: 0, Character: 1}, End: Position{Line: 0, Character: 3}}, NewText: "X"}}}}
+	if err := ApplyWorkspaceEdit(root, ed); err != nil {
+		t.Fatal(err)
+	}
+	data, _ := os.ReadFile(path)
+	if string(data) != "aXb\n" {
+		t.Fatalf("edited data = %q", data)
+	}
+	outside := WorkspaceEdit{Changes: map[string][]TextEdit{URIForPath(filepath.Join(filepath.Dir(root), "outside.txt")): {{Range: Range{}, NewText: "x"}}}}
+	if err := ApplyWorkspaceEdit(root, outside); err == nil {
+		t.Fatal("outside edit was accepted")
+	}
+}
+
+func TestDiagnosticJSONCodeNumber(t *testing.T) {
+	var diagnostic Diagnostic
+	if err := json.Unmarshal([]byte(`{"range":{"start":{"line":0,"character":0},"end":{"line":0,"character":1}},"severity":2,"code":123,"message":"warning"}`), &diagnostic); err != nil {
+		t.Fatal(err)
+	}
+	if diagnostic.Code != "123" || diagnostic.Severity != "warning" {
+		t.Fatalf("diagnostic = %#v", diagnostic)
+	}
+}
+
+func TestReduceDiagnosticsSuppressesLocationOnlyChanges(t *testing.T) {
+	manager := NewManager()
+	root := t.TempDir()
+	path := filepath.Join(root, "main.go")
+	first := Diagnostic{Path: path, Severity: "error", Message: "type mismatch", Range: Range{Start: Position{Line: 1, Character: 2}}}
+	if got := manager.ReduceDiagnostics(root, path, []Diagnostic{first}); len(got) != 1 {
+		t.Fatalf("first reduction returned %d diagnostics, want 1", len(got))
+	}
+	shifted := first
+	shifted.Range.Start.Line = 20
+	if got := manager.ReduceDiagnostics(root, path, []Diagnostic{shifted}); len(got) != 0 {
+		t.Fatalf("shifted diagnostic was replayed: %#v", got)
+	}
+	if got := manager.ReduceDiagnostics(root, path, nil); len(got) != 0 {
+		t.Fatalf("clear returned %#v", got)
+	}
+	if got := manager.ReduceDiagnostics(root, path, []Diagnostic{shifted}); len(got) != 1 {
+		t.Fatalf("diagnostic did not reappear after clear: %#v", got)
+	}
+}

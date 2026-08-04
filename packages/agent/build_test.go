@@ -9,8 +9,28 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/patriceckhart/zot/packages/agent/tools"
 	"github.com/patriceckhart/zot/packages/provider"
 )
+
+func TestBuildToolRegistryIncludesLSPAndWriteDiagnostics(t *testing.T) {
+	root := t.TempDir()
+	registry := buildToolRegistry(Args{}, root, tools.NewSandbox(root), true, true, false)
+	if _, ok := registry["lsp"]; !ok {
+		t.Fatal("default registry does not include lsp")
+	}
+	write, ok := registry["write"].(*tools.WriteTool)
+	if !ok || write.LSP == nil || !write.LSPDiagnostics {
+		t.Fatalf("write tool LSP wiring = %#v", write)
+	}
+	edit, ok := registry["edit"].(*tools.EditTool)
+	if !ok || edit.LSP == nil || edit.LSPDiagnostics {
+		t.Fatalf("edit tool LSP wiring = %#v", edit)
+	}
+	if disabled := buildToolRegistry(Args{}, root, tools.NewSandbox(root), false, true, true); len(disabled) != 4 {
+		t.Fatalf("LSP-disabled registry has %d tools, want 4", len(disabled))
+	}
+}
 
 func TestReadAgentsContextLoadsGlobalAndAncestors(t *testing.T) {
 	root := t.TempDir()

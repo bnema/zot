@@ -8,14 +8,17 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/patriceckhart/zot/packages/agent/lsp"
 	"github.com/patriceckhart/zot/packages/core"
 	"github.com/patriceckhart/zot/packages/provider"
 )
 
 // WriteTool writes content to a file, creating parent directories.
 type WriteTool struct {
-	CWD     string
-	Sandbox *Sandbox
+	CWD            string
+	Sandbox        *Sandbox
+	LSP            *lsp.Manager
+	LSPDiagnostics bool
 }
 
 type writeArgs struct {
@@ -62,7 +65,7 @@ func (t *WriteTool) Execute(ctx context.Context, raw json.RawMessage, progress f
 	if len(a.Content) > 0 && !strings.HasSuffix(a.Content, "\n") {
 		totalLines++ // count the last unterminated line
 	}
-	return core.ToolResult{
+	result := core.ToolResult{
 		Content: []provider.Content{provider.TextBlock{Text: a.Content}},
 		Details: map[string]any{
 			"path":        path,
@@ -70,5 +73,9 @@ func (t *WriteTool) Execute(ctx context.Context, raw json.RawMessage, progress f
 			"total_lines": totalLines,
 			"start_line":  1,
 		},
-	}, nil
+	}
+	if t.LSPDiagnostics {
+		attachWriteDiagnostics(ctx, t.CWD, path, t.LSP, &result)
+	}
+	return result, nil
 }

@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	zotdocs "github.com/patriceckhart/zot"
+	"github.com/patriceckhart/zot/packages/agent/lsp"
 	"github.com/patriceckhart/zot/packages/agent/skills"
 	"github.com/patriceckhart/zot/packages/agent/subagents"
 	"github.com/patriceckhart/zot/packages/agent/tools"
@@ -621,7 +622,9 @@ func Resolve(args Args, requireCred bool) (Resolved, error) {
 	if args.PermissionSet != nil {
 		sandbox.SetPermissions(args.PermissionSet)
 	}
-	reg := buildToolRegistry(args, args.CWD, sandbox)
+	subagentSession := args.Mode == ModeSwarmAgent || strings.TrimSpace(args.Subagent) != ""
+	lspEnabled := !args.NoLSP && cfg.LSPEnabledFor(subagentSession)
+	reg := buildToolRegistry(args, args.CWD, sandbox, lspEnabled, cfg.LSPDiagnosticsOnWriteEnabled(), cfg.LSPDiagnosticsOnEditEnabled())
 
 	docsDir, _ := zotdocs.EnsureInstalled(ZotHome())
 
@@ -1028,6 +1031,8 @@ func (r *Resolved) UseSandbox(s *tools.Sandbox) {
 			v.Sandbox = s
 		case *tools.BashTool:
 			v.Sandbox = s
+		case *tools.LSPTool:
+			v.Sandbox = s
 		}
 		_ = name
 	}
@@ -1044,15 +1049,24 @@ func (r Resolved) NewAgent() *core.Agent {
 	return a
 }
 
-func buildToolRegistry(args Args, cwd string, sandbox *tools.Sandbox) core.Registry {
+func buildToolRegistry(args Args, cwd string, sandbox *tools.Sandbox, lspEnabled, diagnosticsOnWrite, diagnosticsOnEdit bool) core.Registry {
 	if args.NoTools {
 		return core.Registry{}
 	}
+	var manager *lsp.Manager
+	if lspEnabled {
+		manager = lsp.NewManager()
+	}
 	all := map[string]core.Tool{
 		"read":  &tools.ReadTool{CWD: cwd, Sandbox: sandbox},
-		"write": &tools.WriteTool{CWD: cwd, Sandbox: sandbox},
-		"edit":  &tools.EditTool{CWD: cwd, Sandbox: sandbox},
+		"write": &tools.WriteTool{CWD: cwd, Sandbox: sandbox, LSP: manager, LSPDiagnostics: diagnosticsOnWrite},
+		"edit":  &tools.EditTool{CWD: cwd, Sandbox: sandbox, LSP: manager, LSPDiagnostics: diagnosticsOnEdit},
 		"bash":  &tools.BashTool{CWD: cwd, Sandbox: sandbox},
+	}
+	if manager != nil {
+		lspTool := tools.NewLSPTool(cwd, manager)
+		lspTool.Sandbox = sandbox
+		all["lsp"] = lspTool
 	}
 	reg := core.Registry{}
 	if len(args.Tools) == 0 {
@@ -1070,7 +1084,7 @@ func buildToolRegistry(args Args, cwd string, sandbox *tools.Sandbox) core.Regis
 }
 
 func toolSummaries(reg core.Registry, args Args) []ToolSummary {
-	order := []string{"read", "write", "edit", "bash"}
+	order := []string{"read", "write", "edit", "bash", "lsp"}
 	var out []ToolSummary
 	for _, name := range order {
 		if t, ok := reg[name]; ok {

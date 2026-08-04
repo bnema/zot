@@ -77,6 +77,24 @@ func (configSettingsStore) SetFastMode(enabled bool) error {
 	return SaveConfig(cfg)
 }
 
+func (configSettingsStore) SetLSPEnabled(enabled bool) error {
+	cfg, err := LoadConfig()
+	if err != nil {
+		return err
+	}
+	cfg.LSPEnabled = &enabled
+	return SaveConfig(cfg)
+}
+
+func (configSettingsStore) SetSubagentLSPEnabled(enabled bool) error {
+	cfg, err := LoadConfig()
+	if err != nil {
+		return err
+	}
+	cfg.SubagentLSPEnabled = &enabled
+	return SaveConfig(cfg)
+}
+
 func (configSettingsStore) SetAutoCompactThreshold(percent int) error {
 	cfg, err := LoadConfig()
 	if err != nil {

@@ -30,6 +30,7 @@ import (
 	"sync"
 
 	"github.com/patriceckhart/zot/packages/agent"
+	agenttools "github.com/patriceckhart/zot/packages/agent/tools"
 	"github.com/patriceckhart/zot/packages/core"
 	"github.com/patriceckhart/zot/packages/provider"
 )
@@ -74,8 +75,8 @@ type Config struct {
 	// BaseURL overrides the provider base url (for tests / proxies).
 	BaseURL string
 
-	// Tools is the list of tools to enable. Nil/empty = all four
-	// (read, write, edit, bash). Pass an empty-but-non-nil slice
+	// Tools is the list of tools to enable. Nil/empty = all built-in
+	// tools (read, write, edit, bash, lsp). Pass an empty-but-non-nil slice
 	// (e.g. []string{}) plus NoTools=true to disable everything.
 	Tools []string
 
@@ -339,9 +340,13 @@ func (r *Runtime) Close() error {
 	}
 	r.closed = true
 	cancel := r.activeCancel
+	ag := r.agent
 	r.mu.Unlock()
 	if cancel != nil {
 		cancel()
+	}
+	if ag != nil {
+		return agenttools.CloseLSPManagers(ag.Tools)
 	}
 	return nil
 }

@@ -79,6 +79,7 @@ func runRPCMode(ctx context.Context, args Args, version string) error {
 	r.MergeExtensionTools(&extToolAdapter{mgr: extMgr})
 
 	ag := r.NewAgent()
+	defer closeAgentLSP(ag)
 	server.agent = ag
 	ag.BeforeToolExecute = func(call provider.ToolCallBlock) (bool, string, json.RawMessage) {
 		r := extMgr.InterceptToolCall(ctx, call.ID, call.Name, call.Arguments)

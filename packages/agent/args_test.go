@@ -12,6 +12,16 @@ func TestParseArgsSubagentAndReasoning(t *testing.T) {
 	}
 }
 
+func TestParseArgsNoLSP(t *testing.T) {
+	args, err := ParseArgs([]string{"--no-lsp"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !args.NoLSP {
+		t.Fatal("--no-lsp did not disable LSP")
+	}
+}
+
 func TestParseArgsTemperatureAllowsZero(t *testing.T) {
 	args, err := ParseArgs([]string{"--temperature", "0"})
 	if err != nil {

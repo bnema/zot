@@ -65,7 +65,7 @@ const swarmSpawnSchema = `{
   "properties": {
     "task": {
       "type": "string",
-      "description": "The full task description for the sub-agent. Be specific: the sub-agent has the same read/write/edit/bash tools as the main agent and shares this working directory, but starts with NO context from this conversation."
+      "description": "The full task description for the sub-agent. Be specific: the sub-agent has the same built-in tools as the main agent (including lsp when enabled) and shares this working directory, but starts with NO context from this conversation."
     },
     "agent": {
       "type": "string",

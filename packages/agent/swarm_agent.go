@@ -59,6 +59,7 @@ func runSwarmAgentMode(ctx context.Context, args Args, version string) error {
 	defer stopExt()
 
 	ag := r.NewAgent()
+	defer closeAgentLSP(ag)
 	wireNonInteractiveAgentExtHooks(ctx, ag, extMgr)
 	sess, err := openOrCreateSession(args, r, ag, version)
 	if err != nil {
