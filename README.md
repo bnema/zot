@@ -761,7 +761,7 @@ A model installed through Ollama is kept in Ollama's internal storage and is not
 
 ## Clipboard images
 
-In the main chat, `ctrl+v` checks the system clipboard for an image before falling back to text. A pasted image appears as a `[clipboard image #N]` marker and is attached when you submit the prompt; `esc` or `ctrl+c` clears pending image markers with the rest of the input. Wayland image paste uses `wl-paste` from `wl-clipboard`; X11 image paste uses `xclip` when available.
+In the main chat, `ctrl+v` checks the system clipboard for an image before falling back to text. A pasted image appears as a `[clipboard image #N]` marker and is attached when you submit the prompt; `esc` or `ctrl+c` clears pending image markers with the rest of the input. Wayland image paste uses `wl-paste` from `wl-clipboard`; X11 image paste uses `xclip` when available. Clipboard images larger than 32 MiB are ignored and use the normal text-paste fallback.
 
 ## Inline images
 

@@ -3,10 +3,12 @@
 package tui
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
 	"image/png"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -47,18 +49,31 @@ on run argv
 end run
 `
 
-func ReadClipboardImage() (ClipboardImage, bool, error) {
-	_, data, ok, err := ReadClipboardImagePNG()
+func ReadClipboardImage(ctx context.Context) (ClipboardImage, bool, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	ctx, cancel := context.WithTimeout(ctx, clipboardImageReadTimeout)
+	defer cancel()
+
+	path, data, ok, err := readClipboardImagePNG(ctx)
 	if err != nil {
 		return ClipboardImage{}, false, err
 	}
 	if !ok {
 		return ClipboardImage{}, false, nil
 	}
+	if err := removeClipboardImageFile(path); err != nil {
+		return ClipboardImage{}, false, err
+	}
 	return ClipboardImage{MimeType: "image/png", Data: data}, true, nil
 }
 
 func ReadClipboardImagePNG() (string, []byte, bool, error) {
+	return readClipboardImagePNG(context.Background())
+}
+
+func readClipboardImagePNG(ctx context.Context) (string, []byte, bool, error) {
 	dir := clipboardImageDir()
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return "", nil, false, err
@@ -67,7 +82,7 @@ func ReadClipboardImagePNG() (string, []byte, bool, error) {
 	rawPath := path + ".raw"
 	defer os.Remove(rawPath)
 
-	kind, err := writeClipboardImageData(rawPath)
+	kind, err := writeClipboardImageData(ctx, rawPath)
 	if err != nil {
 		return "", nil, false, err
 	}
@@ -90,19 +105,28 @@ func ReadClipboardImagePNG() (string, []byte, bool, error) {
 			return "", nil, false, fmt.Errorf("unexpected clipboard image kind %q", kind)
 		}
 		if err := copyClipboardImageFileToPNG(clipPath, path); err != nil {
+			if err == errClipboardImageTooLarge {
+				return "", nil, false, nil
+			}
 			return "", nil, false, err
 		}
 	}
 
-	data, err := os.ReadFile(path)
+	data, err := readClipboardImageFile(path)
+	if err == errClipboardImageTooLarge {
+		if err := removeClipboardImageFile(path); err != nil {
+			return "", nil, false, err
+		}
+		return "", nil, false, nil
+	}
 	if err != nil {
 		return "", nil, false, err
 	}
 	return path, data, true, nil
 }
 
-func writeClipboardImageData(path string) (string, error) {
-	cmd := exec.Command("/usr/bin/osascript", "-e", readClipboardImageScript, path)
+func writeClipboardImageData(ctx context.Context, path string) (string, error) {
+	cmd := exec.CommandContext(ctx, "/usr/bin/osascript", "-e", readClipboardImageScript, path)
 	out, err := cmd.CombinedOutput()
 	trimmed := strings.TrimSpace(string(out))
 	if err != nil {
@@ -141,10 +165,34 @@ func clipboardImageKind(s string) (string, bool) {
 	return "", false
 }
 
+func readClipboardImageFile(path string) ([]byte, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+
+	data, err := io.ReadAll(io.LimitReader(file, int64(maxClipboardImageBytes)+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(data) > maxClipboardImageBytes {
+		return nil, errClipboardImageTooLarge
+	}
+	return data, nil
+}
+
+func removeClipboardImageFile(path string) error {
+	if err := os.Remove(path); err != nil {
+		return fmt.Errorf("remove temporary clipboard image: %w", err)
+	}
+	return nil
+}
+
 func copyClipboardImageFileToPNG(srcPath, dstPath string) error {
 	switch strings.ToLower(filepath.Ext(srcPath)) {
 	case ".png":
-		data, err := os.ReadFile(srcPath)
+		data, err := readClipboardImageFile(srcPath)
 		if err != nil {
 			return err
 		}

@@ -2,7 +2,9 @@
 
 package tui
 
-func ReadClipboardImage() (ClipboardImage, bool, error) {
+import "context"
+
+func ReadClipboardImage(_ context.Context) (ClipboardImage, bool, error) {
 	return ClipboardImage{}, false, nil
 }
 

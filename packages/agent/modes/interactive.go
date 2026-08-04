@@ -2474,7 +2474,7 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 		i.invalidate()
 		return false
 	case tui.KeyPasteClipboard:
-		i.pasteClipboard()
+		i.pasteClipboard(ctx)
 		return false
 	case tui.KeyCtrlO:
 		i.toggleToolExpansion()
@@ -2766,8 +2766,8 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 	return false
 }
 
-func (i *Interactive) pasteClipboard() {
-	image, ok, err := tui.ReadClipboardImage()
+func (i *Interactive) pasteClipboard(ctx context.Context) {
+	image, ok, err := tui.ReadClipboardImage(ctx)
 	if err != nil {
 		i.mu.Lock()
 		i.statusErr = "clipboard paste failed: " + err.Error()

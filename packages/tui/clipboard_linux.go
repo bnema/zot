@@ -4,13 +4,11 @@ package tui
 
 import (
 	"context"
+	"io"
 	"os"
 	"os/exec"
 	"strings"
-	"time"
 )
-
-const clipboardImageCommandTimeout = 5 * time.Second
 
 var supportedClipboardImageMIMEs = []string{
 	"image/png",
@@ -27,14 +25,20 @@ type clipboardImageCommand struct {
 // ReadClipboardImage reads an image from the Wayland or X11 system clipboard.
 // Clipboard helper failures are intentionally treated as an empty clipboard so
 // that optional desktop integrations do not affect paste handling.
-func ReadClipboardImage() (ClipboardImage, bool, error) {
+func ReadClipboardImage(ctx context.Context) (ClipboardImage, bool, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	ctx, cancel := context.WithTimeout(ctx, clipboardImageReadTimeout)
+	defer cancel()
+
 	if os.Getenv("WAYLAND_DISPLAY") != "" {
-		if image, ok := readClipboardImageWayland(); ok {
+		if image, ok := readClipboardImageWayland(ctx); ok {
 			return image, true, nil
 		}
 	}
 	if os.Getenv("DISPLAY") != "" {
-		if image, ok := readClipboardImageX11(); ok {
+		if image, ok := readClipboardImageX11(ctx); ok {
 			return image, true, nil
 		}
 	}
@@ -47,8 +51,8 @@ func ReadClipboardImagePNG() (string, []byte, bool, error) {
 	return "", nil, false, nil
 }
 
-func readClipboardImageWayland() (ClipboardImage, bool) {
-	types, ok := runClipboardImageCommand(clipboardImageCommand{
+func readClipboardImageWayland(ctx context.Context) (ClipboardImage, bool) {
+	types, ok := runClipboardImageCommand(ctx, clipboardImageCommand{
 		name: "wl-paste",
 		args: []string{"--list-types"},
 	})
@@ -67,7 +71,7 @@ func readClipboardImageWayland() (ClipboardImage, bool) {
 		if !available[mime] {
 			continue
 		}
-		data, ok := runClipboardImageCommand(clipboardImageCommand{
+		data, ok := runClipboardImageCommand(ctx, clipboardImageCommand{
 			name: "wl-paste",
 			args: []string{"--type", mime},
 		})
@@ -78,9 +82,9 @@ func readClipboardImageWayland() (ClipboardImage, bool) {
 	return ClipboardImage{}, false
 }
 
-func readClipboardImageX11() (ClipboardImage, bool) {
+func readClipboardImageX11(ctx context.Context) (ClipboardImage, bool) {
 	for _, mime := range supportedClipboardImageMIMEs {
-		data, ok := runClipboardImageCommand(clipboardImageCommand{
+		data, ok := runClipboardImageCommand(ctx, clipboardImageCommand{
 			name: "xclip",
 			args: []string{"-selection", "clipboard", "-out", "-target", mime},
 		})
@@ -100,16 +104,28 @@ func isSupportedClipboardImageMIME(mime string) bool {
 	return false
 }
 
-func runClipboardImageCommand(command clipboardImageCommand) ([]byte, bool) {
+func runClipboardImageCommand(ctx context.Context, command clipboardImageCommand) ([]byte, bool) {
 	path, err := exec.LookPath(command.name)
 	if err != nil {
 		return nil, false
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), clipboardImageCommandTimeout)
-	defer cancel()
-	data, err := exec.CommandContext(ctx, path, command.args...).Output()
-	if err != nil || len(data) == 0 {
+	cmd := exec.CommandContext(ctx, path, command.args...)
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return nil, false
+	}
+	if err := cmd.Start(); err != nil {
+		return nil, false
+	}
+
+	data, readErr := io.ReadAll(io.LimitReader(stdout, int64(maxClipboardImageBytes)+1))
+	if readErr != nil || len(data) > maxClipboardImageBytes {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+		return nil, false
+	}
+	if err := cmd.Wait(); err != nil || len(data) == 0 {
 		return nil, false
 	}
 	return data, true

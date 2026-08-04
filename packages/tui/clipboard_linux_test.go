@@ -3,6 +3,8 @@
 package tui
 
 import (
+	"bytes"
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -35,7 +37,7 @@ exit 1
 	t.Setenv("DISPLAY", "")
 	t.Setenv("CLIPBOARD_TEST_STATE", state)
 
-	image, ok, err := ReadClipboardImage()
+	image, ok, err := ReadClipboardImage(context.Background())
 	if err != nil {
 		t.Fatalf("ReadClipboardImage() error = %v", err)
 	}
@@ -67,7 +69,7 @@ esac
 	t.Setenv("WAYLAND_DISPLAY", "wayland-test")
 	t.Setenv("DISPLAY", ":test")
 
-	image, ok, err := ReadClipboardImage()
+	image, ok, err := ReadClipboardImage(context.Background())
 	if err != nil {
 		t.Fatalf("ReadClipboardImage() error = %v", err)
 	}
@@ -92,7 +94,7 @@ exit 1
 	t.Setenv("WAYLAND_DISPLAY", "wayland-test")
 	t.Setenv("DISPLAY", "")
 
-	image, ok, err := ReadClipboardImage()
+	image, ok, err := ReadClipboardImage(context.Background())
 	if err != nil {
 		t.Fatalf("ReadClipboardImage() error = %v, want nil", err)
 	}
@@ -106,6 +108,32 @@ exit 1
 	path, data, ok, err := ReadClipboardImagePNG()
 	if err != nil || ok || path != "" || data != nil {
 		t.Fatalf("ReadClipboardImagePNG() = (%q, %v, %v, %v), want empty result", path, data, ok, err)
+	}
+}
+
+func TestRunClipboardImageCommandEnforcesSizeLimit(t *testing.T) {
+	dir := t.TempDir()
+	payload := filepath.Join(dir, "payload")
+	writeClipboardTestHelper(t, dir, "clipboard-test-helper", `#!/bin/sh
+exec /bin/cat "$CLIPBOARD_TEST_PAYLOAD"
+`)
+	t.Setenv("PATH", dir)
+	t.Setenv("CLIPBOARD_TEST_PAYLOAD", payload)
+
+	if err := os.WriteFile(payload, bytes.Repeat([]byte{'x'}, maxClipboardImageBytes), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	data, ok := runClipboardImageCommand(context.Background(), clipboardImageCommand{name: "clipboard-test-helper"})
+	if !ok || len(data) != maxClipboardImageBytes {
+		t.Fatalf("exact-limit command result = (%d bytes, %v), want (%d bytes, true)", len(data), ok, maxClipboardImageBytes)
+	}
+
+	if err := os.WriteFile(payload, bytes.Repeat([]byte{'x'}, maxClipboardImageBytes+1), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	data, ok = runClipboardImageCommand(context.Background(), clipboardImageCommand{name: "clipboard-test-helper"})
+	if ok || data != nil {
+		t.Fatalf("over-limit command result = (%d bytes, %v), want (0 bytes, false)", len(data), ok)
 	}
 }
 
