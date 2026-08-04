@@ -18,6 +18,15 @@ import (
 // One concrete type instead of a closure-driven anonymous tool
 // keeps the schema, name, and ownership inspectable for logs and
 // dialogs.
+// ToolResultDetails identifies extension metadata carried out of the
+// subprocess. State is persisted with the active session when present and
+// is never serialized into a provider request.
+type ToolResultDetails struct {
+	Extension string
+	Tool      string
+	State     json.RawMessage
+}
+
 type extensionTool struct {
 	name        string
 	description string
@@ -90,7 +99,11 @@ func (t *extensionTool) Execute(ctx context.Context, args json.RawMessage, _ fun
 		// Defensive: an empty content slice would confuse the model.
 		out.Content = []provider.Content{provider.TextBlock{Text: "(extension returned no content)"}}
 	}
-	out.Details = map[string]any{"extension": t.extension, "tool": t.name}
+	out.Details = ToolResultDetails{
+		Extension: t.extension,
+		Tool:      t.name,
+		State:     append(json.RawMessage(nil), resp.Details...),
+	}
 	return out, nil
 }
 

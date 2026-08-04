@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/patriceckhart/zot/packages/provider"
 )
@@ -48,6 +49,20 @@ type Agent struct {
 	// surfaced as an assistant-like status line. Used for rate-
 	// limiting, business-hour gates, and deny-by-default setups.
 	BeforeTurn func(step int) (allowed bool, reason string)
+
+	// BeforeTurnContext is the richer turn-start hook. It receives the
+	// current turn context so blocking interception can honor cancellation.
+	// It may return a bounded, non-transcript context string that is appended
+	// to the provider request's system prompt for this turn only. When set, it
+	// replaces BeforeTurn so a host can combine approval and context
+	// collection into one lifecycle round trip.
+	BeforeTurnContext func(ctx context.Context, step int) (allowed bool, reason, context string)
+
+	// OnToolResult, if set, receives extension/tool metadata immediately
+	// after each tool call completes. Details are host-owned metadata and
+	// are never sent to the provider; hosts may persist selected details
+	// with the active session.
+	OnToolResult func(id string, result ToolResult)
 
 	// BeforeAssistantMessage, if set, is called after the model's
 	// final assistant message is assembled but before it's appended
@@ -384,7 +399,20 @@ func (a *Agent) runLoop(ctx context.Context, sink func(AgentEvent)) error {
 		}
 
 		sink(EvTurnStart{Step: step})
-		if a.BeforeTurn != nil {
+		turnContext := ""
+		if a.BeforeTurnContext != nil {
+			var allowed bool
+			var reason string
+			allowed, reason, turnContext = a.BeforeTurnContext(ctx, step)
+			if !allowed {
+				if reason == "" {
+					reason = "turn blocked by extension guard"
+				}
+				sink(EvTurnEnd{Stop: provider.StopError, Err: fmt.Errorf("%s", reason)})
+				sink(EvDone{})
+				return nil
+			}
+		} else if a.BeforeTurn != nil {
 			if allowed, reason := a.BeforeTurn(step); !allowed {
 				if reason == "" {
 					reason = "turn blocked by extension guard"
@@ -401,7 +429,7 @@ func (a *Agent) runLoop(ctx context.Context, sink func(AgentEvent)) error {
 			err          error
 		)
 		for attempt := 0; ; attempt++ {
-			stop, assistantMsg, err = a.oneTurn(ctx, sink)
+			stop, assistantMsg, err = a.oneTurn(ctx, sink, turnContext)
 			sink(EvTurnEnd{Stop: stop, Err: err})
 			if err == nil || !a.canRetryError(err, attempt) {
 				break
@@ -561,14 +589,21 @@ func (a *Agent) dropLastAssistantMessage() {
 
 // oneTurn calls the LLM once, forwards events, returns the stop reason
 // and the assembled assistant message (already appended to the transcript).
-func (a *Agent) oneTurn(ctx context.Context, sink func(AgentEvent)) (provider.StopReason, provider.Message, error) {
+func (a *Agent) oneTurn(ctx context.Context, sink func(AgentEvent), turnContext string) (provider.StopReason, provider.Message, error) {
 	fastMode := a.FastModeEnabled()
 	if err := provider.ValidateFastMode(a.Client.Name(), fastMode); err != nil {
 		return provider.StopError, provider.Message{}, err
 	}
+	system := a.System
+	if contextText := boundedTurnContext(turnContext); contextText != "" {
+		if system != "" {
+			system += "\n\n"
+		}
+		system += "[Extension context for this turn]\n" + contextText
+	}
 	req := provider.Request{
 		Model:  a.Model,
-		System: a.System,
+		System: system,
 		// Repair any dangling tool_use blocks before sending. A turn
 		// aborted mid-flight (cancel, connection drop, ECONNREFUSED to a
 		// dev server, etc.) can leave an assistant tool_use with no
@@ -708,6 +743,9 @@ func (a *Agent) executeTools(ctx context.Context, msg provider.Message, sink fun
 				addedTools = append(addedTools, name)
 			}
 		}
+		if a.OnToolResult != nil {
+			a.OnToolResult(tc.ID, res)
+		}
 		sink(EvToolResult{ID: tc.ID, Result: res})
 	}
 
@@ -819,6 +857,24 @@ func mirrorToolImagesAsUser(msg provider.Message) provider.Message {
 	prefix := provider.TextBlock{Text: "Tool output included the following image content:"}
 	content = append([]provider.Content{prefix}, content...)
 	return provider.Message{Role: provider.RoleUser, Content: content, Time: time.Now()}
+}
+
+const (
+	maxTurnContextBytes        = 16 * 1024
+	turnContextTruncatedMarker = "\n[extension context truncated]"
+)
+
+func boundedTurnContext(text string) string {
+	text = strings.TrimSpace(text)
+	if len(text) <= maxTurnContextBytes {
+		return text
+	}
+	limit := maxTurnContextBytes - len(turnContextTruncatedMarker)
+	cut := limit
+	for cut > 0 && !utf8.RuneStart(text[cut]) {
+		cut--
+	}
+	return strings.TrimSpace(text[:cut]) + turnContextTruncatedMarker
 }
 
 func containsString(values []string, want string) bool {

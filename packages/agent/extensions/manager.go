@@ -29,6 +29,7 @@ import (
 	"time"
 
 	"github.com/patriceckhart/zot/packages/agent/extproto"
+	"github.com/patriceckhart/zot/packages/agent/skills"
 	"github.com/patriceckhart/zot/packages/tui"
 )
 
@@ -43,6 +44,7 @@ type Manifest struct {
 	Language    string   `json:"language,omitempty"` // informational ("go", "python", "typescript", ...)
 	Enabled     *bool    `json:"enabled,omitempty"`  // nil = enabled
 	Description string   `json:"description,omitempty"`
+	Skills      []string `json:"skills,omitempty"` // bundled skill directories
 }
 
 // IsEnabled returns the manifest's effective enabled state. Default
@@ -50,6 +52,48 @@ type Manifest struct {
 // extra zot ext enable command.
 func (m Manifest) IsEnabled() bool {
 	return m.Enabled == nil || *m.Enabled
+}
+
+func loadManifestSkills(extDir string, mf Manifest) ([]*skills.Skill, []error) {
+	if len(mf.Skills) == 0 {
+		return nil, nil
+	}
+	root, err := filepath.Abs(extDir)
+	if err != nil {
+		return nil, []error{fmt.Errorf("resolve extension directory: %w", err)}
+	}
+	root, err = filepath.EvalSymlinks(root)
+	if err != nil {
+		return nil, []error{fmt.Errorf("resolve extension directory: %w", err)}
+	}
+	declared := make([]skills.BundledSkillDir, 0, len(mf.Skills))
+	var errs []error
+	for _, raw := range mf.Skills {
+		rel := strings.TrimSpace(raw)
+		if rel == "" || filepath.IsAbs(rel) {
+			errs = append(errs, fmt.Errorf("skill path %q must be a relative directory", raw))
+			continue
+		}
+		clean := filepath.Clean(rel)
+		if clean == "." || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
+			errs = append(errs, fmt.Errorf("skill path %q escapes the extension directory", raw))
+			continue
+		}
+		candidate := filepath.Join(root, clean)
+		resolved, err := filepath.EvalSymlinks(candidate)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("skill path %q: %w", raw, err))
+			continue
+		}
+		relResolved, err := filepath.Rel(root, resolved)
+		if err != nil || relResolved == ".." || strings.HasPrefix(relResolved, ".."+string(filepath.Separator)) {
+			errs = append(errs, fmt.Errorf("skill path %q escapes the extension directory through a symlink", raw))
+			continue
+		}
+		declared = append(declared, skills.BundledSkillDir{Dir: resolved, Root: root, Source: "extension " + mf.Name})
+	}
+	loaded, loadErrs := skills.LoadBundled(declared)
+	return loaded, append(errs, loadErrs...)
 }
 
 // Extension is a running extension subprocess and the metadata zot
@@ -66,6 +110,16 @@ type Extension struct {
 	helloAck bool
 	commands []extproto.RegisterCommandFromExt
 	tools    []extproto.RegisterToolFromExt
+	skills   []*skills.Skill
+
+	writeMu sync.Mutex // serializes concurrent host→extension frames
+
+	// lifecycleFrames decouples session-event delivery from the host's
+	// synchronous control paths. The queue preserves lifecycle ordering while
+	// bounding backpressure from an extension that stops reading stdin.
+	lifecycleFrames   chan []byte
+	lifecycleStop     chan struct{}
+	lifecycleStopOnce sync.Once
 
 	// readyCh is closed when the extension sends a ReadyFromExt
 	// frame, or when the host gives up waiting (registrationGrace).
@@ -130,6 +184,12 @@ type HostHooks interface {
 	OpenPanel(extName string, spec extproto.PanelSpec)
 	UpdatePanel(extName, panelID, title string, lines []string, footer string)
 	ClosePanel(extName, panelID string)
+
+	// SetStatus and SetWidget maintain persistent extension-owned UI state.
+	// Hosts without a persistent UI may ignore these calls.
+	SetStatus(extName, key, level, text string)
+	SetWidget(extName, id, position, title string, lines []string)
+	ClearWidget(extName, id string)
 }
 
 // AlertHostHooks is an optional extension to HostHooks. Hosts that support
@@ -173,6 +233,16 @@ type Manager struct {
 	// by the host so it can rebuild the agent's tool registry with
 	// the freshly-registered extension tools.
 	onReload func()
+
+	// activeSession is replayed to extensions loaded after the current
+	// session was opened, such as after /reload-ext.
+	activeSession *sessionEventState
+	sessionEmitMu sync.Mutex
+}
+
+type sessionEventState struct {
+	event  extproto.EventFromHost
+	states map[string]json.RawMessage
 }
 
 // New constructs an empty Manager. Call Discover to populate it from
@@ -287,6 +357,7 @@ func (m *Manager) loadOne(ctx context.Context, dir string) error {
 		return nil
 	}
 
+	bundledSkills, skillErrs := loadManifestSkills(dir, mf)
 	ext := &Extension{
 		Manifest:         mf,
 		Dir:              dir,
@@ -296,6 +367,12 @@ func (m *Manager) loadOne(ctx context.Context, dir string) error {
 		pendingIntercept: map[string]chan extproto.EventInterceptResponseFromExt{},
 		eventSubs:        map[string]struct{}{},
 		interceptSubs:    map[string]struct{}{},
+		skills:           bundledSkills,
+		lifecycleFrames:  make(chan []byte, 64),
+		lifecycleStop:    make(chan struct{}),
+	}
+	for _, skillErr := range skillErrs {
+		ext.diagnostics = append(ext.diagnostics, "skill: "+skillErr.Error())
 	}
 	if mf.Exec != "" {
 		if err := m.spawn(ctx, ext); err != nil {
@@ -627,6 +704,12 @@ func (m *Manager) spawn(ctx context.Context, ext *Extension) error {
 	// Trust the manifest's name; ignore mismatch from the hello.
 	ext.helloAck = true
 
+	m.mu.RLock()
+	var activeSession *extproto.SessionContext
+	if m.activeSession != nil {
+		activeSession = cloneSessionContext(m.activeSession.event.Session)
+	}
+	m.mu.RUnlock()
 	ack, _ := extproto.Encode(extproto.HelloAckFromHost{
 		Type:            "hello_ack",
 		ProtocolVersion: extproto.ProtocolVersion,
@@ -636,6 +719,7 @@ func (m *Manager) spawn(ctx context.Context, ext *Extension) error {
 		CWD:             m.cwd,
 		ExtensionDir:    ext.Dir,
 		DataDir:         ext.Dir,
+		Session:         activeSession,
 	})
 	if _, err := stdin.Write(ack); err != nil {
 		return fmt.Errorf("send hello_ack (stderr log: %s): %w", logPath, err)
@@ -643,7 +727,8 @@ func (m *Manager) spawn(ctx context.Context, ext *Extension) error {
 
 	cleanup = false
 
-	// Spin up the read loop now that the handshake is done.
+	// Spin up the lifecycle writer and read loop now that the handshake is done.
+	ext.startLifecycleWriter()
 	go m.readLoop(ext, scanner)
 
 	// Compatibility shim: extensions built against the phase-1 SDK
@@ -737,6 +822,7 @@ func (m *Manager) readLoop(ext *Extension, scanner *bufio.Scanner) {
 			}
 		}
 		m.mu.Unlock()
+		ext.stopLifecycleWriter()
 		ext.readyOnce.Do(func() { close(ext.readyCh) })
 		fmt.Fprintf(ext.logFile, "[zot] extension %s read loop exited at %s\n", ext.Manifest.Name, time.Now().Format(time.RFC3339))
 	}()
@@ -800,6 +886,7 @@ func (m *Manager) readLoop(ext *Extension, scanner *bufio.Scanner) {
 			}
 		case "ready":
 			ext.readyOnce.Do(func() { close(ext.readyCh) })
+			m.replaySessionEvent(ext)
 		case "subscribe":
 			var sub extproto.SubscribeFromExt
 			if err := json.Unmarshal(line, &sub); err == nil {
@@ -849,21 +936,38 @@ func (m *Manager) readLoop(ext *Extension, scanner *bufio.Scanner) {
 			}
 		case "notify":
 			var n extproto.NotifyFromExt
-			if err := json.Unmarshal(line, &n); err == nil {
+			if err := json.Unmarshal(line, &n); err == nil && m.hooks != nil {
 				m.hooks.Notify(ext.Manifest.Name, n.Level, n.Message)
+			}
+		case "status":
+			var s extproto.StatusFromExt
+			if err := json.Unmarshal(line, &s); err == nil && m.hooks != nil {
+				m.hooks.SetStatus(ext.Manifest.Name, s.Key, s.Level, s.Text)
+			}
+		case "widget":
+			var w extproto.WidgetFromExt
+			if err := json.Unmarshal(line, &w); err == nil && m.hooks != nil {
+				m.hooks.SetWidget(ext.Manifest.Name, w.ID, w.Position, w.Title, w.Lines)
+			}
+		case "widget_clear":
+			var w extproto.ClearWidgetFromExt
+			if err := json.Unmarshal(line, &w); err == nil && m.hooks != nil {
+				m.hooks.ClearWidget(ext.Manifest.Name, w.ID)
 			}
 		case "alert":
 			var a extproto.AlertFromExt
-			if err := json.Unmarshal(line, &a); err == nil {
+			if err := json.Unmarshal(line, &a); err == nil && m.hooks != nil {
 				if hooks, ok := m.hooks.(AlertHostHooks); ok {
 					hooks.Alert(ext.Manifest.Name, a.AlertRequest)
 				}
 			}
 		case "clear_notes":
-			m.hooks.ClearNotes(ext.Manifest.Name)
+			if m.hooks != nil {
+				m.hooks.ClearNotes(ext.Manifest.Name)
+			}
 		case "submit":
 			var s extproto.SubmitFromExt
-			if err := json.Unmarshal(line, &s); err == nil {
+			if err := json.Unmarshal(line, &s); err == nil && m.hooks != nil {
 				text := strings.TrimSpace(s.Text)
 				if text != "" {
 					m.hooks.Submit(text)
@@ -877,7 +981,7 @@ func (m *Manager) readLoop(ext *Extension, scanner *bufio.Scanner) {
 			var s extproto.SubmitSlashFromExt
 			if err := json.Unmarshal(line, &s); err == nil {
 				text := strings.TrimSpace(s.Text)
-				if strings.HasPrefix(text, "/") {
+				if strings.HasPrefix(text, "/") && m.hooks != nil {
 					m.hooks.SubmitSlash(text)
 				} else {
 					fmt.Fprintf(ext.logFile, "[zot] submit_slash refused (not a slash command): %q\n", s.Text)
@@ -901,17 +1005,17 @@ func (m *Manager) readLoop(ext *Extension, scanner *bufio.Scanner) {
 			}
 		case "open_panel":
 			var op extproto.OpenPanelFromExt
-			if err := json.Unmarshal(line, &op); err == nil {
+			if err := json.Unmarshal(line, &op); err == nil && m.hooks != nil {
 				m.hooks.OpenPanel(ext.Manifest.Name, op.Panel)
 			}
 		case "panel_render":
 			var pr extproto.PanelRenderFromExt
-			if err := json.Unmarshal(line, &pr); err == nil {
+			if err := json.Unmarshal(line, &pr); err == nil && m.hooks != nil {
 				m.hooks.UpdatePanel(ext.Manifest.Name, pr.PanelID, pr.Title, pr.Lines, pr.Footer)
 			}
 		case "panel_close":
 			var pc extproto.PanelCloseFromExt
-			if err := json.Unmarshal(line, &pc); err == nil {
+			if err := json.Unmarshal(line, &pc); err == nil && m.hooks != nil {
 				m.hooks.ClosePanel(ext.Manifest.Name, pc.PanelID)
 			}
 		case "shutdown_ack":
@@ -919,6 +1023,78 @@ func (m *Manager) readLoop(ext *Extension, scanner *bufio.Scanner) {
 		default:
 			ext.recordDiagnostic(fmt.Sprintf("unknown frame type %q", frame.Type))
 			fmt.Fprintf(ext.logFile, "[zot] unknown frame type %q\n", frame.Type)
+		}
+	}
+}
+
+func (ext *Extension) writeFrame(frame []byte) (int, error) {
+	if ext == nil || ext.stdin == nil {
+		return 0, fmt.Errorf("extension stdin is closed")
+	}
+	ext.writeMu.Lock()
+	defer ext.writeMu.Unlock()
+	return ext.stdin.Write(frame)
+}
+
+func (ext *Extension) startLifecycleWriter() {
+	if ext.lifecycleFrames == nil {
+		ext.lifecycleFrames = make(chan []byte, 64)
+	}
+	if ext.lifecycleStop == nil {
+		ext.lifecycleStop = make(chan struct{})
+	}
+	go ext.lifecycleWriter()
+}
+
+func (ext *Extension) stopLifecycleWriter() {
+	if ext == nil || ext.lifecycleStop == nil {
+		return
+	}
+	ext.lifecycleStopOnce.Do(func() { close(ext.lifecycleStop) })
+}
+
+func (ext *Extension) enqueueLifecycleFrame(frame []byte) bool {
+	if ext == nil {
+		return false
+	}
+	if ext.lifecycleFrames == nil || ext.lifecycleStop == nil {
+		_, err := ext.writeFrame(frame)
+		return err == nil
+	}
+	copyFrame := append([]byte(nil), frame...)
+	select {
+	case <-ext.lifecycleStop:
+		return false
+	default:
+	}
+	select {
+	case ext.lifecycleFrames <- copyFrame:
+		return true
+	default:
+		// Prefer the newest lifecycle snapshot when a broken extension stops
+		// draining its pipe. The latest event still carries the current state.
+		select {
+		case <-ext.lifecycleFrames:
+		default:
+		}
+		select {
+		case ext.lifecycleFrames <- copyFrame:
+			return true
+		default:
+			return false
+		}
+	}
+}
+
+func (ext *Extension) lifecycleWriter() {
+	for {
+		select {
+		case <-ext.lifecycleStop:
+			return
+		case frame := <-ext.lifecycleFrames:
+			if _, err := ext.writeFrame(frame); err != nil {
+				return
+			}
 		}
 	}
 }
@@ -1075,6 +1251,24 @@ func (m *Manager) Tools() []ToolInfo {
 	return out
 }
 
+// Skills returns extension-bundled skills in deterministic extension-name
+// order. The build layer merges them after user skills and before built-ins.
+func (m *Manager) Skills() []*skills.Skill {
+	m.mu.RLock()
+	names := make([]string, 0, len(m.ext))
+	for name := range m.ext {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	var out []*skills.Skill
+	for _, name := range names {
+		ext := m.ext[name]
+		out = append(out, ext.skills...)
+	}
+	m.mu.RUnlock()
+	return out
+}
+
 // HasTool reports whether name is registered by any extension.
 func (m *Manager) HasTool(name string) bool {
 	m.mu.RLock()
@@ -1106,7 +1300,7 @@ func (m *Manager) InvokeTool(ctx context.Context, name string, args json.RawMess
 		Name: name,
 		Args: args,
 	})
-	if _, err := ext.stdin.Write(frame); err != nil {
+	if _, err := ext.writeFrame(frame); err != nil {
 		ext.mu.Lock()
 		delete(ext.pendingTool, id)
 		ext.mu.Unlock()
@@ -1172,7 +1366,7 @@ func (m *Manager) Invoke(ctx context.Context, name, args string, timeout time.Du
 		Name: name,
 		Args: args,
 	})
-	if _, err := ext.stdin.Write(frame); err != nil {
+	if _, err := ext.writeFrame(frame); err != nil {
 		ext.mu.Lock()
 		delete(ext.pending, id)
 		ext.mu.Unlock()
@@ -1206,7 +1400,7 @@ func (m *Manager) SendPanelKey(extName, panelID, key, text string) error {
 		return fmt.Errorf("no extension %q", extName)
 	}
 	frame, _ := extproto.Encode(extproto.PanelKeyFromHost{Type: "panel_key", PanelID: panelID, Key: key, Text: text})
-	_, err := ext.stdin.Write(frame)
+	_, err := ext.writeFrame(frame)
 	return err
 }
 
@@ -1218,7 +1412,7 @@ func (m *Manager) SendPanelClose(extName, panelID string) error {
 		return fmt.Errorf("no extension %q", extName)
 	}
 	frame, _ := extproto.Encode(extproto.PanelCloseFromHost{Type: "panel_close", PanelID: panelID})
-	_, err := ext.stdin.Write(frame)
+	_, err := ext.writeFrame(frame)
 	return err
 }
 
@@ -1238,7 +1432,7 @@ func stopExtensions(exts []*Extension, gracePeriod time.Duration) {
 			continue
 		}
 		if frame, err := extproto.Encode(extproto.ShutdownFromHost{Type: "shutdown"}); err == nil {
-			_, _ = ext.stdin.Write(frame)
+			_, _ = ext.writeFrame(frame)
 		}
 		_ = ext.stdin.Close()
 	}

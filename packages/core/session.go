@@ -26,9 +26,12 @@ type Session struct {
 	Meta SessionMeta
 	// Title is the effective title after applying append-only rename rows.
 	// Meta.Title remains the original meta-line value for compatibility.
-	Title  string
-	writer *os.File
-	buf    *bufio.Writer
+	Title string
+	// ExtensionState contains the latest opaque state snapshot recorded by
+	// each extension for this session/branch. It is never sent to providers.
+	ExtensionState map[string]json.RawMessage
+	writer         *os.File
+	buf            *bufio.Writer
 
 	// freshFile is true when the file was created by NewSession (this
 	// process owns it) and false when OpenSession reopened an existing
@@ -81,6 +84,8 @@ type sessionLine struct {
 	Messages   *[]provider.Message `json:"messages,omitempty"`
 	Usage      *provider.Usage     `json:"usage,omitempty"`
 	Cumulative *provider.Usage     `json:"cumulative,omitempty"`
+	Extension  string              `json:"extension,omitempty"`
+	State      json.RawMessage     `json:"state,omitempty"`
 }
 
 type sessionLineHead struct {
@@ -104,6 +109,7 @@ type SessionSnapshot struct {
 	Meta                 SessionMeta
 	Title                string
 	Messages             []provider.Message
+	ExtensionState       map[string]json.RawMessage
 	UsageCheckpoints     []SessionUsageCheckpoint
 	CompactionGeneration int
 }
@@ -168,12 +174,13 @@ func newSessionAt(p, cwd, providerName, model, version string) (*Session, error)
 		return nil, err
 	}
 	s := &Session{
-		ID:        id,
-		Path:      p,
-		Meta:      SessionMeta{ID: id, CWD: cwd, Provider: providerName, Model: model, Started: time.Now().UTC(), Version: version},
-		writer:    f,
-		buf:       bufio.NewWriter(f),
-		freshFile: true,
+		ID:             id,
+		Path:           p,
+		Meta:           SessionMeta{ID: id, CWD: cwd, Provider: providerName, Model: model, Started: time.Now().UTC(), Version: version},
+		writer:         f,
+		buf:            bufio.NewWriter(f),
+		freshFile:      true,
+		ExtensionState: map[string]json.RawMessage{},
 	}
 	if err := s.writeLine(sessionLine{Type: "meta", Meta: &s.Meta}); err != nil {
 		f.Close()
@@ -277,6 +284,7 @@ func ReadSessionSnapshot(path string) (SessionSnapshot, error) {
 	}
 	var rawCheckpoints []rawCheckpoint
 	titleFromRename := false
+	extensionState := map[string]json.RawMessage{}
 
 	err = forEachStrictJSONLLine(f, func(line []byte, lineNo int) error {
 		var head sessionLineHead
@@ -350,6 +358,19 @@ func ReadSessionSnapshot(path string) (SessionSnapshot, error) {
 			titleFromRename = true
 			snapshot.Title = *row.Title
 
+		case "extension_state":
+			var row sessionLine
+			if err := json.Unmarshal(line, &row); err != nil {
+				return fmt.Errorf("line %d: invalid extension state row: %w", lineNo, err)
+			}
+			if row.Extension != "" && len(row.State) <= maxExtensionStateBytes {
+				if len(row.State) == 0 || strings.TrimSpace(string(row.State)) == "null" {
+					delete(extensionState, row.Extension)
+				} else if json.Valid(row.State) {
+					extensionState[row.Extension] = append(json.RawMessage(nil), row.State...)
+				}
+			}
+
 		default:
 			return fmt.Errorf("line %d: unknown row type %q", lineNo, head.Type)
 		}
@@ -363,6 +384,7 @@ func ReadSessionSnapshot(path string) (SessionSnapshot, error) {
 	}
 
 	snapshot.CompactionGeneration = generation
+	snapshot.ExtensionState = extensionState
 
 	// Repair only after compaction replacement. This makes synthetic tool
 	// results and the removal of orphaned results part of the same indexed
@@ -703,12 +725,13 @@ func OpenSession(path string) (*Session, []provider.Message, error) {
 		return nil, nil, err
 	}
 	s := &Session{
-		ID:     snapshot.Meta.ID,
-		Path:   path,
-		Meta:   snapshot.Meta,
-		Title:  NormalizeSessionTitle(snapshot.Title),
-		writer: out,
-		buf:    bufio.NewWriter(out),
+		ID:             snapshot.Meta.ID,
+		Path:           path,
+		Meta:           snapshot.Meta,
+		Title:          NormalizeSessionTitle(snapshot.Title),
+		ExtensionState: snapshot.ExtensionState,
+		writer:         out,
+		buf:            bufio.NewWriter(out),
 	}
 	return s, snapshot.Messages, nil
 }
@@ -1110,6 +1133,40 @@ func (s *Session) AppendUsage(u, cum provider.Usage) error {
 	return s.writeLine(sessionLine{Type: "usage", Usage: &u, Cumulative: &cum})
 }
 
+const maxExtensionStateBytes = 256 * 1024
+
+// AppendExtensionState records the latest opaque extension snapshot for the
+// active session/branch. State is persisted in the session file but is never
+// included in provider requests. A nil or JSON null state clears the key.
+func (s *Session) AppendExtensionState(extension string, state json.RawMessage) error {
+	if s == nil {
+		return nil
+	}
+	extension = strings.TrimSpace(extension)
+	if extension == "" {
+		return fmt.Errorf("extension state: extension name is empty")
+	}
+	if len(state) > maxExtensionStateBytes {
+		return fmt.Errorf("extension state %q exceeds %d bytes", extension, maxExtensionStateBytes)
+	}
+	if len(state) > 0 && !json.Valid(state) {
+		return fmt.Errorf("extension state %q is not valid JSON", extension)
+	}
+	copyState := append(json.RawMessage(nil), state...)
+	if err := s.writeLine(sessionLine{Type: "extension_state", Extension: extension, State: copyState}); err != nil {
+		return fmt.Errorf("append extension state: %w", err)
+	}
+	if s.ExtensionState == nil {
+		s.ExtensionState = map[string]json.RawMessage{}
+	}
+	if len(copyState) == 0 || strings.TrimSpace(string(copyState)) == "null" {
+		delete(s.ExtensionState, extension)
+	} else {
+		s.ExtensionState[extension] = copyState
+	}
+	return nil
+}
+
 // Close flushes and closes the session file. If the session was
 // freshly created in this process and never had any messages
 // appended (the user opened zot, looked around, and exited without
@@ -1121,7 +1178,7 @@ func (s *Session) Close() error {
 	}
 	flushErr := s.buf.Flush()
 	closeErr := s.writer.Close()
-	if s.freshFile && s.messagesAppended == 0 {
+	if s.freshFile && s.messagesAppended == 0 && len(s.ExtensionState) == 0 {
 		// Best-effort cleanup. We deliberately don't propagate the
 		// remove error: if it fails (file already gone, perms changed)
 		// the worst case is one stale empty file in the listing.

@@ -64,6 +64,9 @@ type EventInterceptResponseFromExt struct {
 	Reason       string          `json:"reason,omitempty"`
 	ModifiedArgs json.RawMessage `json:"modified_args,omitempty"`
 	ReplaceText  string          `json:"replace_text,omitempty"`
+	// Context is hidden, bounded context for the upcoming model turn. It is
+	// not appended to the transcript or shown as a user message.
+	Context string `json:"context,omitempty"`
 }
 
 type ToolResultFromExt struct {
@@ -72,6 +75,9 @@ type ToolResultFromExt struct {
 	Content       []ContentBlock `json:"content"`
 	IsError       bool           `json:"is_error,omitempty"`
 	ActivateTools []string       `json:"activate_tools,omitempty"`
+	// Details is extension-owned metadata. The host never includes it in
+	// provider requests, but may persist it with the active session.
+	Details json.RawMessage `json:"details,omitempty"`
 }
 
 type ContentBlock struct {
@@ -119,6 +125,31 @@ type PanelRenderFromExt struct {
 type PanelCloseFromExt struct {
 	Type    string `json:"type"`
 	PanelID string `json:"panel_id"`
+}
+
+// StatusFromExt sets or replaces one persistent status item owned by an
+// extension. An empty text clears the item.
+type StatusFromExt struct {
+	Type  string `json:"type"`
+	Key   string `json:"key"`
+	Level string `json:"level,omitempty"`
+	Text  string `json:"text,omitempty"`
+}
+
+// WidgetFromExt sets or replaces one persistent widget owned by an
+// extension. Position is a host-defined placement hint; interactive hosts
+// currently support "above_input" and treat unknown values as that default.
+type WidgetFromExt struct {
+	Type     string   `json:"type"`
+	ID       string   `json:"id"`
+	Position string   `json:"position,omitempty"`
+	Title    string   `json:"title,omitempty"`
+	Lines    []string `json:"lines,omitempty"`
+}
+
+type ClearWidgetFromExt struct {
+	Type string `json:"type"`
+	ID   string `json:"id"`
 }
 
 const AlertKindBell = "bell"
@@ -174,14 +205,25 @@ type ShutdownAckFromExt struct {
 }
 
 type HelloAckFromHost struct {
-	Type            string `json:"type"`
-	ProtocolVersion int    `json:"protocol_version"`
-	ZotVersion      string `json:"zot_version"`
-	Provider        string `json:"provider"`
-	Model           string `json:"model"`
-	CWD             string `json:"cwd"`
-	ExtensionDir    string `json:"extension_dir,omitempty"`
-	DataDir         string `json:"data_dir,omitempty"`
+	Type            string          `json:"type"`
+	ProtocolVersion int             `json:"protocol_version"`
+	ZotVersion      string          `json:"zot_version"`
+	Provider        string          `json:"provider"`
+	Model           string          `json:"model"`
+	CWD             string          `json:"cwd"`
+	ExtensionDir    string          `json:"extension_dir,omitempty"`
+	DataDir         string          `json:"data_dir,omitempty"`
+	Session         *SessionContext `json:"session,omitempty"`
+}
+
+// SessionContext identifies the active transcript branch. ID is the current
+// session/branch id; ParentID is empty for a root session.
+type SessionContext struct {
+	ID        string `json:"id"`
+	ParentID  string `json:"parent_id,omitempty"`
+	Path      string `json:"path,omitempty"`
+	CWD       string `json:"cwd,omitempty"`
+	ForkPoint int    `json:"fork_point,omitempty"`
 }
 
 type CommandInvokedFromHost struct {
@@ -209,6 +251,10 @@ type EventFromHost struct {
 	ToolArgs    json.RawMessage `json:"tool_args,omitempty"`
 	ToolPreview string          `json:"tool_preview,omitempty"`
 	Text        string          `json:"text,omitempty"`
+	Session     *SessionContext `json:"session,omitempty"`
+	// State is private to the receiving extension. The manager selects the
+	// matching extension-owned snapshot before sending the event.
+	State json.RawMessage `json:"state,omitempty"`
 }
 
 type EventInterceptFromHost struct {

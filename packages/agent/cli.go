@@ -131,6 +131,21 @@ func (h *interactiveExtHooks) ClosePanel(extName, panelID string) {
 		iv.ClosePanel(extName, panelID)
 	}
 }
+func (h *interactiveExtHooks) SetStatus(extName, key, level, text string) {
+	if iv := h.iv(); iv != nil {
+		iv.SetStatus(extName, key, level, text)
+	}
+}
+func (h *interactiveExtHooks) SetWidget(extName, id, position, title string, lines []string) {
+	if iv := h.iv(); iv != nil {
+		iv.SetWidget(extName, id, position, title, lines)
+	}
+}
+func (h *interactiveExtHooks) ClearWidget(extName, id string) {
+	if iv := h.iv(); iv != nil {
+		iv.ClearWidget(extName, id)
+	}
+}
 
 // extToolAdapter bridges *extensions.Manager to the
 // ExtensionToolSource interface declared in build.go (kept narrow to
@@ -139,6 +154,16 @@ func (h *interactiveExtHooks) ClosePanel(extName, panelID string) {
 // same set of extension tools.
 type extToolAdapter struct {
 	mgr *extensions.Manager
+}
+
+var _ ExtensionToolSource = (*extToolAdapter)(nil)
+var _ ExtensionSkillSource = (*extToolAdapter)(nil)
+
+func (a *extToolAdapter) Skills() []*skills.Skill {
+	if a == nil || a.mgr == nil {
+		return nil
+	}
+	return a.mgr.Skills()
 }
 
 func (a *extToolAdapter) Tools() []ExtensionToolInfo {
@@ -436,6 +461,61 @@ func applyInitialSessionResume(ctx context.Context, args Args, base Resolved, ex
 // the events that have a clear extension-facing meaning are
 // forwarded; internal-only ones (text_delta, tool_progress) are
 // dropped to keep the per-extension stream sane.
+func sessionContext(sess *core.Session) *extproto.SessionContext {
+	if sess == nil {
+		return nil
+	}
+	return &extproto.SessionContext{
+		ID:        sess.Meta.ID,
+		ParentID:  sess.Meta.Parent,
+		Path:      sess.Path,
+		CWD:       sess.Meta.CWD,
+		ForkPoint: sess.Meta.ForkPoint,
+	}
+}
+
+func announceSession(mgr *extensions.Manager, sess *core.Session) {
+	if mgr == nil {
+		return
+	}
+	var states map[string]json.RawMessage
+	if sess != nil {
+		states = copyExtensionStates(sess.ExtensionState)
+	}
+	mgr.EmitSessionEvent("session_start", sessionContext(sess), states)
+	if sess != nil {
+		mgr.EmitSessionEvent("session_opened", sessionContext(sess), states)
+	}
+}
+
+func copyExtensionStates(states map[string]json.RawMessage) map[string]json.RawMessage {
+	if len(states) == 0 {
+		return nil
+	}
+	out := make(map[string]json.RawMessage, len(states))
+	for name, state := range states {
+		out[name] = append(json.RawMessage(nil), state...)
+	}
+	return out
+}
+
+func persistExtensionToolResult(mgr *extensions.Manager, sess *core.Session, result core.ToolResult) {
+	if sess == nil {
+		return
+	}
+	details, ok := result.Details.(extensions.ToolResultDetails)
+	if !ok || details.Extension == "" || len(details.State) == 0 {
+		return
+	}
+	if err := sess.AppendExtensionState(details.Extension, details.State); err != nil {
+		fmt.Fprintf(os.Stderr, "extension state: %v\n", err)
+		return
+	}
+	if mgr != nil {
+		mgr.UpdateSessionState(details.Extension, details.State)
+	}
+}
+
 func fanoutAgentEvent(mgr *extensions.Manager, ev core.AgentEvent) {
 	if mgr == nil {
 		return
@@ -557,6 +637,9 @@ func (nonInteractiveExtHooks) ClearNotes(string)                                
 func (nonInteractiveExtHooks) OpenPanel(string, extproto.PanelSpec)                 {}
 func (nonInteractiveExtHooks) UpdatePanel(string, string, string, []string, string) {}
 func (nonInteractiveExtHooks) ClosePanel(string, string)                            {}
+func (nonInteractiveExtHooks) SetStatus(string, string, string, string)             {}
+func (nonInteractiveExtHooks) SetWidget(string, string, string, string, []string)   {}
+func (nonInteractiveExtHooks) ClearWidget(string, string)                           {}
 
 // setupNonInteractiveExtensions loads --ext paths and (unless
 // --no-ext) runs discovery. Returns the manager so the caller can
@@ -574,7 +657,6 @@ func setupNonInteractiveExtensions(ctx context.Context, args Args, r *Resolved, 
 	}
 	extMgr.WaitForReady(3 * time.Second)
 	r.MergeExtensionTools(&extToolAdapter{mgr: extMgr})
-	extMgr.EmitEvent(extproto.EventFromHost{Event: "session_start"})
 	return extMgr, func() { extMgr.Stop(2 * time.Second) }
 }
 
@@ -593,9 +675,9 @@ func wireNonInteractiveAgentExtHooks(ctx context.Context, ag *core.Agent, extMgr
 		}
 		return true, "", res.ModifiedArgs
 	}
-	ag.BeforeTurn = func(step int) (bool, string) {
-		res := extMgr.InterceptTurnStart(ctx, step)
-		return !res.Block, res.Reason
+	ag.BeforeTurnContext = func(turnCtx context.Context, step int) (bool, string, string) {
+		res := extMgr.InterceptTurnStart(turnCtx, step)
+		return !res.Block, res.Reason, res.Context
 	}
 	ag.BeforeAssistantMessage = func(text string) (bool, string, string) {
 		res := extMgr.InterceptAssistantMessage(ctx, text)
@@ -677,8 +759,10 @@ func runPrintMode(ctx context.Context, args Args, version string) error {
 			return err
 		}
 		r.Provider, r.Model = providerName, model
+		ag.OnToolResult = func(_ string, result core.ToolResult) { persistExtensionToolResult(extMgr, sess, result) }
 		defer sess.Close()
 	}
+	announceSession(extMgr, sess)
 
 	prompt := args.Prompt
 	if prompt == "" {
@@ -738,8 +822,10 @@ func runStreamMode(ctx context.Context, args Args, version string) error {
 			return err
 		}
 		r.Provider, r.Model = providerName, model
+		ag.OnToolResult = func(_ string, result core.ToolResult) { persistExtensionToolResult(extMgr, sess, result) }
 		defer sess.Close()
 	}
+	announceSession(extMgr, sess)
 
 	prompt := args.Prompt
 	if prompt == "" {
@@ -838,8 +924,10 @@ func runJSONMode(ctx context.Context, args Args, version string) error {
 			return err
 		}
 		r.Provider, r.Model = providerName, model
+		ag.OnToolResult = func(_ string, result core.ToolResult) { persistExtensionToolResult(extMgr, sess, result) }
 		defer sess.Close()
 	}
+	announceSession(extMgr, sess)
 
 	prompt := args.Prompt
 	if prompt == "" {
@@ -1170,9 +1258,9 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 			}
 			return true, "", r.ModifiedArgs
 		}
-		a.BeforeTurn = func(step int) (bool, string) {
-			r := extMgr.InterceptTurnStart(ctx, step)
-			return !r.Block, r.Reason
+		a.BeforeTurnContext = func(turnCtx context.Context, step int) (bool, string, string) {
+			r := extMgr.InterceptTurnStart(turnCtx, step)
+			return !r.Block, r.Reason, r.Context
 		}
 		a.BeforeAssistantMessage = func(text string) (bool, string, string) {
 			r := extMgr.InterceptAssistantMessage(ctx, text)
@@ -1261,9 +1349,6 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 		refreshAgentToolsAndPrompt(args, sharedSandbox, extToolAdapter, current, injectSwarmSpawn)
 	})
 
-	// Fire session_start once we know the manager's running.
-	extMgr.EmitEvent(extproto.EventFromHost{Event: "session_start"})
-
 	var sess *core.Session
 	var sessBaselineMsgs int // messages already on disk when current session opened
 	var sessionTitlePending bool
@@ -1296,6 +1381,7 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 			sessionTitlePending = sess.Meta.Parent != "" && sess.Title == "" && len(ag.Messages()) <= sess.Meta.ForkPoint
 		}
 	}
+	announceSession(extMgr, sess)
 	defer func() {
 		persistMu.Lock()
 		defer persistMu.Unlock()
@@ -1334,15 +1420,26 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 	}
 	persistCompaction := func(messages []provider.Message) {
 		sessionTransitionMu.RLock()
-		defer sessionTransitionMu.RUnlock()
+		var session *extproto.SessionContext
+		var states map[string]json.RawMessage
+		persistMu.Lock()
+		if sess != nil {
+			if err := sess.AppendCompaction(messages); err == nil {
+				sessBaselineMsgs = len(messages)
+				session = sessionContext(sess)
+				states = copyExtensionStates(sess.ExtensionState)
+			}
+		}
+		persistMu.Unlock()
+		sessionTransitionMu.RUnlock()
+		if session != nil {
+			extMgr.EmitSessionEvent("session_compacted", session, states)
+		}
+	}
+	persistToolResult := func(_ string, result core.ToolResult) {
 		persistMu.Lock()
 		defer persistMu.Unlock()
-		if sess == nil {
-			return
-		}
-		if err := sess.AppendCompaction(messages); err == nil {
-			sessBaselineMsgs = len(messages)
-		}
+		persistExtensionToolResult(extMgr, sess, result)
 	}
 	wireAgentPersist := func(a *core.Agent) *core.Agent {
 		if a == nil {
@@ -1351,6 +1448,7 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 		a.OnMessageAppended = persistMessage
 		a.OnUsage = persistUsage
 		a.OnTranscriptCompacted = persistCompaction
+		a.OnToolResult = persistToolResult
 		return a
 	}
 	wireAgentPersist(ag)
@@ -1443,6 +1541,7 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 			persistMu.Unlock()
 			return fmt.Errorf("session changed while loading; please try again")
 		}
+		newStates := copyExtensionStates(candidate.session.ExtensionState)
 		if oldSess != nil {
 			_ = oldSess.Close()
 		}
@@ -1477,6 +1576,10 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 		}
 		committed = true
 		persistMu.Unlock()
+		if candidate.session.Meta.Parent != "" {
+			extMgr.EmitSessionEvent("session_forked", sessionContext(candidate.session), newStates)
+		}
+		extMgr.EmitSessionEvent("session_switched", sessionContext(candidate.session), newStates)
 		return nil
 	}
 
@@ -1626,12 +1729,16 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 
 		// Commit only after every fallible operation has succeeded. Close
 		// the old session last so rollback never has to resurrect it.
+		var newStates map[string]json.RawMessage
 		persistMu.Lock()
 		if sess != nil {
 			writeNewTranscriptLocked(currentAg, sess, sessBaselineMsgs)
 			_ = sess.Close()
 		}
 		sess = newSess
+		if newSess != nil {
+			newStates = copyExtensionStates(newSess.ExtensionState)
+		}
 		sessBaselineMsgs = 0
 		sessionTitlePending = false
 		activeProvider = newProvider
@@ -1649,6 +1756,9 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 		// Re-scope the swarm dashboard to the new session.
 		if swarmMgr != nil && newSess != nil {
 			swarmMgr.SetActiveSession(newSess.ID)
+		}
+		if newSess != nil {
+			extMgr.EmitSessionEvent("session_opened", sessionContext(newSess), newStates)
 		}
 		return nil
 	}
@@ -1906,6 +2016,7 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 			// manifest and the skill tool.
 			userHome, _ := os.UserHomeDir()
 			list, _ := skills.Discover(ZotHome(), r.CWD, userHome, args.WithSkills)
+			list = mergeExtensionSkills(skills.NewTool(list), extMgr.Skills())
 			return skills.VisibleSkills(list)
 		},
 		NoYolo:      args.NoYolo,

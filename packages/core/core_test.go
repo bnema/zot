@@ -2,6 +2,7 @@ package core
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"testing"
 	"time"
@@ -160,6 +161,78 @@ func TestNewSessionAtPathCreatesAtExplicitPath(t *testing.T) {
 	// existing file.
 	if _, err := NewSessionAtPath(want, "/tmp/proj", "anthropic", "claude", "test"); err == nil {
 		t.Error("NewSessionAtPath on existing path returned nil; want error")
+	}
+}
+
+func TestSessionExtensionStateRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	sess, err := NewSession(dir, "/tmp/project", "anthropic", "claude", "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := sess.AppendMessage(provider.Message{
+		Role:    provider.RoleUser,
+		Content: []provider.Content{provider.TextBlock{Text: "prompt"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	state := json.RawMessage(`{"phases":[{"id":"phase-1"}]}`)
+	if err := sess.AppendExtensionState("tasked-phases", state); err != nil {
+		t.Fatal(err)
+	}
+	if err := sess.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	reopened, _, err := OpenSession(sess.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstReopened := reopened
+	t.Cleanup(func() { _ = firstReopened.Close() })
+	if got := string(reopened.ExtensionState["tasked-phases"]); got != string(state) {
+		t.Fatalf("extension state = %q, want %q", got, state)
+	}
+	if err := reopened.AppendExtensionState("tasked-phases", nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := reopened.ExtensionState["tasked-phases"]; ok {
+		t.Fatal("nil extension state did not clear the snapshot")
+	}
+	if err := reopened.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reopened, _, err = OpenSession(sess.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = reopened.Close() })
+	if _, ok := reopened.ExtensionState["tasked-phases"]; ok {
+		t.Fatal("cleared extension state was restored after reopening")
+	}
+}
+
+func TestSessionRetainsExtensionStateWithoutMessages(t *testing.T) {
+	dir := t.TempDir()
+	sess, err := NewSession(dir, "/tmp/project", "anthropic", "claude", "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	state := json.RawMessage(`{"version":1}`)
+	if err := sess.AppendExtensionState("tasked-phases", state); err != nil {
+		t.Fatal(err)
+	}
+	path := sess.Path
+	if err := sess.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reopened, _, err := OpenSession(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+	if got := string(reopened.ExtensionState["tasked-phases"]); got != string(state) {
+		t.Fatalf("extension state = %q, want %q", got, state)
 	}
 }
 

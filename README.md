@@ -954,7 +954,7 @@ An extension may ship only a theme: `extension.json` plus `theme.json` (or `them
 
 ### Reference
 
-`examples/extensions/` ships reference implementations in Go, TypeScript, Node, and shell. See [docs/extensions.md](docs/extensions.md) for the full protocol, the SDK API (`packages/agent/ext`), and the phase roadmap.
+`examples/extensions/` ships reference implementations in Go, TypeScript, Node, and shell, including `tasked-phases` for spec-driven phase/checklist tracking. See [docs/extensions.md](docs/extensions.md) for the full protocol, the SDK API (`packages/agent/ext`), and the phase roadmap.
 
 ## Skills
 

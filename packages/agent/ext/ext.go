@@ -66,7 +66,11 @@ type EventHandler func(ev Event)
 // Event is a lifecycle notification from zot. The fields populated
 // depend on Name (the host's event_name string):
 //
-//	session_start    : (no extra fields)
+//	session_start    : Session
+//	session_opened   : Session + extension-owned State snapshot
+//	session_switched : Session + extension-owned State snapshot
+//	session_forked   : Session + extension-owned State snapshot
+//	session_compacted: Session + extension-owned State snapshot
 //	turn_start       : Step
 //	turn_end                  : Stop, optional Error
 //	tool_call                 : ToolID, ToolName, ToolArgs
@@ -74,6 +78,9 @@ type EventHandler func(ev Event)
 //	assistant_message         : Text
 type Event struct {
 	Name string
+
+	Session *extproto.SessionContext
+	State   json.RawMessage
 
 	Step  int
 	Stop  string
@@ -122,6 +129,9 @@ type ToolCallHandler func(toolName string, args json.RawMessage) ToolCallDecisio
 type TurnStartDecision struct {
 	Block  bool
 	Reason string
+	// Context is hidden, per-turn context sent only in the next provider
+	// request. It is not recorded as a user or assistant message.
+	Context string
 }
 
 // TurnStartHandler is called before every turn's model call. Return
@@ -156,6 +166,20 @@ type ToolResult struct {
 	Content       []ToolContent
 	IsError       bool
 	ActivateTools []string
+	// Details is opaque JSON kept out of provider-visible tool results. The
+	// host may persist it with the active session and return it on the next
+	// session lifecycle event.
+	Details json.RawMessage
+}
+
+// JSONDetails encodes an extension-owned value for ToolResult.Details. Invalid
+// values return nil, causing the host to ignore the metadata.
+func JSONDetails(value any) json.RawMessage {
+	data, err := json.Marshal(value)
+	if err != nil || !json.Valid(data) {
+		return nil
+	}
+	return data
 }
 
 // AlertRequest asks the host to surface a structured alert. The host owns
@@ -301,6 +325,7 @@ type HostInfo struct {
 	CWD             string
 	ExtensionDir    string
 	DataDir         string
+	Session         *extproto.SessionContext
 }
 
 // New constructs an Extension with the given identifier. name should
@@ -317,7 +342,7 @@ func New(name, version string) *Extension {
 		eventHandlers: map[string]EventHandler{},
 		panelKeys:     map[string]func(key, text string){},
 		panelCloses:   map[string]func(){},
-		caps:          []string{"commands", "tools", "events", "alerts", "panels"},
+		caps:          []string{"commands", "tools", "events", "alerts", "panels", "session_state", "status", "widgets"},
 	}
 }
 
@@ -416,8 +441,9 @@ func (e *Extension) registerTool(name, description string, schema json.RawMessag
 
 // On subscribes to a lifecycle event. fn is called for each
 // notification; the same name can only have one handler (later
-// registrations replace earlier ones). Recognised names:
-// session_start, turn_start, turn_end, tool_call,
+// registrations replace earlier ones). Recognised names include:
+// session_start, session_opened, session_switched, session_forked,
+// session_compacted, turn_start, turn_end, tool_call,
 // tool_confirmation_requested, assistant_message.
 func (e *Extension) On(name string, fn EventHandler) {
 	e.mu.Lock()
@@ -485,6 +511,25 @@ func (e *Extension) Notify(level, message string) {
 	})
 }
 
+// SetStatus replaces one persistent status item owned by this extension.
+// Passing an empty text clears the item.
+func (e *Extension) SetStatus(key, text string) {
+	_ = e.send(extproto.StatusFromExt{Type: "status", Key: key, Text: text})
+}
+
+// ClearStatus removes one persistent status item owned by this extension.
+func (e *Extension) ClearStatus(key string) { e.SetStatus(key, "") }
+
+// SetWidget replaces one persistent widget owned by this extension.
+func (e *Extension) SetWidget(id, position, title string, lines []string) {
+	_ = e.send(extproto.WidgetFromExt{Type: "widget", ID: id, Position: position, Title: title, Lines: lines})
+}
+
+// ClearWidget removes one persistent widget owned by this extension.
+func (e *Extension) ClearWidget(id string) {
+	_ = e.send(extproto.ClearWidgetFromExt{Type: "widget_clear", ID: id})
+}
+
 // Alert asks the host to surface a structured alert. It is fire-and-forget;
 // hosts that do not support the requested kind may ignore it.
 func (e *Extension) Alert(alert AlertRequest) {
@@ -529,6 +574,7 @@ func (e *Extension) Run() error {
 		CWD:             ack.CWD,
 		ExtensionDir:    ack.ExtensionDir,
 		DataDir:         ack.DataDir,
+		Session:         ack.Session,
 	}
 	e.mu.Lock()
 	onHello := e.onHello
@@ -657,7 +703,8 @@ func (e *Extension) Run() error {
 						}
 					}()
 					handler(Event{
-						Name: ef.Event, Step: ef.Step, Stop: ef.Stop,
+						Name: ef.Event, Session: ef.Session, State: append(json.RawMessage(nil), ef.State...),
+						Step: ef.Step, Stop: ef.Stop,
 						Error: ef.Error, ToolID: ef.ToolID, ToolName: ef.ToolName,
 						ToolArgs: ef.ToolArgs, ToolPreview: ef.ToolPreview, Text: ef.Text,
 					})
@@ -739,6 +786,7 @@ func (e *Extension) respondTool(id string, r ToolResult) {
 		Content:       blocks,
 		IsError:       r.IsError,
 		ActivateTools: r.ActivateTools,
+		Details:       append(json.RawMessage(nil), r.Details...),
 	})
 }
 
@@ -802,6 +850,9 @@ func (e *Extension) dispatchIntercept(ei extproto.EventInterceptFromHost) {
 			d := fn(ei.Step)
 			resp.Block = d.Block
 			resp.Reason = d.Reason
+			if !d.Block {
+				resp.Context = d.Context
+			}
 		}
 	case "assistant_message":
 		e.mu.Lock()

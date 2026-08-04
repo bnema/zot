@@ -73,6 +73,17 @@ type Skill struct {
 	Permissions  map[string][]string
 }
 
+// BundledSkillDir identifies a skill directory shipped by an extension.
+// The directory contains one subdirectory per skill, each with SKILL.md.
+// Root is optional; when set, every loaded SKILL.md must resolve beneath it.
+// Extension managers set Root to keep symlinked skill files inside the
+// extension directory.
+type BundledSkillDir struct {
+	Dir    string
+	Source string
+	Root   string
+}
+
 // VisibleSkills returns the subset of skills users should see in
 // pickers, /skills, and other interactive surfaces. Built-ins are
 // hidden because they're implementation detail; the model still
@@ -102,13 +113,22 @@ func VisibleSkills(in []*Skill) []*Skill {
 // Errors per skill are returned alongside the partial result so a
 // single broken file doesn't suppress the rest.
 func Discover(zotHome, cwd, userHome string, includeUser bool) ([]*Skill, []error) {
+	return DiscoverWithBundled(zotHome, cwd, userHome, includeUser, nil)
+}
+
+// DiscoverWithBundled merges normal user skills with extension-bundled skills
+// and built-ins. Precedence is user/project locations, then bundled skills in
+// declaration order, then built-ins. The first matching name wins.
+func DiscoverWithBundled(zotHome, cwd, userHome string, includeUser bool, bundled []BundledSkillDir) ([]*Skill, []error) {
 	var errs []error
 	seen := map[string]*Skill{}
 	if includeUser {
 		errs = append(errs, scanUserSkills(zotHome, cwd, userHome, seen)...)
 	}
-	// Built-ins fill in any name the user didn't already provide
-	// (or every name, when includeUser is false).
+	for _, dir := range bundled {
+		errs = append(errs, scanBundledSkills(dir, seen)...)
+	}
+	// Built-ins fill in any name the user or an extension didn't provide.
 	for _, s := range loadBuiltins() {
 		if _, dup := seen[s.Name]; dup {
 			continue
@@ -121,6 +141,111 @@ func Discover(zotHome, cwd, userHome string, includeUser bool) ([]*Skill, []erro
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out, errs
+}
+
+// LoadBundled loads only the skills declared by extension manifests. The
+// first declaration with a given name wins; built-in and user locations are
+// intentionally not considered here.
+func LoadBundled(bundled []BundledSkillDir) ([]*Skill, []error) {
+	seen := map[string]*Skill{}
+	var errs []error
+	for _, dir := range bundled {
+		errs = append(errs, scanBundledSkills(dir, seen)...)
+	}
+	out := make([]*Skill, 0, len(seen))
+	for _, s := range seen {
+		out = append(out, s)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out, errs
+}
+
+func pathWithinRoot(root, path string) (bool, error) {
+	rootResolved, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		return false, err
+	}
+	rootAbs, err := filepath.Abs(rootResolved)
+	if err != nil {
+		return false, err
+	}
+	resolved, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return false, err
+	}
+	resolvedAbs, err := filepath.Abs(resolved)
+	if err != nil {
+		return false, err
+	}
+	rel, err := filepath.Rel(rootAbs, resolvedAbs)
+	if err != nil {
+		return false, err
+	}
+	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)), nil
+}
+
+// scanBundledSkills walks one caller-resolved bundled-skill directory and
+// populates `seen` with first-match-wins per name.
+func scanBundledSkills(dir BundledSkillDir, seen map[string]*Skill) []error {
+	if strings.TrimSpace(dir.Dir) == "" {
+		return nil
+	}
+	label := strings.TrimSpace(dir.Source)
+	if label == "" {
+		label = "extension (unnamed)"
+	}
+	var errs []error
+	loadOne := func(path, fallbackName string) {
+		if dir.Root != "" {
+			safe, err := pathWithinRoot(dir.Root, path)
+			if err != nil {
+				if !os.IsNotExist(err) {
+					errs = append(errs, fmt.Errorf("%s: validate path: %w", path, err))
+				}
+				return
+			}
+			if !safe {
+				errs = append(errs, fmt.Errorf("%s: resolved path escapes bundled extension directory", path))
+				return
+			}
+		}
+		s, err := load(path, label)
+		if err != nil {
+			if !os.IsNotExist(err) {
+				errs = append(errs, fmt.Errorf("%s: %w", path, err))
+			}
+			return
+		}
+		if s.Name == "" {
+			s.Name = fallbackName
+		}
+		if _, dup := seen[s.Name]; !dup {
+			seen[s.Name] = s
+		}
+	}
+	skillPath := filepath.Join(dir.Dir, "SKILL.md")
+	if info, err := os.Stat(skillPath); err == nil {
+		if !info.IsDir() {
+			loadOne(skillPath, filepath.Base(dir.Dir))
+			return errs
+		}
+	} else if !os.IsNotExist(err) {
+		errs = append(errs, fmt.Errorf("%s: %w", skillPath, err))
+	}
+	entries, err := os.ReadDir(dir.Dir)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			errs = append(errs, fmt.Errorf("%s: %w", dir.Dir, err))
+		}
+		return errs
+	}
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		loadOne(filepath.Join(dir.Dir, entry.Name(), "SKILL.md"), entry.Name())
+	}
+	return errs
 }
 
 // scanUserSkills walks the user-skill search dirs and populates

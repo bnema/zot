@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -308,7 +309,11 @@ func branchSession(parentPath, root, cwd, version string, upToMessageIdx int, hi
 		limit++
 	}
 
-	return writeBranchSession(root, cwd, version, snapshot.Meta, snapshot.Messages, snapshot.UsageCheckpoints, limit, hideFromSessions)
+	extensionState, err := readExtensionStateAtFork(parentPath, limit)
+	if err != nil {
+		return "", err
+	}
+	return writeBranchSession(root, cwd, version, snapshot.Meta, snapshot.Messages, snapshot.UsageCheckpoints, limit, hideFromSessions, extensionState)
 }
 
 // BranchSessionHiddenFromHistory creates a hidden tree branch from a
@@ -334,10 +339,70 @@ func BranchSessionHiddenFromHistory(parentPath, root, cwd, version string, segme
 	if limit > 0 && limit < len(segment.Messages) && messageHasToolCalls(segment.Messages[limit-1]) && segment.Messages[limit].Role == provider.RoleTool {
 		limit++
 	}
-	return writeBranchSession(root, cwd, version, snapshot.Meta, segment.Messages, segment.UsageCheckpoints, limit, true)
+	extensionState, err := readExtensionStateAtFork(parentPath, limit)
+	if err != nil {
+		return "", err
+	}
+	return writeBranchSession(root, cwd, version, snapshot.Meta, segment.Messages, segment.UsageCheckpoints, limit, true, extensionState)
 }
 
-func writeBranchSession(root, cwd, version string, parent SessionMeta, messages []provider.Message, checkpoints []SessionUsageCheckpoint, limit int, hideFromSessions bool) (string, error) {
+// readExtensionStateAtFork reconstructs the latest extension snapshot that was
+// persisted at or before a branch boundary. Extension state is independent of
+// provider messages, but its timeline still follows the effective message
+// stream across compaction rows.
+func readExtensionStateAtFork(path string, limit int) (map[string]json.RawMessage, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, fmt.Errorf("branch: open parent for extension state: %w", err)
+	}
+	defer f.Close()
+
+	state := make(map[string]json.RawMessage)
+	effectiveCount := 0
+	err = forEachStrictJSONLLine(f, func(line []byte, lineNo int) error {
+		var head sessionLineHead
+		if err := json.Unmarshal(line, &head); err != nil {
+			return fmt.Errorf("line %d: invalid JSON: %w", lineNo, err)
+		}
+		switch head.Type {
+		case "meta", "usage", "rename":
+			return nil
+		case "message":
+			if _, err := hydrateMessage(line); err != nil {
+				return fmt.Errorf("line %d: invalid message row: %w", lineNo, err)
+			}
+			effectiveCount++
+		case "compaction":
+			messages, err := hydrateCompaction(line)
+			if err != nil {
+				return fmt.Errorf("line %d: invalid compaction row: %w", lineNo, err)
+			}
+			effectiveCount = len(messages)
+		case "extension_state":
+			var row sessionLine
+			if err := json.Unmarshal(line, &row); err != nil {
+				return fmt.Errorf("line %d: invalid extension state row: %w", lineNo, err)
+			}
+			if effectiveCount > limit || row.Extension == "" || len(row.State) > maxExtensionStateBytes {
+				return nil
+			}
+			if len(row.State) == 0 || strings.TrimSpace(string(row.State)) == "null" {
+				delete(state, row.Extension)
+			} else if json.Valid(row.State) {
+				state[row.Extension] = append(json.RawMessage(nil), row.State...)
+			}
+		default:
+			return fmt.Errorf("line %d: unknown row type %q", lineNo, head.Type)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("branch: read extension state: %w", err)
+	}
+	return state, nil
+}
+
+func writeBranchSession(root, cwd, version string, parent SessionMeta, messages []provider.Message, checkpoints []SessionUsageCheckpoint, limit int, hideFromSessions bool, extensionState map[string]json.RawMessage) (string, error) {
 	dir := SessionsDir(root, cwd)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", err
@@ -404,6 +469,26 @@ func writeBranchSession(root, cwd, version string, parent SessionMeta, messages 
 		}
 	}
 
+	// Extension snapshots are branch state, not provider-visible transcript
+	// content. Write the latest snapshot that existed at the fork point so a
+	// child branch starts from the same extension state as its copied prefix.
+	extensionNames := make([]string, 0, len(extensionState))
+	for name := range extensionState {
+		extensionNames = append(extensionNames, name)
+	}
+	sort.Strings(extensionNames)
+	for _, name := range extensionNames {
+		line, err := json.Marshal(sessionLine{Type: "extension_state", Extension: name, State: extensionState[name]})
+		if err != nil {
+			return "", fmt.Errorf("branch: marshal extension state: %w", err)
+		}
+		if _, err := bw.Write(line); err != nil {
+			return "", fmt.Errorf("branch: write extension state: %w", err)
+		}
+		if err := bw.WriteByte('\n'); err != nil {
+			return "", fmt.Errorf("branch: terminate extension state row: %w", err)
+		}
+	}
 	// Preserve every cumulative checkpoint that belongs to this prefix. The
 	// final two rows are needed to reconstruct LastTurnUsage as a delta.
 	for _, checkpoint := range checkpoints {

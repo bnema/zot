@@ -8,6 +8,7 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/patriceckhart/zot/packages/provider"
 )
@@ -219,6 +220,46 @@ func (c *captureClient) Stream(ctx context.Context, req provider.Request) (<-cha
 		}}
 	}()
 	return out, nil
+}
+
+func TestAgentInjectsHiddenTurnContextIntoRequestOnly(t *testing.T) {
+	client := &captureClient{}
+	a := NewAgent(client, "fake-model", "system", Registry{})
+	a.BeforeTurnContext = func(context.Context, int) (bool, string, string) {
+		return true, "", "current phase: parse files"
+	}
+	if err := a.Prompt(context.Background(), "hello", nil, nil); err != nil {
+		t.Fatalf("Prompt returned %v", err)
+	}
+	if !strings.Contains(client.lastReq.System, "current phase: parse files") {
+		t.Fatalf("request system prompt = %q; missing hidden context", client.lastReq.System)
+	}
+	if len(a.Messages()) != 2 {
+		t.Fatalf("transcript message count = %d; hidden context must not be persisted", len(a.Messages()))
+	}
+	for _, msg := range a.Messages() {
+		if strings.Contains(extractText(msg), "current phase: parse files") {
+			t.Fatal("hidden turn context leaked into transcript")
+		}
+	}
+}
+
+func TestBoundedTurnContextPreservesUTF8AndLimit(t *testing.T) {
+	contextText := strings.Repeat("界", maxTurnContextBytes)
+	got := boundedTurnContext(contextText)
+	if len(got) > maxTurnContextBytes {
+		t.Fatalf("bounded context bytes = %d, want <= %d", len(got), maxTurnContextBytes)
+	}
+	if !utf8.ValidString(got) {
+		t.Fatal("bounded context is not valid UTF-8")
+	}
+	if !strings.HasSuffix(got, turnContextTruncatedMarker) {
+		tail := got
+		if len(tail) > 64 {
+			tail = tail[len(tail)-64:]
+		}
+		t.Fatalf("bounded context missing truncation marker: %q", tail)
+	}
 }
 
 func TestAgentPropagatesMaxTokens(t *testing.T) {
