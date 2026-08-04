@@ -487,7 +487,7 @@ Sessions created by a zotfile are isolated from ordinary zot sessions and from o
 $ZOT_HOME/sessions/agents/<name>/
 ```
 
-Normal session flags still apply, including `--continue`, `--resume`, `--session`, and `--no-session`, but their default storage root is scoped to the active agent. The interactive `/sessions` picker and `/session` import, fork, and tree commands use that same agent-scoped root.
+Normal session flags still apply, including `--continue`, `--resume`, `--session`, and `--no-session`, but their default storage root is scoped to the active agent. The interactive `/sessions` picker and `/session` import, fork, and tree commands use that same agent-scoped root; `/fork` is the direct alias for selecting a user message and branching after that turn. `/session tree` shows the current session's family within that root (its ancestor and descendants), while tree-navigation branches stay hidden from the flat `/sessions` picker. Resuming honors the selected session's stored provider/model pair; a failed provider/model rebuild leaves the current session unchanged.
 
 ## Commands
 

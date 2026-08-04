@@ -2,12 +2,65 @@ package modes
 
 import (
 	"fmt"
+	"reflect"
 	"strings"
+	"unicode"
+
+	"github.com/mattn/go-runewidth"
 
 	"github.com/patriceckhart/zot/packages/core"
 	"github.com/patriceckhart/zot/packages/provider"
 	"github.com/patriceckhart/zot/packages/tui"
 )
+
+// sessionTreeBoundary describes what a tree row points at. Message rows are
+// normal transcript rows. Empty and detached rows are real, selectable
+// boundaries even though they do not correspond to a message.
+type sessionTreeBoundary uint8
+
+const (
+	sessionTreeMessageBoundary sessionTreeBoundary = iota
+	sessionTreeEmptyBoundary
+	sessionTreeDetachedBoundary
+)
+
+func (b sessionTreeBoundary) String() string {
+	switch b {
+	case sessionTreeEmptyBoundary:
+		return "empty"
+	case sessionTreeDetachedBoundary:
+		return "detached"
+	default:
+		return "message"
+	}
+}
+
+// sessionTreeTarget is the stable description of a row in the dialog.
+// EffectiveIndex is an index into SourcePath's effective transcript (the
+// snapshot returned by core.OpenSession), while SelectionBoundary is the
+// message count to pass to core.BranchSessionHidden. Keeping both values is
+// important for a user row: selecting it branches before that row so the
+// complete draft can be put back in the editor.
+type sessionTreeTarget struct {
+	SourcePath        string
+	EffectiveIndex    int
+	SelectionBoundary int
+	Role              provider.Role
+	UserDraft         string
+	Boundary          sessionTreeBoundary
+}
+
+func (t sessionTreeTarget) IsBoundary() bool {
+	return t.Boundary != sessionTreeMessageBoundary
+}
+
+func (t sessionTreeTarget) IsEmptyBoundary() bool {
+	return t.Boundary == sessionTreeEmptyBoundary
+}
+
+func (t sessionTreeTarget) IsDetachedBoundary() bool {
+	return t.Boundary == sessionTreeDetachedBoundary
+}
 
 // sessionTreeDialog renders a compact outline of the current session family.
 // Branches are shown inline at the point where they forked, using indentation
@@ -17,54 +70,108 @@ type sessionTreeDialog struct {
 	active bool
 	items  []sessionTreeItem
 	cursor int
+
+	// MaxRows is the maximum number of transcript/boundary rows rendered in
+	// one viewport. The interactive host may set it from terminal height. A
+	// bounded default is deliberately used when it is left at zero so a large
+	// family cannot consume the whole chat pane.
+	MaxRows int
+	viewTop int
 }
 
 type sessionTreeItem struct {
 	label      string
-	messageIdx int
+	messageIdx int // compatibility alias for target.EffectiveIndex
 	turnNo     int
 	role       provider.Role
-	prompt     string
-	path       string
+	prompt     string // compatibility alias for target.UserDraft
+	path       string // compatibility alias for target.SourcePath
 	depth      int
 	current    bool
+	target     sessionTreeTarget
 }
 
+// sessionTreeAction is returned by HandleKey. Target is the structured API
+// for the integration layer. The scalar fields are retained for the existing
+// interactive.go integration and mirror a message target where possible.
 type sessionTreeAction struct {
-	Select     bool
+	Select bool
+	Target sessionTreeTarget
+
+	// Legacy/package integration fields. New callers should use Target,
+	// especially Target.SelectionBoundary for empty or detached rows.
 	MessageIdx int
 	TurnNo     int
 	Role       provider.Role
 	Prompt     string
 	Path       string
+	Boundary   sessionTreeBoundary
 	Close      bool
 }
 
-func newSessionTreeDialog() *sessionTreeDialog { return &sessionTreeDialog{} }
-
-func (d *sessionTreeDialog) OpenMessages(msgs []provider.Message) bool {
-	d.items = buildSessionTreeItems("", msgs, 0, false)
-	d.cursor = len(d.items) - 1
-	if d.cursor < 0 {
-		d.cursor = 0
-	}
-	d.active = true
-	return len(d.items) > 0
+type sessionTreeSnapshot struct {
+	path     string
+	messages []provider.Message
 }
 
-func (d *sessionTreeDialog) OpenSessionFamily(root, cwd, currentPath string) bool {
-	roots := core.BuildSessionTree(root, cwd)
-	if len(roots) == 0 {
+const defaultSessionTreeRows = 12
+
+func newSessionTreeDialog() *sessionTreeDialog { return &sessionTreeDialog{} }
+
+// OpenMessages opens a snapshot supplied by the running agent. This is the
+// fallback used before a session has a persisted source path.
+func (d *sessionTreeDialog) OpenMessages(msgs []provider.Message) bool {
+	items := buildSessionTreeItems("", msgs, 0, false)
+	if len(items) == 0 {
 		return false
 	}
-	rootNode := findTreeRootForPath(roots, currentPath)
-	if rootNode == nil {
-		rootNode = roots[0]
+	d.activate(items, len(items)-1)
+	return true
+}
+
+// OpenSessionFamily preflights the complete family containing currentPath,
+// then activates the dialog in one step. A missing current path is not
+// recoverable by choosing an arbitrary forest root. Failed reads leave the
+// prior dialog state untouched.
+func (d *sessionTreeDialog) OpenSessionFamily(root, cwd, currentPath string) bool {
+	roots, err := core.BuildSessionTreeFamilyStrict(root, cwd, currentPath)
+	if err != nil || len(roots) == 0 {
+		return false
 	}
-	d.items = flattenSessionFamily(rootNode, currentPath)
-	d.cursor = indexCurrentTreeItem(d.items)
+	familyRoot := roots[0]
+
+	snapshots, err := preflightSessionTreeFamily(familyRoot)
+	if err != nil {
+		return false
+	}
+	items := flattenSessionFamilySnapshot(familyRoot, currentPath, snapshots)
+	if len(items) == 0 || !sessionTreeItemsMeaningful(items, familyRoot.Summary.Path) {
+		return false
+	}
+	d.activate(items, indexCurrentTreeItem(items))
+	return true
+}
+
+func sessionTreeItemsMeaningful(items []sessionTreeItem, rootPath string) bool {
+	for _, item := range items {
+		if !item.target.IsBoundary() || item.path != rootPath {
+			return true
+		}
+	}
+	return false
+}
+
+func (d *sessionTreeDialog) activate(items []sessionTreeItem, cursor int) {
+	if cursor < 0 {
+		cursor = 0
+	}
+	if cursor >= len(items) {
+		cursor = len(items) - 1
+	}
+	d.items = items
+	d.cursor = cursor
+	d.viewTop = 0
 	d.active = true
-	return len(d.items) > 0
 }
 
 // Close hides the dialog.
@@ -76,30 +183,60 @@ func (d *sessionTreeDialog) CursorPos() (row, col int) { return -1, -1 }
 // Active reports whether the dialog consumes input.
 func (d *sessionTreeDialog) Active() bool { return d != nil && d.active }
 
+func (d *sessionTreeDialog) pageRows() int {
+	if d.MaxRows > 0 {
+		return d.MaxRows
+	}
+	return defaultSessionTreeRows
+}
+
+func (d *sessionTreeDialog) followCursor() {
+	d.viewTop = clampSessionTreeViewTop(d.viewTop, d.cursor, d.pageRows(), len(d.items))
+}
+
 // HandleKey advances the cursor or resolves the selection.
 func (d *sessionTreeDialog) HandleKey(k tui.Key) sessionTreeAction {
+	if d == nil {
+		return sessionTreeAction{}
+	}
+	page := d.pageRows()
+	if page < 1 {
+		page = 1
+	}
 	switch k.Kind {
 	case tui.KeyUp:
 		if d.cursor > 0 {
 			d.cursor--
 		}
+		d.followCursor()
 	case tui.KeyDown:
 		if d.cursor < len(d.items)-1 {
 			d.cursor++
 		}
+		d.followCursor()
 	case tui.KeyPageUp:
-		d.cursor -= 5
+		d.cursor -= page
 		if d.cursor < 0 {
 			d.cursor = 0
 		}
+		d.followCursor()
 	case tui.KeyPageDown:
-		d.cursor += 5
+		d.cursor += page
 		if d.cursor >= len(d.items) {
 			d.cursor = len(d.items) - 1
 		}
 		if d.cursor < 0 {
 			d.cursor = 0
 		}
+		d.followCursor()
+	case tui.KeyHome:
+		d.cursor = 0
+		d.followCursor()
+	case tui.KeyEnd:
+		if len(d.items) > 0 {
+			d.cursor = len(d.items) - 1
+		}
+		d.followCursor()
 	case tui.KeyEsc:
 		d.Close()
 		return sessionTreeAction{Close: true}
@@ -110,118 +247,337 @@ func (d *sessionTreeDialog) HandleKey(k tui.Key) sessionTreeAction {
 		}
 		it := d.items[d.cursor]
 		d.Close()
-		return sessionTreeAction{Select: true, MessageIdx: it.messageIdx, TurnNo: it.turnNo, Role: it.role, Prompt: it.prompt, Path: it.path}
+		return sessionTreeActionForTarget(it.target, it.turnNo)
 	}
 	return sessionTreeAction{}
 }
 
-// Render returns the dialog lines.
+func sessionTreeActionForTarget(target sessionTreeTarget, turnNo int) sessionTreeAction {
+	act := sessionTreeAction{
+		Select:   true,
+		Target:   target,
+		TurnNo:   turnNo,
+		Boundary: target.Boundary,
+		Path:     target.SourcePath,
+		Role:     target.Role,
+		Prompt:   target.UserDraft,
+		// MessageIdx is the effective index for ordinary rows. For a
+		// boundary, use the old integration's "last included row" form
+		// so msgIdx+1 still equals the safe selection boundary.
+		MessageIdx: target.EffectiveIndex,
+	}
+	if target.IsBoundary() {
+		act.MessageIdx = target.SelectionBoundary - 1
+		act.Role = provider.RoleAssistant
+		act.Prompt = ""
+	}
+	return act
+}
+
+// Render returns the dialog lines. MaxRows controls the number of selectable
+// rows, not the chrome; every returned row is still hard-clipped to width.
 func (d *sessionTreeDialog) Render(th tui.Theme, width int) []string {
 	if !d.Active() {
 		return nil
 	}
-	var lines []string
-	lines = append(lines, frameHeader(th, "session tree", width))
+	renderWidth := width
+	if renderWidth < 0 {
+		renderWidth = 0
+	}
+	line := func(s string) string { return truncateSessionTreeANSI(s, renderWidth) }
+
+	lines := []string{line(frameHeader(th, "session tree", renderWidth))}
 	if len(d.items) == 0 {
-		lines = append(lines, th.FG256(th.Muted, "no messages in this session yet"))
-		lines = append(lines, th.FG256(th.Muted, "press esc to close"))
-		lines = append(lines, frameRule(th, width))
+		lines = append(lines,
+			line(th.FG256(th.Muted, "no messages in this session yet")),
+			line(th.FG256(th.Muted, "press esc to close")),
+			line(frameRule(th, renderWidth)),
+		)
 		return lines
 	}
-	lines = append(lines, th.FG256(th.Muted, "session branches (↑/↓, pgup/pgdn, enter checkout, esc cancel):"))
+	lines = append(lines, line(th.FG256(th.Muted,
+		"session branches (↑/↓, pgup/pgdn, home/end, enter checkout, esc cancel):")))
 
-	const maxRows = 12
-	start := 0
-	end := len(d.items)
-	if end > maxRows {
-		start = d.cursor - maxRows/2
-		if start < 0 {
-			start = 0
-		}
-		end = start + maxRows
-		if end > len(d.items) {
-			end = len(d.items)
-			start = end - maxRows
-		}
+	d.followCursor()
+	start := d.viewTop
+	end := start + d.pageRows()
+	if end > len(d.items) {
+		end = len(d.items)
+	}
+	if start > end {
+		start = end
 	}
 	if start > 0 {
-		lines = append(lines, th.FG256(th.Muted, fmt.Sprintf("  ↑ %d more above", start)))
+		lines = append(lines, line(th.FG256(th.Muted, fmt.Sprintf("  ↑ %d more above", start))))
 	}
 	for i := start; i < end; i++ {
 		it := d.items[i]
-		indent := strings.Repeat("  ", it.depth)
-		plain := "  " + indent + fitSessionTreeLabel(it.label, width-2-len([]rune(indent)))
-		if it.current {
-			plain += "  [current]"
-		}
+		plain := fitSessionTreeItemPlain(it, renderWidth)
 		if i == d.cursor {
-			lines = append(lines, th.PadHighlight(plain, width))
+			lines = append(lines, line(th.PadHighlight(plain, renderWidth)))
 		} else {
-			lines = append(lines, colorSessionTreeLine(th, plain))
+			lines = append(lines, line(colorSessionTreeLine(th, plain)))
 		}
 	}
 	if end < len(d.items) {
-		lines = append(lines, th.FG256(th.Muted, fmt.Sprintf("  ↓ %d more below", len(d.items)-end)))
+		lines = append(lines, line(th.FG256(th.Muted, fmt.Sprintf("  ↓ %d more below", len(d.items)-end))))
 	}
-	lines = append(lines, th.FG256(th.Muted, fmt.Sprintf("%d/%d", d.cursor+1, len(d.items))))
-	lines = append(lines, frameRule(th, width))
+	lines = append(lines, line(th.FG256(th.Muted, fmt.Sprintf("%d/%d", d.cursor+1, len(d.items)))), line(frameRule(th, renderWidth)))
 	return lines
 }
 
-func flattenSessionFamily(root *core.TreeNode, currentPath string) []sessionTreeItem {
-	childrenByFork := map[int][]*core.TreeNode{}
-	for _, child := range root.Children {
-		childrenByFork[child.Meta.ForkPoint] = append(childrenByFork[child.Meta.ForkPoint], child)
+func clampSessionTreeViewTop(viewTop, cursor, window, total int) int {
+	if window <= 0 || total <= 0 || window >= total {
+		return 0
 	}
-	sess, msgs, err := core.OpenSession(root.Summary.Path)
+	if cursor < viewTop {
+		viewTop = cursor
+	}
+	if cursor >= viewTop+window {
+		viewTop = cursor - window + 1
+	}
+	if viewTop < 0 {
+		viewTop = 0
+	}
+	if viewTop+window > total {
+		viewTop = total - window
+	}
+	return viewTop
+}
+
+func fitSessionTreeItemPlain(it sessionTreeItem, maxWidth int) string {
+	if maxWidth <= 0 {
+		return ""
+	}
+	prefix := "  " + strings.Repeat("  ", it.depth)
+	suffix := ""
+	if it.current {
+		suffix = "  [current]"
+	}
+	prefixWidth := runewidth.StringWidth(prefix)
+	suffixWidth := runewidth.StringWidth(suffix)
+	if prefixWidth+suffixWidth >= maxWidth {
+		// A terminal narrower than the structural chrome cannot show the
+		// complete row; retain the current marker as the highest-value suffix.
+		return fitSessionTreeLabel(suffix, maxWidth)
+	}
+	labelWidth := maxWidth - prefixWidth - suffixWidth
+	return prefix + fitSessionTreeLabel(it.label, labelWidth) + suffix
+}
+
+// preflightSessionTreeFamily reads every node before any dialog state is
+// changed. The returned messages are the shared effective snapshots used by
+// all flattening and target construction for this open operation.
+func preflightSessionTreeFamily(root *core.TreeNode) (map[string]sessionTreeSnapshot, error) {
+	if root == nil {
+		return nil, fmt.Errorf("session tree: nil family root")
+	}
+	snapshots := make(map[string]sessionTreeSnapshot)
+	visiting := make(map[string]bool)
+	var walk func(*core.TreeNode) error
+	walk = func(node *core.TreeNode) error {
+		if node == nil {
+			return nil
+		}
+		path := node.Summary.Path
+		if visiting[path] {
+			return fmt.Errorf("session tree: cycle at %q", path)
+		}
+		if _, ok := snapshots[path]; ok {
+			return nil
+		}
+		visiting[path] = true
+		snapshot, err := core.ReadSessionSnapshot(path)
+		if err != nil {
+			delete(visiting, path)
+			return fmt.Errorf("session tree: read %q: %w", path, err)
+		}
+		snapshots[path] = sessionTreeSnapshot{path: path, messages: snapshot.Messages}
+		for _, child := range node.Children {
+			if err := walk(child); err != nil {
+				delete(visiting, path)
+				return err
+			}
+		}
+		delete(visiting, path)
+		return nil
+	}
+	if err := walk(root); err != nil {
+		return nil, err
+	}
+	return snapshots, nil
+}
+
+// flattenSessionFamily is retained for package callers/tests that already
+// provide a TreeNode. The dialog itself uses the snapshot variant so all
+// reads happen before activation.
+func flattenSessionFamily(root *core.TreeNode, currentPath string) []sessionTreeItem {
+	snapshots, err := preflightSessionTreeFamily(root)
 	if err != nil {
 		return nil
 	}
-	_ = sess.Close()
-	items := buildSessionTreeItems(root.Summary.Path, msgs, 0, root.Summary.Path == currentPath)
+	return flattenSessionFamilySnapshot(root, currentPath, snapshots)
+}
+
+func flattenSessionFamilySnapshot(root *core.TreeNode, currentPath string, snapshots map[string]sessionTreeSnapshot) []sessionTreeItem {
+	return flattenSessionNode(root, currentPath, snapshots, 0, 0, true, false)
+}
+
+// flattenSessionBranch remains a small compatibility helper. It is useful in
+// focused package tests and keeps the old helper available to nearby callers.
+func flattenSessionBranch(node *core.TreeNode, currentPath string, depth int) []sessionTreeItem {
+	snapshots, err := preflightSessionTreeFamily(node)
+	if err != nil {
+		return nil
+	}
+	parentLen := 0
+	if snap, ok := snapshots[node.Summary.Path]; ok {
+		parentLen = len(snap.messages)
+	}
+	return flattenSessionNode(node, currentPath, snapshots, depth, parentLen, false, false)
+}
+
+// flattenSessionNode emits the visible suffix for a node and inserts children
+// at their effective fork boundary. Fork points are counts, so fork N appears
+// after message N-1. A fork beyond the parent's effective snapshot is kept at
+// the end and gets a detached boundary instead of silently disappearing.
+func flattenSessionNode(node *core.TreeNode, currentPath string, snapshots map[string]sessionTreeSnapshot, depth, parentLen int, rootNode, detachedFromParent bool) []sessionTreeItem {
+	if node == nil {
+		return nil
+	}
+	snapshot, ok := snapshots[node.Summary.Path]
+	if !ok {
+		return nil
+	}
+	msgs := snapshot.messages
+	start := 0
+	selectionBoundary := 0
+	boundary := sessionTreeMessageBoundary
+	rawFork := 0
+	if !rootNode {
+		rawFork = node.Meta.ForkPoint
+		switch {
+		case detachedFromParent || rawFork < 0 || rawFork > parentLen || rawFork > len(msgs):
+			// Historical placement no longer maps to either snapshot. Keep the
+			// branch visible at the parent's tail, but render its complete
+			// current snapshot rather than slicing it at the stale fork point.
+			boundary = sessionTreeDetachedBoundary
+			start = 0
+			selectionBoundary = len(msgs)
+		default:
+			start = rawFork
+			selectionBoundary = rawFork
+			if start >= len(msgs) {
+				boundary = sessionTreeEmptyBoundary
+			}
+		}
+	} else if len(msgs) == 0 {
+		boundary = sessionTreeEmptyBoundary
+		selectionBoundary = 0
+	} else {
+		selectionBoundary = len(msgs)
+	}
+
+	all := buildSessionTreeItems(snapshot.path, msgs, depth, snapshot.path == currentPath)
+	childrenAt := make(map[int][]*core.TreeNode)
+	var stale []*core.TreeNode
+	for _, child := range node.Children {
+		fork := child.Meta.ForkPoint
+		attach := fork
+		if attach < start {
+			attach = start
+		}
+		childSnapshot, childLoaded := snapshots[child.Summary.Path]
+		// A branch with no post-fork messages still needs its explicit empty
+		// boundary even when the copied historical prefix is no longer
+		// comparable after compaction; there is no suffix whose placement could
+		// be wrong. Non-empty suffixes require the prefix identity check.
+		emptySuffix := childLoaded && fork >= 0 && fork == len(childSnapshot.messages)
+		if fork < 0 || fork > len(msgs) || !childLoaded ||
+			(!emptySuffix && !sessionTreePrefixMatches(msgs, childSnapshot.messages, fork)) {
+			// Numeric fork points are only placement hints. A parent may have
+			// been compacted and later grown back to the old length, so bounds
+			// alone are insufficient: verify that the child's copied prefix is
+			// still the parent's current prefix before placing the edge.
+			stale = append(stale, child)
+			continue
+		}
+		childrenAt[attach] = append(childrenAt[attach], child)
+	}
+
 	var out []sessionTreeItem
-	for idx, item := range items {
-		out = append(out, item)
-		for _, child := range childrenByFork[idx+1] {
-			out = append(out, flattenSessionBranch(child, currentPath, 1)...)
+	if boundary != sessionTreeMessageBoundary {
+		turn := treeTurnAtBoundary(msgs, selectionBoundary)
+		boundaryCurrent := snapshot.path == currentPath && (len(msgs) == 0 || boundary == sessionTreeEmptyBoundary)
+		out = append(out, makeSessionTreeBoundaryItem(snapshot.path, selectionBoundary, depth, boundaryCurrent, boundary, rawFork, len(msgs), turn))
+	}
+
+	emitChildren := func(children []*core.TreeNode, childDetached bool) {
+		for _, child := range children {
+			out = append(out, flattenSessionNode(child, currentPath, snapshots, depth+1, len(msgs), false, childDetached)...)
 		}
 	}
-	for _, child := range childrenByFork[0] {
-		out = append(out, flattenSessionBranch(child, currentPath, 1)...)
+
+	// A fork at zero is shown before the first visible message. For a branch,
+	// children that forked in the hidden copied prefix are normalized to its
+	// first visible index above, so they remain discoverable too.
+	emitChildren(childrenAt[start], false)
+	for idx := start; idx < len(all); idx++ {
+		out = append(out, all[idx])
+		emitChildren(childrenAt[idx+1], false)
 	}
+	// Stale children are attached after the current effective snapshot. Their
+	// own row makes the missing historical boundary explicit.
+	emitChildren(stale, true)
 	return out
 }
 
-func flattenSessionBranch(node *core.TreeNode, currentPath string, depth int) []sessionTreeItem {
-	sess, msgs, err := core.OpenSession(node.Summary.Path)
-	if err != nil {
-		return nil
+func makeSessionTreeBoundaryItem(path string, effectiveIndex, depth int, current bool, boundary sessionTreeBoundary, forkPoint, snapshotLen, turn int) sessionTreeItem {
+	label := fmt.Sprintf("%s branch boundary", boundary.String())
+	if boundary == sessionTreeDetachedBoundary {
+		label = fmt.Sprintf("detached branch boundary (fork %d; snapshot %d)", forkPoint, snapshotLen)
 	}
-	_ = sess.Close()
-	start := node.Meta.ForkPoint
-	if start < 0 {
-		start = 0
+	target := sessionTreeTarget{
+		SourcePath:        path,
+		EffectiveIndex:    effectiveIndex,
+		SelectionBoundary: effectiveIndex,
+		Boundary:          boundary,
 	}
-	if start > len(msgs) {
-		start = len(msgs)
+	return sessionTreeItem{
+		label:      label,
+		messageIdx: effectiveIndex,
+		turnNo:     turn,
+		path:       path,
+		depth:      depth,
+		current:    current,
+		target:     target,
 	}
-	items := buildSessionTreeItems(node.Summary.Path, msgs[start:], depth, node.Summary.Path == currentPath)
-	for idx := range items {
-		items[idx].messageIdx += start
+}
+
+func sessionTreePrefixMatches(parent, child []provider.Message, fork int) bool {
+	if fork < 0 || fork > len(parent) || fork > len(child) {
+		return false
 	}
-	childrenByFork := map[int][]*core.TreeNode{}
-	for _, child := range node.Children {
-		childrenByFork[child.Meta.ForkPoint] = append(childrenByFork[child.Meta.ForkPoint], child)
+	return reflect.DeepEqual(parent[:fork], child[:fork])
+}
+
+func treeTurnAtBoundary(msgs []provider.Message, boundary int) int {
+	if boundary < 0 {
+		boundary = 0
 	}
-	var out []sessionTreeItem
-	for relIdx, item := range items {
-		out = append(out, item)
-		absAfter := start + relIdx + 1
-		for _, child := range childrenByFork[absAfter] {
-			out = append(out, flattenSessionBranch(child, currentPath, depth+1)...)
+	if boundary > len(msgs) {
+		boundary = len(msgs)
+	}
+	turn := 0
+	for _, msg := range msgs[:boundary] {
+		if msg.Role == provider.RoleUser {
+			turn++
 		}
 	}
-	return out
+	if turn == 0 {
+		return 1
+	}
+	return turn
 }
 
 func buildSessionTreeItems(path string, msgs []provider.Message, depth int, currentPath bool) []sessionTreeItem {
@@ -229,29 +585,57 @@ func buildSessionTreeItems(path string, msgs []provider.Message, depth int, curr
 	turn := 0
 	lastTurn := 0
 	for idx, msg := range msgs {
-		label := sessionTreeRoleLabel(msg.Role)
 		if msg.Role == provider.RoleUser {
 			turn++
 			lastTurn = turn
 		} else if lastTurn == 0 {
 			lastTurn = 1
 		}
+		roleLabel := sessionTreeRoleLabel(msg.Role)
 		preview := sessionTreePreview(msg)
+		boundary := idx + 1
+		draft := ""
+		if msg.Role == provider.RoleUser {
+			boundary = idx
+			draft = completeUserDraft(msg)
+		}
+		target := sessionTreeTarget{
+			SourcePath:        path,
+			EffectiveIndex:    idx,
+			SelectionBoundary: boundary,
+			Role:              msg.Role,
+			UserDraft:         draft,
+			Boundary:          sessionTreeMessageBoundary,
+		}
 		out = append(out, sessionTreeItem{
-			label:      fmt.Sprintf("%s: %s", label, preview),
+			label:      fmt.Sprintf("%s: %s", roleLabel, preview),
 			messageIdx: idx,
 			turnNo:     lastTurn,
 			role:       msg.Role,
-			prompt:     firstTextFromTreeMessage(msg),
+			prompt:     draft,
 			path:       path,
 			depth:      depth,
 			current:    currentPath && idx == len(msgs)-1,
+			target:     target,
 		})
 	}
 	return out
 }
 
+func completeUserDraft(msg provider.Message) string {
+	var text []string
+	for _, c := range msg.Content {
+		if tb, ok := c.(provider.TextBlock); ok {
+			text = append(text, tb.Text)
+		}
+	}
+	return strings.Join(text, "\n")
+}
+
 func findTreeRootForPath(roots []*core.TreeNode, path string) *core.TreeNode {
+	if path == "" {
+		return nil
+	}
 	for _, root := range roots {
 		if treeContainsPath(root, path) {
 			return root
@@ -287,15 +671,6 @@ func indexCurrentTreeItem(items []sessionTreeItem) int {
 	return len(items) - 1
 }
 
-func firstTextFromTreeMessage(msg provider.Message) string {
-	for _, c := range msg.Content {
-		if tb, ok := c.(provider.TextBlock); ok {
-			return tb.Text
-		}
-	}
-	return ""
-}
-
 func sessionTreeRoleLabel(role provider.Role) string {
 	switch role {
 	case provider.RoleUser:
@@ -314,14 +689,13 @@ func sessionTreePreview(msg provider.Message) string {
 	for _, c := range msg.Content {
 		switch b := c.(type) {
 		case provider.TextBlock:
-			text := strings.TrimSpace(strings.ReplaceAll(b.Text, "\n", " "))
-			if text != "" {
+			if text := sanitizeSessionTreeText(b.Text); text != "" {
 				parts = append(parts, text)
 			}
 		case provider.ImageBlock:
 			parts = append(parts, "[image]")
 		case provider.ToolCallBlock:
-			parts = append(parts, "tool "+b.Name)
+			parts = append(parts, "tool "+sanitizeSessionTreeText(b.Name))
 		case provider.ToolResultBlock:
 			if b.IsError {
 				parts = append(parts, "tool result error")
@@ -340,6 +714,42 @@ func sessionTreePreview(msg provider.Message) string {
 	return strings.Join(parts, " ")
 }
 
+// sanitizeSessionTreeText keeps previews single-line and prevents transcript
+// content from injecting terminal control sequences into the dialog frame.
+func sanitizeSessionTreeText(s string) string {
+	runes := []rune(s)
+	var b strings.Builder
+	for i := 0; i < len(runes); {
+		if end, ok := sessionTreeCSIEnd(runes, i); ok {
+			i = end
+			continue
+		}
+		if runes[i] == '\x1b' {
+			// OSC sequences end at BEL or ST. Drop the whole sequence when
+			// present; an isolated ESC is dropped as well.
+			i++
+			for i < len(runes) && runes[i] != '\a' {
+				if runes[i] == '\x1b' && i+1 < len(runes) && runes[i+1] == '\\' {
+					i += 2
+					break
+				}
+				i++
+			}
+			if i < len(runes) && runes[i] == '\a' {
+				i++
+			}
+			continue
+		}
+		if unicode.IsControl(runes[i]) {
+			b.WriteByte(' ')
+		} else {
+			b.WriteRune(runes[i])
+		}
+		i++
+	}
+	return strings.Join(strings.Fields(b.String()), " ")
+}
+
 func colorSessionTreeLine(th tui.Theme, line string) string {
 	plain := strings.TrimSpace(line)
 	switch {
@@ -354,13 +764,96 @@ func colorSessionTreeLine(th tui.Theme, line string) string {
 	}
 }
 
+// fitSessionTreeLabel truncates by terminal cells, not Go runes. This is
+// intentionally also used for the indentation and current marker together so
+// neither can push a row past the terminal edge.
 func fitSessionTreeLabel(label string, maxWidth int) string {
-	if maxWidth < 4 {
-		maxWidth = 4
+	if maxWidth <= 0 {
+		return ""
 	}
-	runes := []rune(label)
-	if len(runes) <= maxWidth {
+	if runewidth.StringWidth(label) <= maxWidth {
 		return label
 	}
-	return string(runes[:maxWidth-3]) + "..."
+	if maxWidth <= 3 {
+		return strings.Repeat(".", maxWidth)
+	}
+	return truncateSessionTreePlain(label, maxWidth-3) + "..."
+}
+
+func truncateSessionTreePlain(s string, maxWidth int) string {
+	if maxWidth <= 0 {
+		return ""
+	}
+	var b strings.Builder
+	used := 0
+	for _, r := range s {
+		w := runewidth.RuneWidth(r)
+		if w > 0 && used+w > maxWidth {
+			break
+		}
+		b.WriteRune(r)
+		used += w
+	}
+	return b.String()
+}
+
+// truncateSessionTreeANSI is the dialog-local equivalent of tui's renderer
+// clipping helper. Keeping it here avoids changing tui for one dialog while
+// still making headers, hints, colors, and highlighted rows width-safe.
+func truncateSessionTreeANSI(s string, maxWidth int) string {
+	if maxWidth <= 0 {
+		return ""
+	}
+	if sessionTreeANSIWidth(s) <= maxWidth {
+		return s
+	}
+	runes := []rune(s)
+	var b strings.Builder
+	used := 0
+	clipped := false
+	for i := 0; i < len(runes); {
+		if end, ok := sessionTreeCSIEnd(runes, i); ok {
+			b.WriteString(string(runes[i:end]))
+			i = end
+			continue
+		}
+		w := runewidth.RuneWidth(runes[i])
+		if w > 0 && used+w > maxWidth {
+			clipped = true
+			break
+		}
+		b.WriteRune(runes[i])
+		used += w
+		i++
+	}
+	if clipped && strings.Contains(s, "\x1b[") {
+		b.WriteString("\x1b[0m")
+	}
+	return b.String()
+}
+
+func sessionTreeANSIWidth(s string) int {
+	runes := []rune(s)
+	width := 0
+	for i := 0; i < len(runes); {
+		if end, ok := sessionTreeCSIEnd(runes, i); ok {
+			i = end
+			continue
+		}
+		width += runewidth.RuneWidth(runes[i])
+		i++
+	}
+	return width
+}
+
+func sessionTreeCSIEnd(runes []rune, start int) (int, bool) {
+	if start+1 >= len(runes) || runes[start] != '\x1b' || runes[start+1] != '[' {
+		return start, false
+	}
+	for i := start + 2; i < len(runes); i++ {
+		if runes[i] >= 0x40 && runes[i] <= 0x7e {
+			return i + 1, true
+		}
+	}
+	return len(runes), true
 }

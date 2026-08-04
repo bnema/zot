@@ -198,6 +198,161 @@ func trimMessagesForResume(msgs []provider.Message, keepTail int) []provider.Mes
 	return provider.RepairOrphanedToolResults(out)
 }
 
+// sessionResumeCandidate contains all state needed to resume a session.
+// It is deliberately assembled before the caller changes any live state:
+// opening the transcript, reading usage, and rebuilding a provider/model
+// must all succeed before the candidate can replace the current session.
+type sessionResumeCandidate struct {
+	session          *core.Session
+	agent            *core.Agent
+	messages         []provider.Message
+	fullMessageCount int
+	cumulative       provider.Usage
+	lastTurn         provider.Usage
+	provider         string
+	model            string
+	rebuilt          bool
+}
+
+// prepareSessionResume opens and validates a selected session without
+// touching the current agent. Missing provider/model metadata is treated as
+// legacy metadata: the current agent is reused, preserving compatibility
+// with sessions written before those fields were persisted.
+//
+// The returned candidate owns session until its caller commits it. On any
+// error this function closes the candidate session and leaves the current
+// agent untouched.
+func prepareSessionResume(path string, current *core.Agent, currentProvider, currentModel string, buildAgentFor func(string, string) (*core.Agent, string, string, error)) (candidate sessionResumeCandidate, err error) {
+	if current == nil {
+		return candidate, fmt.Errorf("no agent running; log in first")
+	}
+
+	sess, msgs, err := core.OpenSession(path)
+	if err != nil {
+		return candidate, err
+	}
+	keepSession := false
+	defer func() {
+		if !keepSession {
+			_ = sess.Close()
+		}
+	}()
+
+	cumulative, lastTurn, err := core.SessionUsageDetail(path)
+	if err != nil {
+		return candidate, fmt.Errorf("read session usage: %w", err)
+	}
+
+	fullMessageCount := len(msgs)
+	resumedMessages := trimMessagesForResume(msgs, 100)
+	storedProvider := strings.TrimSpace(sess.Meta.Provider)
+	storedModel := strings.TrimSpace(sess.Meta.Model)
+	currentProvider = strings.TrimSpace(currentProvider)
+	currentModel = strings.TrimSpace(currentModel)
+
+	candidate = sessionResumeCandidate{
+		session:          sess,
+		agent:            current,
+		messages:         resumedMessages,
+		fullMessageCount: fullMessageCount,
+		cumulative:       cumulative,
+		lastTurn:         lastTurn,
+		provider:         currentProvider,
+		model:            currentModel,
+	}
+
+	// Old sessions may have either field absent. Only a complete stored
+	// selection is actionable; otherwise resume exactly as older zot did.
+	if storedProvider == "" || storedModel == "" ||
+		(storedProvider == currentProvider && storedModel == currentModel) {
+		keepSession = true
+		return candidate, nil
+	}
+	if buildAgentFor == nil {
+		return sessionResumeCandidate{}, fmt.Errorf("cannot resume session with provider %q and model %q: no agent builder configured", storedProvider, storedModel)
+	}
+
+	rebuilt, resolvedProvider, resolvedModel, err := buildAgentFor(storedProvider, storedModel)
+	if err != nil {
+		return sessionResumeCandidate{}, fmt.Errorf("rebuild agent for session provider %q/model %q: %w", storedProvider, storedModel, err)
+	}
+	if rebuilt == nil {
+		return sessionResumeCandidate{}, fmt.Errorf("rebuild agent for session provider %q/model %q returned no agent", storedProvider, storedModel)
+	}
+	resolvedProvider = strings.TrimSpace(resolvedProvider)
+	resolvedModel = strings.TrimSpace(resolvedModel)
+	if resolvedProvider == "" {
+		resolvedProvider = storedProvider
+	}
+	if resolvedModel == "" {
+		resolvedModel = storedModel
+	}
+
+	// Hydrate and seed the replacement while it is still private. The live
+	// agent is not modified until the caller commits the complete candidate.
+	rebuilt.SetMessages(resumedMessages)
+	rebuilt.SeedCost(cumulative)
+	rebuilt.SeedLastTurnUsage(lastTurn)
+	candidate.agent = rebuilt
+	candidate.provider = resolvedProvider
+	candidate.model = resolvedModel
+	candidate.rebuilt = true
+	keepSession = true
+	return candidate, nil
+}
+
+// buildNonInteractiveSessionAgent constructs a provider/model-specific agent
+// for startup resume while preserving the cwd sandbox and extension tools that
+// were attached to the initial resolution.
+func buildNonInteractiveSessionAgent(ctx context.Context, args Args, base Resolved, extMgr *extensions.Manager, providerName, model string) (*core.Agent, string, string, error) {
+	next := args
+	next.Provider = providerName
+	next.Model = model
+	resolved, err := Resolve(next, true)
+	if err != nil {
+		return nil, "", "", err
+	}
+	resolved.UseSandbox(base.Sandbox)
+	if extMgr != nil {
+		resolved.MergeExtensionTools(&extToolAdapter{mgr: extMgr})
+	}
+	ag := resolved.NewAgent()
+	wireNonInteractiveAgentExtHooks(ctx, ag, extMgr)
+	return ag, resolved.Provider, resolved.Model, nil
+}
+
+// applyInitialSessionResume applies the same provider/model-aware candidate
+// contract used by interactive session switching to non-interactive startup
+// modes. The returned session owns the replacement append handle.
+func applyInitialSessionResume(ctx context.Context, args Args, base Resolved, extMgr *extensions.Manager, sess *core.Session, ag *core.Agent) (*core.Session, *core.Agent, string, string, error) {
+	if sess == nil || ag == nil {
+		return sess, ag, base.Provider, base.Model, nil
+	}
+	// A newly created meta-only session is already on the active pair. Avoid
+	// reopening and closing it through the resume path: Close intentionally
+	// removes fresh empty sessions, and a second append handle would otherwise
+	// keep an unlinked file alive.
+	if len(ag.Messages()) == 0 &&
+		strings.TrimSpace(sess.Meta.Provider) == strings.TrimSpace(base.Provider) &&
+		strings.TrimSpace(sess.Meta.Model) == strings.TrimSpace(base.Model) {
+		return sess, ag, base.Provider, base.Model, nil
+	}
+	candidate, err := prepareSessionResume(sess.Path, ag, base.Provider, base.Model, func(providerName, model string) (*core.Agent, string, string, error) {
+		return buildNonInteractiveSessionAgent(ctx, args, base, extMgr, providerName, model)
+	})
+	if err != nil {
+		_ = sess.Close()
+		return nil, ag, "", "", err
+	}
+	if !candidate.rebuilt {
+		candidate.agent.SetMessages(candidate.messages)
+		candidate.agent.SeedCost(candidate.cumulative)
+		candidate.agent.SeedLastTurnUsage(candidate.lastTurn)
+	}
+	_ = sess.Close()
+	return candidate.session, candidate.agent, candidate.provider, candidate.model, nil
+}
+
 // fanoutAgentEvent translates a core.AgentEvent into the wire-format
 // EventFromHost and pushes it through the extension manager. Only
 // the events that have a clear extension-facing meaning are
@@ -426,8 +581,19 @@ func runPrintMode(ctx context.Context, args Args, version string) error {
 
 	ag := r.NewAgent()
 	wireNonInteractiveAgentExtHooks(ctx, ag, extMgr)
-	sess, _ := openOrCreateSession(args, r, ag, version)
-	defer sess.Close()
+	sess, err := openOrCreateSession(args, r, ag, version)
+	if err != nil {
+		return err
+	}
+	if sess != nil {
+		var providerName, model string
+		sess, ag, providerName, model, err = applyInitialSessionResume(ctx, args, r, extMgr, sess, ag)
+		if err != nil {
+			return err
+		}
+		r.Provider, r.Model = providerName, model
+		defer sess.Close()
+	}
 
 	prompt := args.Prompt
 	if prompt == "" {
@@ -469,8 +635,19 @@ func runStreamMode(ctx context.Context, args Args, version string) error {
 
 	ag := r.NewAgent()
 	wireNonInteractiveAgentExtHooks(ctx, ag, extMgr)
-	sess, _ := openOrCreateSession(args, r, ag, version)
-	defer sess.Close()
+	sess, err := openOrCreateSession(args, r, ag, version)
+	if err != nil {
+		return err
+	}
+	if sess != nil {
+		var providerName, model string
+		sess, ag, providerName, model, err = applyInitialSessionResume(ctx, args, r, extMgr, sess, ag)
+		if err != nil {
+			return err
+		}
+		r.Provider, r.Model = providerName, model
+		defer sess.Close()
+	}
 
 	prompt := args.Prompt
 	if prompt == "" {
@@ -551,8 +728,19 @@ func runJSONMode(ctx context.Context, args Args, version string) error {
 
 	ag := r.NewAgent()
 	wireNonInteractiveAgentExtHooks(ctx, ag, extMgr)
-	sess, _ := openOrCreateSession(args, r, ag, version)
-	defer sess.Close()
+	sess, err := openOrCreateSession(args, r, ag, version)
+	if err != nil {
+		return err
+	}
+	if sess != nil {
+		var providerName, model string
+		sess, ag, providerName, model, err = applyInitialSessionResume(ctx, args, r, extMgr, sess, ag)
+		if err != nil {
+			return err
+		}
+		r.Provider, r.Model = providerName, model
+		defer sess.Close()
+	}
 
 	prompt := args.Prompt
 	if prompt == "" {
@@ -695,6 +883,17 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 	// rebuilt tool instances must share the same one so the lock sticks.
 	sharedSandbox := r.Sandbox
 
+	// persistMu guards the active session and selection across the agent
+	// loop, TUI callbacks, and session swaps. Declare it before tool
+	// construction because swarm defaults must read the live selection too.
+	var persistMu sync.Mutex
+	// Serialize session transitions with persistence callbacks so a candidate
+	// is read only after the old agent is flushed and cannot be overwritten by
+	// an in-flight append before commit.
+	var sessionTransitionMu sync.RWMutex
+	activeProvider := r.Provider
+	activeModel := r.Model
+
 	// Build the extension manager BEFORE the agent so we can fold
 	// extension-defined tools into the registry. Attach the interactive
 	// host after constructing it below so startup alerts can be buffered.
@@ -791,10 +990,18 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 			return reg
 		}
 		reg["swarm_spawn"] = &tools.SwarmSpawnTool{
-			Swarm:            swarmMgr,
-			Enabled:          AutoSwarmEnabled,
-			DefaultModel:     func() string { return r.Model },
-			DefaultProvider:  func() string { return r.Provider },
+			Swarm:   swarmMgr,
+			Enabled: AutoSwarmEnabled,
+			DefaultModel: func() string {
+				persistMu.Lock()
+				defer persistMu.Unlock()
+				return activeModel
+			},
+			DefaultProvider: func() string {
+				persistMu.Lock()
+				defer persistMu.Unlock()
+				return activeProvider
+			},
 			DefaultReasoning: func() string { return r.Reasoning },
 			ResolveSubagent:  resolveSubagent,
 			OnSpawned:        onSpawnedSwarm,
@@ -957,16 +1164,41 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 
 	var sess *core.Session
 	var sessBaselineMsgs int // messages already on disk when current session opened
-	// persistMu guards sess + sessBaselineMsgs against concurrent access
-	// from the agent loop's per-message persistence hook (runs on the
-	// agent goroutine) and the TUI's session swap / flush callbacks
-	// (run on the TUI goroutine). Without this, a /sessions swap that
-	// races with a finishing turn could double-write or lose messages.
-	var persistMu sync.Mutex
+	// persistMu also guards sess + sessBaselineMsgs, so a session swap
+	// commits the transcript writer and live selection under the same lock.
 	if !args.NoSess && ag != nil {
 		sess, _ = openOrCreateSession(args, r, ag, version)
 		if ag != nil {
 			sessBaselineMsgs = len(ag.Messages())
+		}
+		if sess != nil {
+			// Startup resume uses the same provider/model-aware preparation as
+			// the interactive session picker. This matters for --continue,
+			// --resume, and explicit --session paths whose latest meta row was
+			// written by another provider/model.
+			if !(len(ag.Messages()) == 0 &&
+				strings.TrimSpace(sess.Meta.Provider) == strings.TrimSpace(r.Provider) &&
+				strings.TrimSpace(sess.Meta.Model) == strings.TrimSpace(r.Model)) {
+				candidate, resumeErr := prepareSessionResume(sess.Path, ag, r.Provider, r.Model, buildAgentFor)
+				if resumeErr != nil {
+					_ = sess.Close()
+					return resumeErr
+				}
+				oldSess := sess
+				if !candidate.rebuilt {
+					candidate.agent.SetMessages(candidate.messages)
+					candidate.agent.SeedCost(candidate.cumulative)
+					candidate.agent.SeedLastTurnUsage(candidate.lastTurn)
+				}
+				_ = oldSess.Close()
+				sess = candidate.session
+				ag = candidate.agent
+				sessBaselineMsgs = candidate.fullMessageCount
+				activeProvider = candidate.provider
+				activeModel = candidate.model
+				r.Provider = candidate.provider
+				r.Model = candidate.model
+			}
 		}
 	}
 	defer func() {
@@ -984,6 +1216,8 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 	// baseline counter advances in lock-step so the exit-time flush
 	// doesn't double-write rows already on disk.
 	persistMessage := func(m provider.Message) {
+		sessionTransitionMu.RLock()
+		defer sessionTransitionMu.RUnlock()
 		persistMu.Lock()
 		defer persistMu.Unlock()
 		if sess == nil {
@@ -994,6 +1228,8 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 		}
 	}
 	persistUsage := func(cum provider.Usage) {
+		sessionTransitionMu.RLock()
+		defer sessionTransitionMu.RUnlock()
 		persistMu.Lock()
 		defer persistMu.Unlock()
 		if sess == nil {
@@ -1002,6 +1238,8 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 		_ = sess.AppendUsage(cum, cum)
 	}
 	persistCompaction := func(messages []provider.Message) {
+		sessionTransitionMu.RLock()
+		defer sessionTransitionMu.RUnlock()
 		persistMu.Lock()
 		defer persistMu.Unlock()
 		if sess == nil {
@@ -1025,7 +1263,8 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 	// Re-wrap the build closures so any agent constructed by the TUI
 	// (login, /model swap to a different provider) also gets the
 	// persistence hooks. Without this, switching provider would
-	// silently revert to the old in-memory-only behaviour.
+	// silently revert to the old in-memory-only behaviour. Selection state
+	// is published by the successful transition itself, not by preparation.
 	baseBuildAgent := buildAgent
 	buildAgent = func() (*core.Agent, string, string, error) {
 		a, p, m, err := baseBuildAgent()
@@ -1045,47 +1284,100 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 	// loadSession replaces the current session with the one at path and
 	// hands its messages to the agent. Used by the /sessions picker.
 	loadSession := func(path string) error {
+		// Hold the transition lock from the pre-flush through the commit.
+		// Persistence callbacks take the read side, so an active session
+		// cannot be snapshotted before its lazy writes land or overwritten by
+		// a callback while the candidate is being installed.
+		sessionTransitionMu.Lock()
+		defer sessionTransitionMu.Unlock()
+
 		currentAg := liveInteractiveAgent(iv, ag)
 		if currentAg == nil {
 			return fmt.Errorf("no agent running; log in first")
 		}
-		newSess, msgs, err := core.OpenSession(path)
+
+		persistMu.Lock()
+		currentProvider := activeProvider
+		currentModel := activeModel
+		oldSess := sess
+		// Flush before reading the candidate. Use the locked form rather
+		// than the public callback, which would acquire the read lock held
+		// by this transition.
+		if oldSess != nil {
+			writeNewTranscriptLocked(currentAg, oldSess, sessBaselineMsgs)
+		}
+		currentMessageCount := len(currentAg.Messages())
+		currentCost := currentAg.Cost()
+		persistMu.Unlock()
+
+		// A candidate build must not publish its provider/model as the live
+		// selection before the candidate commits.
+		candidate, err := prepareSessionResume(path, currentAg, currentProvider, currentModel, baseBuildAgentFor)
 		if err != nil {
+			// prepareSessionResume closes its append handle on failure;
+			// no live agent or session has been changed.
 			return err
 		}
-		fullMsgCount := len(msgs)
-		msgs = trimMessagesForResume(msgs, 100)
+		committed := false
+		defer func() {
+			if !committed {
+				_ = candidate.session.Close()
+			}
+		}()
+
+		// Wire the private candidate before it can become visible. This is
+		// also required for legacy same-provider resumes, where the current
+		// agent is reused and only its transcript/usage are refreshed.
+		wireAgentPersist(candidate.agent)
+
 		persistMu.Lock()
-		// Flush any unsaved messages to the old session before swapping.
-		// Per-message persistence keeps sessBaselineMsgs current, so
-		// this is a defensive no-op in the common case; it still
-		// matters for the rare race where a turn just finished and
-		// hadn't fired its hook yet.
-		if sess != nil {
-			writeNewTranscriptLocked(currentAg, sess, sessBaselineMsgs)
-			_ = sess.Close()
+		// A provider rebuild ran outside persistMu. Refuse to install it if
+		// the live agent, session, selection, transcript, or cost changed in
+		// the meantime; otherwise a slow resume could discard a newer turn or
+		// model swap.
+		live := liveInteractiveAgent(iv, ag)
+		changed := sess != oldSess || activeProvider != currentProvider || activeModel != currentModel || live != currentAg
+		if !changed && live != nil {
+			changed = len(live.Messages()) != currentMessageCount || live.Cost() != currentCost
 		}
-		sess = newSess
-		currentAg.SetMessages(msgs)
-		if cum, last, uerr := core.SessionUsageDetail(path); uerr == nil {
-			currentAg.SeedCost(cum)
-			currentAg.SeedLastTurnUsage(last)
+		if changed {
+			persistMu.Unlock()
+			return fmt.Errorf("session changed while loading; please try again")
 		}
-		// The live agent only receives a compact resume window, but
-		// the session file remains intact. Keep the persistence
-		// baseline at the original on-disk message count so future
-		// turns append after the full session instead of duplicating
-		// the hydrated tail.
-		sessBaselineMsgs = fullMsgCount
+
+		if oldSess != nil {
+			_ = oldSess.Close()
+		}
+		sess = candidate.session
+		// The live agent only receives a compact resume window, but the
+		// session file remains intact. Keep the persistence baseline at
+		// the original on-disk message count so future turns append after
+		// the full session instead of duplicating the hydrated tail.
+		sessBaselineMsgs = candidate.fullMessageCount
+
+		if candidate.rebuilt {
+			// Commit the TUI agent while persistMu still protects the session
+			// writer, so no new message can land on the old file between the
+			// two state changes.
+			if iv != nil {
+				iv.ApplySessionAgent(candidate.agent, candidate.provider, candidate.model)
+			}
+			ag = candidate.agent
+		} else {
+			currentAg.SetMessages(candidate.messages)
+			currentAg.SeedCost(candidate.cumulative)
+			currentAg.SeedLastTurnUsage(candidate.lastTurn)
+			ag = currentAg
+		}
+		activeProvider = candidate.provider
+		activeModel = candidate.model
+		if swarmMgr != nil && candidate.session != nil {
+			// Keep the dashboard scope in the same commit as the session,
+			// agent, usage, and persistence baseline.
+			swarmMgr.SetActiveSession(candidate.session.ID)
+		}
+		committed = true
 		persistMu.Unlock()
-		// Re-scope the swarm dashboard to the new session so /swarm
-		// only shows agents this session spawned. swarmMgr may be nil
-		// here if we haven't reached the construction site yet (it
-		// shouldn't be, since the interactive loop is what triggers
-		// loadSession, but the nil check is cheap insurance).
-		if swarmMgr != nil && newSess != nil {
-			swarmMgr.SetActiveSession(newSess.ID)
-		}
 		return nil
 	}
 
@@ -1105,6 +1397,8 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 	// The /jail state is preserved verbatim: if the sandbox was locked
 	// to the old cwd, it stays locked, just re-pointed at the new one.
 	changeCWD := func(path string) error {
+		sessionTransitionMu.Lock()
+		defer sessionTransitionMu.Unlock()
 		if path == "" {
 			return fmt.Errorf("empty path")
 		}
@@ -1135,7 +1429,7 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 			return fmt.Errorf("not a directory: %s", absPath)
 		}
 
-		currentAg := ag
+		currentAg := liveInteractiveAgent(iv, ag)
 		if currentAg == nil {
 			return fmt.Errorf("no agent running; log in first")
 		}
@@ -1146,6 +1440,10 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 		oldCWD := args.CWD
 		oldResolvedCWD := r.CWD
 		oldPermissionSet := args.PermissionSet
+		persistMu.Lock()
+		oldActiveProvider := activeProvider
+		oldActiveModel := activeModel
+		persistMu.Unlock()
 		oldSwarmRoot := ""
 		if swarmMgr != nil {
 			oldSwarmRoot = swarmMgr.RepoRoot()
@@ -1160,6 +1458,10 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 			args.CWD = oldCWD
 			r.CWD = oldResolvedCWD
 			args.PermissionSet = oldPermissionSet
+			persistMu.Lock()
+			activeProvider = oldActiveProvider
+			activeModel = oldActiveModel
+			persistMu.Unlock()
 			if swarmMgr != nil {
 				swarmMgr.SetRepoRoot(oldSwarmRoot)
 			}
@@ -1224,6 +1526,8 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 		}
 		sess = newSess
 		sessBaselineMsgs = 0
+		activeProvider = newProvider
+		activeModel = newModel
 		persistMu.Unlock()
 		ag = newAg
 
@@ -1413,12 +1717,16 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 		LoadSession: loadSession,
 		ChangeCWD:   changeCWD,
 		CurrentSessionPath: func() string {
+			persistMu.Lock()
+			defer persistMu.Unlock()
 			if sess == nil {
 				return ""
 			}
 			return sess.Path
 		},
 		FlushSession: func() {
+			sessionTransitionMu.RLock()
+			defer sessionTransitionMu.RUnlock()
 			// Append any not-yet-persisted agent messages to the
 			// current session file, then advance the baseline so
 			// the final WriteNewTranscript at exit doesn't write
@@ -1438,6 +1746,11 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 			}
 			writeNewTranscriptLocked(currentAg, sess, sessBaselineMsgs)
 			sessBaselineMsgs = len(currentAg.Messages())
+		},
+		SessionTransition: func(fn func()) {
+			sessionTransitionMu.Lock()
+			defer sessionTransitionMu.Unlock()
+			fn()
 		},
 		Extensions:      extMgr,
 		Swarm:           swarmMgr,
@@ -1473,14 +1786,40 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 		NoYolo:      args.NoYolo,
 		ConfirmGate: confirmGate,
 		PersistModel: func(providerName, model string) {
+			providerName = strings.TrimSpace(providerName)
+			model = strings.TrimSpace(model)
+			// Persist the active session metadata before publishing the
+			// selection used by future resumes. UpdateModel restores its old
+			// in-memory metadata when the append fails.
+			persistMu.Lock()
+			var sessionErr error
+			if sess != nil {
+				sessionErr = sess.UpdateModel(providerName, model)
+			}
+			if sessionErr == nil {
+				activeProvider = providerName
+				activeModel = model
+			}
+			persistMu.Unlock()
+			if sessionErr != nil {
+				if iv != nil {
+					iv.Notify("session", "error", "model change was not persisted: "+sessionErr.Error())
+				}
+				return
+			}
+
 			// Update config.json so next launch uses the same pick.
-			cfg, _ := LoadConfig()
+			cfg, cfgErr := LoadConfig()
+			if cfgErr != nil {
+				if iv != nil {
+					iv.Notify("session", "error", "model changed for this run, but config could not be read: "+cfgErr.Error())
+				}
+				return
+			}
 			cfg.Provider = providerName
 			cfg.Model = model
-			_ = SaveConfig(cfg)
-			// Update the active session's meta so resume picks this up.
-			if sess != nil {
-				_ = sess.UpdateModel(providerName, model)
+			if cfgErr = SaveConfig(cfg); cfgErr != nil && iv != nil {
+				iv.Notify("session", "error", "model changed for this run, but config could not be saved: "+cfgErr.Error())
 			}
 		},
 	})

@@ -82,6 +82,50 @@ func TestSessionExportImportRoundTrip(t *testing.T) {
 	}
 }
 
+func TestExportImportUsesLatestProviderModelMetadata(t *testing.T) {
+	root := t.TempDir()
+	session, err := NewSession(root, "/source", "old-provider", "old-model", "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = session.AppendMessage(provider.Message{
+		Role:    provider.RoleUser,
+		Content: []provider.Content{provider.TextBlock{Text: "metadata prompt"}},
+	})
+	if err := session.UpdateModel("new-provider", "new-model"); err != nil {
+		t.Fatal(err)
+	}
+	path := session.Path
+	if err := session.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	exportPath, err := ExportSession(path, filepath.Join(t.TempDir(), "latest"+PortableExt))
+	if err != nil {
+		t.Fatalf("ExportSession: %v", err)
+	}
+	exported, err := ReadSessionSnapshot(exportPath)
+	if err != nil {
+		t.Fatalf("Read exported snapshot: %v", err)
+	}
+	if exported.Meta.Provider != "new-provider" || exported.Meta.Model != "new-model" {
+		t.Fatalf("export metadata = provider %q model %q, want latest values", exported.Meta.Provider, exported.Meta.Model)
+	}
+
+	importedPath, err := ImportSession(exportPath, t.TempDir(), "/destination", "test")
+	if err != nil {
+		t.Fatalf("ImportSession: %v", err)
+	}
+	imported, _, err := OpenSession(importedPath)
+	if err != nil {
+		t.Fatalf("Open imported session: %v", err)
+	}
+	defer imported.Close()
+	if imported.Meta.Provider != "new-provider" || imported.Meta.Model != "new-model" {
+		t.Fatalf("import metadata = provider %q model %q, want latest values", imported.Meta.Provider, imported.Meta.Model)
+	}
+}
+
 // TestExportToFilePath writes to an explicit file path (no
 // directory guessing) and checks the .zotsession extension is
 // appended when missing.

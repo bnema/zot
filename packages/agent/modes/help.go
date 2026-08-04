@@ -13,7 +13,7 @@ var helpKeyRows = [][2]string{
 	{"enter", "submit the current input"},
 	{"shift+enter / alt+enter", "insert a newline"},
 	{"tab", "complete the highlighted slash command"},
-	{"esc", "cancel the current turn (while busy) - clear the input (while idle)"},
+	{"esc", "cancel the current turn (while busy) - clear idle input; two bare Esc presses within 500ms open /session tree"},
 	{"ctrl+c", "exit (while idle) - cancel the current turn (while busy)"},
 	{"ctrl+w", "delete previous word"},
 	{"alt+backspace", "delete previous word (same as ctrl+w)"},

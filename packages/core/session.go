@@ -69,16 +69,34 @@ type SessionMeta struct {
 // the default unmarshaler cannot reconstruct); it is written with a
 // regular provider.Message value.
 type sessionLine struct {
-	Type       string             `json:"type"`
-	Meta       *SessionMeta       `json:"meta,omitempty"`
-	Message    *provider.Message  `json:"message,omitempty"`
-	Messages   []provider.Message `json:"messages,omitempty"`
-	Usage      *provider.Usage    `json:"usage,omitempty"`
-	Cumulative *provider.Usage    `json:"cumulative,omitempty"`
+	Type       string              `json:"type"`
+	Meta       *SessionMeta        `json:"meta,omitempty"`
+	Message    *provider.Message   `json:"message,omitempty"`
+	Messages   *[]provider.Message `json:"messages,omitempty"`
+	Usage      *provider.Usage     `json:"usage,omitempty"`
+	Cumulative *provider.Usage     `json:"cumulative,omitempty"`
 }
 
 type sessionLineHead struct {
 	Type string `json:"type"`
+}
+
+// SessionUsageCheckpoint records the cumulative usage known when a usage
+// row was written. MessageCount uses the effective transcript (after the
+// latest compaction and tool-pair repair), not the number of raw JSONL rows.
+type SessionUsageCheckpoint struct {
+	MessageCount int
+	Cumulative   provider.Usage
+}
+
+// SessionSnapshot is the effective, in-memory view of a session file.
+// Messages are the transcript that a resumed agent should use. The raw
+// JSONL audit history is deliberately not exposed here because message
+// indices used by tree navigation and branching must agree.
+type SessionSnapshot struct {
+	Meta             SessionMeta
+	Messages         []provider.Message
+	UsageCheckpoints []SessionUsageCheckpoint
 }
 
 // SessionsDir returns the per-cwd sessions directory under root.
@@ -168,69 +186,33 @@ func SessionUsage(path string) (provider.Usage, error) {
 }
 
 // SessionUsageDetail returns the latest cumulative usage and the
-// per-turn usage of the final completed turn. The per-turn row drives
-// the live "context used" gauge in the status bar (input + cache
-// approximates the prompt size the model just saw), letting the TUI
-// rehydrate the gauge on resume instead of starting at 0% until the
-// next turn lands.
+// per-turn usage of the final completed turn. It reads through the same
+// strict snapshot path as OpenSession, so a truncated or malformed session
+// cannot silently reset the usage display.
 func SessionUsageDetail(path string) (cumulative, lastTurn provider.Usage, err error) {
-	f, ferr := os.Open(path)
-	if ferr != nil {
-		return provider.Usage{}, provider.Usage{}, ferr
+	snapshot, err := ReadSessionSnapshot(path)
+	if err != nil {
+		return provider.Usage{}, provider.Usage{}, err
 	}
-	defer f.Close()
-
-	// Some historical sessions logged the per-turn `usage` field as a copy
-	// of `cumulative` instead of the true delta. To recover an accurate
-	// last-turn snapshot (used by the status-bar context gauge on resume),
-	// we always derive lastTurn from the delta between the final two
-	// cumulative rows. For prompt-size purposes, cache_read/cache_write
-	// reflect the most recent prompt directly, so we take those from the
-	// final cumulative row as-is rather than as a delta.
-	var prevCum provider.Usage
-	var haveCum bool
-	if ierr := forEachJSONLLine(f, func(line []byte) error {
-		var head sessionLineHead
-		if err := json.Unmarshal(line, &head); err != nil || head.Type != "usage" {
-			return nil
-		}
-		var row struct {
-			Cumulative provider.Usage `json:"cumulative"`
-		}
-		if err := json.Unmarshal(line, &row); err != nil {
-			return nil
-		}
-		if haveCum {
-			prevCum = cumulative
-		}
-		cumulative = row.Cumulative
-		haveCum = true
-		return nil
-	}); ierr != nil {
-		return provider.Usage{}, provider.Usage{}, ierr
+	if len(snapshot.UsageCheckpoints) == 0 {
+		return provider.Usage{}, provider.Usage{}, nil
 	}
-	if haveCum {
-		// input/output are monotonic totals -> per-turn = delta.
-		lastTurn.InputTokens = nonNegDelta(cumulative.InputTokens, prevCum.InputTokens)
-		lastTurn.OutputTokens = nonNegDelta(cumulative.OutputTokens, prevCum.OutputTokens)
-		lastTurn.ReasoningTokens = nonNegDelta(cumulative.ReasoningTokens, prevCum.ReasoningTokens)
-		lastTurn.ReasoningTokensKnown = cumulative.ReasoningTokensKnown
-		// cache_read/write on the final row already represent the last prompt's
-		// cache hit/creation, not a running total of bytes; use directly.
-		lastTurn.CacheReadTokens = cumulative.CacheReadTokens - prevCum.CacheReadTokens
-		if lastTurn.CacheReadTokens < 0 {
-			lastTurn.CacheReadTokens = cumulative.CacheReadTokens
-		}
-		lastTurn.CacheWriteTokens = cumulative.CacheWriteTokens - prevCum.CacheWriteTokens
-		if lastTurn.CacheWriteTokens < 0 {
-			lastTurn.CacheWriteTokens = cumulative.CacheWriteTokens
-		}
-		lastTurn.CostUSD = cumulative.CostUSD - prevCum.CostUSD
-		if lastTurn.CostUSD < 0 {
-			lastTurn.CostUSD = 0
-		}
+	last := snapshot.UsageCheckpoints[len(snapshot.UsageCheckpoints)-1].Cumulative
+	var prev provider.Usage
+	if len(snapshot.UsageCheckpoints) > 1 {
+		prev = snapshot.UsageCheckpoints[len(snapshot.UsageCheckpoints)-2].Cumulative
 	}
-	return cumulative, lastTurn, nil
+	lastTurn.InputTokens = nonNegDelta(last.InputTokens, prev.InputTokens)
+	lastTurn.OutputTokens = nonNegDelta(last.OutputTokens, prev.OutputTokens)
+	lastTurn.ReasoningTokens = nonNegDelta(last.ReasoningTokens, prev.ReasoningTokens)
+	lastTurn.ReasoningTokensKnown = last.ReasoningTokensKnown
+	lastTurn.CacheReadTokens = nonNegDelta(last.CacheReadTokens, prev.CacheReadTokens)
+	lastTurn.CacheWriteTokens = nonNegDelta(last.CacheWriteTokens, prev.CacheWriteTokens)
+	lastTurn.CostUSD = last.CostUSD - prev.CostUSD
+	if lastTurn.CostUSD < 0 {
+		lastTurn.CostUSD = 0
+	}
+	return last, lastTurn, nil
 }
 
 func nonNegDelta(cur, prev int) int {
@@ -240,49 +222,322 @@ func nonNegDelta(cur, prev int) int {
 	return cur - prev
 }
 
-// OpenSession opens an existing session for appending.
-func OpenSession(path string) (*Session, []provider.Message, error) {
+// ReadSessionSnapshot reads a complete session file and reconstructs the
+// effective transcript. It is intentionally stricter than the lightweight
+// listing helpers: a caller that is about to resume, render, or branch a
+// session must not receive a plausible-looking partial transcript.
+func ReadSessionSnapshot(path string) (SessionSnapshot, error) {
 	f, err := os.Open(path)
 	if err != nil {
-		return nil, nil, err
+		return SessionSnapshot{}, fmt.Errorf("session snapshot: open %q: %w", path, err)
 	}
 	defer f.Close()
 
-	var meta SessionMeta
-	var messages []provider.Message
-	if err := forEachJSONLLine(f, func(line []byte) error {
+	var snapshot SessionSnapshot
+	var sawMeta bool
+	generation := 0
+	type rawCheckpoint struct {
+		messageCount int
+		cumulative   provider.Usage
+		generation   int
+	}
+	var rawCheckpoints []rawCheckpoint
+
+	err = forEachStrictJSONLLine(f, func(line []byte, lineNo int) error {
 		var head sessionLineHead
 		if err := json.Unmarshal(line, &head); err != nil {
-			return nil
+			return fmt.Errorf("line %d: invalid JSON: %w", lineNo, err)
 		}
+		if head.Type == "" {
+			return fmt.Errorf("line %d: missing row type", lineNo)
+		}
+		if !sawMeta && head.Type != "meta" {
+			return fmt.Errorf("line %d: first row is not meta", lineNo)
+		}
+
 		switch head.Type {
 		case "meta":
-			var row struct {
-				Meta SessionMeta `json:"meta"`
+			var row sessionLine
+			if err := json.Unmarshal(line, &row); err != nil {
+				return fmt.Errorf("line %d: invalid meta row: %w", lineNo, err)
 			}
-			if err := json.Unmarshal(line, &row); err == nil {
-				meta = row.Meta
+			if row.Meta == nil || row.Meta.ID == "" {
+				return fmt.Errorf("line %d: meta row has no session id", lineNo)
 			}
+			snapshot.Meta = *row.Meta
+			sawMeta = true
+
 		case "message":
-			if msg, err := hydrateMessage(line); err == nil && len(msg.Content) > 0 {
-				messages = append(messages, msg)
+			msg, err := hydrateMessage(line)
+			if err != nil {
+				return fmt.Errorf("line %d: invalid message row: %w", lineNo, err)
 			}
+			snapshot.Messages = append(snapshot.Messages, msg)
+
 		case "compaction":
-			if compacted, err := hydrateCompaction(line); err == nil {
-				messages = compacted
+			compacted, err := hydrateCompaction(line)
+			if err != nil {
+				return fmt.Errorf("line %d: invalid compaction row: %w", lineNo, err)
 			}
+			snapshot.Messages = compacted
+			generation++
+
+		case "usage":
+			var row struct {
+				Usage      *provider.Usage `json:"usage"`
+				Cumulative *provider.Usage `json:"cumulative"`
+			}
+			if err := json.Unmarshal(line, &row); err != nil {
+				return fmt.Errorf("line %d: invalid usage row: %w", lineNo, err)
+			}
+			if row.Cumulative == nil {
+				return fmt.Errorf("line %d: usage row has no cumulative usage", lineNo)
+			}
+			rawCheckpoints = append(rawCheckpoints, rawCheckpoint{
+				messageCount: len(snapshot.Messages),
+				cumulative:   *row.Cumulative,
+				generation:   generation,
+			})
+
+		case "rename":
+			var row struct {
+				Title *string `json:"title"`
+			}
+			if err := json.Unmarshal(line, &row); err != nil {
+				return fmt.Errorf("line %d: invalid rename row: %w", lineNo, err)
+			}
+			if row.Title == nil {
+				return fmt.Errorf("line %d: rename row has no title", lineNo)
+			}
+
+		default:
+			return fmt.Errorf("line %d: unknown row type %q", lineNo, head.Type)
 		}
 		return nil
-	}); err != nil {
+	})
+	if err != nil {
+		return SessionSnapshot{}, fmt.Errorf("session snapshot %q: %w", path, err)
+	}
+	if !sawMeta {
+		return SessionSnapshot{}, fmt.Errorf("session snapshot %q: file is empty", path)
+	}
+
+	// Repair only after compaction replacement. This makes synthetic tool
+	// results and the removal of orphaned results part of the same indexed
+	// stream that OpenSession returns and that BranchSession materializes.
+	rawMessages := snapshot.Messages
+	repaired := repairSessionMessages(rawMessages)
+	snapshot.Messages = repaired.messages
+	for _, checkpoint := range rawCheckpoints {
+		count := checkpoint.messageCount
+		if checkpoint.generation == generation {
+			count = repaired.prefixCount(count)
+		} else if count > len(rawMessages) {
+			// A compaction replaces the effective stream. Preserve the
+			// cumulative cost represented by an older checkpoint at the
+			// end of the replacement rather than making every post-summary
+			// branch appear to have zero usage.
+			count = len(rawMessages)
+		}
+		snapshot.UsageCheckpoints = append(snapshot.UsageCheckpoints, SessionUsageCheckpoint{
+			MessageCount: count,
+			Cumulative:   checkpoint.cumulative,
+		})
+	}
+	return snapshot, nil
+}
+
+// forEachStrictJSONLLine is the complete-read counterpart to
+// forEachJSONLLine. It rejects malformed and blank rows and reports the
+// line number so callers cannot accidentally proceed with a partial file.
+func forEachStrictJSONLLine(r io.Reader, fn func([]byte, int) error) error {
+	br := bufio.NewReader(r)
+	lineNo := 0
+	for {
+		line, err := br.ReadBytes('\n')
+		if len(line) > 0 {
+			lineNo++
+			line = bytes.TrimRight(line, "\r\n")
+			if len(bytes.TrimSpace(line)) == 0 {
+				return fmt.Errorf("line %d: blank row", lineNo)
+			}
+			if ferr := fn(line, lineNo); ferr != nil {
+				return ferr
+			}
+		}
+		if err == io.EOF {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+	}
+}
+
+// repairedSessionMessage keeps the raw message index that produced an
+// effective message. Synthetic tool results use the assistant's raw index;
+// this lets usage checkpoints continue to refer to the same effective
+// message prefix after repair removes or inserts rows.
+type repairedSessionMessage struct {
+	message  provider.Message
+	rawIndex int
+}
+
+type repairedSessionMessages struct {
+	messages []provider.Message
+	counts   []int
+}
+
+func (r repairedSessionMessages) prefixCount(rawCount int) int {
+	if rawCount < 0 {
+		return 0
+	}
+	if rawCount >= len(r.counts) {
+		return r.counts[len(r.counts)-1]
+	}
+	return r.counts[rawCount]
+}
+
+// repairSessionMessages repairs tool-call pairs and removes orphaned result
+// blocks while retaining a mapping from raw effective prefixes to repaired
+// prefixes. A tool result is valid only in the immediately following tool
+// message for the assistant tool calls; keeping an unrelated result there
+// would still make a resumed or branched transcript provider-invalid.
+func repairSessionMessages(msgs []provider.Message) repairedSessionMessages {
+	if len(msgs) == 0 {
+		return repairedSessionMessages{counts: []int{0}}
+	}
+
+	repaired := make([]repairedSessionMessage, 0, len(msgs)+2)
+	for i := 0; i < len(msgs); i++ {
+		m := msgs[i]
+		if m.Role == provider.RoleAssistant && messageHasToolCalls(m) {
+			ids := make(map[string]bool)
+			for _, c := range m.Content {
+				if tc, ok := c.(provider.ToolCallBlock); ok {
+					ids[tc.ID] = true
+				}
+			}
+			repaired = append(repaired, repairedSessionMessage{message: m, rawIndex: i})
+
+			if i+1 < len(msgs) && msgs[i+1].Role == provider.RoleTool {
+				tool := msgs[i+1]
+				seen := make(map[string]bool)
+				filtered := make([]provider.Content, 0, len(tool.Content)+len(ids))
+				for _, c := range tool.Content {
+					tr, ok := c.(provider.ToolResultBlock)
+					if !ok {
+						filtered = append(filtered, c)
+						continue
+					}
+					if !ids[tr.CallID] || seen[tr.CallID] {
+						continue
+					}
+					seen[tr.CallID] = true
+					filtered = append(filtered, tr)
+				}
+				for _, c := range m.Content {
+					if tc, ok := c.(provider.ToolCallBlock); ok && !seen[tc.ID] {
+						filtered = append(filtered, provider.ToolResultBlock{
+							CallID:  tc.ID,
+							Content: []provider.Content{provider.TextBlock{Text: "tool call was aborted; no result recorded."}},
+							IsError: true,
+						})
+					}
+				}
+				if len(filtered) > 0 {
+					tool.Content = filtered
+					repaired = append(repaired, repairedSessionMessage{message: tool, rawIndex: i + 1})
+				}
+				i++
+				continue
+			}
+
+			stubs := make([]provider.Content, 0, len(ids))
+			for _, c := range m.Content {
+				if tc, ok := c.(provider.ToolCallBlock); ok {
+					stubs = append(stubs, provider.ToolResultBlock{
+						CallID:  tc.ID,
+						Content: []provider.Content{provider.TextBlock{Text: "tool call was aborted; no result recorded."}},
+						IsError: true,
+					})
+				}
+			}
+			repaired = append(repaired, repairedSessionMessage{message: provider.Message{
+				Role:    provider.RoleTool,
+				Content: stubs,
+				Time:    m.Time,
+			}, rawIndex: i})
+			continue
+		}
+
+		if m.Role == provider.RoleTool {
+			// Deferred-tool activation rows intentionally carry a result
+			// without a preceding assistant call. Preserve those rows and
+			// their AddedToolNames marker; they are consumed as local
+			// transcript state rather than sent as a provider tool pair.
+			if len(m.AddedToolNames) > 0 {
+				repaired = append(repaired, repairedSessionMessage{message: m, rawIndex: i})
+				continue
+			}
+			// This tool row was not immediately paired with an assistant
+			// tool-call row. Drop its result blocks; a bare tool row is an
+			// orphan and is not safe to send to a provider.
+			filtered := make([]provider.Content, 0, len(m.Content))
+			for _, c := range m.Content {
+				if _, ok := c.(provider.ToolResultBlock); !ok {
+					filtered = append(filtered, c)
+				}
+			}
+			if len(filtered) > 0 {
+				m.Content = filtered
+				repaired = append(repaired, repairedSessionMessage{message: m, rawIndex: i})
+			}
+			continue
+		}
+		repaired = append(repaired, repairedSessionMessage{message: m, rawIndex: i})
+	}
+
+	out := repairedSessionMessages{
+		messages: make([]provider.Message, 0, len(repaired)),
+		counts:   make([]int, len(msgs)+1),
+	}
+	for _, item := range repaired {
+		out.messages = append(out.messages, item.message)
+		for n := item.rawIndex + 1; n <= len(msgs); n++ {
+			out.counts[n]++
+		}
+	}
+	return out
+}
+
+func messageHasToolCalls(msg provider.Message) bool {
+	for _, content := range msg.Content {
+		if _, ok := content.(provider.ToolCallBlock); ok {
+			return true
+		}
+	}
+	return false
+}
+
+// OpenSession opens an existing session for appending.
+func OpenSession(path string) (*Session, []provider.Message, error) {
+	snapshot, err := ReadSessionSnapshot(path)
+	if err != nil {
 		return nil, nil, err
 	}
-	messages = repairToolUseResultPairs(messages)
 	out, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o644)
 	if err != nil {
 		return nil, nil, err
 	}
-	s := &Session{ID: meta.ID, Path: path, Meta: meta, writer: out, buf: bufio.NewWriter(out)}
-	return s, messages, nil
+	s := &Session{
+		ID:     snapshot.Meta.ID,
+		Path:   path,
+		Meta:   snapshot.Meta,
+		writer: out,
+		buf:    bufio.NewWriter(out),
+	}
+	return s, snapshot.Messages, nil
 }
 
 // repairToolUseResultPairs walks a restored transcript and
@@ -311,68 +566,7 @@ func OpenSession(path string) (*Session, []provider.Message, error) {
 //
 // Runs once per OpenSession call. No cost on the hot path.
 func repairToolUseResultPairs(msgs []provider.Message) []provider.Message {
-	if len(msgs) == 0 {
-		return msgs
-	}
-	out := make([]provider.Message, 0, len(msgs)+2)
-	for i, m := range msgs {
-		out = append(out, m)
-		if m.Role != provider.RoleAssistant {
-			continue
-		}
-		// Collect tool_use ids in this assistant message.
-		var ids []string
-		for _, c := range m.Content {
-			if tc, ok := c.(provider.ToolCallBlock); ok {
-				ids = append(ids, tc.ID)
-			}
-		}
-		if len(ids) == 0 {
-			continue
-		}
-		// Look at the next message (if any) and collect tool_result
-		// CallIDs it covers.
-		have := map[string]bool{}
-		if i+1 < len(msgs) && msgs[i+1].Role == provider.RoleTool {
-			for _, c := range msgs[i+1].Content {
-				if tr, ok := c.(provider.ToolResultBlock); ok {
-					have[tr.CallID] = true
-				}
-			}
-		}
-		// Build stubs for any missing id.
-		var stubs []provider.Content
-		for _, id := range ids {
-			if have[id] {
-				continue
-			}
-			stubs = append(stubs, provider.ToolResultBlock{
-				CallID:  id,
-				Content: []provider.Content{provider.TextBlock{Text: "tool call was aborted; no result recorded."}},
-				IsError: true,
-			})
-		}
-		if len(stubs) == 0 {
-			continue
-		}
-		// Merge into the next tool-role message if present,
-		// otherwise insert a synthetic one right after the
-		// assistant message. Merging keeps the tool-role row
-		// count stable; inserting handles the common case where
-		// no tool message was persisted at all.
-		if i+1 < len(msgs) && msgs[i+1].Role == provider.RoleTool {
-			msgs[i+1].Content = append(msgs[i+1].Content, stubs...)
-			// We already appended m to out; the modified next
-			// message will be appended on the following iteration.
-			continue
-		}
-		out = append(out, provider.Message{
-			Role:    provider.RoleTool,
-			Content: stubs,
-			Time:    m.Time,
-		})
-	}
-	return out
+	return repairSessionMessages(msgs).messages
 }
 
 // LatestSession returns the most recent session file for cwd, or "".
@@ -425,8 +619,8 @@ func DeleteSession(path string) error {
 }
 
 // DescribeSessions returns lightweight summaries for every session in
-// cwd, newest first. Parses only the first few lines and the last usage
-// line so it's cheap to run on every dialog open.
+// cwd, newest first. It uses the effective snapshot so message counts,
+// metadata, and usage agree with resume and branching behavior.
 func DescribeSessions(root, cwd string) []SessionSummary {
 	paths := ListSessions(root, cwd)
 	summaries := make([]SessionSummary, 0, len(paths))
@@ -470,73 +664,60 @@ func sessionBranchDepth(path string, metas map[string]SessionMeta, idToPath map[
 
 func describeSession(path string) SessionSummary {
 	s := SessionSummary{Path: path}
-	f, err := os.Open(path)
+	snapshot, err := ReadSessionSnapshot(path)
 	if err != nil {
 		return s
 	}
-	defer f.Close()
-	isBranch := false
-	forkPoint := 0
+	s.Started = snapshot.Meta.Started
+	s.Model = snapshot.Meta.Model
+	s.Provider = snapshot.Meta.Provider
+	s.Title = snapshot.Meta.Title
+	s.MessageCount = len(snapshot.Messages)
+	s.FirstUserText = firstUserTextFromMessages(snapshot.Messages)
+	lastUser := lastUserText(snapshot.Messages)
+	isBranch := snapshot.Meta.Parent != ""
+	forkPoint := snapshot.Meta.ForkPoint
+	branchPrompt := firstUserTextFromMessagesAfter(snapshot.Messages, forkPoint)
+	if len(snapshot.UsageCheckpoints) > 0 {
+		s.TotalCost = snapshot.UsageCheckpoints[len(snapshot.UsageCheckpoints)-1].Cumulative.CostUSD
+	}
+
+	// Rename rows are append-only and are intentionally kept out of the
+	// effective transcript. Scan only their placement so generated branch
+	// titles can still be replaced by the first post-fork prompt while an
+	// explicit rename after divergence keeps priority.
 	messageIdx := 0
-	branchPrompt := ""
-	lastUser := ""
 	renameMessageIdx := -1
-	_ = forEachJSONLLine(f, func(line []byte) error {
-		var head sessionLineHead
-		if err := json.Unmarshal(line, &head); err != nil {
+	_ = func() error {
+		f, err := os.Open(path)
+		if err != nil {
+			return err
+		}
+		defer f.Close()
+		return forEachJSONLLine(f, func(line []byte) error {
+			var head sessionLineHead
+			if err := json.Unmarshal(line, &head); err != nil {
+				return nil
+			}
+			switch head.Type {
+			case "message":
+				messageIdx++
+			case "compaction":
+				if compacted, err := hydrateCompaction(line); err == nil {
+					messageIdx = len(compacted)
+				}
+			case "rename":
+				var row struct {
+					Title string `json:"title"`
+				}
+				if err := json.Unmarshal(line, &row); err == nil && row.Title != "" {
+					s.Title = row.Title
+					renameMessageIdx = messageIdx
+				}
+			}
 			return nil
-		}
-		switch head.Type {
-		case "meta":
-			var row struct {
-				Meta SessionMeta `json:"meta"`
-			}
-			if err := json.Unmarshal(line, &row); err == nil {
-				s.Started = row.Meta.Started
-				s.Model = row.Meta.Model
-				s.Provider = row.Meta.Provider
-				s.Title = row.Meta.Title
-				isBranch = row.Meta.Parent != ""
-				forkPoint = row.Meta.ForkPoint
-			}
-		case "message":
-			if text := firstUserText(line); text != "" {
-				lastUser = text
-				if s.FirstUserText == "" {
-					s.FirstUserText = text
-				}
-				if isBranch && messageIdx >= forkPoint && branchPrompt == "" {
-					branchPrompt = text
-				}
-			}
-			messageIdx++
-			s.MessageCount++
-		case "compaction":
-			if compacted, err := hydrateCompaction(line); err == nil {
-				s.MessageCount = len(compacted)
-				messageIdx = len(compacted)
-				s.FirstUserText = firstUserTextFromMessages(compacted)
-				lastUser = lastUserText(compacted)
-				branchPrompt = firstUserTextFromMessagesAfter(compacted, forkPoint)
-			}
-		case "rename":
-			var row struct {
-				Title string `json:"title"`
-			}
-			if err := json.Unmarshal(line, &row); err == nil && row.Title != "" {
-				s.Title = row.Title
-				renameMessageIdx = messageIdx
-			}
-		case "usage":
-			var row struct {
-				Cumulative provider.Usage `json:"cumulative"`
-			}
-			if err := json.Unmarshal(line, &row); err == nil {
-				s.TotalCost = row.Cumulative.CostUSD
-			}
-		}
-		return nil
-	})
+		})
+	}()
 	if isBranch {
 		// A rename written after the branch has diverged is user intent
 		// and must win. Older generated branch titles were written at
@@ -550,29 +731,6 @@ func describeSession(path string) SessionSummary {
 		}
 	}
 	return s
-}
-
-func firstUserText(line []byte) string {
-	var row struct {
-		Message struct {
-			Role    string `json:"role"`
-			Content []struct {
-				Text string `json:"text"`
-			} `json:"content"`
-		} `json:"message"`
-	}
-	if err := json.Unmarshal(line, &row); err != nil {
-		return ""
-	}
-	if row.Message.Role != "user" {
-		return ""
-	}
-	for _, c := range row.Message.Content {
-		if c.Text != "" {
-			return c.Text
-		}
-	}
-	return ""
 }
 
 func firstUserTextFromMessages(msgs []provider.Message) string {
@@ -712,10 +870,14 @@ func (s *Session) AppendCompaction(messages []provider.Message) error {
 	if s == nil {
 		return nil
 	}
-	if err := s.writeLine(sessionLine{Type: "compaction", Messages: messages}); err != nil {
+	compactionMessages := messages
+	if err := s.writeLine(sessionLine{Type: "compaction", Messages: &compactionMessages}); err != nil {
 		return err
 	}
-	s.messagesAppended = len(messages)
+	// The compaction row itself is meaningful even when it replaces the
+	// transcript with an empty or nil slice. Count the append operation so a
+	// fresh session containing an empty checkpoint is not deleted on Close.
+	s.messagesAppended++
 	return nil
 }
 
@@ -726,9 +888,15 @@ func (s *Session) UpdateModel(providerName, model string) error {
 	if s == nil {
 		return nil
 	}
+	oldProvider, oldModel := s.Meta.Provider, s.Meta.Model
 	s.Meta.Provider = providerName
 	s.Meta.Model = model
-	return s.writeLine(sessionLine{Type: "meta", Meta: &s.Meta})
+	if err := s.writeLine(sessionLine{Type: "meta", Meta: &s.Meta}); err != nil {
+		s.Meta.Provider = oldProvider
+		s.Meta.Model = oldModel
+		return err
+	}
+	return nil
 }
 
 // AppendUsage writes a usage row to the session.
@@ -784,17 +952,27 @@ func (s *Session) writeLine(row sessionLine) error {
 
 func hydrateCompaction(lineBytes []byte) ([]provider.Message, error) {
 	var row struct {
-		Messages []json.RawMessage `json:"messages"`
+		Messages json.RawMessage `json:"messages"`
 	}
 	if err := json.Unmarshal(lineBytes, &row); err != nil {
 		return nil, err
 	}
-	messages := make([]provider.Message, 0, len(row.Messages))
-	for _, raw := range row.Messages {
+	if len(row.Messages) == 0 || bytes.Equal(bytes.TrimSpace(row.Messages), []byte("null")) {
+		// Older writers omitted the field for an empty compaction and some
+		// wrote it as null. Both represent a valid empty replacement.
+		return []provider.Message{}, nil
+	}
+	var rawMessages []json.RawMessage
+	if err := json.Unmarshal(row.Messages, &rawMessages); err != nil {
+		return nil, fmt.Errorf("invalid messages: %w", err)
+	}
+	messages := make([]provider.Message, 0, len(rawMessages))
+	for idx, raw := range rawMessages {
 		msg, err := hydrateMessageObject(raw)
-		if err == nil && len(msg.Content) > 0 {
-			messages = append(messages, msg)
+		if err != nil {
+			return nil, fmt.Errorf("message %d: %w", idx, err)
 		}
+		messages = append(messages, msg)
 	}
 	return messages, nil
 }
@@ -805,6 +983,9 @@ func hydrateMessage(lineBytes []byte) (provider.Message, error) {
 	}
 	if err := json.Unmarshal(lineBytes, &row); err != nil {
 		return provider.Message{}, err
+	}
+	if len(row.Message) == 0 || bytes.Equal(bytes.TrimSpace(row.Message), []byte("null")) {
+		return provider.Message{}, fmt.Errorf("message row has no message")
 	}
 	return hydrateMessageObject(row.Message)
 }
@@ -820,8 +1001,17 @@ func hydrateMessageObject(rawMessage []byte) (provider.Message, error) {
 	if err := json.Unmarshal(rawMessage, &row); err != nil {
 		return provider.Message{}, err
 	}
+	if row.Role != provider.RoleUser && row.Role != provider.RoleAssistant && row.Role != provider.RoleTool {
+		return provider.Message{}, fmt.Errorf("message has invalid role %q", row.Role)
+	}
+	if row.Content == nil || len(row.Content) == 0 {
+		return provider.Message{}, fmt.Errorf("message has no content")
+	}
 	msg := provider.Message{Role: row.Role, Time: row.Time, Meta: row.Meta, AddedToolNames: row.AddedToolNames}
-	for _, raw := range row.Content {
+	for idx, raw := range row.Content {
+		if len(bytes.TrimSpace(raw)) == 0 || bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+			return provider.Message{}, fmt.Errorf("content block %d is empty", idx)
+		}
 		var head struct {
 			Text             string `json:"text"`
 			MimeType         string `json:"mime_type"`
@@ -836,7 +1026,14 @@ func hydrateMessageObject(rawMessage []byte) (provider.Message, error) {
 			// ToolCallBlock also has Arguments, ToolResultBlock has Content + IsError
 		}
 		if err := json.Unmarshal(raw, &head); err != nil {
-			continue
+			return provider.Message{}, fmt.Errorf("content block %d: %w", idx, err)
+		}
+		var fields map[string]json.RawMessage
+		if err := json.Unmarshal(raw, &fields); err != nil || fields == nil {
+			if err == nil {
+				err = fmt.Errorf("content block is not an object")
+			}
+			return provider.Message{}, fmt.Errorf("content block %d: %w", idx, err)
 		}
 		// Discriminate by presence of fields.
 		switch {
@@ -846,7 +1043,10 @@ func hydrateMessageObject(rawMessage []byte) (provider.Message, error) {
 				Summary:   head.Summary,
 				Encrypted: head.Encrypted,
 			})
-		case head.Name != "" && head.ID != "":
+		case head.Name != "" || head.ID != "" || fields["arguments"] != nil:
+			if head.Name == "" || head.ID == "" {
+				return provider.Message{}, fmt.Errorf("content block %d: incomplete tool call", idx)
+			}
 			var tc struct {
 				ID               string          `json:"id"`
 				Name             string          `json:"name"`
@@ -866,20 +1066,39 @@ func hydrateMessageObject(rawMessage []byte) (provider.Message, error) {
 				Content []json.RawMessage `json:"content"`
 				IsError bool              `json:"is_error"`
 			}
-			_ = json.Unmarshal(raw, &tr)
+			if err := json.Unmarshal(raw, &tr); err != nil || tr.Content == nil {
+				if err == nil {
+					err = fmt.Errorf("tool result has no content")
+				}
+				return provider.Message{}, fmt.Errorf("content block %d: %w", idx, err)
+			}
 			block := provider.ToolResultBlock{CallID: tr.CallID, IsError: tr.IsError}
-			for _, c := range tr.Content {
+			for innerIdx, c := range tr.Content {
 				var inner struct {
 					Text     string `json:"text"`
 					MimeType string `json:"mime_type"`
 					Data     []byte `json:"data"`
 				}
-				_ = json.Unmarshal(c, &inner)
+				if err := json.Unmarshal(c, &inner); err != nil {
+					return provider.Message{}, fmt.Errorf("content block %d result %d: %w", idx, innerIdx, err)
+				}
+				var innerFields map[string]json.RawMessage
+				if err := json.Unmarshal(c, &innerFields); err != nil || innerFields == nil {
+					if err == nil {
+						err = fmt.Errorf("result content is not an object")
+					}
+					return provider.Message{}, fmt.Errorf("content block %d result %d: %w", idx, innerIdx, err)
+				}
 				if inner.MimeType != "" {
 					block.Content = append(block.Content, provider.ImageBlock{MimeType: inner.MimeType, Data: inner.Data})
-				} else {
+				} else if _, ok := innerFields["text"]; ok {
 					block.Content = append(block.Content, provider.TextBlock{Text: inner.Text})
+				} else {
+					return provider.Message{}, fmt.Errorf("content block %d result %d: unknown content", idx, innerIdx)
 				}
+			}
+			if len(block.Content) == 0 {
+				return provider.Message{}, fmt.Errorf("content block %d tool result has no content", idx)
 			}
 			msg.Content = append(msg.Content, block)
 		case head.MimeType != "":
@@ -889,6 +1108,9 @@ func hydrateMessageObject(rawMessage []byte) (provider.Message, error) {
 				ThoughtSignature: head.ThoughtSignature,
 			})
 		default:
+			if _, ok := fields["text"]; !ok {
+				return provider.Message{}, fmt.Errorf("content block %d: unknown content", idx)
+			}
 			msg.Content = append(msg.Content, provider.TextBlock{
 				Text:             head.Text,
 				ThoughtSignature: head.ThoughtSignature,
