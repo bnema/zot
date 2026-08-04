@@ -61,11 +61,16 @@ type Resolved struct {
 	// messages to the provider transcript.
 	ContextFiles []ContextFile
 
+	// skillsEnabled is true when discovery ran, even when it found no
+	// skills. It is false only for an explicit clean-room disable.
+	skillsEnabled bool
+
 	// Bookkeeping for MergeExtensionTools. Captured at Resolve time
 	// so the system prompt can be rebuilt later without re-running
 	// resolve.
 	systemAppend     []string
 	systemCustom     string
+	skillAddendum    string
 	toolDescriptions map[string]string
 }
 
@@ -83,31 +88,89 @@ func (r *Resolved) MergeExtensionTools(mgr ExtensionToolSource) {
 	if mgr == nil {
 		return
 	}
-	infos := mgr.Tools()
-	if len(infos) == 0 {
-		return
-	}
 	changed := false
-	for _, info := range infos {
+	for _, info := range mgr.Tools() {
 		if _, exists := r.ToolRegistry[info.Name]; exists {
 			continue
 		}
 		r.ToolRegistry[info.Name] = mgr.NewExtensionTool(info)
 		changed = true
 	}
+
+	// A nil SkillTool can mean discovery ran and found nothing, so use the
+	// explicit disable flag rather than the discovery result as the gate.
+	if source, ok := mgr.(ExtensionSkillSource); ok && r.skillsEnabled {
+		if bundled := source.Skills(); len(bundled) > 0 {
+			merged := mergeExtensionSkills(r.SkillTool, bundled)
+			if r.SkillTool == nil {
+				r.SkillTool = skills.NewTool(merged)
+				r.ToolRegistry[r.SkillTool.Name()] = r.SkillTool
+			} else {
+				r.SkillTool.SetSkills(merged)
+			}
+			append_ := append([]string(nil), r.systemAppend...)
+			if r.skillAddendum != "" {
+				filtered := append_[:0]
+				for _, item := range append_ {
+					if item != r.skillAddendum {
+						filtered = append(filtered, item)
+					}
+				}
+				append_ = filtered
+			}
+			r.skillAddendum = skills.SystemPromptAddendum(merged)
+			if r.skillAddendum != "" {
+				append_ = append(append_, r.skillAddendum)
+			}
+			r.systemAppend = append_
+			changed = true
+		}
+	}
 	if !changed {
 		return
 	}
-	// Re-render the system prompt with the merged tool list. Skill
-	// addendum is preserved by walking the existing append slice.
-	append_ := r.systemAppend
+	// Re-render the system prompt with the merged tool and skill lists.
+	r.ToolSummary = toolSummariesFromRegistry(r.ToolRegistry, r.toolDescriptions)
 	r.SystemPrompt = BuildSystemPrompt(SystemPromptOpts{
 		CWD:        r.CWD,
-		Tools:      toolSummariesFromRegistry(r.ToolRegistry, r.toolDescriptions),
+		Tools:      r.ToolSummary,
 		Custom:     r.systemCustom,
-		Append:     append_,
+		Append:     r.systemAppend,
 		ZotDocsDir: filepath.Join(ZotHome(), "docs"),
 	})
+}
+
+func mergeExtensionSkills(tool *skills.Tool, bundled []*skills.Skill) []*skills.Skill {
+	var existing []*skills.Skill
+	if tool != nil {
+		existing = tool.Skills()
+	}
+	merged := make([]*skills.Skill, 0, len(existing)+len(bundled))
+	seen := map[string]bool{}
+	add := func(list []*skills.Skill) {
+		for _, skill := range list {
+			if skill == nil || skill.Name == "" || seen[skill.Name] {
+				continue
+			}
+			seen[skill.Name] = true
+			merged = append(merged, skill)
+		}
+	}
+	var user, builtins []*skills.Skill
+	for _, skill := range existing {
+		if skill == nil || strings.HasPrefix(skill.Source, "extension ") {
+			continue
+		}
+		if skill.Builtin {
+			builtins = append(builtins, skill)
+		} else {
+			user = append(user, skill)
+		}
+	}
+	add(user)
+	add(bundled)
+	add(builtins)
+	return merged
 }
 
 // ExtensionToolSource is the slice of the extension manager that
@@ -117,6 +180,12 @@ func (r *Resolved) MergeExtensionTools(mgr ExtensionToolSource) {
 type ExtensionToolSource interface {
 	Tools() []ExtensionToolInfo
 	NewExtensionTool(info ExtensionToolInfo) core.Tool
+}
+
+// ExtensionSkillSource exposes the optional bundled-skill surface without
+// forcing older ExtensionToolSource implementations to add it.
+type ExtensionSkillSource interface {
+	Skills() []*skills.Skill
 }
 
 // ExtensionToolInfo mirrors extensions.ToolInfo so we can declare
@@ -640,8 +709,10 @@ func Resolve(args Args, requireCred bool) (Resolved, error) {
 		discovered    []*skills.Skill
 		skillTool     *skills.Tool
 		skillAddendum string
+		skillsEnabled bool
 	)
 	if !args.NoSkill && (selectedProfile == nil || selectedProfile.InheritSkills == nil || *selectedProfile.InheritSkills) {
+		skillsEnabled = true
 		homeDir, _ := os.UserHomeDir()
 		discovered, _ = skills.Discover(ZotHome(), args.CWD, homeDir, args.WithSkills)
 		if len(discovered) > 0 {
@@ -728,9 +799,11 @@ func Resolve(args Args, requireCred bool) (Resolved, error) {
 		MaxOutput:        resolvedModel.MaxOutput,
 		Sandbox:          sandbox,
 		SkillTool:        skillTool,
+		skillsEnabled:    skillsEnabled,
 		ContextFiles:     contextFiles,
 		systemAppend:     append_,
 		systemCustom:     custom,
+		skillAddendum:    skillAddendum,
 		toolDescriptions: descMapFromSummaries(summaries),
 	}, nil
 }

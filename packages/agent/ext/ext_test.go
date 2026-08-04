@@ -3,6 +3,7 @@ package ext
 import (
 	"bufio"
 	"encoding/json"
+	"errors"
 	"io"
 	"strings"
 	"testing"
@@ -62,6 +63,25 @@ func newHarness(name string) *extHarness {
 	}()
 
 	return h
+}
+
+func (h *extHarness) startRun(t *testing.T) {
+	t.Helper()
+	runDone := make(chan error, 1)
+	go func() { runDone <- h.ext.Run() }()
+	t.Cleanup(func() {
+		if err := h.hostW.Close(); err != nil && !errors.Is(err, io.ErrClosedPipe) {
+			t.Errorf("close extension input: %v", err)
+		}
+		select {
+		case err := <-runDone:
+			if err != nil {
+				t.Errorf("extension Run: %v", err)
+			}
+		case <-time.After(2 * time.Second):
+			t.Error("extension Run did not exit after closing host input")
+		}
+	})
 }
 
 // next returns the next frame, timing out after 2 s.
@@ -218,6 +238,99 @@ func TestOpenPanelEmitsCorrectFrame(t *testing.T) {
 	}
 
 	h.hostW.Close()
+}
+
+func TestPersistentChromeFrames(t *testing.T) {
+	h := newHarness("chrome-ext")
+	h.startRun(t)
+	h.handshake(t)
+
+	h.ext.SetStatus("progress", "2/4 tasks")
+	status := h.drainUntil(t, "status")
+	var sf extproto.StatusFromExt
+	if err := json.Unmarshal(status.raw, &sf); err != nil {
+		t.Fatal(err)
+	}
+	if sf.Key != "progress" || sf.Text != "2/4 tasks" {
+		t.Fatalf("status = %+v", sf)
+	}
+
+	h.ext.SetWidget("plan", "above_input", "Plan", []string{"one"})
+	widget := h.drainUntil(t, "widget")
+	var wf extproto.WidgetFromExt
+	if err := json.Unmarshal(widget.raw, &wf); err != nil {
+		t.Fatal(err)
+	}
+	if wf.ID != "plan" || wf.Position != "above_input" || wf.Title != "Plan" || len(wf.Lines) != 1 || wf.Lines[0] != "one" {
+		t.Fatalf("widget = %+v", wf)
+	}
+
+	h.ext.ClearWidget("plan")
+	clear := h.drainUntil(t, "widget_clear")
+	var cf extproto.ClearWidgetFromExt
+	if err := json.Unmarshal(clear.raw, &cf); err != nil {
+		t.Fatal(err)
+	}
+	if cf.ID != "plan" {
+		t.Fatalf("widget clear = %+v", cf)
+	}
+}
+
+func TestToolResultDetailsEmitsOpaqueMetadata(t *testing.T) {
+	h := newHarness("details-ext")
+	h.ext.Tool("details", "returns metadata", json.RawMessage(`{"type":"object"}`), func(json.RawMessage) ToolResult {
+		return ToolResult{Content: []ToolContent{Text("ok")}, Details: JSONDetails(map[string]any{"state": 1})}
+	})
+	h.startRun(t)
+	h.handshake(t)
+	h.sendToExt(t, extproto.ToolCallFromHost{Type: "tool_call", ID: "call-1", Name: "details", Args: json.RawMessage(`{}`)})
+	frame := h.drainUntil(t, "tool_result")
+	var result extproto.ToolResultFromExt
+	if err := json.Unmarshal(frame.raw, &result); err != nil {
+		t.Fatal(err)
+	}
+	if string(result.Details) != `{"state":1}` {
+		t.Fatalf("details = %s", result.Details)
+	}
+}
+
+func TestSessionEventCarriesIdentityAndState(t *testing.T) {
+	h := newHarness("session-ext")
+	received := make(chan Event, 1)
+	h.ext.On("session_opened", func(event Event) { received <- event })
+	h.startRun(t)
+	h.handshake(t)
+	h.sendToExt(t, extproto.EventFromHost{
+		Type: "event", Event: "session_opened",
+		Session: &extproto.SessionContext{ID: "branch-1", ParentID: "root-1", Path: "/tmp/session.jsonl", ForkPoint: 4},
+		State:   json.RawMessage(`{"version":1}`),
+	})
+	select {
+	case event := <-received:
+		if event.Session == nil || event.Session.ID != "branch-1" || event.Session.ParentID != "root-1" || event.Session.Path != "/tmp/session.jsonl" || event.Session.ForkPoint != 4 || string(event.State) != `{"version":1}` {
+			t.Fatalf("session event = %+v state=%s", event.Session, event.State)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for session event")
+	}
+}
+
+func TestTurnStartContextIsReturned(t *testing.T) {
+	h := newHarness("context-ext")
+	h.ext.InterceptTurnStart(func(int) TurnStartDecision {
+		return TurnStartDecision{Context: "current phase: parse"}
+	})
+	h.startRun(t)
+	h.handshake(t)
+	h.sendToExt(t, extproto.EventInterceptFromHost{Type: "event_intercept", ID: "intercept-1", Event: "turn_start", Step: 2})
+	frame := h.drainUntil(t, "event_intercept_response")
+	var response extproto.EventInterceptResponseFromExt
+	if err := json.Unmarshal(frame.raw, &response); err != nil {
+		t.Fatal(err)
+	}
+	if response.ID != "intercept-1" || response.Context != "current phase: parse" || response.Block {
+		t.Fatalf("intercept response = %+v", response)
+	}
 }
 
 func TestAlertEmitsStructuredFrame(t *testing.T) {

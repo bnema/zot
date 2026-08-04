@@ -1,6 +1,7 @@
 package modes
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -42,5 +43,69 @@ func TestClearNotesNoMatchKeepsNotes(t *testing.T) {
 
 	if len(i.extNotes) != 1 {
 		t.Fatalf("expected note to survive, got %d", len(i.extNotes))
+	}
+}
+
+func TestPersistentExtensionWidgetRowsAreBounded(t *testing.T) {
+	i := newNotesTestInteractive()
+	lines := make([]string, 20)
+	for idx := range lines {
+		lines[idx] = "line"
+	}
+	i.SetWidget("extension", "widget", "above_input", "Title", lines)
+
+	i.mu.Lock()
+	got := i.extensionChromeLinesLocked(80)
+	i.mu.Unlock()
+	if len(got) != maxExtensionWidgetRows {
+		t.Fatalf("widget rows = %d, want %d: %v", len(got), maxExtensionWidgetRows, got)
+	}
+	if !strings.Contains(strings.Join(got, "\n"), "extension widgets truncated") {
+		t.Fatalf("bounded widget rows omitted truncation marker: %v", got)
+	}
+}
+
+func TestPersistentExtensionStatusRowsAreBounded(t *testing.T) {
+	i := newNotesTestInteractive()
+	for n := 0; n < maxExtensionStatusRows+4; n++ {
+		i.SetStatus("extension", fmt.Sprintf("status-%d", n), "info", "line")
+	}
+
+	i.mu.Lock()
+	got := i.extensionChromeLinesLocked(80)
+	i.mu.Unlock()
+	if len(got) != maxExtensionStatusRows {
+		t.Fatalf("status rows = %d, want %d: %v", len(got), maxExtensionStatusRows, got)
+	}
+	if !strings.Contains(strings.Join(got, "\n"), "extension statuses truncated") {
+		t.Fatalf("bounded status rows omitted truncation marker: %v", got)
+	}
+}
+
+func TestPersistentExtensionStatusAndWidget(t *testing.T) {
+	i := newNotesTestInteractive()
+	i.SetStatus("tasked-phases", "progress", "success", "2/4 tasks checked")
+	i.SetWidget("tasked-phases", "plan", "above_input", "Tasked phases", []string{"Current phase: parse", "[ ] read files"})
+
+	i.mu.Lock()
+	lines := i.extensionChromeLinesLocked(80)
+	statusKey := i.extensionStatusesKeyLocked()
+	widgetKey := i.extensionWidgetsKeyLocked()
+	i.mu.Unlock()
+	joined := strings.Join(lines, "\n")
+	if !strings.Contains(joined, "2/4 tasks checked") || !strings.Contains(joined, "Tasked phases") || !strings.Contains(joined, "[ ] read files") {
+		t.Fatalf("persistent extension chrome = %q", joined)
+	}
+	if !strings.Contains(statusKey, "tasked-phases/progress/success/2/4 tasks checked") {
+		t.Fatalf("status cache key = %q", statusKey)
+	}
+	if !strings.Contains(widgetKey, "tasked-phases/plan/above_input/Tasked phases") {
+		t.Fatalf("widget cache key = %q", widgetKey)
+	}
+
+	i.SetStatus("tasked-phases", "progress", "", "")
+	i.ClearWidget("tasked-phases", "plan")
+	if len(i.extStatuses) != 0 || len(i.extWidgets) != 0 {
+		t.Fatalf("persistent extension chrome was not cleared: statuses=%v widgets=%v", i.extStatuses, i.extWidgets)
 	}
 }

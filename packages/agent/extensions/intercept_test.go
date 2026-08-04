@@ -8,7 +8,21 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 )
+
+func TestBoundInterceptContextPreservesUTF8AndLimit(t *testing.T) {
+	got := boundInterceptContext(strings.Repeat("界", maxInterceptContext))
+	if len(got) > maxInterceptContext {
+		t.Fatalf("bounded context bytes = %d, want <= %d", len(got), maxInterceptContext)
+	}
+	if !utf8.ValidString(got) {
+		t.Fatal("bounded context is not valid UTF-8")
+	}
+	if !strings.HasSuffix(got, interceptContextTruncatedMarker) {
+		t.Fatalf("bounded context missing truncation marker")
+	}
+}
 
 // TestInterceptAllThreeEvents exercises tool_call / turn_start /
 // assistant_message interception end-to-end via a bash extension that

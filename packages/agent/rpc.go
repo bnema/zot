@@ -38,6 +38,9 @@ import (
 //
 // Responses (stdout): {"type":"response","id":"1","command":"prompt","success":true}
 // Events (stdout): one JSON object per AgentEvent (same schema as --json mode).
+// Extensions may additionally emit ext_status with extension/key/level/text,
+// ext_widget with extension/id/position/title/lines, and ext_widget_clear
+// with extension/id when loaded extensions publish persistent UI state.
 //
 // Auth: if $ZOTCORE_RPC_TOKEN is set, the first command must be
 // {"type":"hello","token":"..."} or the connection is closed.
@@ -89,9 +92,9 @@ func runRPCMode(ctx context.Context, args Args, version string) error {
 		}
 		return true, "", r.ModifiedArgs
 	}
-	ag.BeforeTurn = func(step int) (bool, string) {
-		r := extMgr.InterceptTurnStart(ctx, step)
-		return !r.Block, r.Reason
+	ag.BeforeTurnContext = func(turnCtx context.Context, step int) (bool, string, string) {
+		r := extMgr.InterceptTurnStart(turnCtx, step)
+		return !r.Block, r.Reason, r.Context
 	}
 	ag.BeforeAssistantMessage = func(text string) (bool, string, string) {
 		r := extMgr.InterceptAssistantMessage(ctx, text)
@@ -120,7 +123,7 @@ func runRPCMode(ctx context.Context, args Args, version string) error {
 		}
 	})
 
-	extMgr.EmitEvent(extproto.EventFromHost{Event: "session_start"})
+	extMgr.EmitSessionEvent("session_start", nil, nil)
 
 	return server.run(os.Stdin)
 }
@@ -176,6 +179,27 @@ func (h *rpcExtHooks) Insert(string)                                        {} /
 func (h *rpcExtHooks) OpenPanel(string, extproto.PanelSpec)                 {}
 func (h *rpcExtHooks) UpdatePanel(string, string, string, []string, string) {}
 func (h *rpcExtHooks) ClosePanel(string, string)                            {}
+func (h *rpcExtHooks) SetStatus(extName, key, level, text string) {
+	if h.server != nil {
+		h.server.writeExtensionEvent(map[string]any{
+			"type": "ext_status", "extension": extName, "key": key, "level": level, "text": text,
+		})
+	}
+}
+func (h *rpcExtHooks) SetWidget(extName, id, position, title string, lines []string) {
+	if h.server != nil {
+		h.server.writeExtensionEvent(map[string]any{
+			"type": "ext_widget", "extension": extName, "id": id, "position": position, "title": title, "lines": lines,
+		})
+	}
+}
+func (h *rpcExtHooks) ClearWidget(extName, id string) {
+	if h.server != nil {
+		h.server.writeExtensionEvent(map[string]any{
+			"type": "ext_widget_clear", "extension": extName, "id": id,
+		})
+	}
+}
 
 const maxPendingRPCExtEvents = 64
 

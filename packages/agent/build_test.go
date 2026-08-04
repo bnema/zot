@@ -9,9 +9,57 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/patriceckhart/zot/packages/agent/skills"
 	"github.com/patriceckhart/zot/packages/agent/tools"
+	"github.com/patriceckhart/zot/packages/core"
 	"github.com/patriceckhart/zot/packages/provider"
 )
+
+type bundledSkillSource struct {
+	bundled []*skills.Skill
+}
+
+func (s bundledSkillSource) Tools() []ExtensionToolInfo { return nil }
+func (s bundledSkillSource) NewExtensionTool(ExtensionToolInfo) core.Tool {
+	return nil
+}
+func (s bundledSkillSource) Skills() []*skills.Skill { return s.bundled }
+
+func TestMergeExtensionToolsCreatesSkillToolWhenDiscoveryFoundNoSkills(t *testing.T) {
+	r := Resolved{
+		CWD:           t.TempDir(),
+		ToolRegistry:  make(core.Registry),
+		skillsEnabled: true,
+	}
+	bundled := &skills.Skill{Name: "bundled", Description: "bundled skill", Source: "extension tasked-phases"}
+
+	r.MergeExtensionTools(bundledSkillSource{bundled: []*skills.Skill{bundled}})
+
+	if r.SkillTool == nil {
+		t.Fatal("MergeExtensionTools did not create a skill tool for bundled skills")
+	}
+	if _, ok := r.ToolRegistry[r.SkillTool.Name()]; !ok {
+		t.Fatalf("skill tool %q was not registered", r.SkillTool.Name())
+	}
+	if got := r.SkillTool.Skills(); len(got) != 1 || got[0].Name != bundled.Name {
+		t.Fatalf("merged bundled skills = %#v", got)
+	}
+}
+
+func TestMergeExtensionToolsRespectsDisabledSkillDiscovery(t *testing.T) {
+	r := Resolved{
+		CWD:           t.TempDir(),
+		ToolRegistry:  make(core.Registry),
+		skillsEnabled: false,
+	}
+	bundled := &skills.Skill{Name: "bundled", Description: "bundled skill", Source: "extension tasked-phases"}
+
+	r.MergeExtensionTools(bundledSkillSource{bundled: []*skills.Skill{bundled}})
+
+	if r.SkillTool != nil {
+		t.Fatal("disabled skill discovery created a skill tool")
+	}
+}
 
 func TestBuildToolRegistryIncludesLSPAndWriteDiagnostics(t *testing.T) {
 	root := t.TempDir()

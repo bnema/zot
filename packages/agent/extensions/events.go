@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/patriceckhart/zot/packages/agent/extproto"
 )
@@ -36,14 +38,109 @@ func (m *Manager) EmitEvent(ev extproto.EventFromHost) {
 
 	for _, ext := range subs {
 		go func(ext *Extension) {
-			defer func() {
-				// A panicking write to a closed pipe shouldn't kill
-				// the calling goroutine.
-				_ = recover()
-			}()
-			_, _ = ext.stdin.Write(frame)
+			defer func() { _ = recover() }()
+			_, _ = ext.writeFrame(frame)
 		}(ext)
 	}
+}
+
+// UpdateSessionState updates the cached state used when an extension is
+// reloaded during the active session. The session file remains the durable
+// source of truth; this only keeps the in-memory lifecycle replay current.
+func (m *Manager) UpdateSessionState(extension string, state json.RawMessage) {
+	if m == nil || strings.TrimSpace(extension) == "" || len(state) > maxSessionStateBytes {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.activeSession == nil {
+		return
+	}
+	if m.activeSession.states == nil {
+		m.activeSession.states = map[string]json.RawMessage{}
+	}
+	if len(state) == 0 || strings.TrimSpace(string(state)) == "null" {
+		delete(m.activeSession.states, extension)
+		return
+	}
+	m.activeSession.states[extension] = append(json.RawMessage(nil), state...)
+}
+
+// EmitSessionEvent broadcasts a session lifecycle event with the active
+// session identity. Each extension receives only its own opaque state
+// snapshot, preventing one extension from reading another extension's data.
+// The latest event is retained and replayed to extensions loaded later.
+func (m *Manager) EmitSessionEvent(event string, session *extproto.SessionContext, states map[string]json.RawMessage) {
+	if event == "" {
+		return
+	}
+	m.sessionEmitMu.Lock()
+	defer m.sessionEmitMu.Unlock()
+	base := extproto.EventFromHost{Type: "event", Event: event, Session: cloneSessionContext(session)}
+	storedStates := cloneExtensionStates(states)
+	m.mu.Lock()
+	m.activeSession = &sessionEventState{event: base, states: storedStates}
+	subs := make([]*Extension, 0, len(m.ext))
+	for _, ext := range m.ext {
+		ext.mu.Lock()
+		_, subscribed := ext.eventSubs[event]
+		ext.mu.Unlock()
+		if subscribed {
+			subs = append(subs, ext)
+		}
+	}
+	m.mu.Unlock()
+	for _, ext := range subs {
+		m.sendSessionEvent(ext, base, storedStates[ext.Manifest.Name])
+	}
+}
+
+func (m *Manager) sendSessionEvent(ext *Extension, base extproto.EventFromHost, state json.RawMessage) {
+	if ext == nil {
+		return
+	}
+	frame := base
+	frame.State = append(json.RawMessage(nil), state...)
+	encoded, err := extproto.Encode(frame)
+	if err != nil {
+		return
+	}
+	if !ext.enqueueLifecycleFrame(encoded) {
+		ext.recordDiagnostic("session lifecycle frame dropped because the extension queue is full or stopped")
+	}
+}
+
+func (m *Manager) replaySessionEvent(ext *Extension) {
+	m.sessionEmitMu.Lock()
+	defer m.sessionEmitMu.Unlock()
+	m.mu.RLock()
+	if m.activeSession == nil {
+		m.mu.RUnlock()
+		return
+	}
+	base := m.activeSession.event
+	state := append(json.RawMessage(nil), m.activeSession.states[ext.Manifest.Name]...)
+	m.mu.RUnlock()
+	m.sendSessionEvent(ext, base, state)
+}
+
+func cloneSessionContext(in *extproto.SessionContext) *extproto.SessionContext {
+	if in == nil {
+		return nil
+	}
+	out := *in
+	return &out
+}
+
+func cloneExtensionStates(in map[string]json.RawMessage) map[string]json.RawMessage {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]json.RawMessage, len(in))
+	for name, state := range in {
+		out[name] = append(json.RawMessage(nil), state...)
+	}
+	return out
 }
 
 // InterceptResult aggregates the outcome of walking every subscribed
@@ -56,9 +153,29 @@ type InterceptResult struct {
 	Reason       string
 	ModifiedArgs json.RawMessage
 	ReplaceText  string
+	Context      string
 }
 
-const interceptTimeout = 5 * time.Second
+const (
+	interceptTimeout     = 5 * time.Second
+	maxInterceptContext  = 16 * 1024
+	maxSessionStateBytes = 256 * 1024
+)
+
+const interceptContextTruncatedMarker = "\n[extension context truncated]"
+
+func boundInterceptContext(text string) string {
+	text = strings.TrimSpace(text)
+	if len(text) <= maxInterceptContext {
+		return text
+	}
+	limit := maxInterceptContext - len(interceptContextTruncatedMarker)
+	cut := limit
+	for cut > 0 && !utf8.RuneStart(text[cut]) {
+		cut--
+	}
+	return strings.TrimSpace(text[:cut]) + interceptContextTruncatedMarker
+}
 
 // InterceptToolCall is the typed entry point for tool_call
 // interception. Subscribers are invoked serially; the first to return
@@ -100,6 +217,7 @@ func (m *Manager) InterceptTurnStart(ctx context.Context, step int) InterceptRes
 	if len(subs) == 0 {
 		return InterceptResult{}
 	}
+	var contexts []string
 	for _, ext := range subs {
 		r := m.askIntercept(ctx, ext, extproto.EventInterceptFromHost{
 			Event: "turn_start",
@@ -108,8 +226,11 @@ func (m *Manager) InterceptTurnStart(ctx context.Context, step int) InterceptRes
 		if r.Block {
 			return r
 		}
+		if text := strings.TrimSpace(r.Context); text != "" {
+			contexts = append(contexts, "["+ext.Manifest.Name+"]\n"+text)
+		}
 	}
-	return InterceptResult{}
+	return InterceptResult{Context: boundInterceptContext(strings.Join(contexts, "\n\n"))}
 }
 
 // InterceptAssistantMessage asks every subscriber to approve, block,
@@ -179,7 +300,7 @@ func (m *Manager) askIntercept(ctx context.Context, ext *Extension, payload extp
 		ext.mu.Unlock()
 		return InterceptResult{}
 	}
-	if _, err := ext.stdin.Write(frame); err != nil {
+	if _, err := ext.writeFrame(frame); err != nil {
 		ext.mu.Lock()
 		delete(ext.pendingIntercept, id)
 		ext.mu.Unlock()
@@ -194,6 +315,7 @@ func (m *Manager) askIntercept(ctx context.Context, ext *Extension, payload extp
 			Reason:       resp.Reason,
 			ModifiedArgs: resp.ModifiedArgs,
 			ReplaceText:  resp.ReplaceText,
+			Context:      resp.Context,
 		}
 	case <-time.After(interceptTimeout):
 		ext.mu.Lock()

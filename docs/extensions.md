@@ -6,13 +6,17 @@ its stdin/stdout. Extensions can be written in **any language** that
 can read and write JSON lines from stdio — Go, TypeScript, Python,
 Rust, shell with `jq`, anything.
 
-Four phases shipped so far:
+Six phases shipped so far:
 
 - **Phase 1**: slash commands, chat notifications, and host alerts.
 - **Phase 2**: tools the LLM can call.
 - **Phase 3**: lifecycle event subscriptions + tool-call interception
   for guardrail extensions.
 - **Phase 4**: interactive extension-owned panels rendered inside zot.
+- **Phase 5**: branch-aware session lifecycle events and opaque extension
+  state persisted with session files.
+- **Phase 6**: hidden per-turn context, persistent status/widgets, and
+  extension-bundled skills.
 - **Theme-only extensions**: ship `theme.json` without launching a
   subprocess. See [themes.md](themes.md).
 
@@ -118,6 +122,7 @@ manifest tells zot how to launch it:
   "args": ["--mode", "daemon"],
   "language": "go",
   "description": "current weather for any city",
+  "skills": ["skills"],
   "enabled": true
 }
 ```
@@ -130,6 +135,7 @@ manifest tells zot how to launch it:
 | `args` | optional. extra argv passed to `exec`. |
 | `language` | optional. informational only (`go`, `python`, `typescript`, ...). |
 | `description` | optional. shown in `zot ext list`. |
+| `skills` | optional. relative directories containing bundled `<name>/SKILL.md` files or a direct `SKILL.md`. Paths must remain inside the extension directory. |
 | `enabled` | optional, defaults to `true`. set to `false` to disable without removing. |
 
 ## Lifecycle
@@ -149,10 +155,12 @@ manifest tells zot how to launch it:
    (logged in the extension's own log file).
 5. **Runtime**: after `ready`, zot dispatches `command_invoked` frames
    when the user runs a registered command; the extension responds
-   with `command_response`. Extensions can also push `notify` and
-   structured `alert` frames during runtime. Panel-capable extensions
-   may open an interactive panel, receive key events, and push redraws
-   while the panel is focused.
+   with `command_response`. Extensions can also push `notify`, persistent
+   status/widget, and structured `alert` frames during runtime. Extensions
+   subscribed to session lifecycle events receive the active branch identity
+   and their own restored opaque state. Panel-capable extensions may open an
+   interactive panel, receive key events, and push redraws while the panel is
+   focused.
 6. **Shutdown**: when zot exits, it sends `shutdown` and waits up to
    2s for the extension to send `shutdown_ack`. Holdouts are
    SIGTERM'd, then SIGKILL'd.
@@ -236,8 +244,16 @@ registered deferred tools that become available after this result.
 
 ```json
 {"type":"tool_result","id":"...",
- "content":[{"type":"text","text":"Berlin: 16°C, fog"}]}
+ "content":[{"type":"text","text":"Berlin: 16°C, fog"}],
+ "details":{"state":{"version":1}}}
 ```
+
+`details` is opaque extension metadata. Zot excludes it from provider
+requests and persists it as the latest extension state for the active
+session branch. Keep it valid JSON and reasonably small; the host caps
+persisted snapshots at 256 KiB. The next `session_opened`,
+`session_switched`, `session_forked`, or `session_compacted` event returns
+the extension's own snapshot in `state`.
 
 #### `subscribe`
 
@@ -250,8 +266,14 @@ which it wants to intercept. Send once after `hello`, before `ready`.
  "intercept":["tool_call","turn_start","assistant_message"]}
 ```
 
-Recognised event names: `session_start`, `turn_start`, `turn_end`,
-`tool_call`, `tool_confirmation_requested`, `assistant_message`.
+Recognised event names include `session_start`, `session_opened`,
+`session_switched`, `session_forked`, `session_compacted`, `turn_start`,
+`tool_call`, `tool_confirmation_requested`, `assistant_message`, and
+`turn_end`.
+
+Session events contain `session` with the current branch ID, parent ID,
+path, cwd, and fork point. They also contain `state`, but only for the
+receiving extension. Zot never exposes another extension's state.
 
 `tool_confirmation_requested` fires only when zot is about to wait for
 interactive approval. Calls running in yolo mode, calls covered by a
@@ -282,6 +304,7 @@ Reply to an `event_intercept` from the host. All fields default to
 | `reason` | refusal text (on block) or pass-through note. |
 | `modified_args` | for `tool_call`: rewritten JSON args the tool will actually see. Must be a valid JSON object. Ignored when `block` is true. |
 | `replace_text` | for `assistant_message`: replaces the user-visible text. The model's original output still lives in the transcript. Ignored when `block` is true. |
+| `context` | for `turn_start`: bounded hidden context sent only in the upcoming provider request. It is not a user message and is not persisted in the transcript. |
 
 Missing the response within 5s is treated as "allow" (i.e. an
 unresponsive extension never stalls the agent). When multiple
@@ -298,6 +321,9 @@ subsequent interceptor sees the previous one's output.
 
 {"type":"event_intercept_response","id":"...",
  "replace_text":"[redacted]"}
+
+{"type":"event_intercept_response","id":"...",
+ "context":"Current phase: parse files\nRemaining: validate inputs"}
 ```
 
 #### `command_response` (reply to `command_invoked`)
@@ -369,6 +395,32 @@ Closes a previously-open panel.
 {"type":"panel_close","panel_id":"todos-main"}
 ```
 
+#### `status` (one-way, persistent)
+
+Sets or replaces one status item owned by the extension. Sending an empty
+`text` clears the item.
+
+```json
+{"type":"status","key":"progress","level":"success",
+ "text":"2/4 tasks checked"}
+```
+
+#### `widget` (one-way, persistent)
+
+Sets or replaces a compact widget. Interactive zot currently renders widgets
+above the input; other hosts may ignore the placement hint.
+
+```json
+{"type":"widget","id":"plan","position":"above_input",
+ "title":"Tasked phases","lines":["Current phase: parse","[ ] validate inputs"]}
+```
+
+#### `widget_clear` (one-way)
+
+```json
+{"type":"widget_clear","id":"plan"}
+```
+
 #### `notify` (one-way, any time)
 
 ```json
@@ -429,7 +481,10 @@ Sent in response to `shutdown`. Extension should exit promptly after.
  "zot_version":"0.0.7","provider":"anthropic",
  "model":"claude-opus-4-7","cwd":"/Users/pat/Developer/zot",
  "extension_dir":"/Users/pat/Developer/zot/.zot/extensions/todos",
- "data_dir":"/Users/pat/Developer/zot/.zot/extensions/todos"}
+ "data_dir":"/Users/pat/Developer/zot/.zot/extensions/todos",
+ "session":{"id":"branch-1","parent_id":"root-1",
+             "path":".../session.jsonl","cwd":"/Users/pat/Developer/zot",
+             "fork_point":4}}
 ```
 
 Sent immediately after `hello`. Wait for this frame before sending
@@ -473,6 +528,9 @@ Lifecycle notification for events the extension subscribed to via
 `subscribe`. One-way — no response expected.
 
 ```json
+{"type":"event","event":"session_opened",
+ "session":{"id":"branch-1","parent_id":"root-1","fork_point":4},
+ "state":{"version":1}}
 {"type":"event","event":"turn_start","step":1}
 {"type":"event","event":"tool_call",
  "tool_id":"...","tool_name":"read","tool_args":{"path":"foo.go"}}
@@ -622,6 +680,16 @@ host metadata such as `HostInfo.CWD`, `Provider`, `Model`, `ZotVersion`,
 `ExtensionDir`, or `DataDir`. The SDK sends `hello`, waits for
 `hello_ack`, runs `OnHello`, announces registrations, then sends `ready`.
 
+Session-aware extensions can subscribe to `session_opened`,
+`session_switched`, `session_forked`, and `session_compacted`; `Event.Session`
+identifies the active branch and `Event.State` contains that extension's
+latest persisted snapshot. A tool can return opaque state with
+`result.Details = ext.JSONDetails(value)`.
+
+`TurnStartDecision.Context` supplies hidden bounded context for the next model
+request. `SetStatus`, `SetWidget`, and their clear methods update persistent
+interactive chrome without entering the transcript.
+
 The SDK has four interceptor hooks, all optional:
 
 ```go
@@ -662,7 +730,16 @@ See:
 - `examples/extensions/guard/` — event subscriptions + tool-call
   interception (refuses dangerous bash patterns)
 - `examples/extensions/todo/` — interactive persistent panel + tool
+- `examples/extensions/tasked-phases/` — spec, phased checklist, persistent tool, and `/phases` panel
 - `examples/extensions/scratchpad/` — source-run TypeScript commands + tool
+
+The `tasked-phases` example bundles its companion skill under
+`examples/extensions/tasked-phases/skills/` and declares it in
+`extension.json`. Installing the extension therefore installs the workflow
+skill automatically. The standalone copy at `examples/skills/tasked-phases/`
+remains useful for project-local skill installation. Its state is restored per
+session branch when zot session persistence is enabled; the extension keeps a
+project-file fallback for hosts that do not persist sessions.
 
 ### Hot reload
 
@@ -713,8 +790,9 @@ Phase 2 (shipped):
 - [x] tool result attribution surfaces extension name in details
 
 Phase 3 (shipped):
-- [x] event subscriptions (`session_start`, `turn_start`, `turn_end`,
-      `tool_call`, `assistant_message`)
+- [x] event subscriptions (`session_start`, `session_opened`,
+      `session_switched`, `session_forked`, `session_compacted`, `turn_start`,
+      `turn_end`, `tool_call`, `assistant_message`)
 - [x] tool-call interception (block before execution)
 
 Phase 4 (shipped):
@@ -723,6 +801,16 @@ Phase 4 (shipped):
 - [x] modify tool args mid-flight via `modified_args`
 - [x] rewrite user-visible assistant text via `replace_text`
 - [x] `/reload-ext` slash command (hot-reload without restarting zot)
+
+Phase 5 (shipped):
+- [x] session/branch identity in `hello_ack` and lifecycle events
+- [x] session open/switch/fork/compaction notifications
+- [x] opaque extension state persisted with session branches
+
+Phase 6 (shipped):
+- [x] hidden bounded context returned from `turn_start` interception
+- [x] persistent extension status and widget frames
+- [x] manifest-declared bundled skill discovery with safe path validation
 
 Future (no firm timeline):
 - [ ] TypeScript and Python SDK packages (currently the wire format

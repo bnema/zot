@@ -142,6 +142,9 @@ func (extDoctorHooks) ClearNotes(string)                                    {}
 func (extDoctorHooks) OpenPanel(string, extproto.PanelSpec)                 {}
 func (extDoctorHooks) UpdatePanel(string, string, string, []string, string) {}
 func (extDoctorHooks) ClosePanel(string, string)                            {}
+func (extDoctorHooks) SetStatus(string, string, string, string)             {}
+func (extDoctorHooks) SetWidget(string, string, string, string, []string)   {}
+func (extDoctorHooks) ClearWidget(string, string)                           {}
 
 type extDoctorStaticRow struct {
 	Scope    string

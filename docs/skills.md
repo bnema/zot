@@ -66,6 +66,17 @@ skill ecosystem works in zot unchanged. Drop your existing
 `.claude/skills/` or `.agents/skills/` directories into a project and
 zot will pick them up.
 
+Enabled extensions may bundle skills by declaring relative directories in
+`extension.json`, for example `"skills": ["skills"]`, with files at
+`skills/<name>/SKILL.md`. A declared directory may also contain a single
+`SKILL.md` directly; its directory name supplies the fallback skill name and
+child directories are not scanned. Bundled skills are copied by `zot ext
+install` and loaded automatically. User/project skills take precedence over
+bundled skills; bundled skills take precedence over embedded built-ins. When
+two extensions provide the same skill name, the first declaration wins. The
+host rejects manifest paths that escape the extension directory, including
+symlinked skill files that resolve outside it.
+
 When `XDG_STATE_HOME` is set on any platform, `$ZOT_HOME` defaults to
 `$XDG_STATE_HOME/zot`. Otherwise it defaults to `~/Library/Application Support/zot/`
 on macOS, `~/.local/state/zot` on Linux, or `%LOCALAPPDATA%\zot` on Windows.
@@ -113,9 +124,10 @@ are omitted from the model's startup context.
 
 ## Examples
 
-See `examples/skills/` for two starter skills:
+See `examples/skills/` for starter skills:
 
 - `code-review/` — self-review pass on a recent diff
+- `tasked-phases/` — spec-to-phase checklist workflow for the `tasked-phases` extension and its `tasked_phases` tool
 - `test-fix/` — diagnose + minimally fix a failing test
 
 ## Comparison to other discovery layouts

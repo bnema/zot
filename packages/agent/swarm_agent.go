@@ -78,8 +78,10 @@ func runSwarmAgentMode(ctx context.Context, args Args, version string) error {
 			return err
 		}
 		r.Provider, r.Model = providerName, model
+		ag.OnToolResult = func(_ string, result core.ToolResult) { persistExtensionToolResult(extMgr, sess, result) }
 		defer sess.Close()
 	}
+	announceSession(extMgr, sess)
 
 	// Open the inbox listener BEFORE emitting agent_ready so the
 	// supervisor can dial through on the very first send. The

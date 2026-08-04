@@ -94,6 +94,59 @@ func TestDiscoverProjectAndGlobalPriorityAndDedup(t *testing.T) {
 	}
 }
 
+func TestDiscoverWithBundledSkillsPrecedence(t *testing.T) {
+	t.Setenv("ZOT_AGENT_SKILLS", "")
+	tmp := t.TempDir()
+	cwd := filepath.Join(tmp, "project")
+	userDir := filepath.Join(cwd, ".zot", "skills")
+	bundleA := filepath.Join(tmp, "ext-a", "skills")
+	bundleB := filepath.Join(tmp, "ext-b", "skills")
+	write := func(root, name, description string) {
+		dir := filepath.Join(root, name)
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		body := "---\nname: " + name + "\ndescription: " + description + "\n---\nbody\n"
+		if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write(userDir, "shared", "user")
+	write(bundleA, "shared", "bundle-a")
+	write(bundleA, "only-a", "only a")
+	write(bundleB, "only-a", "bundle-b")
+	write(bundleB, "only-b", "only b")
+
+	list, errs := DiscoverWithBundled("", cwd, "", true, []BundledSkillDir{
+		{Dir: bundleA, Source: "extension a"},
+		{Dir: bundleB, Source: "extension b"},
+	})
+	if len(errs) > 0 {
+		t.Fatalf("errs: %v", errs)
+	}
+	if got := FindByName(list, "shared"); got == nil || got.Description != "user" {
+		t.Fatalf("user precedence = %#v", got)
+	}
+	if got := FindByName(list, "only-a"); got == nil || got.Description != "only a" || got.Source != "extension a" {
+		t.Fatalf("bundle declaration precedence = %#v", got)
+	}
+	if got := FindByName(list, "only-b"); got == nil || got.Source != "extension b" {
+		t.Fatalf("second bundle skill = %#v", got)
+	}
+	builtins := loadBuiltins()
+	if len(builtins) == 0 {
+		t.Fatal("expected at least one builtin skill")
+	}
+	write(bundleA, builtins[0].Name, "bundled override")
+	list, errs = DiscoverWithBundled("", cwd, "", true, []BundledSkillDir{{Dir: bundleA, Source: "extension a"}})
+	if len(errs) > 0 {
+		t.Fatalf("builtin override errors: %v", errs)
+	}
+	if got := FindByName(list, builtins[0].Name); got == nil || got.Description != "bundled override" || got.Builtin {
+		t.Fatalf("bundled builtin override = %#v", got)
+	}
+}
+
 func TestVisibleSkillsHidesBuiltins(t *testing.T) {
 	in := []*Skill{
 		{Name: "user-one"},

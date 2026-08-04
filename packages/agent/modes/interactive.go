@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -376,6 +377,8 @@ type chatCacheKey struct {
 	statusErr       string
 	help            string
 	extNotes        string
+	extStatuses     string
+	extWidgets      string
 	reloadErrors    string
 	updateAvailable bool
 	updateCurrent   string
@@ -390,6 +393,17 @@ type chatCacheKey struct {
 type QuickModelShortcut struct {
 	Provider string
 	Model    string
+}
+
+type extensionStatus struct {
+	Level string
+	Text  string
+}
+
+type extensionWidget struct {
+	Position string
+	Title    string
+	Lines    []string
 }
 
 // SettingsStore persists user-toggleable settings surfaced by /settings.
@@ -480,6 +494,8 @@ type Interactive struct {
 	statusErr        string
 	statusOK         string
 	reloadStatusSeq  uint64
+	extStatuses      map[string]map[string]extensionStatus
+	extWidgets       map[string]map[string]extensionWidget
 	liveBlock        []string // live streaming/tool progress rendered outside scrollback
 	helpBlock        []string // rendered above the chat when /help was typed
 	cumUsage         provider.Usage
@@ -748,6 +764,8 @@ func NewInteractive(cfg InteractiveConfig) *Interactive {
 		sessionOpsDialog:  newSessionOpsDialog(),
 		sessionTreeDialog: newSessionTreeDialog(),
 		extPanel:          newExtPanelDialog(),
+		extStatuses:       map[string]map[string]extensionStatus{},
+		extWidgets:        map[string]map[string]extensionWidget{},
 		suggest:           newSlashSuggester(),
 		fileSuggest:       newFileSuggester(),
 		spin:              newSpinner(cfg.Theme),
@@ -1105,6 +1123,8 @@ func (i *Interactive) chatCacheKeyLocked(cols int) (chatCacheKey, bool) {
 		statusErr:       i.statusErr,
 		help:            strings.Join(i.helpBlock, "\n"),
 		extNotes:        strings.Join(i.extNotes, "\n"),
+		extStatuses:     i.extensionStatusesKeyLocked(),
+		extWidgets:      i.extensionWidgetsKeyLocked(),
 		reloadErrors:    strings.Join(i.reloadErrors, "\n"),
 		updateAvailable: i.updateInfo.Available,
 		updateCurrent:   i.updateInfo.Current,
@@ -1114,6 +1134,138 @@ func (i *Interactive) chatCacheKeyLocked(cols int) (chatCacheKey, bool) {
 		expandAll:       i.view.ExpandAll,
 		tailLimit:       i.view.TailLimit,
 	}, true
+}
+
+func sortedNestedOuterKeys[T any](groups map[string]map[string]T) []string {
+	keys := make([]string, 0, len(groups))
+	for key := range groups {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+func sortedNestedInnerKeys[T any](groups map[string]map[string]T, outer string) []string {
+	items := groups[outer]
+	keys := make([]string, 0, len(items))
+	for key := range items {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+func (i *Interactive) extensionStatusesKeyLocked() string {
+	var sb strings.Builder
+	extNames := sortedNestedOuterKeys(i.extStatuses)
+	for _, extName := range extNames {
+		keys := sortedNestedInnerKeys(i.extStatuses, extName)
+		for _, key := range keys {
+			status := i.extStatuses[extName][key]
+			fmt.Fprintf(&sb, "%s/%s/%s/%s\n", extName, key, status.Level, status.Text)
+		}
+	}
+	return sb.String()
+}
+
+func (i *Interactive) extensionWidgetsKeyLocked() string {
+	var sb strings.Builder
+	extNames := sortedNestedOuterKeys(i.extWidgets)
+	for _, extName := range extNames {
+		ids := sortedNestedInnerKeys(i.extWidgets, extName)
+		for _, id := range ids {
+			widget := i.extWidgets[extName][id]
+			fmt.Fprintf(&sb, "%s/%s/%s/%s\n", extName, id, widget.Position, widget.Title)
+			for _, line := range widget.Lines {
+				sb.WriteString(line)
+				sb.WriteByte('\n')
+			}
+		}
+	}
+	return sb.String()
+}
+
+const maxExtensionWidgetRows = 12
+const maxExtensionStatusRows = 6
+
+func (i *Interactive) extensionChromeLinesLocked(cols int) []string {
+	var out []string
+	bodyWidth := cols - 2
+	if bodyWidth < 1 {
+		bodyWidth = 1
+	}
+	widgetRows := 0
+	widgetTruncated := false
+	appendWidgetRow := func(line string) bool {
+		if widgetRows >= maxExtensionWidgetRows-1 {
+			widgetTruncated = true
+			return false
+		}
+		out = append(out, line)
+		widgetRows++
+		return true
+	}
+
+	stopWidgets := false
+	for _, extName := range sortedNestedOuterKeys(i.extWidgets) {
+		if stopWidgets {
+			break
+		}
+		for _, id := range sortedNestedInnerKeys(i.extWidgets, extName) {
+			widget := i.extWidgets[extName][id]
+			label := "  [" + extName + "]"
+			if widget.Title != "" {
+				label += " " + widget.Title
+			}
+			if !appendWidgetRow(i.cfg.Theme.FG256(i.cfg.Theme.Accent, truncateLine(label, cols))) {
+				stopWidgets = true
+				break
+			}
+			for _, line := range widget.Lines {
+				if !appendWidgetRow("  " + truncateLine(line, bodyWidth)) {
+					stopWidgets = true
+					break
+				}
+			}
+			if stopWidgets {
+				break
+			}
+		}
+	}
+	if widgetTruncated {
+		out = append(out, i.cfg.Theme.FG256(i.cfg.Theme.Muted, truncateLine("  ... extension widgets truncated ...", cols)))
+	}
+
+	statusRows := 0
+	statusTruncated := false
+	for _, extName := range sortedNestedOuterKeys(i.extStatuses) {
+		for _, key := range sortedNestedInnerKeys(i.extStatuses, extName) {
+			if statusRows >= maxExtensionStatusRows-1 {
+				statusTruncated = true
+				break
+			}
+			status := i.extStatuses[extName][key]
+			color := i.cfg.Theme.Muted
+			switch status.Level {
+			case "warn":
+				color = i.cfg.Theme.Warning
+			case "error":
+				color = i.cfg.Theme.Error
+			case "success":
+				color = i.cfg.Theme.Tool
+			}
+			label := "  [" + extName + "] " + status.Text
+			out = append(out, i.cfg.Theme.FG256(color, truncateLine(label, cols)))
+			statusRows++
+		}
+		if statusTruncated {
+			break
+		}
+	}
+	if statusTruncated {
+		out = append(out, i.cfg.Theme.FG256(i.cfg.Theme.Muted, truncateLine("  ... extension statuses truncated ...", cols)))
+	}
+	return out
 }
 
 func (i *Interactive) buildChatLocked(cols int) []string {
@@ -1599,13 +1751,15 @@ func (i *Interactive) redraw() {
 		queue = append(queue, i.cfg.Theme.FG256(i.cfg.Theme.Muted, hint))
 	}
 
+	extensionLines := i.extensionChromeLinesLocked(cols)
+
 	// Bottom-sticky sections (always visible, never scroll). Each
 	// non-empty subsection (dialog, suggest popup, sliding-in queue)
 	// is preceded by one blank row so it has air above the chat
 	// content. The status block and editor get their own dedicated
 	// blanks so spacing stays consistent whether or not a dialog or
 	// popup is showing.
-	bottom := make([]string, 0, len(dialog)+len(suggest)+len(queue)+len(statusLines)+len(edLines)+9)
+	bottom := make([]string, 0, len(dialog)+len(suggest)+len(queue)+len(extensionLines)+len(statusLines)+len(edLines)+9)
 	inputStartRow := -1
 	if len(dialog) > 0 {
 		bottom = append(bottom, "")
@@ -1627,6 +1781,7 @@ func (i *Interactive) redraw() {
 		workingBelow := workingPosition == tui.WorkingPositionBelowInput
 
 		var aboveInput []string
+		aboveInput = append(aboveInput, extensionLines...)
 		if !statusBelow {
 			aboveInput = append(aboveInput, statusLines...)
 		}
@@ -3483,6 +3638,66 @@ func (i *Interactive) Insert(text string) {
 // model call.
 func (i *Interactive) Display(extName, text string) {
 	i.appendExtensionNote(extName, text, "info")
+	i.invalidate()
+}
+
+// SetStatus replaces one persistent status item owned by an extension.
+func (i *Interactive) SetStatus(extName, key, level, text string) {
+	if strings.TrimSpace(extName) == "" || strings.TrimSpace(key) == "" {
+		return
+	}
+	i.mu.Lock()
+	if i.extStatuses == nil {
+		i.extStatuses = map[string]map[string]extensionStatus{}
+	}
+	if strings.TrimSpace(text) == "" {
+		if items := i.extStatuses[extName]; items != nil {
+			delete(items, key)
+			if len(items) == 0 {
+				delete(i.extStatuses, extName)
+			}
+		}
+	} else {
+		if i.extStatuses[extName] == nil {
+			i.extStatuses[extName] = map[string]extensionStatus{}
+		}
+		i.extStatuses[extName][key] = extensionStatus{Level: level, Text: text}
+	}
+	i.mu.Unlock()
+	i.invalidate()
+}
+
+// SetWidget replaces one persistent widget owned by an extension.
+func (i *Interactive) SetWidget(extName, id, position, title string, lines []string) {
+	if strings.TrimSpace(extName) == "" || strings.TrimSpace(id) == "" {
+		return
+	}
+	i.mu.Lock()
+	if i.extWidgets == nil {
+		i.extWidgets = map[string]map[string]extensionWidget{}
+	}
+	if i.extWidgets[extName] == nil {
+		i.extWidgets[extName] = map[string]extensionWidget{}
+	}
+	i.extWidgets[extName][id] = extensionWidget{
+		Position: position,
+		Title:    title,
+		Lines:    append([]string(nil), lines...),
+	}
+	i.mu.Unlock()
+	i.invalidate()
+}
+
+// ClearWidget removes one persistent widget owned by an extension.
+func (i *Interactive) ClearWidget(extName, id string) {
+	i.mu.Lock()
+	if items := i.extWidgets[extName]; items != nil {
+		delete(items, id)
+		if len(items) == 0 {
+			delete(i.extWidgets, extName)
+		}
+	}
+	i.mu.Unlock()
 	i.invalidate()
 }
 

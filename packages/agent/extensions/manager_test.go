@@ -3,6 +3,7 @@ package extensions
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"os"
 
 	"github.com/patriceckhart/zot/packages/agent/extproto"
@@ -13,6 +14,30 @@ import (
 	"testing"
 	"time"
 )
+
+func TestLifecycleWriteDropsWhenSynchronousWriterOwnsLock(t *testing.T) {
+	ext := &Extension{stdin: &nopWriteCloser{}}
+	ext.writeMu.Lock()
+	defer ext.writeMu.Unlock()
+
+	done := make(chan error, 1)
+	go func() { done <- ext.tryWriteLifecycleFrame([]byte("lifecycle")) }()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("lifecycle write unexpectedly acquired the synchronous writer lock")
+		}
+	case <-time.After(lifecycleWriteGrace + time.Second):
+		t.Fatal("lifecycle write remained blocked on the synchronous writer lock")
+	}
+}
+
+type nopWriteCloser struct{}
+
+func (*nopWriteCloser) Write(data []byte) (int, error) { return len(data), nil }
+func (*nopWriteCloser) Close() error                   { return nil }
+
+var _ io.WriteCloser = (*nopWriteCloser)(nil)
 
 // stubHooks records every callback so the test can assert on them.
 type stubHooks struct {
@@ -68,6 +93,9 @@ func (s *stubHooks) OpenPanel(extName string, spec extproto.PanelSpec) {
 }
 func (s *stubHooks) UpdatePanel(string, string, string, []string, string) {}
 func (s *stubHooks) ClosePanel(string, string)                            {}
+func (s *stubHooks) SetStatus(string, string, string, string)             {}
+func (s *stubHooks) SetWidget(string, string, string, string, []string)   {}
+func (s *stubHooks) ClearWidget(string, string)                           {}
 
 // writeMockExtension creates a minimal extension on disk that uses a
 // shell script (or batch file on windows) to drive the protocol. The
@@ -256,6 +284,63 @@ func TestDiscoverLoadsThemeOnlyExtension(t *testing.T) {
 	}
 	if !strings.Contains(opts[0].Description, "from extension theme-only") {
 		t.Fatalf("description missing extension source: %q", opts[0].Description)
+	}
+}
+
+func TestManifestBundlesSkillsWithSafePrecedence(t *testing.T) {
+	tmp := t.TempDir()
+	extRoot := filepath.Join(tmp, "extensions")
+	extDir := filepath.Join(extRoot, "bundle")
+	if err := os.MkdirAll(filepath.Join(extDir, "skills", "phases"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(extDir, "skills", "phases", "SKILL.md"), []byte("---\nname: phases\ndescription: bundled phases\n---\nbody\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	manifest := `{"name":"bundle","skills":["skills"],"description":"bundle"}`
+	if err := os.WriteFile(filepath.Join(extDir, "extension.json"), []byte(manifest), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(extDir, "theme.json"), []byte(`{"name":"bundle","colors":{"dark":{"accent":1}}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	mgr := New(tmp, "", "0.0.0-test", "", "", &stubHooks{})
+	if errs := mgr.Discover(context.Background()); len(errs) > 0 {
+		t.Fatalf("discover errors: %v", errs)
+	}
+	defer mgr.Stop(10 * time.Millisecond)
+	bundled := mgr.Skills()
+	if len(bundled) != 1 || bundled[0].Name != "phases" || bundled[0].Source != "extension bundle" {
+		t.Fatalf("bundled skills = %#v", bundled)
+	}
+	if _, errs := loadManifestSkills(extDir, Manifest{Name: "bundle", Skills: []string{"../outside"}}); len(errs) == 0 {
+		t.Fatal("path traversal manifest was accepted")
+	}
+	for _, path := range []string{"", filepath.Join(string(filepath.Separator), "outside")} {
+		if _, errs := loadManifestSkills(extDir, Manifest{Name: "bundle", Skills: []string{path}}); len(errs) == 0 {
+			t.Fatalf("unsafe skill path %q was accepted", path)
+		}
+	}
+	if runtime.GOOS != "windows" {
+		outside := filepath.Join(tmp, "outside", "SKILL.md")
+		if err := os.MkdirAll(filepath.Dir(outside), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(outside, []byte("---\nname: escape\ndescription: outside\n---\nbody\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		unsafeDir := filepath.Join(extDir, "unsafe")
+		if err := os.MkdirAll(unsafeDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(outside, filepath.Join(unsafeDir, "SKILL.md")); err != nil {
+			t.Fatal(err)
+		}
+		loaded, errs := loadManifestSkills(extDir, Manifest{Name: "bundle", Skills: []string{"unsafe"}})
+		if len(errs) == 0 || len(loaded) != 0 {
+			t.Fatalf("symlinked skill outside extension was accepted: skills=%#v errors=%v", loaded, errs)
+		}
 	}
 }
 
