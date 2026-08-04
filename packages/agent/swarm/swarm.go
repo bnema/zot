@@ -177,11 +177,16 @@ func (f *Swarm) agentStateDir(id string) string {
 // SpawnRequest configures a Spawn. Only Task is required; the rest
 // are optional. Model + Provider, when set, get baked into the
 // child argv as --model / --provider so the agent runs against the
-// chosen model regardless of the parent's current selection.
+// chosen model regardless of the parent's current selection. A named
+// Subagent is passed to the child as --subagent, where it resolves the
+// markdown profile and applies its instructions. Reasoning is passed
+// as --reasoning when set.
 type SpawnRequest struct {
-	Task     string
-	Model    string // optional override; child resolves default if empty
-	Provider string // optional override; usually paired with Model
+	Task      string
+	Model     string // optional override; child resolves default if empty
+	Provider  string // optional override; usually paired with Model
+	Reasoning string // optional reasoning/thinking level override
+	Subagent  string // optional named markdown profile
 }
 
 // Spawn creates a new Agent for the given task, allocates its
@@ -238,6 +243,8 @@ func (f *Swarm) SpawnReq(ctx context.Context, req SpawnRequest) (*Agent, error) 
 		Started:      f.cfg.Now(),
 		Model:        strings.TrimSpace(req.Model),
 		Provider:     strings.TrimSpace(req.Provider),
+		Reasoning:    strings.TrimSpace(req.Reasoning),
+		Subagent:     strings.TrimSpace(req.Subagent),
 		SessionID:    sessionID,
 		InboxPath:    inboxPath,
 		EventLogPath: logPath,
@@ -444,12 +451,15 @@ type AgentSnapshot struct {
 	Lines         []string // full transcript (already capped by Agent.appendTranscript)
 	LastAssistant string   // complete final assistant message, without role formatting
 
-	// Model and Provider expose the per-agent overrides set at
-	// Spawn time (empty when the agent inherits the child's default
-	// resolution). The dashboard surfaces these so the user can
-	// confirm which model an agent is running against.
-	Model    string
-	Provider string
+	// Model, Provider, and Reasoning expose the per-agent overrides set
+	// at Spawn time (empty when the agent inherits the child's default
+	// resolution). Subagent is the selected named markdown profile.
+	// The dashboard surfaces these so the user can confirm the child
+	// configuration.
+	Model     string
+	Provider  string
+	Reasoning string
+	Subagent  string
 
 	// Paths to the agent's durable state. Surface them in the
 	// snapshot so the dashboard / /swarm open can read events.jsonl
@@ -479,6 +489,8 @@ func (a *Agent) Snapshot() AgentSnapshot {
 		LastAssistant: a.lastAssistant,
 		Model:         a.Model,
 		Provider:      a.Provider,
+		Reasoning:     a.Reasoning,
+		Subagent:      a.Subagent,
 		InboxPath:     a.InboxPath,
 		EventLogPath:  a.EventLogPath,
 		SessionPath:   a.SessionPath,

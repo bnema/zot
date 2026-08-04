@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/patriceckhart/zot/packages/agent/subagents"
 	"github.com/patriceckhart/zot/packages/agent/swarm"
 	"github.com/patriceckhart/zot/packages/provider"
 )
@@ -29,10 +30,11 @@ func newTestSwarm(t *testing.T) *swarm.Swarm {
 
 func TestSwarmSpawnInheritsHostModelAndProviderWhenOmitted(t *testing.T) {
 	tool := &SwarmSpawnTool{
-		Swarm:           newTestSwarm(t),
-		Enabled:         func() bool { return true },
-		DefaultModel:    func() string { return "gpt-5" },
-		DefaultProvider: func() string { return "openai-codex" },
+		Swarm:            newTestSwarm(t),
+		Enabled:          func() bool { return true },
+		DefaultModel:     func() string { return "gpt-5" },
+		DefaultProvider:  func() string { return "openai-codex" },
+		DefaultReasoning: func() string { return "medium" },
 	}
 
 	res, err := tool.Execute(context.Background(), json.RawMessage(`{"task":"research docs"}`), nil)
@@ -52,8 +54,11 @@ func TestSwarmSpawnInheritsHostModelAndProviderWhenOmitted(t *testing.T) {
 	if got := details["provider"]; got != "openai-codex" {
 		t.Fatalf("provider detail = %v, want openai-codex", got)
 	}
+	if got := details["reasoning"]; got != "medium" {
+		t.Fatalf("reasoning detail = %v, want medium", got)
+	}
 	text := textResult(res.Content)
-	if !strings.Contains(text, "model: gpt-5") || !strings.Contains(text, "provider: openai-codex") {
+	if !strings.Contains(text, "model: gpt-5") || !strings.Contains(text, "provider: openai-codex") || !strings.Contains(text, "reasoning: medium") {
 		t.Fatalf("result text missing inherited model/provider:\n%s", text)
 	}
 
@@ -61,8 +66,63 @@ func TestSwarmSpawnInheritsHostModelAndProviderWhenOmitted(t *testing.T) {
 	if len(agents) != 1 {
 		t.Fatalf("spawned agents = %d, want 1", len(agents))
 	}
-	if agents[0].Model != "gpt-5" || agents[0].Provider != "openai-codex" {
-		t.Fatalf("agent model/provider = %q/%q, want gpt-5/openai-codex", agents[0].Model, agents[0].Provider)
+	if agents[0].Model != "gpt-5" || agents[0].Provider != "openai-codex" || agents[0].Reasoning != "medium" {
+		t.Fatalf("agent model/provider/reasoning = %q/%q/%q, want gpt-5/openai-codex/medium", agents[0].Model, agents[0].Provider, agents[0].Reasoning)
+	}
+}
+
+func TestSwarmSpawnSelectsProfileAndReasoning(t *testing.T) {
+	tool := &SwarmSpawnTool{
+		Swarm:   newTestSwarm(t),
+		Enabled: func() bool { return true },
+		ResolveSubagent: func(name string) (*subagents.Profile, error) {
+			if name != "reviewer" {
+				return nil, nil
+			}
+			return &subagents.Profile{
+				Name:     "reviewer",
+				Model:    "openai-codex/gpt-5.6-luna",
+				Thinking: "low",
+			}, nil
+		},
+	}
+
+	res, err := tool.Execute(context.Background(), json.RawMessage(`{"task":"review auth","agent":"reviewer","reasoning":"high"}`), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.IsError {
+		t.Fatalf("unexpected tool error: %s", textResult(res.Content))
+	}
+	text := textResult(res.Content)
+	for _, want := range []string{"agent: reviewer", "model: gpt-5.6-luna", "provider: openai-codex", "reasoning: high"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("result text missing %q:\n%s", want, text)
+		}
+	}
+	agents := tool.Swarm.List()
+	if len(agents) != 1 || agents[0].Subagent != "reviewer" || agents[0].Reasoning != "high" {
+		t.Fatalf("agent profile/reasoning = %#v", agents)
+	}
+}
+
+func TestSwarmSpawnRejectsUnknownProfile(t *testing.T) {
+	tool := &SwarmSpawnTool{
+		Swarm:   newTestSwarm(t),
+		Enabled: func() bool { return true },
+		ResolveSubagent: func(string) (*subagents.Profile, error) {
+			return nil, nil
+		},
+	}
+	res, err := tool.Execute(context.Background(), json.RawMessage(`{"task":"review auth","agent":"missing"}`), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.IsError || !strings.Contains(textResult(res.Content), "unknown subagent profile") {
+		t.Fatalf("result = %#v, want unknown profile error", res)
+	}
+	if got := len(tool.Swarm.List()); got != 0 {
+		t.Fatalf("spawned agents = %d, want 0", got)
 	}
 }
 

@@ -538,16 +538,17 @@ func TestSpawnReqPersistsModel(t *testing.T) {
 	})
 	a, err := f.SpawnReq(context.Background(), SpawnRequest{
 		Task: "x", Model: "claude-sonnet-4-5", Provider: "anthropic",
+		Reasoning: "high", Subagent: "reviewer",
 	})
 	if err != nil {
 		t.Fatalf("spawn: %v", err)
 	}
-	if a.Model != "claude-sonnet-4-5" || a.Provider != "anthropic" {
-		t.Fatalf("agent fields = (%q,%q); want (claude-sonnet-4-5, anthropic)", a.Model, a.Provider)
+	if a.Model != "claude-sonnet-4-5" || a.Provider != "anthropic" || a.Reasoning != "high" || a.Subagent != "reviewer" {
+		t.Fatalf("agent fields = (%q,%q,%q,%q); want model/provider/reasoning/profile", a.Model, a.Provider, a.Reasoning, a.Subagent)
 	}
 	snap := a.Snapshot()
-	if snap.Model != "claude-sonnet-4-5" || snap.Provider != "anthropic" {
-		t.Fatalf("snapshot = (%q,%q); model fields not surfaced", snap.Model, snap.Provider)
+	if snap.Model != "claude-sonnet-4-5" || snap.Provider != "anthropic" || snap.Reasoning != "high" || snap.Subagent != "reviewer" {
+		t.Fatalf("snapshot = (%q,%q,%q,%q); child fields not surfaced", snap.Model, snap.Provider, snap.Reasoning, snap.Subagent)
 	}
 
 	// Stop so we can read meta.json without racing the run loop.
@@ -564,8 +565,8 @@ func TestSpawnReqPersistsModel(t *testing.T) {
 	if err := json.Unmarshal(metaBytes, &got); err != nil {
 		t.Fatal(err)
 	}
-	if got.Model != "claude-sonnet-4-5" || got.Provider != "anthropic" {
-		t.Errorf("meta = (%q,%q); want model + provider persisted", got.Model, got.Provider)
+	if got.Model != "claude-sonnet-4-5" || got.Provider != "anthropic" || got.Reasoning != "high" || got.Subagent != "reviewer" {
+		t.Errorf("meta = (%q,%q,%q,%q); want model/provider/reasoning/profile persisted", got.Model, got.Provider, got.Reasoning, got.Subagent)
 	}
 
 	// Reload in a fresh Swarm and confirm the detached agent still
@@ -579,8 +580,8 @@ func TestSpawnReqPersistsModel(t *testing.T) {
 	if re == nil {
 		t.Fatal("reloaded agent missing")
 	}
-	if re.Model != "claude-sonnet-4-5" || re.Provider != "anthropic" {
-		t.Errorf("reloaded fields = (%q,%q); want preserved", re.Model, re.Provider)
+	if re.Model != "claude-sonnet-4-5" || re.Provider != "anthropic" || re.Reasoning != "high" || re.Subagent != "reviewer" {
+		t.Errorf("reloaded fields = (%q,%q,%q,%q); want preserved", re.Model, re.Provider, re.Reasoning, re.Subagent)
 	}
 }
 

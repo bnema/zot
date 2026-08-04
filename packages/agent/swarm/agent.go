@@ -22,8 +22,10 @@ type Agent struct {
 	// the child resolves on its own from config / env / flags" —
 	// the historical behaviour. Persisted in meta.json so Resume
 	// keeps using the same model across zot restarts.
-	Model    string
-	Provider string
+	Model     string
+	Provider  string
+	Reasoning string
+	Subagent  string
 
 	// SessionID, when non-empty, scopes the agent to a particular
 	// host zot session: the dashboard only surfaces agents whose

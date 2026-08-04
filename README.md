@@ -26,6 +26,7 @@ Yet another coding agent harness, lightweight and written (vibe-slopped) in go.
 - user and extension themes via JSON; see [docs/themes.md](docs/themes.md).
 - standing instructions via `AGENTS.md` files (global and per-project); see [Persistent instructions](#persistent-instructions-agentsmd).
 - reusable instructions via `SKILL.md` files; see [docs/skills.md](docs/skills.md).
+- named subagent profiles from `~/.agents/agents/*.md`; see [docs/subagents.md](docs/subagents.md).
 - portable agents from local directories, `.zot` files, or temporary public GitHub downloads; see [docs/zotfiles.md](docs/zotfiles.md).
 
 ## Install
@@ -280,7 +281,7 @@ Slash command names are case-insensitive in the TUI and messaging backends; argu
 | `/session` | Four ops on the current session: `export` to a portable `.zotsession` file, `import` one back in, `fork` from a past user message into a new branch, `tree` to switch between branches. Opens a picker without an argument; direct forms: `/session export [path]`, `/session import <path>`, `/session fork`, `/session tree`. Default export destination is `~/Downloads`. |
 | `/jump` | Scroll the chat to a previous turn (or `/jump <text>` to filter). |
 | `/btw` | Side chat with full context that doesn't add to the main thread. |
-| `/swarm` | Spawn, monitor, and chat with background subagents. Each runs in parallel with your main session and shares its working directory. |
+| `/swarm` | Spawn, monitor, and chat with background subagents. Each runs in parallel with your main session and shares its working directory. Named profiles can be selected with `agent`; see [docs/subagents.md](docs/subagents.md). |
 | `/skills` | List discovered skills (SKILL.md files) and preview their bodies. |
 | `/compact` | Summarize the transcript into one message to free up context. |
 | `/study` | Run the canned prompt "Read and understand everything in the current directory." so the agent has full project context before you start asking targeted questions. Pass a path — typed, drag-dropped, or selected via `@` — to target a specific file or directory instead: `/study [dir:packages/]`, `/study cmd/zot/main.go`. |
@@ -341,7 +342,9 @@ Background subagents that run alongside your main session. Each one is a separat
 ```
 /swarm                            # open the dashboard
 /swarm new <task>                 # spawn an agent
+/swarm new --agent reviewer <task> # use a named markdown profile
 /swarm new --model gpt-5 <task>    # pin the new agent to a specific model
+/swarm new --reasoning high <task> # set the child reasoning level
 /swarm logs <id>                  # jump straight into one agent's transcript
 /swarm send <id> <text>           # send a follow-up without opening the dashboard
 /swarm resume                     # pick a stopped agent to bring back
@@ -376,14 +379,18 @@ Background subagents that run alongside your main session. Each one is a separat
 
 **`/session export` does NOT bundle subagents.** A `.zotsession` is just the main chat transcript; per-agent state (session file, unix-socket inbox) is machine-local and doesn't round-trip through a JSONL file. To share what an agent said, copy it out of the transcript view manually.
 
-**Auto-swarm.** With `/settings` -> auto-swarm on, the main agent gets a built-in `swarm_spawn` tool and a system-prompt nudge to use it. It can then fork sub-agents on its own when a request naturally splits into independent parallel work ("implement A and B", "investigate three files"). Each spawn returns the sub-agent id immediately and the main turn keeps going. When every sub-agent the agent spawned in that batch finishes its initial task, zot injects one `[auto-swarm update]` message back into the main chat recapping each agent's status, task, and complete final response. If an agent produced no assistant response, zot includes a truncated transcript tail for diagnostics instead. The main agent then writes a short follow-up summary referencing the agents by id. Off by default; toggle from `/settings`.
+**Auto-swarm.** With `/settings` -> auto-swarm on, the main agent gets a built-in `swarm_spawn` tool and a system-prompt nudge to use it. It can then fork sub-agents on its own when a request naturally splits into independent parallel work ("implement A and B", "investigate three files"). If named markdown profiles are available, zot adds a compact `[subagents_list]` to the main prompt; the model can choose a profile with the tool's `agent` field and optionally override its `model`, `provider`, or `reasoning`. Each spawn returns the sub-agent id immediately and the main turn keeps going. When every sub-agent the agent spawned in that batch finishes its initial task, zot injects one `[auto-swarm update]` message back into the main chat recapping each agent's status, task, and complete final response. If an agent produced no assistant response, zot includes a truncated transcript tail for diagnostics instead. The main agent then writes a short follow-up summary referencing the agents by id. Off by default; toggle from `/settings`.
+
+### Named subagent profiles
+
+zot discovers the common markdown/frontmatter profile layout from `~/.agents/agents/*.md` by default. With auto-swarm enabled, the main agent receives `[subagents_list]` metadata and can select a named profile through `swarm_spawn`. Profile bodies are applied only to the selected child. See [docs/subagents.md](docs/subagents.md) for discovery, supported fields, reasoning levels, and examples.
 
 ### `/settings`
 
 Opens a dialog with every persistent setting. `up`/`down` to navigate, `enter` or `space` to change the selected row, `esc` to close (rows that open a sub-view, like model shortcuts, use `esc` to go back one level first). Changes are written to `$ZOT_HOME/config.json` and take effect on the next turn (no restart needed). Current settings:
 
 - **render images when supported** — draw screenshots / `read`-returned images inline using the terminal's image protocol, or fall back to a text placeholder. Auto-detected from `TERM_PROGRAM`; the toggle overrides the detection. The row is greyed out and forced off on terminals that don't speak any image protocol.
-- **auto-swarm** — let the main agent spawn background sub-agents in parallel via a built-in `swarm_spawn` tool. Off by default. When on, the tool is registered with the running agent, the system prompt gains a short addendum telling the model to delegate independent sub-tasks proactively, and zot watches every sub-agent the main agent spawns. As soon as the last sub-agent in a batch finishes its initial task, an `[auto-swarm update]` message is injected back into the chat with each agent's status / task / transcript tail, so the main agent can summarise the collective outcome. Flipping off mid-session removes the tool from the live agent and strips the addendum on the next turn — the model stops trying to delegate. See `/swarm` for the dashboard that lets you monitor, message, kill, or remove the spawned agents.
+- **auto-swarm** — let the main agent spawn background sub-agents in parallel via a built-in `swarm_spawn` tool. Off by default. When on, the tool is registered with the running agent, the system prompt gains a short addendum telling the model to delegate independent sub-tasks proactively, and available named profiles are rendered in `[subagents_list]`. The tool accepts a profile name through `agent` and a per-child `reasoning`/`thinking` override. zot watches every sub-agent the main agent spawns. As soon as the last sub-agent in a batch finishes its initial task, an `[auto-swarm update]` message is injected back into the chat with each agent's status / task / transcript tail, so the main agent can summarise the collective outcome. Flipping off mid-session removes the tool from the live agent and strips the addendum on the next turn — the model stops trying to delegate. See `/swarm` and [docs/subagents.md](docs/subagents.md) for details.
 - **auto-compact threshold** — choose `off`, `70%`, `80%`, `85%` (default), or `90%` of the model's advertised context window. The selected percentage controls automatic compaction before and after interactive turns and persists as `auto_compact_threshold`. `off` disables percentage-based triggers but keeps manual `/compact` and automatic recovery from context-window and payload-too-large responses.
 - **jail new sessions by default**: start every new agent with tools confined to its working directory. Off by default. The setting applies to interactive, print, JSON, RPC, and background-agent runs, persists as `jail_by_default`, and immediately updates the current interactive session. `/jail` and `/unjail` remain session-scoped overrides and do not change this default.
 - **compact transcript rendering**: reduce visual chrome in the chat transcript. Tool calls render as a quiet header plus indented output instead of a bordered box, and sent messages render without padded background bubbles. Off by default. Changes apply immediately and persist to `config.json` as `compact_mode`.
@@ -1026,6 +1033,7 @@ packages/agent/modes/bot/             protocol-agnostic bot runner (BotAdapter i
 packages/agent/modes/telegram/        telegram adapter, api client, daemon
 packages/agent/tools/                 read, write, edit, bash, sandbox
 packages/agent/skills/                skill discovery, frontmatter parser, skill tool
+packages/agent/subagents/             named markdown profile discovery and dispatch
 packages/agent/swarm/                 background subagent runtime
 packages/agent/sdk/                   public Go SDK for embedding zot in-process (package sdk)
 packages/agent/ext/                   public Go SDK for writing extensions (package ext)

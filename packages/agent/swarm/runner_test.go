@@ -113,6 +113,8 @@ func TestSwarmAgentArgs(t *testing.T) {
 		SessionPath: "/tmp/state/session.json",
 		InboxPath:   "/tmp/state/in.sock",
 		Task:        "do the thing",
+		Reasoning:   "high",
+		Subagent:    "reviewer",
 	})
 	if len(args) < 7 {
 		t.Fatalf("argv unexpectedly short: %v", args)
@@ -130,6 +132,8 @@ func TestSwarmAgentArgs(t *testing.T) {
 		"--swarm-agent": "/tmp/state/in.sock",
 		"--session":     "/tmp/state/session.json",
 		"--cwd":         "/tmp/worktree",
+		"--reasoning":   "high",
+		"--subagent":    "reviewer",
 	}
 	for flag, value := range mustHave {
 		i := indexOf(args, flag)

@@ -11,6 +11,31 @@ import (
 	"github.com/patriceckhart/zot/packages/core"
 )
 
+func TestAutoSwarmSystemPromptTogglesProfileManifestWithDelegationGuidance(t *testing.T) {
+	iv := &Interactive{
+		agent: &core.Agent{System: "base system"},
+		cfg: InteractiveConfig{
+			AutoSwarmSystemAddendum: "auto-swarm guidance",
+			SubagentsSystemAddendum: "[subagents_list]\n- reviewer\n[/subagents_list]",
+		},
+	}
+
+	iv.applyAutoSwarmSystemPrompt(true)
+	if !strings.Contains(iv.agent.System, "[subagents_list]") || !strings.Contains(iv.agent.System, "auto-swarm guidance") {
+		t.Fatalf("enabled system prompt missing swarm blocks: %q", iv.agent.System)
+	}
+	before := iv.agent.System
+	iv.applyAutoSwarmSystemPrompt(true)
+	if iv.agent.System != before {
+		t.Fatalf("enabling twice changed system prompt: %q -> %q", before, iv.agent.System)
+	}
+
+	iv.applyAutoSwarmSystemPrompt(false)
+	if strings.Contains(iv.agent.System, "[subagents_list]") || strings.Contains(iv.agent.System, "auto-swarm guidance") {
+		t.Fatalf("disabled system prompt retained swarm blocks: %q", iv.agent.System)
+	}
+}
+
 func TestAutoSwarmSummaryIncludesCompleteFinalResponseAfterLongTask(t *testing.T) {
 	response := "first response line\n" + strings.Repeat("result ", 150) + "final marker"
 	mgr := swarm.New(swarm.Config{

@@ -13,8 +13,8 @@ import (
 //
 //	/swarm                       -> open the dashboard
 //	/swarm list                  -> open the dashboard
-//	/swarm new [--model M] [--provider P] <task...>
-//	                             -> spawn an agent (optionally pinned to a model)
+//	/swarm new [--agent A] [--model M] [--provider P] [--reasoning L] <task...>
+//	                             -> spawn an agent with optional profile/model overrides
 //	/swarm kill <id>             -> stop a running agent
 //	/swarm remove <id>           -> tear down a terminated agent
 //	/swarm logs <id>             -> open the scrollable transcript view
@@ -53,7 +53,7 @@ func (i *Interactive) runSwarm(ctx context.Context, args []string) {
 	// feed the dialog identical callbacks.
 	spawnAdapter := func(task, model, provider string) error {
 		_, err := i.cfg.Swarm.SpawnReq(ctx, swarm.SpawnRequest{
-			Task: task, Model: model, Provider: provider,
+			Task: task, Model: model, Provider: provider, Reasoning: i.cfg.Reasoning,
 		})
 		return err
 	}
@@ -93,30 +93,53 @@ func (i *Interactive) runSwarm(ctx context.Context, args []string) {
 			i.swarmStatus("", "/swarm new <task>: missing task")
 			return
 		}
-		// Permit `--model X --provider Y` flags before the task so
-		// scripts can pin a model without going through the dialog.
-		// Anything that isn't a recognised flag terminates parsing
-		// and the rest becomes the task; this keeps `/swarm new
-		// --model foo do a thing` and `/swarm new do --model thing`
-		// (where --model is part of the task) unambiguous — only
-		// leading flags are consumed.
-		model, provider, task := parseSpawnFlags(rest)
+		// Permit profile/model/provider/reasoning flags before the task
+		// so scripts can pin a child without going through the dialog.
+		// Anything that isn't a recognised flag terminates parsing and
+		// the rest becomes the task; only leading flags are consumed.
+		model, provider, reasoning, subagent, task := parseSpawnFlags(rest)
 		if task == "" {
-			i.swarmStatus("", "/swarm new: missing task (after any --model/--provider flags)")
+			i.swarmStatus("", "/swarm new: missing task (after any spawn flags)")
 			return
 		}
+		if subagent != "" && i.cfg.ResolveSubagent != nil {
+			profile, err := i.cfg.ResolveSubagent(subagent)
+			if err != nil {
+				i.swarmStatus("", "spawn: "+err.Error())
+				return
+			}
+			if profile == nil {
+				i.swarmStatus("", "spawn: unknown subagent profile "+subagent)
+				return
+			}
+			subagent = profile.Name
+			if model == "" && provider == "" {
+				profileProvider, profileModel := profile.ModelSelection()
+				if profileProvider != "" && profileModel != "" {
+					provider, model = profileProvider, profileModel
+				}
+			}
+			if reasoning == "" {
+				reasoning = profile.Thinking
+			}
+		}
+		if reasoning == "" {
+			reasoning = i.cfg.Reasoning
+		}
 		a, err := i.cfg.Swarm.SpawnReq(ctx, swarm.SpawnRequest{
-			Task: task, Model: model, Provider: provider,
+			Task: task, Model: model, Provider: provider, Reasoning: reasoning, Subagent: subagent,
 		})
 		if err != nil {
 			i.swarmStatus("", "spawn: "+err.Error())
 			return
 		}
-		if model != "" {
-			i.swarmStatus("spawned "+a.ID+" (model "+model+")", "")
-		} else {
-			i.swarmStatus("spawned "+a.ID, "")
+		status := "spawned " + a.ID
+		if subagent != "" {
+			status += " (agent " + subagent + ")"
+		} else if model != "" {
+			status += " (model " + model + ")"
 		}
+		i.swarmStatus(status, "")
 	case "kill", "stop":
 		if rest == "" {
 			i.swarmStatus("", "/swarm kill <id>: missing id")
@@ -220,24 +243,40 @@ func (i *Interactive) runSwarm(ctx context.Context, args []string) {
 	}
 }
 
-// parseSpawnFlags consumes any leading `--model X` / `--provider Y`
-// flags from s and returns them along with the remaining task body.
+// parseSpawnFlags consumes leading profile/model/provider/reasoning flags
+// from s and returns them along with the remaining task body.
 // We deliberately only honour LEADING flags so a task like "check
 // --model lookup" doesn't accidentally swallow part of its prose as
 // the model name.
 //
 // Recognised forms:
 //
+//	--agent X            two-token form
+//	--agent=X            single-token form
 //	--model X            two-token form
 //	--model=X            single-token form
 //	--provider X         two-token form
 //	--provider=X         single-token form
-func parseSpawnFlags(s string) (model, provider, task string) {
+//	--reasoning X        two-token form (also --thinking)
+//	--reasoning=X        single-token form
+func parseSpawnFlags(s string) (model, provider, reasoning, subagent, task string) {
 	fields := strings.Fields(s)
 	i := 0
 	for i < len(fields) {
 		f := fields[i]
 		switch {
+		case f == "--agent":
+			if i+1 < len(fields) {
+				subagent = fields[i+1]
+				i += 2
+			} else {
+				i++
+			}
+			continue
+		case strings.HasPrefix(f, "--agent="):
+			subagent = strings.TrimPrefix(f, "--agent=")
+			i++
+			continue
 		case f == "--model":
 			// Consume the flag even when no value follows so a
 			// dangling "--model" doesn't leak into the task. The
@@ -263,6 +302,22 @@ func parseSpawnFlags(s string) (model, provider, task string) {
 			continue
 		case strings.HasPrefix(f, "--provider="):
 			provider = strings.TrimPrefix(f, "--provider=")
+			i++
+			continue
+		case f == "--reasoning" || f == "--thinking":
+			if i+1 < len(fields) {
+				reasoning = fields[i+1]
+				i += 2
+			} else {
+				i++
+			}
+			continue
+		case strings.HasPrefix(f, "--reasoning="):
+			reasoning = strings.TrimPrefix(f, "--reasoning=")
+			i++
+			continue
+		case strings.HasPrefix(f, "--thinking="):
+			reasoning = strings.TrimPrefix(f, "--thinking=")
 			i++
 			continue
 		}

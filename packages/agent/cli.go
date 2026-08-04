@@ -19,6 +19,7 @@ import (
 	"github.com/patriceckhart/zot/packages/agent/extproto"
 	"github.com/patriceckhart/zot/packages/agent/modes"
 	"github.com/patriceckhart/zot/packages/agent/skills"
+	"github.com/patriceckhart/zot/packages/agent/subagents"
 	"github.com/patriceckhart/zot/packages/agent/swarm"
 	"github.com/patriceckhart/zot/packages/agent/tools"
 	"github.com/patriceckhart/zot/packages/core"
@@ -729,6 +730,9 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 			iv.TrackSwarmAgent(a, task)
 		}
 	}
+	resolveSubagent := func(name string) (*subagents.Profile, error) {
+		return findSubagentProfile(r.CWD, name)
+	}
 
 	// Inject the swarm_spawn auto-swarm tool only when /settings ->
 	// auto-swarm is currently enabled. Registering it unconditionally
@@ -744,11 +748,13 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 			return reg
 		}
 		reg["swarm_spawn"] = &tools.SwarmSpawnTool{
-			Swarm:           swarmMgr,
-			Enabled:         AutoSwarmEnabled,
-			DefaultModel:    func() string { return r.Model },
-			DefaultProvider: func() string { return r.Provider },
-			OnSpawned:       onSpawnedSwarm,
+			Swarm:            swarmMgr,
+			Enabled:          AutoSwarmEnabled,
+			DefaultModel:     func() string { return r.Model },
+			DefaultProvider:  func() string { return r.Provider },
+			DefaultReasoning: func() string { return r.Reasoning },
+			ResolveSubagent:  resolveSubagent,
+			OnSpawned:        onSpawnedSwarm,
 		}
 		return reg
 	}
@@ -1247,6 +1253,9 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 	if r.SkillTool != nil {
 		startupSkills = r.SkillTool.Skills()
 	}
+	homeDir, _ := os.UserHomeDir()
+	discoveredSubagents, _ := subagents.Discover(r.CWD, homeDir)
+	subagentsAddendum := subagents.SystemPromptAddendum(discoveredSubagents)
 
 	iv = modes.NewInteractive(modes.InteractiveConfig{
 		Terminal:                  term,
@@ -1267,6 +1276,7 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 		CompactUser:               initialCfg.CompactUserInput(),
 		ExtensionThemes:           extMgr.ThemeOptions,
 		AutoSwarmSystemAddendum:   AutoSwarmSystemAddendum,
+		SubagentsSystemAddendum:   subagentsAddendum,
 		SettingsStore:             configSettingsStore{},
 		Model:                     r.Model,
 		Provider:                  r.Provider,
@@ -1360,9 +1370,10 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 			writeNewTranscriptLocked(currentAg, sess, sessBaselineMsgs)
 			sessBaselineMsgs = len(currentAg.Messages())
 		},
-		Extensions:    extMgr,
-		Swarm:         swarmMgr,
-		ChangelogChan: changelogCh,
+		Extensions:      extMgr,
+		Swarm:           swarmMgr,
+		ResolveSubagent: resolveSubagent,
+		ChangelogChan:   changelogCh,
 		OnChangelogDismiss: func() {
 			// For dev builds (0.0.0) store the actual release version
 			// so the same changelog doesn't show again next launch.

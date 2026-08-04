@@ -10,6 +10,7 @@ import (
 
 	zotdocs "github.com/patriceckhart/zot"
 	"github.com/patriceckhart/zot/packages/agent/skills"
+	"github.com/patriceckhart/zot/packages/agent/subagents"
 	"github.com/patriceckhart/zot/packages/agent/tools"
 	"github.com/patriceckhart/zot/packages/core"
 	"github.com/patriceckhart/zot/packages/provider"
@@ -302,6 +303,44 @@ func canonicalProvider(name string) string {
 	return n
 }
 
+func findSubagentProfile(cwd, name string) (*subagents.Profile, error) {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return nil, nil
+	}
+	home, _ := os.UserHomeDir()
+	profiles, _ := subagents.Discover(cwd, home)
+	profile := subagents.Find(profiles, name)
+	if profile == nil {
+		return nil, fmt.Errorf("subagent profile %q not found (looked in ~/.agents/agents and compatibility locations)", name)
+	}
+	return profile, nil
+}
+
+func applySubagentProfile(args *Args, profile *subagents.Profile) {
+	if args == nil || profile == nil {
+		return
+	}
+	profileProvider, profileModel := profile.ModelSelection()
+	if args.Provider == "" && profileProvider != "" {
+		args.Provider = profileProvider
+	}
+	if args.Model == "" && profileModel != "" {
+		args.Model = profileModel
+	}
+	if args.Reasoning == "" && profile.Thinking != "" {
+		// Keep an explicit "off" value non-empty so it overrides a
+		// persisted global reasoning setting when the child resolves.
+		args.Reasoning = strings.TrimSpace(profile.Thinking)
+	}
+	if !args.NoTools && len(args.Tools) == 0 && len(profile.Tools) > 0 {
+		args.Tools = append([]string(nil), profile.Tools...)
+	}
+	if profile.InheritSkills != nil && !*profile.InheritSkills {
+		args.NoSkill = true
+	}
+}
+
 // Resolve merges args, config, and env into a Resolved set.
 //
 // Unlike the earlier version, Resolve NEVER returns an error for
@@ -310,6 +349,15 @@ func canonicalProvider(name string) string {
 // hard error (used by print/json modes).
 func Resolve(args Args, requireCred bool) (Resolved, error) {
 	cfg, _ := LoadConfig()
+	var selectedProfile *subagents.Profile
+	if strings.TrimSpace(args.Subagent) != "" {
+		var err error
+		selectedProfile, err = findSubagentProfile(args.CWD, args.Subagent)
+		if err != nil {
+			return Resolved{}, err
+		}
+		applySubagentProfile(&args, selectedProfile)
+	}
 
 	// User-requested provider (explicit > config > default).
 	// Normalise common aliases (e.g. "bedrock" -> "amazon-bedrock")
@@ -586,7 +634,7 @@ func Resolve(args Args, requireCred bool) (Resolved, error) {
 		skillTool     *skills.Tool
 		skillAddendum string
 	)
-	if !args.NoSkill {
+	if !args.NoSkill && (selectedProfile == nil || selectedProfile.InheritSkills == nil || *selectedProfile.InheritSkills) {
 		homeDir, _ := os.UserHomeDir()
 		discovered, _ = skills.Discover(ZotHome(), args.CWD, homeDir, args.WithSkills)
 		if len(discovered) > 0 {
@@ -599,7 +647,10 @@ func Resolve(args Args, requireCred bool) (Resolved, error) {
 
 	summaries := toolSummaries(reg, args)
 
-	contextFiles := loadAgentsContext(args.CWD, ZotHome())
+	contextFiles := []ContextFile(nil)
+	if selectedProfile == nil || selectedProfile.InheritProjectContext == nil || *selectedProfile.InheritProjectContext {
+		contextFiles = loadAgentsContext(args.CWD, ZotHome())
+	}
 	append_ := append([]string(nil), args.AppendSystemPrompt...)
 	if agentsAddendum := formatAgentsContext(contextFiles); agentsAddendum != "" {
 		append_ = append(append_, agentsAddendum)
@@ -607,8 +658,17 @@ func Resolve(args Args, requireCred bool) (Resolved, error) {
 	if skillAddendum != "" {
 		append_ = append(append_, skillAddendum)
 	}
-	if AutoSwarmEnabled() {
+	interactiveMode := args.Mode == "" || args.Mode == ModeInteractive
+	if selectedProfile == nil && interactiveMode && cfg.AutoSwarmEnabled != nil && *cfg.AutoSwarmEnabled {
+		homeDir, _ := os.UserHomeDir()
+		profiles, _ := subagents.Discover(args.CWD, homeDir)
+		if subagentsAddendum := subagents.SystemPromptAddendum(profiles); subagentsAddendum != "" {
+			append_ = append(append_, subagentsAddendum)
+		}
 		append_ = append(append_, AutoSwarmSystemAddendum)
+	}
+	if selectedProfile != nil && selectedProfile.SystemPromptMode != "replace" && selectedProfile.SystemPrompt != "" {
+		append_ = append(append_, selectedProfile.SystemPrompt)
 	}
 
 	// Custom system prompt resolution order:
@@ -616,7 +676,9 @@ func Resolve(args Args, requireCred bool) (Resolved, error) {
 	//   2. $ZOT_HOME/SYSTEM.md (persistent user override)
 	//   3. built-in default (defaultIdentity + defaultGuidelines)
 	custom := args.SystemPrompt
-	if custom == "" {
+	if selectedProfile != nil && selectedProfile.SystemPromptMode == "replace" {
+		custom = selectedProfile.SystemPrompt
+	} else if custom == "" {
 		custom = readUserSystemPrompt(ZotHome())
 	}
 

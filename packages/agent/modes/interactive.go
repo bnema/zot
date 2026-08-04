@@ -16,6 +16,7 @@ import (
 	"github.com/patriceckhart/zot/packages/agent/extproto"
 	"github.com/patriceckhart/zot/packages/agent/modes/telegram"
 	"github.com/patriceckhart/zot/packages/agent/skills"
+	"github.com/patriceckhart/zot/packages/agent/subagents"
 	"github.com/patriceckhart/zot/packages/agent/swarm"
 	"github.com/patriceckhart/zot/packages/agent/tools"
 	"github.com/patriceckhart/zot/packages/core"
@@ -123,6 +124,10 @@ type InteractiveConfig struct {
 	// Plumbed in from the cli so this package doesn't have to import
 	// agent (cycle).
 	AutoSwarmSystemAddendum string
+
+	// SubagentsSystemAddendum is the metadata-only [subagents_list]
+	// block that is added or removed together with auto-swarm.
+	SubagentsSystemAddendum string
 	SettingsStore           SettingsStore
 
 	// Agent is optional. If nil, zot opens without credentials; the
@@ -261,6 +266,11 @@ type InteractiveConfig struct {
 	// feature entirely (used by embedders / tests that don't want
 	// subprocesses).
 	Swarm *swarm.Swarm
+
+	// ResolveSubagent validates a named markdown profile for direct
+	// /swarm commands. Auto-swarm uses the equivalent callback on its
+	// tool; keeping this optional preserves lightweight embedders.
+	ResolveSubagent func(name string) (*subagents.Profile, error)
 
 	// SkillSnapshot, if non-nil, returns the current list of
 	// discovered SKILL.md files. Re-invoked each time /skills opens
@@ -3052,9 +3062,14 @@ func (i *Interactive) ApplyChangedCWDWithStartupContext(ag *core.Agent, provider
 }
 
 func (i *Interactive) applyChangedCWD(ag *core.Agent, provider, model, cwd string, startupContextPaths []string) {
+	home, _ := os.UserHomeDir()
+	profiles, _ := subagents.Discover(cwd, home)
+	subagentsAddendum := subagents.SystemPromptAddendum(profiles)
+
 	i.mu.Lock()
 	i.agent = ag
 	i.cfg.CWD = cwd
+	i.cfg.SubagentsSystemAddendum = subagentsAddendum
 	i.cfg.StartupContextPaths = append([]string(nil), startupContextPaths...)
 	i.view.StartupContextPaths = nil
 	if i.cfg.ShowInstructionsAtStartup != nil && *i.cfg.ShowInstructionsAtStartup {
@@ -6487,28 +6502,48 @@ func truncateForSummary(s string, n int) string {
 }
 
 // applyAutoSwarmSystemPrompt appends (active=true) or strips
-// (active=false) the auto-swarm system-prompt block on the running
-// agent so the model proactively considers swarm_spawn when the user
-// flips the toggle. The block lives at the tail of agent.System so
-// stripping is a plain suffix-trim; idempotent in both directions.
+// (active=false) the auto-swarm prompt blocks on the running agent.
+// The profile manifest and delegation guidance are managed together so
+// toggling auto-swarm never leaves the model with names but no tool.
 func (i *Interactive) applyAutoSwarmSystemPrompt(active bool) {
 	if i.agent == nil {
 		return
 	}
-	addendum := i.cfg.AutoSwarmSystemAddendum
-	if addendum == "" {
+	addenda := make([]string, 0, 2)
+	if addendum := strings.TrimSpace(i.cfg.SubagentsSystemAddendum); addendum != "" {
+		addenda = append(addenda, addendum)
+	}
+	if addendum := strings.TrimSpace(i.cfg.AutoSwarmSystemAddendum); addendum != "" {
+		addenda = append(addenda, addendum)
+	}
+	if len(addenda) == 0 {
 		return
 	}
+
 	sys := i.agent.System
-	has := strings.Contains(sys, addendum)
-	switch {
-	case active && !has:
-		if sys != "" && !strings.HasSuffix(sys, "\n\n") {
-			sys += "\n\n"
+	if active {
+		for _, addendum := range addenda {
+			if strings.Contains(sys, addendum) {
+				continue
+			}
+			if sys != "" && !strings.HasSuffix(sys, "\n\n") {
+				sys += "\n\n"
+			}
+			sys += addendum
 		}
-		i.agent.System = sys + addendum
-	case !active && has:
-		i.agent.System = strings.TrimRight(strings.ReplaceAll(sys, addendum, ""), "\n") + "\n"
+		i.agent.System = sys
+		return
+	}
+
+	changed := false
+	for _, addendum := range addenda {
+		if strings.Contains(sys, addendum) {
+			changed = true
+			sys = strings.ReplaceAll(sys, addendum, "")
+		}
+	}
+	if changed {
+		i.agent.System = strings.TrimRight(sys, "\n") + "\n"
 	}
 }
 
@@ -6535,11 +6570,13 @@ func (i *Interactive) applyAutoSwarmTool(active bool) {
 	}
 	if active && i.cfg.Swarm != nil {
 		next["swarm_spawn"] = &tools.SwarmSpawnTool{
-			Swarm:           i.cfg.Swarm,
-			Enabled:         func() bool { return true },
-			DefaultModel:    func() string { return i.cfg.Model },
-			DefaultProvider: func() string { return i.cfg.Provider },
-			OnSpawned:       i.trackSwarmAgent,
+			Swarm:            i.cfg.Swarm,
+			Enabled:          func() bool { return true },
+			DefaultModel:     func() string { return i.cfg.Model },
+			DefaultProvider:  func() string { return i.cfg.Provider },
+			DefaultReasoning: func() string { return i.cfg.Reasoning },
+			ResolveSubagent:  i.cfg.ResolveSubagent,
+			OnSpawned:        i.trackSwarmAgent,
 		}
 	}
 	i.agent.SetTools(next)
