@@ -45,6 +45,7 @@ type agentMeta struct {
 	Model        string    `json:"model,omitempty"`
 	Provider     string    `json:"provider,omitempty"`
 	Reasoning    string    `json:"reasoning,omitempty"`
+	FastMode     *bool     `json:"fast_mode,omitempty"`
 	Subagent     string    `json:"subagent,omitempty"`
 	InboxPath    string    `json:"inbox_path"`
 	EventLogPath string    `json:"event_log_path"`
@@ -66,6 +67,7 @@ func metaPath(stateDir string) string { return filepath.Join(stateDir, "meta.jso
 // write is atomic (tmp + rename) so a crash mid-write can't leave a
 // half-parsable file that fails Reload.
 func writeAgentMeta(stateDir string, a *Agent) error {
+	fastMode := a.FastMode
 	m := agentMeta{
 		ID:           a.ID,
 		Task:         a.Task,
@@ -74,6 +76,7 @@ func writeAgentMeta(stateDir string, a *Agent) error {
 		Model:        a.Model,
 		Provider:     a.Provider,
 		Reasoning:    a.Reasoning,
+		FastMode:     &fastMode,
 		Subagent:     a.Subagent,
 		InboxPath:    a.InboxPath,
 		EventLogPath: a.EventLogPath,
@@ -202,6 +205,10 @@ func (f *Swarm) buildDetachedAgent(m agentMeta) *Agent {
 	if f.cfg.RepoRoot != "" {
 		dir = f.cfg.RepoRoot
 	}
+	fastMode := f.cfg.FastMode
+	if m.FastMode != nil {
+		fastMode = *m.FastMode
+	}
 	a := &Agent{
 		ID:           m.ID,
 		Task:         m.Task,
@@ -210,6 +217,7 @@ func (f *Swarm) buildDetachedAgent(m agentMeta) *Agent {
 		Model:        m.Model,
 		Provider:     m.Provider,
 		Reasoning:    m.Reasoning,
+		FastMode:     fastMode,
 		Subagent:     m.Subagent,
 		InboxPath:    m.InboxPath,
 		EventLogPath: m.EventLogPath,
@@ -348,11 +356,13 @@ func (f *Swarm) Resume(ctx context.Context, id string) (*Agent, error) {
 	if err != nil {
 		return nil, fmt.Errorf("swarm inbox path: %w", err)
 	}
+	fastMode := existing.FastMode
 	m := agentMeta{
 		ID: existing.ID, Task: existing.Task,
 		Dir: existing.Dir, Started: existing.Started,
 		Model: existing.Model, Provider: existing.Provider,
-		Reasoning: existing.Reasoning, Subagent: existing.Subagent,
+		Reasoning: existing.Reasoning, FastMode: &fastMode,
+		Subagent:  existing.Subagent,
 		SessionID: existing.SessionID,
 		InboxPath: inboxPath, EventLogPath: existing.EventLogPath,
 		SessionPath: existing.SessionPath,
@@ -366,6 +376,7 @@ func (f *Swarm) Resume(ctx context.Context, id string) (*Agent, error) {
 		Model:        m.Model,
 		Provider:     m.Provider,
 		Reasoning:    m.Reasoning,
+		FastMode:     fastMode,
 		Subagent:     m.Subagent,
 		SessionID:    m.SessionID,
 		InboxPath:    m.InboxPath,

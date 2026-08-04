@@ -176,11 +176,15 @@ type oaiRequest struct {
 	MaxTokens        *int              `json:"max_tokens,omitempty"`
 	MaxCompletionTok *int              `json:"max_completion_tokens,omitempty"`
 	ReasoningEffort  string            `json:"reasoning_effort,omitempty"`
+	ServiceTier      string            `json:"service_tier,omitempty"`
 }
 
 // ---- request building ----
 
 func (c *openaiClient) buildRequest(req Request) (*oaiRequest, error) {
+	if err := ValidateFastMode(c.Name(), req.FastMode); err != nil {
+		return nil, err
+	}
 	// The OpenAI wire client is shared by many providers, so prefer its own
 	// provider namespace before falling back to a provider-agnostic lookup.
 	m, err := FindModel(c.Name(), req.Model)
@@ -202,6 +206,9 @@ func (c *openaiClient) buildRequest(req Request) (*oaiRequest, error) {
 		Stream:        true,
 		StreamOptions: &oaiStreamOptions{IncludeUsage: true},
 		Temperature:   req.Temperature,
+	}
+	if req.FastMode {
+		out.ServiceTier = fastModeServiceTier
 	}
 
 	maxTok := req.MaxTokens

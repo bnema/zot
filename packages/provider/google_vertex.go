@@ -367,5 +367,8 @@ type renamedClient struct {
 
 func (r *renamedClient) Name() string { return r.name }
 func (r *renamedClient) Stream(ctx context.Context, req Request) (<-chan Event, error) {
+	if err := ValidateFastMode(r.Name(), req.FastMode); err != nil {
+		return nil, err
+	}
 	return r.inner.Stream(ctx, req)
 }

@@ -405,8 +405,8 @@ func TestResolveLlamaCPPUsesRouterInferenceURL(t *testing.T) {
 	if r.Credential != "local" || !r.HasCredential() {
 		t.Fatalf("credential = %q", r.Credential)
 	}
-	if got := r.NewClient().Name(); got != "openai" {
-		t.Fatalf("client name = %q", got)
+	if got := r.NewClient().Name(); got != provider.LlamaCPPProviderID {
+		t.Fatalf("client name = %q, want %q", got, provider.LlamaCPPProviderID)
 	}
 }
 

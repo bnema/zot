@@ -59,6 +59,15 @@ func (configSettingsStore) SetAutoSwarm(enabled bool) error {
 	return SaveConfig(cfg)
 }
 
+func (configSettingsStore) SetFastMode(enabled bool) error {
+	cfg, err := LoadConfig()
+	if err != nil {
+		return err
+	}
+	cfg.FastMode = &enabled
+	return SaveConfig(cfg)
+}
+
 func (configSettingsStore) SetAutoCompactThreshold(percent int) error {
 	cfg, err := LoadConfig()
 	if err != nil {

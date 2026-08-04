@@ -68,6 +68,11 @@ type InteractiveConfig struct {
 	// re-reading config.json on every open.
 	AutoSwarmEnabled *bool
 
+	// FastMode mirrors the persisted OpenAI fast-mode flag at startup.
+	// nil/missing means disabled. Unsupported providers reject attempts
+	// to enable it and reject requests when it remains enabled.
+	FastMode *bool
+
 	// AutoCompactThreshold is the context-window percentage that triggers
 	// automatic compaction. nil means 85; zero disables percentage-based
 	// triggers while preserving payload-too-large recovery.
@@ -368,6 +373,10 @@ type showInstructionsSettingsStore interface {
 
 type autoCompactThresholdSettingsStore interface {
 	SetAutoCompactThreshold(percent int) error
+}
+
+type fastModeSettingsStore interface {
+	SetFastMode(enabled bool) error
 }
 
 type Interactive struct {
@@ -3411,6 +3420,12 @@ func (i *Interactive) openSettingsDialog() {
 		autoSwarmHint = "swarm supervisor not available in this mode"
 	}
 
+	fastMode := i.cfg.FastMode != nil && *i.cfg.FastMode
+	fastModeHint := "OpenAI service tier"
+	if !provider.SupportsFastMode(i.cfg.Provider) {
+		fastModeHint = "only supported for OpenAI providers"
+	}
+
 	jailByDefault := i.cfg.JailByDefault != nil && *i.cfg.JailByDefault
 	recursiveFiles := i.cfg.RecursiveFileSuggest != nil && *i.cfg.RecursiveFileSuggest
 	respectGitignore := i.cfg.RespectGitignore == nil || *i.cfg.RespectGitignore
@@ -3522,6 +3537,13 @@ func (i *Interactive) openSettingsDialog() {
 			value:    autoSwarm,
 			disabled: autoSwarmDisabled,
 			hint:     autoSwarmHint,
+		},
+		{
+			key:   "fast_mode",
+			label: "fast mode",
+			desc:  "request OpenAI's fast service tier; unsupported providers return an error",
+			value: fastMode,
+			hint:  fastModeHint,
 		},
 		{
 			key:     "auto_compact_threshold",
@@ -3821,6 +3843,18 @@ func (i *Interactive) refreshQuickModelSettingsItem(slot int) {
 	}
 }
 
+func (i *Interactive) resetSettingsToggle(key string, value bool) {
+	if i.settingsDialog == nil {
+		return
+	}
+	for idx := range i.settingsDialog.items {
+		if i.settingsDialog.items[idx].key == key {
+			i.settingsDialog.items[idx].value = value
+			return
+		}
+	}
+}
+
 func (i *Interactive) applySettingToggle(key string, value bool) {
 	// Every setting toggle forces a full repaint at the end — same
 	// effect as the user pressing Ctrl+L — so any per-setting visual
@@ -3889,6 +3923,36 @@ func (i *Interactive) applySettingToggle(key string, value bool) {
 		i.applyAutoSwarmSystemPrompt(value)
 		i.mu.Lock()
 		i.statusOK = "auto-swarm " + onOff(value)
+		i.statusErr = ""
+		i.mu.Unlock()
+	case "fast_mode":
+		previous := i.cfg.FastMode != nil && *i.cfg.FastMode
+		if err := provider.ValidateFastMode(i.cfg.Provider, value); err != nil {
+			i.resetSettingsToggle(key, previous)
+			i.mu.Lock()
+			i.statusErr = "settings: " + err.Error()
+			i.mu.Unlock()
+			return
+		}
+		if store, ok := i.cfg.SettingsStore.(fastModeSettingsStore); ok {
+			if err := store.SetFastMode(value); err != nil {
+				i.resetSettingsToggle(key, previous)
+				i.mu.Lock()
+				i.statusErr = "settings: " + err.Error()
+				i.mu.Unlock()
+				return
+			}
+		}
+		val := value
+		i.cfg.FastMode = &val
+		if i.agent != nil {
+			i.agent.SetFastMode(value)
+		}
+		if i.cfg.Swarm != nil {
+			i.cfg.Swarm.SetFastMode(value)
+		}
+		i.mu.Lock()
+		i.statusOK = "fast mode " + onOff(value)
 		i.statusErr = ""
 		i.mu.Unlock()
 	case "jail_by_default":

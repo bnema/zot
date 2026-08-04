@@ -276,6 +276,7 @@ func newBtwAgent(main *core.Agent, system, model string) *core.Agent {
 	agent.MaxSteps = main.MaxSteps
 	agent.Reasoning = main.Reasoning
 	agent.Temperature = main.Temperature
+	agent.FastMode = main.FastModeEnabled()
 	agent.MaxTokens = main.MaxTokens
 	agent.BeforeToolExecute = main.BeforeToolExecute
 	agent.BeforeTurn = main.BeforeTurn

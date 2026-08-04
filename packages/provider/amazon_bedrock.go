@@ -572,6 +572,9 @@ func bedrockGeoPrefixForRegion(region string) string {
 }
 
 func (c *bedrockClient) Stream(ctx context.Context, req Request) (<-chan Event, error) {
+	if err := ValidateFastMode(c.Name(), req.FastMode); err != nil {
+		return nil, err
+	}
 	wire, err := c.buildRequest(req)
 	if err != nil {
 		return nil, err

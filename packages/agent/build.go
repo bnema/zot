@@ -34,6 +34,7 @@ type Resolved struct {
 	CWD         string
 	Reasoning   string
 	Temperature *float32
+	FastMode    bool
 
 	ToolRegistry core.Registry
 	ToolSummary  []ToolSummary
@@ -698,6 +699,10 @@ func Resolve(args Args, requireCred bool) (Resolved, error) {
 	if temperature == nil {
 		temperature = cfg.Temperature
 	}
+	fastMode := cfg.FastMode != nil && *cfg.FastMode
+	if args.FastModeSet {
+		fastMode = args.FastMode
+	}
 
 	max := args.MaxSteps // 0 = unlimited
 
@@ -712,6 +717,7 @@ func Resolve(args Args, requireCred bool) (Resolved, error) {
 		CWD:              args.CWD,
 		Reasoning:        reasoning,
 		Temperature:      temperature,
+		FastMode:         fastMode,
 		ToolRegistry:     reg,
 		ToolSummary:      summaries,
 		SystemPrompt:     sys,
@@ -840,13 +846,13 @@ func (r Resolved) NewClient() provider.Client {
 	wrap := r.withHTTPClient
 	switch r.Provider {
 	case "ollama":
-		return wrap(provider.NewOpenAI(r.Credential, r.BaseURL))
+		return wrap(provider.NewOpenAICompat("ollama", r.Credential, r.BaseURL, ""))
 	case provider.LlamaCPPProviderID:
 		credential := r.Credential
 		if credential == "local" {
 			credential = ""
 		}
-		return wrap(provider.NewOpenAI(credential, r.BaseURL))
+		return wrap(provider.NewOpenAICompat(provider.LlamaCPPProviderID, credential, r.BaseURL, ""))
 	case "kimi":
 		// kimi-coding speaks anthropic-messages on api.kimi.com/coding.
 		// Subscription OAuth (refreshed) wraps the same Anthropic-shaped client.
@@ -1034,6 +1040,7 @@ func (r Resolved) NewAgent() *core.Agent {
 	a.MaxTokens = r.MaxOutput
 	a.Reasoning = r.Reasoning
 	a.Temperature = r.Temperature
+	a.FastMode = r.FastMode
 	return a
 }
 

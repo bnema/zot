@@ -8,6 +8,8 @@ package provider
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"strings"
 	"time"
 )
 
@@ -255,6 +257,34 @@ type Request struct {
 	// "max". Empty disables reasoning. The max tier is sent natively only to
 	// models that support it and clamped elsewhere.
 	Reasoning string
+	// FastMode requests OpenAI's fast service tier. Providers that do not
+	// implement the OpenAI service-tier contract reject the request.
+	FastMode bool
+}
+
+// OpenAI's current Fast mode is represented as the priority service tier on
+// the wire, including the ChatGPT/Codex Responses endpoint.
+const fastModeServiceTier = "priority"
+
+// SupportsFastMode reports whether a provider uses an OpenAI request
+// contract that supports the fast service tier.
+func SupportsFastMode(providerName string) bool {
+	switch strings.ToLower(strings.TrimSpace(providerName)) {
+	case "openai", "openai-codex", "openai-responses":
+		return true
+	default:
+		return false
+	}
+}
+
+// ValidateFastMode rejects fast-mode requests before a provider performs
+// any network or credential work. Keep this check at the provider boundary
+// so direct Client users get the same contract as the core agent loop.
+func ValidateFastMode(providerName string, enabled bool) error {
+	if !enabled || SupportsFastMode(providerName) {
+		return nil
+	}
+	return fmt.Errorf("fast mode is only supported for OpenAI providers, not %q", providerName)
 }
 
 // Client is an LLM streaming client.
