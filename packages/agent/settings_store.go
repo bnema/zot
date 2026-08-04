@@ -50,6 +50,15 @@ func (configSettingsStore) SetTerminalAlertsEnabled(enabled bool) error {
 	return SaveConfig(cfg)
 }
 
+func (configSettingsStore) SetTerminalTitleEnabled(enabled bool) error {
+	cfg, err := LoadConfig()
+	if err != nil {
+		return err
+	}
+	cfg.TerminalTitleEnabled = &enabled
+	return SaveConfig(cfg)
+}
+
 func (configSettingsStore) SetAutoSwarm(enabled bool) error {
 	cfg, err := LoadConfig()
 	if err != nil {

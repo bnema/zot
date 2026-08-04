@@ -1231,8 +1231,7 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 
 	var sess *core.Session
 	var sessBaselineMsgs int // messages already on disk when current session opened
-	// persistMu also guards sess + sessBaselineMsgs, so a session swap
-	// commits the transcript writer and live selection under the same lock.
+	var sessionTitlePending bool
 	if !args.NoSess && ag != nil {
 		var sessErr error
 		sess, sessErr = openOrCreateSession(args, r, ag, version)
@@ -1257,6 +1256,9 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 			activeModel = candidate.model
 			r.Provider = candidate.provider
 			r.Model = candidate.model
+		}
+		if sess != nil && ag != nil {
+			sessionTitlePending = sess.Meta.Parent != "" && sess.Title == "" && len(ag.Messages()) <= sess.Meta.ForkPoint
 		}
 	}
 	defer func() {
@@ -1402,11 +1404,11 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 			persistMu.Unlock()
 			return fmt.Errorf("session changed while loading; please try again")
 		}
-
 		if oldSess != nil {
 			_ = oldSess.Close()
 		}
 		sess = candidate.session
+		sessionTitlePending = candidate.session != nil && candidate.session.Meta.Parent != "" && candidate.session.Title == "" && candidate.fullMessageCount <= candidate.session.Meta.ForkPoint
 		// The live agent only receives a compact resume window, but the
 		// session file remains intact. Keep the persistence baseline at
 		// the original on-disk message count so future turns append after
@@ -1575,6 +1577,14 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 			}
 		}
 
+		// Invalidate any title request before swapping the host-owned session
+		// pointer. The interactive state reset below happens after the swap,
+		// so this guard closes the window where a late result could otherwise
+		// be written to the new session.
+		if iv != nil {
+			iv.CancelPendingSessionTitle()
+		}
+
 		// Commit only after every fallible operation has succeeded. Close
 		// the old session last so rollback never has to resurrect it.
 		persistMu.Lock()
@@ -1584,6 +1594,7 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 		}
 		sess = newSess
 		sessBaselineMsgs = 0
+		sessionTitlePending = false
 		activeProvider = newProvider
 		activeModel = newModel
 		persistMu.Unlock()
@@ -1693,6 +1704,7 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 		Theme:                     theme,
 		InlineImagesEnabled:       initialCfg.InlineImagesEnabled,
 		TerminalAlertsEnabled:     initialCfg.TerminalAlertsEnabled,
+		TerminalTitleEnabled:      initialCfg.TerminalTitleEnabled,
 		AutoSwarmEnabled:          initialCfg.AutoSwarmEnabled,
 		FastMode:                  &fastMode,
 		AutoCompactThreshold:      initialCfg.AutoCompactThreshold,
@@ -1732,8 +1744,15 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 		UpdateInfoChan:            updateCh,
 		Sandbox:                   sharedSandbox,
 		Agent:                     ag,
-		InitialInput:              args.Prompt,
-		StartupPre:                args.StartupPre,
+		InitialSessionTitle: func() string {
+			if sess == nil || sessionTitlePending {
+				return ""
+			}
+			return sess.Title
+		}(),
+		InitialSessionTitlePending: sessionTitlePending,
+		InitialInput:               args.Prompt,
+		StartupPre:                 args.StartupPre,
 		OnStartupPreDone: func() {
 			// entry.pre often installs skills/extensions; rediscover them
 			// before the user starts a model turn.
@@ -1852,6 +1871,8 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 			// selection used by future resumes. The live agent has already
 			// switched pairs, so keep the in-memory selection aligned even
 			// when the append fails and report that persistence error below.
+			sessionTransitionMu.RLock()
+			defer sessionTransitionMu.RUnlock()
 			persistMu.Lock()
 			var sessionErr error
 			if sess != nil {
@@ -1879,6 +1900,45 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 			cfg.Model = model
 			if cfgErr = SaveConfig(cfg); cfgErr != nil && iv != nil {
 				iv.Notify("session", "error", "model changed for this run, but config could not be saved: "+cfgErr.Error())
+			}
+		},
+		CurrentSessionTitle: func() string {
+			sessionTransitionMu.RLock()
+			defer sessionTransitionMu.RUnlock()
+			persistMu.Lock()
+			defer persistMu.Unlock()
+			if sess == nil || sessionTitlePending {
+				return ""
+			}
+			return sess.Title
+		},
+		CurrentSessionTitlePending: func() bool {
+			sessionTransitionMu.RLock()
+			defer sessionTransitionMu.RUnlock()
+			persistMu.Lock()
+			defer persistMu.Unlock()
+			return sessionTitlePending
+		},
+		PersistTitle: func(title string) error {
+			persistMu.Lock()
+			defer persistMu.Unlock()
+			if sess == nil {
+				return nil
+			}
+			if err := sess.UpdateTitle(title); err != nil {
+				return err
+			}
+			sessionTitlePending = false
+			return nil
+		},
+		OnSessionTitleChanged: func(title string) {
+			sessionTransitionMu.RLock()
+			defer sessionTransitionMu.RUnlock()
+			persistMu.Lock()
+			defer persistMu.Unlock()
+			if sess != nil {
+				sess.Title = title
+				sessionTitlePending = false
 			}
 		},
 	})

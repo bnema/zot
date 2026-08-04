@@ -364,6 +364,39 @@ func TestBranchSessionTitleUsesFirstPromptAfterForkWhenBranchDiverges(t *testing
 	}
 }
 
+func TestGeneratedBranchTitleWinsWhenWrittenBeforeBranchPrompt(t *testing.T) {
+	root := t.TempDir()
+	cwd := "/project"
+	parent, err := NewSession(root, cwd, "anthropic", "claude-opus-4-7", "0.0.0-test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = parent.AppendMessage(provider.Message{Role: provider.RoleUser, Content: []provider.Content{provider.TextBlock{Text: "hello"}}})
+	_ = parent.Close()
+
+	branchPath, err := BranchSession(parent.Path, root, cwd, "0.0.0-test", 1)
+	if err != nil {
+		t.Fatalf("BranchSession: %v", err)
+	}
+	branch, _, err := OpenSession(branchPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := branch.UpdateTitle("AI branch title"); err != nil {
+		t.Fatal(err)
+	}
+	if err := branch.AppendMessage(provider.Message{Role: provider.RoleUser, Content: []provider.Content{provider.TextBlock{Text: "how are you?"}}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := branch.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	if summary := describeSession(branchPath); summary.Title != "AI branch title" {
+		t.Errorf("branch title: want %q, got %q", "AI branch title", summary.Title)
+	}
+}
+
 func TestRenamedBranchKeepsExplicitTitle(t *testing.T) {
 	root := t.TempDir()
 	cwd := "/project"

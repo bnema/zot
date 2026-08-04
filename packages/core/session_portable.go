@@ -220,6 +220,7 @@ func ImportSession(srcPath, root, cwd, version string) (string, error) {
 		Provider: snapshot.Meta.Provider,
 		Started:  time.Now().UTC(),
 		Version:  version,
+		Title:    snapshot.Title,
 	}
 	metaLine, err := json.Marshal(sessionLine{Type: "meta", Meta: &importMeta})
 	if err != nil {
@@ -400,18 +401,6 @@ func branchSession(parentPath, root, cwd, version string, upToMessageIdx int, hi
 		}
 	}
 
-	if branchTitle := lastUserText(snapshot.Messages[:limit]); branchTitle != "" {
-		line, err := json.Marshal(map[string]string{"type": "rename", "title": branchTitle})
-		if err != nil {
-			return "", fmt.Errorf("branch: marshal title: %w", err)
-		}
-		if _, err := bw.Write(line); err != nil {
-			return "", err
-		}
-		if err := bw.WriteByte('\n'); err != nil {
-			return "", err
-		}
-	}
 	if err := bw.Flush(); err != nil {
 		return "", err
 	}

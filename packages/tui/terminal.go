@@ -4,7 +4,9 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
+	"unicode"
 
 	"golang.org/x/term"
 )
@@ -49,6 +51,20 @@ func (p *ProcTerm) Write(b []byte) (int, error) { return p.out.Write(b) }
 func WriteBell(w io.Writer) error {
 	_, err := io.WriteString(w, "\a")
 	return err
+}
+
+// SetTitle returns an OSC 0 sequence that sets the terminal's tab/window
+// title. Control characters are removed from the payload so user- or
+// model-provided text cannot inject another terminal control sequence.
+func SetTitle(title string) string {
+	var safe strings.Builder
+	for _, r := range title {
+		if unicode.IsControl(r) || r == 0x7f {
+			continue
+		}
+		safe.WriteRune(r)
+	}
+	return "\x1b]0;" + safe.String() + "\x07"
 }
 
 func (p *ProcTerm) Size() (int, int) {
