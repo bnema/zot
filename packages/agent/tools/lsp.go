@@ -59,6 +59,9 @@ func (t *LSPTool) Description() string {
 func (t *LSPTool) Schema() json.RawMessage { return json.RawMessage(lspSchema) }
 
 func (t *LSPTool) Execute(ctx context.Context, raw json.RawMessage, _ func(string)) (core.ToolResult, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	var args lspArgs
 	if err := json.Unmarshal(raw, &args); err != nil {
 		return core.ToolResult{}, fmt.Errorf("invalid lsp args: %w", err)

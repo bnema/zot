@@ -131,6 +131,20 @@ func TestFramingRoundTripWithAdditionalHeader(t *testing.T) {
 	}
 }
 
+func TestZotHomeEnvironmentPrecedence(t *testing.T) {
+	configuredHome := filepath.Join(t.TempDir(), "zot")
+	xdgHome := filepath.Join(t.TempDir(), "state")
+	t.Setenv("ZOT_HOME", configuredHome)
+	t.Setenv("XDG_STATE_HOME", xdgHome)
+	if got := zotHome(); got != configuredHome {
+		t.Fatalf("ZOT_HOME path = %q, want %q", got, configuredHome)
+	}
+	t.Setenv("ZOT_HOME", "")
+	if got := zotHome(); got != filepath.Join(xdgHome, "zot") {
+		t.Fatalf("XDG_STATE_HOME path = %q, want %q", got, filepath.Join(xdgHome, "zot"))
+	}
+}
+
 func TestLoadConfigMergesGlobalProjectAndBuiltins(t *testing.T) {
 	root := t.TempDir()
 	zotHome := t.TempDir()
@@ -283,6 +297,27 @@ func TestDiagnosticDedupUsesCodeAndStartPosition(t *testing.T) {
 	otherStart.Range.Start.Line++
 	if got := DeduplicateDiagnostics([]Diagnostic{base, endChanged, otherCode, otherStart}); len(got) != 3 {
 		t.Fatalf("deduplicated diagnostics = %#v, want three reports", got)
+	}
+}
+
+func TestManagerClearsPublishedDiagnostics(t *testing.T) {
+	manager := NewManager()
+	root := t.TempDir()
+	path := filepath.Join(root, "main.go")
+	if err := os.WriteFile(path, []byte("package main\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ws, err := manager.workspace(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager.storeDiagnostics(ws, "fake", []Diagnostic{{Path: path, Message: "problem"}})
+	if got := manager.snapshot(ws, path); len(got) != 1 {
+		t.Fatalf("stored diagnostics = %#v", got)
+	}
+	manager.storeDiagnostics(ws, "fake", []Diagnostic{{Path: path, Clear: true}})
+	if got := manager.snapshot(ws, path); len(got) != 0 {
+		t.Fatalf("cleared diagnostics = %#v", got)
 	}
 }
 

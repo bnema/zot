@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 )
 
@@ -345,6 +346,18 @@ func zotHome() string {
 	}
 	if value := strings.TrimSpace(os.Getenv("XDG_STATE_HOME")); value != "" {
 		return filepath.Join(value, "zot")
+	}
+	switch runtime.GOOS {
+	case "darwin":
+		home, _ := os.UserHomeDir()
+		if home == "" {
+			return ""
+		}
+		return filepath.Join(home, "Library", "Application Support", "zot")
+	case "windows":
+		if value := strings.TrimSpace(os.Getenv("LOCALAPPDATA")); value != "" {
+			return filepath.Join(value, "zot")
+		}
 	}
 	home, _ := os.UserHomeDir()
 	if home == "" {

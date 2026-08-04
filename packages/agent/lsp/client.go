@@ -477,7 +477,7 @@ func (c *Client) handleDiagnostics(params json.RawMessage) {
 	if len(value.Diagnostics) == 0 {
 		// Preserve the URI on a clear so Manager can remove only this file's
 		// snapshot rather than accidentally retaining stale diagnostics.
-		value.Diagnostics = []Diagnostic{{Path: path, Server: c.Spec.ID}}
+		value.Diagnostics = []Diagnostic{{Path: path, Server: c.Spec.ID, Clear: true}}
 	}
 	if c.options.OnDiagnostics != nil {
 		c.options.OnDiagnostics(value.Diagnostics)

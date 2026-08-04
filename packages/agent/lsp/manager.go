@@ -215,8 +215,13 @@ func wsSettings(global, local map[string]any) map[string]any {
 
 func (m *Manager) storeDiagnostics(ws *workspace, server string, diagnostics []Diagnostic) {
 	byPath := make(map[string][]Diagnostic)
+	cleared := make(map[string]bool)
 	for _, diagnostic := range diagnostics {
 		if diagnostic.Path == "" || !diagnosticInWorkspace(ws.rootReal, diagnostic.Path) {
+			continue
+		}
+		if diagnostic.Clear {
+			cleared[diagnostic.Path] = true
 			continue
 		}
 		byPath[diagnostic.Path] = append(byPath[diagnostic.Path], diagnostic)
@@ -225,11 +230,10 @@ func (m *Manager) storeDiagnostics(ws *workspace, server string, diagnostics []D
 	if ws.diagnostics[server] == nil {
 		ws.diagnostics[server] = make(map[string][]Diagnostic)
 	}
+	for path := range cleared {
+		delete(ws.diagnostics[server], path)
+	}
 	for path, values := range byPath {
-		if len(values) == 1 && values[0].Message == "" && values[0].Code == "" {
-			delete(ws.diagnostics[server], path)
-			continue
-		}
 		ws.diagnostics[server][path] = values
 	}
 	m.mu.Unlock()
