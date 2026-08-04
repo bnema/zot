@@ -215,6 +215,12 @@ func containsImageEscape(s string) bool {
 	return strings.Contains(s, "\x1b]1337;File=") || strings.Contains(s, "\x1b_G")
 }
 
+func imageFootprintBlank(s string) bool {
+	s = strings.ReplaceAll(stripANSI(s), imageFootprintSentinel, "")
+	s = strings.Trim(strings.TrimSpace(s), "│")
+	return strings.TrimSpace(s) == ""
+}
+
 // paintBackgroundRow applies the optional theme background to a single
 // already-truncated terminal row. It pads with spaces to cols so the
 // background reaches the right edge, and re-applies the background
@@ -634,10 +640,7 @@ func (r *Renderer) DrawLog(chat, bottom []string, cursorBottomRow, cursorCol int
 			delta := len(chatFrame) - len(r.logChat)
 			reflowAbove := false
 			if delta != 0 {
-				overlapEnd := len(chatFrame)
-				if len(r.logChat) < overlapEnd {
-					overlapEnd = len(r.logChat)
-				}
+				overlapEnd := min(len(chatFrame), len(r.logChat))
 				for idx := r.logViewportTop; idx < overlapEnd; idx++ {
 					if r.logChat[idx] != chatFrame[idx] {
 						reflowAbove = true
@@ -646,81 +649,61 @@ func (r *Renderer) DrawLog(chat, bottom []string, cursorBottomRow, cursorCol int
 				}
 			}
 			if reflowAbove {
-				// A height change above the viewport shifts every following
-				// logical row, but it does not move the rows already painted by
-				// the terminal. Rebase our logical coordinates by the same delta
-				// instead of clearing and replaying the transcript. The inaccessible
-				// prefix remains the historical snapshot the terminal actually
-				// holds; addressable chat and bottom rows stay aligned with their
-				// existing physical rows.
-				oldLines := r.logLines
-				oldChatLen := len(r.logChat)
-				newViewportTop := r.logViewportTop + delta
-				if newViewportTop < 0 {
-					newViewportTop = 0
-				}
-				rebasedLen := len(oldLines) + delta
-				if rebasedLen < 0 {
-					rebasedLen = 0
-				}
-				rebased := make([]string, rebasedLen)
-				for idx := range rebased {
-					switch {
-					case idx < newViewportTop:
-						// These rows cannot be repainted. Mark the new logical
-						// contents as accepted so they do not trigger a replay.
-						if idx < len(lines) {
-							rebased[idx] = lines[idx]
+				// Reflow has made the cached logical coordinates unreliable.
+				// Repaint only the visible tail: replaying the full transcript
+				// duplicates scrollback, while rebasing by the total height delta
+				// can drift when some new rows landed inside the viewport.
+				w.WriteString(SeqDeleteKittyImages + SeqCursorHome + SeqClearToEnd)
+				viewportTop := max(0, len(lines)-r.rows)
+				start := viewportTop
+				if start > 0 && imageFootprintBlank(lines[start]) {
+					for idx := start - 1; idx >= 0; idx-- {
+						if containsImageEscape(lines[idx]) {
+							start = idx
+							break
 						}
-					case idx < len(chatFrame):
-						oldIdx := idx - delta
-						if oldIdx >= 0 && oldIdx < oldChatLen {
-							rebased[idx] = oldLines[oldIdx]
-						}
-					default:
-						// Bottom rows are indexed relative to the end of chat,
-						// so preserve that relative position across the reflow.
-						oldIdx := oldChatLen + idx - len(chatFrame)
-						if oldIdx >= 0 && oldIdx < len(oldLines) {
-							rebased[idx] = oldLines[oldIdx]
+						if !imageFootprintBlank(lines[idx]) {
+							break
 						}
 					}
 				}
-				r.logLines = rebased
-				r.logViewportTop = newViewportTop
-				r.logHardwareRow += delta
-				if r.logHardwareRow < 0 {
-					r.logHardwareRow = 0
-				}
-				maxLines = len(lines)
-				if len(r.logLines) > maxLines {
-					maxLines = len(r.logLines)
-				}
-			}
-
-			firstChanged = -1
-			lastChanged = -1
-			for idx := r.logViewportTop; idx < maxLines; idx++ {
-				oldLine := ""
-				if idx < len(r.logLines) {
-					oldLine = r.logLines[idx]
-				}
-				newLine := ""
-				if idx < len(lines) {
-					newLine = lines[idx]
-				}
-				if oldLine != newLine {
-					if firstChanged == -1 {
-						firstChanged = idx
+				for idx := start; idx < len(lines); idx++ {
+					if idx > start {
+						w.WriteString("\r\n")
 					}
-					lastChanged = idx
+					w.WriteString("\x1b[0m")
+					w.WriteString(SeqClearLine)
+					w.WriteString(lines[idx])
 				}
-			}
-			// A newly appended blank row compares equal to the implicit empty
-			// row past the old slice, but it still has to advance the terminal.
-			if firstChanged == -1 && len(lines) > len(r.logLines) && len(r.logLines) >= r.logViewportTop {
-				firstChanged = len(r.logLines)
-				lastChanged = len(lines) - 1
+				r.logViewportTop = viewportTop
+				r.logHardwareRow = len(lines) - 1
+				firstChanged = -1
+				lastChanged = -1
+			} else {
+				firstChanged = -1
+				lastChanged = -1
+				for idx := r.logViewportTop; idx < maxLines; idx++ {
+					oldLine := ""
+					if idx < len(r.logLines) {
+						oldLine = r.logLines[idx]
+					}
+					newLine := ""
+					if idx < len(lines) {
+						newLine = lines[idx]
+					}
+					if oldLine != newLine {
+						if firstChanged == -1 {
+							firstChanged = idx
+						}
+						lastChanged = idx
+					}
+				}
+				// A newly appended blank row compares equal to the implicit empty
+				// row past the old slice, but it still has to advance the terminal.
+				if firstChanged == -1 && len(lines) > len(r.logLines) && len(r.logLines) >= r.logViewportTop {
+					firstChanged = len(r.logLines)
+					lastChanged = len(lines) - 1
+				}
 			}
 		}
 

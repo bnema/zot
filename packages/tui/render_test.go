@@ -126,51 +126,78 @@ func TestDrawLogInaccessibleChangePreservesScrollbackSelection(t *testing.T) {
 	}
 }
 
-func TestDrawLogStructuralReflowAboveViewportRebasesWithoutReplay(t *testing.T) {
+func TestDrawLogStructuralReflowResetsVisibleViewport(t *testing.T) {
+	t.Setenv("TERM_PROGRAM", "ghostty")
+	var buf bytes.Buffer
+	r := NewRenderer(&buf)
+	r.Resize(80, 3)
+	r.DrawLog([]string{"old 0", "old 1"}, []string{"working 0s"}, -1, 0)
+	buf.Reset()
+
+	// Chat and the bottom band both grow while an old row is above the
+	// viewport. Rebasing by chat growth alone leaves both tracked terminal
+	// coordinates one row behind, so future status updates paint off-screen.
+	chat := []string{"new row", "old 0", "old 1"}
+	r.DrawLog(chat, []string{"working 0s", "editor"}, 1, 3)
+	got := buf.String()
+	if !strings.Contains(got, SeqCursorHome+SeqClearToEnd) {
+		t.Fatalf("structural reflow did not reset the visible viewport: %q", got)
+	}
+	if strings.Contains(got, SeqClearScreenNoHome) || strings.Contains(got, SeqClearScrollback) {
+		t.Fatalf("structural reflow cleared retained scrollback: %q", got)
+	}
+	if strings.Contains(got, "old 1") {
+		t.Fatalf("viewport repaint included a row above the visible tail: %q", got)
+	}
+	for _, visible := range []string{"working 0s", "editor", SeqShowCursor, "\x1b[3C"} {
+		if !strings.Contains(got, visible) {
+			t.Fatalf("viewport repaint missing %q: %q", visible, got)
+		}
+	}
+	if want := len(r.logLines) - r.rows; r.logViewportTop != want {
+		t.Fatalf("viewport top = %d, want %d", r.logViewportTop, want)
+	}
+	if want := len(chat) + 1; r.logHardwareRow != want {
+		t.Fatalf("hardware row = %d, want cursor row %d", r.logHardwareRow, want)
+	}
+
+	buf.Reset()
+	r.DrawLog(chat, []string{"working 1s", "editor"}, 1, 3)
+	if got := buf.String(); !strings.Contains(got, "working 1s") {
+		t.Fatalf("status update after viewport reset was lost: %q", got)
+	}
+
+	buf.Reset()
+	r.DrawLog(append(chat, "next tool"), []string{"working 2s", "editor"}, 1, 3)
+	if got := buf.String(); !strings.Contains(got, "next tool") {
+		t.Fatalf("append after viewport reset was lost: %q", got)
+	}
+}
+
+func TestDrawLogStructuralReflowRepaintsVisibleImageFootprint(t *testing.T) {
 	t.Setenv("TERM_PROGRAM", "ghostty")
 	var buf bytes.Buffer
 	r := NewRenderer(&buf)
 	r.Resize(80, 4)
-	oldChat := []string{
-		"user prompt",
-		"┌ bash first ─────", "│ old output", "└──────────────────",
-		"┌ bash second ────", "│ second output", "└──────────────────",
-	}
-	r.DrawLog(oldChat, []string{"input"}, 0, 0)
+	image := "\x1b_Ga=T;payload\x1b\\"
+	boxedBlank := "  │      │  "
+	r.DrawLog([]string{image, boxedBlank, "caption"}, []string{"working 0s"}, -1, 0)
 	buf.Reset()
 
-	// The first tool gains wrapped rows after its top has scrolled away.
-	// Clearing the viewport and replaying the complete logical transcript
-	// leaves the old prompt in native scrollback and prints a second copy.
-	// Rebase the logical row coordinates instead, leaving inaccessible rows
-	// as historical snapshots and keeping the visible tail aligned.
-	newChat := []string{
-		"user prompt",
-		"┌ bash first ─────", "│ old output", "│ wrapped line 1", "│ wrapped line 2", "└──────────────────",
-		"┌ bash second ────", "│ second output", "└──────────────────",
-	}
-	r.DrawLog(newChat, []string{"input"}, 0, 0)
+	// The visible tail begins deep inside an image footprint spanning more
+	// than one screen. Real footprint rows may retain their sentinel or be
+	// wrapped in empty tool-box edges. A viewport reset deletes Kitty images,
+	// so it must scan across both forms and replay the escape row above them.
+	r.DrawLog([]string{
+		"new row", image, boxedBlank, imageFootprintSentinel, boxedBlank,
+		boxedBlank, boxedBlank, "caption",
+	}, []string{"working 1s"}, -1, 0)
 	got := buf.String()
-	if strings.Contains(got, SeqClearScreenNoHome) || strings.Contains(got, SeqClearScrollback) {
-		t.Fatalf("structural reflow cleared the terminal: %q", got)
+	if !strings.Contains(got, SeqDeleteKittyImages) {
+		t.Fatalf("viewport reset did not clear stale Kitty images: %q", got)
 	}
-	for _, replayed := range []string{"user prompt", "┌ bash first", "┌ bash second"} {
-		if strings.Contains(got, replayed) {
-			t.Fatalf("structural reflow replayed %q into scrollback: %q", replayed, got)
-		}
-	}
-
-	buf.Reset()
-	appended := append(append([]string(nil), newChat...), "┌ bash third ─────", "│ third output", "└──────────────────")
-	r.DrawLog(appended, []string{"input"}, 0, 0)
-	got = buf.String()
-	if !strings.Contains(got, "┌ bash third") || !strings.Contains(got, "│ third output") {
-		t.Fatalf("new output was not appended after coordinate rebase: %q", got)
-	}
-	for _, replayed := range []string{"user prompt", "┌ bash first", "┌ bash second"} {
-		if strings.Contains(got, replayed) {
-			t.Fatalf("append after rebase replayed %q: %q", replayed, got)
-		}
+	if !strings.Contains(got, image) {
+		t.Fatalf("viewport reset did not repaint the visible image: %q", got)
 	}
 }
 
