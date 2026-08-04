@@ -98,8 +98,9 @@ func Find(profiles []*Profile, name string) *Profile {
 }
 
 // ModelSelection splits a provider-qualified model value such as
-// "openai-codex/gpt-5.6-luna". A model id may itself contain slashes, so only
-// the first slash is treated as the provider separator.
+// "openai-codex/gpt-5.6-luna". Explicit provider metadata must be paired
+// with an unqualified model; model IDs may contain slashes when no provider
+// metadata is supplied.
 func (p *Profile) ModelSelection() (provider, model string) {
 	if p == nil {
 		return "", ""
@@ -171,6 +172,10 @@ func searchDirs(cwd, userHome string) []location {
 	}
 	if extra := os.Getenv("ZOT_AGENT_PROFILES"); extra != "" {
 		for _, dir := range filepath.SplitList(extra) {
+			dir = strings.TrimSpace(dir)
+			if dir != "" && !filepath.IsAbs(dir) && strings.TrimSpace(cwd) != "" {
+				dir = filepath.Join(cwd, dir)
+			}
 			add(dir, "configured")
 		}
 	}
@@ -218,13 +223,18 @@ func load(path, source string) (*Profile, error) {
 	if thinking == "" {
 		thinking = reasoning
 	}
+	model := strings.TrimSpace(unquote(values["model"]))
+	provider := strings.TrimSpace(unquote(values["provider"]))
+	if provider != "" && strings.Contains(model, "/") {
+		return nil, fmt.Errorf("model must not include a provider when provider is set")
+	}
 	profile := &Profile{
 		Name:         strings.TrimSpace(name),
 		Description:  strings.TrimSpace(unquote(values["description"])),
 		SystemPrompt: strings.TrimSpace(body),
 		Tools:        lists["tools"],
-		Model:        unquote(values["model"]),
-		Provider:     unquote(values["provider"]),
+		Model:        model,
+		Provider:     provider,
 		Thinking:     thinking,
 		Path:         path,
 		Source:       source,

@@ -23,7 +23,7 @@ Profiles are read-only inputs. zot does not execute files from these directories
 ---
 name: reviewer
 description: Read-only code reviewer
-tools: read, grep, find, ls, diagnostics, code_search
+tools: read, write, edit, bash
 model: openai-codex/gpt-5.6-luna
 thinking: max
 systemPromptMode: replace

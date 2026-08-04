@@ -3,6 +3,7 @@ package modes
 import (
 	"context"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 
@@ -79,6 +80,19 @@ func TestRunSwarmSubcommandsDoNotPanic(t *testing.T) {
 			}()
 			iv.runSwarm(context.Background(), args)
 		}()
+	}
+}
+
+func TestRunSwarmRejectsNamedProfileWithoutResolver(t *testing.T) {
+	iv, f := newInteractiveForSwarmTest(t)
+	defer f.StopAll()
+
+	iv.runSwarm(context.Background(), []string{"new", "--agent", "reviewer", "review", "auth"})
+	if !strings.Contains(iv.statusErr, "named subagent profiles are unavailable") {
+		t.Fatalf("status error = %q, want unavailable profile resolver", iv.statusErr)
+	}
+	if got := len(f.List()); got != 0 {
+		t.Fatalf("spawned agents = %d, want 0", got)
 	}
 }
 

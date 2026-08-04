@@ -68,6 +68,40 @@ Implement the requested change.
 	}
 }
 
+func TestDiscoverResolvesConfiguredRelativePathAgainstCWD(t *testing.T) {
+	first := t.TempDir()
+	second := t.TempDir()
+	t.Setenv("ZOT_AGENT_PROFILES", ".agents")
+	writeProfile(t, filepath.Join(first, ".agents", "reviewer.md"), `---
+name: reviewer
+description: First session profile
+---
+First.
+`)
+	writeProfile(t, filepath.Join(second, ".agents", "reviewer.md"), `---
+name: reviewer
+description: Second session profile
+---
+Second.
+`)
+
+	for _, tc := range []struct {
+		cwd         string
+		description string
+	}{
+		{cwd: first, description: "First session profile"},
+		{cwd: second, description: "Second session profile"},
+	} {
+		profiles, errs := Discover(tc.cwd, t.TempDir())
+		if len(errs) != 0 {
+			t.Fatalf("Discover(%q) errors = %v", tc.cwd, errs)
+		}
+		if len(profiles) != 1 || profiles[0].Description != tc.description {
+			t.Fatalf("Discover(%q) = %#v, want %q", tc.cwd, profiles, tc.description)
+		}
+	}
+}
+
 func TestDiscoverConfiguredDirectoryWinsAndRejectsUnsafeNames(t *testing.T) {
 	configured := t.TempDir()
 	home := t.TempDir()
@@ -117,6 +151,7 @@ func TestLoadRejectsInvalidClosedSchemaMetadata(t *testing.T) {
 	}{
 		{name: "invalid-thinking", field: "thinking: extreme"},
 		{name: "invalid-reasoning", field: "reasoning: extreme"},
+		{name: "qualified-model-with-provider", field: "provider: openai\nmodel: openai-codex/gpt-5"},
 		{name: "invalid-prompt-mode", field: "systemPromptMode: merge"},
 		{name: "invalid-project-context", field: "inheritProjectContext: sometimes"},
 		{name: "invalid-skills", field: "inheritSkills: sometimes"},

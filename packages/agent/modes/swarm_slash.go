@@ -103,7 +103,11 @@ func (i *Interactive) runSwarm(ctx context.Context, args []string) {
 			i.swarmStatus("", "/swarm new: missing task (after any spawn flags)")
 			return
 		}
-		if subagent != "" && i.cfg.ResolveSubagent != nil {
+		if subagent != "" {
+			if i.cfg.ResolveSubagent == nil {
+				i.swarmStatus("", "spawn: named subagent profiles are unavailable")
+				return
+			}
 			profile, err := i.cfg.ResolveSubagent(subagent)
 			if err != nil {
 				i.swarmStatus("", "spawn: "+err.Error())
