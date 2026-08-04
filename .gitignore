@@ -73,4 +73,6 @@ logs/
 .tmp/
 tmp/
 .agent-reviews/
+.codereview/
+docs/superpowers/
 npm/
