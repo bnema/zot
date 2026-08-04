@@ -251,6 +251,46 @@ func TestTurnContextIsBoundedForUntrustedIdentifiers(t *testing.T) {
 	if !strings.Contains(context, "Tasked phases focus:") || !strings.Contains(context, "Current phase:") || !strings.Contains(context, "Goal: Reduce repeated context") {
 		t.Fatalf("bounded turn context lost its useful focus: %q", context)
 	}
+	if !strings.Contains(context, "Remaining implementation task") {
+		t.Fatalf("per-field id bounding did not leave room for task lines: %q", context)
+	}
+	for _, line := range strings.Split(context, "\n") {
+		if got := len([]rune(line)); got > 400 {
+			t.Fatalf("unbounded field produced a %d-rune line: %q", got, line)
+		}
+	}
+}
+
+func TestDisplayRenderingSanitizesUntrustedTextWithoutMutatingState(t *testing.T) {
+	state := sampleState()
+	state.Spec = "spec \x1b[31mred\x1b[0m\x00"
+	state.Phases[1].Title = "title \x1b]0;evil\a"
+	state.Phases[1].Goal = "goal\r\t\x1b[2J"
+	state.Phases[1].Tasks[0].Text = "task \x1b[?25l\x7f"
+	original := state
+
+	for _, rendered := range []string{
+		buildSummary(state), buildCompactSummary(state), buildTurnContext(state), strings.Join(buildViewLines(state), "\n"),
+	} {
+		if strings.Contains(rendered, "\x1b") || strings.ContainsRune(rendered, '\x00') || strings.ContainsRune(rendered, '\x7f') || strings.ContainsRune(rendered, '\r') || strings.ContainsRune(rendered, '\t') {
+			t.Fatalf("rendered text contains terminal/control injection: %q", rendered)
+		}
+	}
+	if state.Spec != original.Spec || state.Phases[1].Title != original.Phases[1].Title || state.Phases[1].Tasks[0].Text != original.Phases[1].Tasks[0].Text {
+		t.Fatal("render sanitization mutated persisted plan state")
+	}
+}
+
+func TestTaskErrorsDistinguishMissingAndUnknownIDs(t *testing.T) {
+	state := sampleState()
+	for _, action := range []string{actionUpdateTask, actionSetTaskChecked} {
+		if _, _, err := applyAction(state, toolArgs{Action: action}); err == nil || !strings.Contains(err.Error(), "taskId is required") {
+			t.Fatalf("%s missing task id error = %v", action, err)
+		}
+		if _, _, err := applyAction(state, toolArgs{Action: action, TaskID: "missing"}); err == nil || !strings.Contains(err.Error(), "Valid incomplete task ids: task-4") {
+			t.Fatalf("%s unknown task id error = %v", action, err)
+		}
+	}
 }
 
 func TestPanelRendersSpecGoalsTasksAndEmptyState(t *testing.T) {
@@ -347,6 +387,39 @@ func TestStatePersistenceIsProjectScopedAtomicAndRestrictive(t *testing.T) {
 	}
 	if decoded.Phases[0].Tasks[0].ID != "task-1" {
 		t.Fatalf("on-disk state = %+v", decoded)
+	}
+}
+
+func TestStateStoreDoesNotOverwriteCorruptStateAfterSessionActivation(t *testing.T) {
+	dataDir := t.TempDir()
+	cwd := "/projects/corrupt"
+	path := projectStatePath(dataDir, cwd)
+	original := []byte("not valid plan json")
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, original, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	store := newStateStore()
+	if err := store.load(dataDir, cwd); err == nil {
+		t.Fatal("corrupt state unexpectedly loaded")
+	}
+	if err := store.activateSession(nil); err == nil {
+		t.Fatal("session activation cleared the corrupt-state fault")
+	}
+	if _, _, err := store.transact(func(current PlanState) (PlanState, string, error) {
+		return applyAction(current, toolArgs{Action: actionClear})
+	}); err == nil {
+		t.Fatal("transaction unexpectedly wrote through a corrupt-state fault")
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != string(original) {
+		t.Fatalf("corrupt state bytes changed from %q to %q", original, got)
 	}
 }
 

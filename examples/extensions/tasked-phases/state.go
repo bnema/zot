@@ -9,9 +9,12 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
+	"unicode"
+	"unicode/utf8"
 )
 
 const (
@@ -28,6 +31,12 @@ const (
 	actionSetTaskChecked  = "set_task_checked"
 	actionSetPhaseChecked = "set_phase_checked"
 	actionClear           = "clear"
+)
+
+var (
+	phaseIDPattern     = regexp.MustCompile(`^phase-(\d+)$`)
+	taskIDPattern      = regexp.MustCompile(`^task-(\d+)$`)
+	bracketedIDPattern = regexp.MustCompile(`\[([^\]]+)\]`)
 )
 
 var toolActions = []string{
@@ -135,8 +144,61 @@ func normalizeOptionalText(value string) string {
 	return strings.TrimSpace(value)
 }
 
+// sanitizeDisplayText removes terminal escape sequences and non-printing
+// control characters at the rendering boundary. Persisted state is never
+// modified, so the original extension-supplied text remains recoverable.
+func sanitizeDisplayText(text string) string {
+	var out strings.Builder
+	for index := 0; index < len(text); {
+		if text[index] == 0x1b {
+			index++
+			if index >= len(text) {
+				break
+			}
+			switch text[index] {
+			case '[': // CSI sequence.
+				index++
+				for index < len(text) {
+					final := text[index]
+					index++
+					if final >= 0x40 && final <= 0x7e {
+						break
+					}
+				}
+			case ']': // OSC sequence, terminated by BEL or ST.
+				index++
+				for index < len(text) {
+					if text[index] == 0x07 {
+						index++
+						break
+					}
+					if text[index] == 0x1b && index+1 < len(text) && text[index+1] == '\\' {
+						index += 2
+						break
+					}
+					index++
+				}
+			default:
+				index++
+			}
+			continue
+		}
+		r, size := utf8.DecodeRuneInString(text[index:])
+		index += size
+		if r != '\n' && (unicode.IsControl(r) || r == 0x7f) {
+			continue
+		}
+		out.WriteRune(r)
+	}
+	return out.String()
+}
+
 func singleLine(text string) string {
 	return strings.Join(strings.Fields(text), " ")
+}
+
+func displaySingleLine(text string) string {
+	return singleLine(sanitizeDisplayText(text))
 }
 
 func truncatePlain(text string, maxLength int) string {
@@ -250,14 +312,17 @@ func getSuggestedCurrentPhaseID(state PlanState) string {
 
 func extractHighestIDNumber(prefix string, ids []string) int {
 	highest := 0
-	pattern := regexp.MustCompile(`^` + regexp.QuoteMeta(prefix) + `-(\d+)$`)
+	pattern := taskIDPattern
+	if prefix == "phase" {
+		pattern = phaseIDPattern
+	}
 	for _, id := range ids {
 		match := pattern.FindStringSubmatch(id)
 		if len(match) != 2 {
 			continue
 		}
-		var number int
-		if _, err := fmt.Sscanf(match[1], "%d", &number); err == nil && number > highest {
+		number, err := strconv.Atoi(match[1])
+		if err == nil && number > highest {
 			highest = number
 		}
 	}
@@ -334,7 +399,7 @@ func nextTaskID(state *PlanState) string {
 }
 
 func extractBracketedPhaseID(value string) string {
-	matches := regexp.MustCompile(`\[([^\]]+)\]`).FindAllStringSubmatch(value, -1)
+	matches := bracketedIDPattern.FindAllStringSubmatch(value, -1)
 	candidate := ""
 	for _, match := range matches {
 		if len(match) == 2 {
@@ -362,6 +427,8 @@ func findUniquePhaseByTitle(state PlanState, phaseTitle string) *Phase {
 	return nil
 }
 
+// findPhase returns a pointer into state.Phases, aliasing the caller's slice
+// backing array so mutations are applied to the caller's state copy.
 func findPhase(state PlanState, phaseID string) *Phase {
 	candidate := normalizeOptionalText(phaseID)
 	if candidate == "" {
@@ -402,6 +469,32 @@ func phaseIDError(state PlanState, action, phaseID string) string {
 	return fmt.Sprintf("phaseId %q was not found for %s. Use the raw id from brackets without brackets. Valid phase ids: %s.", singleLine(candidate), action, validIDs)
 }
 
+func formatValidTaskIDs(state PlanState) string {
+	parts := make([]string, 0)
+	for _, phase := range state.Phases {
+		for _, task := range phase.Tasks {
+			if !task.Checked {
+				parts = append(parts, fmt.Sprintf("%s (%s)", task.ID, displaySingleLine(phase.Title)))
+			}
+		}
+	}
+	if len(parts) == 0 {
+		return "none"
+	}
+	return strings.Join(parts, ", ")
+}
+
+func taskIDError(state PlanState, action, taskID string) string {
+	candidate := normalizeOptionalText(taskID)
+	validIDs := formatValidTaskIDs(state)
+	if candidate == "" {
+		return fmt.Sprintf("taskId is required for %s. Use a valid task id. Valid incomplete task ids: %s.", action, validIDs)
+	}
+	return fmt.Sprintf("taskId %q was not found for %s. Use the task id from brackets. Valid incomplete task ids: %s.", displaySingleLine(candidate), action, validIDs)
+}
+
+// findTask returns pointers into state.Phases and their Tasks, aliasing the
+// caller's slice backing arrays so mutations are applied to the caller's state.
 func findTask(state PlanState, taskID, phaseID string) (phase *Phase, task *PhaseTask) {
 	if taskID == "" {
 		return nil, nil
@@ -590,13 +683,16 @@ func applyAction(state PlanState, params toolArgs) (PlanState, string, error) {
 		phase.Tasks = append(phase.Tasks, PhaseTask{ID: nextTaskID(&nextState), Text: taskText})
 		return nextState, "Added task to " + phase.Title, nil
 	case actionUpdateTask:
+		if params.TaskID == "" {
+			return state, "Task not updated", errors.New("taskId is required for update_task")
+		}
 		_, task := findTask(nextState, params.TaskID, params.PhaseID)
 		taskText := ""
 		if params.TaskText != nil {
 			taskText = normalizeOptionalText(*params.TaskText)
 		}
 		if task == nil {
-			return state, "Task not updated", errors.New("taskId was not found")
+			return state, "Task not updated", errors.New(taskIDError(nextState, actionUpdateTask, params.TaskID))
 		}
 		if taskText == "" {
 			return state, "Task not updated", errors.New("taskText is required for update_task")
@@ -627,9 +723,12 @@ func applyAction(state PlanState, params toolArgs) (PlanState, string, error) {
 		nextState.CurrentPhaseID = phase.ID
 		return nextState, "Current phase set to " + phase.Title, nil
 	case actionSetTaskChecked:
+		if params.TaskID == "" {
+			return state, "Task not updated", errors.New("taskId is required for set_task_checked")
+		}
 		phase, task := findTask(nextState, params.TaskID, params.PhaseID)
 		if task == nil {
-			return state, "Task not updated", errors.New("taskId was not found")
+			return state, "Task not updated", errors.New(taskIDError(nextState, actionSetTaskChecked, params.TaskID))
 		}
 		if params.Checked == nil {
 			return state, "Task not updated", errors.New("checked must be provided for set_task_checked")
@@ -697,8 +796,8 @@ func formatRemainingTaskCount(count int) string {
 	return fmt.Sprintf("%d remaining", count)
 }
 
-func formatPhaseTitle(phase Phase) string  { return truncatePlain(singleLine(phase.Title), 120) }
-func formatTaskText(task PhaseTask) string { return truncatePlain(singleLine(task.Text), 180) }
+func formatPhaseTitle(phase Phase) string  { return truncatePlain(displaySingleLine(phase.Title), 120) }
+func formatTaskText(task PhaseTask) string { return truncatePlain(displaySingleLine(task.Text), 180) }
 
 func formatTurnContextID(id string) string { return truncatePlain(singleLine(id), 96) }
 
@@ -708,7 +807,7 @@ func appendIncompleteTaskLines(lines *[]string, tasks []PhaseTask, visibleCount 
 		visible = visible[:visibleCount]
 	}
 	for _, task := range visible {
-		*lines = append(*lines, fmt.Sprintf("%s[ ] %s [%s]", indent, formatTaskText(task), task.ID))
+		*lines = append(*lines, fmt.Sprintf("%s[ ] %s [%s]", indent, formatTaskText(task), formatTurnContextID(task.ID)))
 	}
 	if omitted := len(tasks) - len(visible); omitted > 0 {
 		*lines = append(*lines, fmt.Sprintf("%s... %d more incomplete task(s) omitted; call tasked_phases get_status for the full checklist.", indent, omitted))
@@ -721,7 +820,7 @@ func buildSummary(state PlanState) string {
 	}
 	lines := make([]string, 0)
 	if state.Spec != "" {
-		lines = append(lines, "Spec:", state.Spec, "")
+		lines = append(lines, "Spec:", sanitizeDisplayText(state.Spec), "")
 	}
 	if len(state.Phases) == 0 {
 		return strings.Join(append(lines, "Phases: (none)"), "\n")
@@ -733,7 +832,7 @@ func buildSummary(state PlanState) string {
 		if closedSummary == "" {
 			closedSummary = "all phases complete"
 		}
-		lines = append(lines, "Plan closed: "+closedSummary)
+		lines = append(lines, "Plan closed: "+displaySingleLine(closedSummary))
 	}
 	lines = append(lines, "Phases:")
 	for _, phase := range state.Phases {
@@ -748,9 +847,9 @@ func buildSummary(state PlanState) string {
 		}
 		goalSuffix := ""
 		if phase.Goal != "" {
-			goalSuffix = " - " + phase.Goal
+			goalSuffix = " - " + displaySingleLine(phase.Goal)
 		}
-		lines = append(lines, fmt.Sprintf("%s %s %s [%s] (%d/%d)%s", currentMarker, phaseMarker, phase.Title, phase.ID, phaseDone, phaseTotal, goalSuffix))
+		lines = append(lines, fmt.Sprintf("%s %s %s [%s] (%d/%d)%s", currentMarker, phaseMarker, formatPhaseTitle(phase), formatTurnContextID(phase.ID), phaseDone, phaseTotal, goalSuffix))
 		if len(phase.Tasks) == 0 {
 			lines = append(lines, "    - No tasks yet")
 			continue
@@ -760,7 +859,7 @@ func buildSummary(state PlanState) string {
 			if task.Checked {
 				marker = "[x]"
 			}
-			lines = append(lines, fmt.Sprintf("    %s %s [%s]", marker, task.Text, task.ID))
+			lines = append(lines, fmt.Sprintf("    %s %s [%s]", marker, formatTaskText(task), formatTurnContextID(task.ID)))
 		}
 	}
 	return strings.Join(lines, "\n")
@@ -772,7 +871,7 @@ func buildCompactSummary(state PlanState) string {
 	}
 	lines := make([]string, 0)
 	if state.Spec != "" {
-		lines = append(lines, "Spec: "+truncatePlain(singleLine(state.Spec), 220))
+		lines = append(lines, "Spec: "+truncatePlain(displaySingleLine(state.Spec), 220))
 	}
 	done, total := getPlanProgress(state)
 	lines = append(lines, fmt.Sprintf("Progress: %d/%d tasks checked", done, total))
@@ -781,16 +880,16 @@ func buildCompactSummary(state PlanState) string {
 		if closedSummary == "" {
 			closedSummary = "all phases complete"
 		}
-		lines = append(lines, "Plan closed: "+closedSummary)
+		lines = append(lines, "Plan closed: "+displaySingleLine(closedSummary))
 		return strings.Join(lines, "\n")
 	}
 	if currentPhase := getActivePhase(state); currentPhase != nil {
 		incompleteTasks := getIncompleteTasks(*currentPhase)
 		goalSuffix := ""
 		if currentPhase.Goal != "" {
-			goalSuffix = " - " + truncatePlain(singleLine(currentPhase.Goal), 120)
+			goalSuffix = " - " + truncatePlain(displaySingleLine(currentPhase.Goal), 120)
 		}
-		lines = append(lines, fmt.Sprintf("Current phase: %s [%s] (%s)%s", formatPhaseTitle(*currentPhase), currentPhase.ID, formatRemainingTaskCount(len(incompleteTasks)), goalSuffix))
+		lines = append(lines, fmt.Sprintf("Current phase: %s [%s] (%s)%s", formatPhaseTitle(*currentPhase), formatTurnContextID(currentPhase.ID), formatRemainingTaskCount(len(incompleteTasks)), goalSuffix))
 		if len(incompleteTasks) > 0 {
 			lines = append(lines, "Incomplete tasks:")
 			appendIncompleteTaskLines(&lines, incompleteTasks, compactVisibleIncompleteTasks, "  ")
@@ -820,7 +919,7 @@ func buildTurnContext(state PlanState) string {
 		fmt.Sprintf("Current phase: %s [%s]", formatPhaseTitle(*phase), formatTurnContextID(phase.ID)),
 	}
 	if phase.Goal != "" {
-		lines = append(lines, "Goal: "+truncatePlain(singleLine(phase.Goal), 160))
+		lines = append(lines, "Goal: "+truncatePlain(displaySingleLine(phase.Goal), 160))
 	}
 	incompleteTasks := getIncompleteTasks(*phase)
 	if len(incompleteTasks) == 0 {
@@ -828,16 +927,7 @@ func buildTurnContext(state PlanState) string {
 		return truncatePlain(strings.Join(lines, "\n"), maxTurnContextChars)
 	}
 	lines = append(lines, "Incomplete tasks:")
-	visible := incompleteTasks
-	if len(visible) > turnContextVisibleIncompleteTasks {
-		visible = visible[:turnContextVisibleIncompleteTasks]
-	}
-	for _, task := range visible {
-		lines = append(lines, fmt.Sprintf("  [ ] %s [%s]", formatTaskText(task), formatTurnContextID(task.ID)))
-	}
-	if omitted := len(incompleteTasks) - len(visible); omitted > 0 {
-		lines = append(lines, fmt.Sprintf("  ... %d more incomplete task(s) omitted; call tasked_phases get_status for the full checklist.", omitted))
-	}
+	appendIncompleteTaskLines(&lines, incompleteTasks, turnContextVisibleIncompleteTasks, "  ")
 	return truncatePlain(strings.Join(lines, "\n"), maxTurnContextChars)
 }
 
@@ -869,7 +959,7 @@ func buildViewLines(state PlanState) []string {
 	}
 	if state.Spec != "" {
 		lines = append(lines, "  Spec")
-		for _, specLine := range strings.Split(state.Spec, "\n") {
+		for _, specLine := range strings.Split(sanitizeDisplayText(state.Spec), "\n") {
 			lines = append(lines, "  "+specLine)
 		}
 		lines = append(lines, "")
@@ -882,7 +972,7 @@ func buildViewLines(state PlanState) []string {
 			closedSummary = "all phases complete"
 		}
 		lines = append(lines,
-			"  Closed: "+closedSummary,
+			"  Closed: "+displaySingleLine(closedSummary),
 			"  New work should create a fresh plan instead of extending this one.",
 		)
 	}
@@ -897,9 +987,9 @@ func buildViewLines(state PlanState) []string {
 		if phase.ID == state.CurrentPhaseID {
 			currentTitle = "> " + currentTitle
 		}
-		lines = append(lines, fmt.Sprintf("  %s %s [%s] (%d/%d)", marker, currentTitle, phase.ID, phaseDone, phaseTotal))
+		lines = append(lines, fmt.Sprintf("  %s %s [%s] (%d/%d)", marker, displaySingleLine(currentTitle), formatTurnContextID(phase.ID), phaseDone, phaseTotal))
 		if phase.Goal != "" {
-			lines = append(lines, "    "+phase.Goal)
+			lines = append(lines, "    "+displaySingleLine(phase.Goal))
 		}
 		if len(phase.Tasks) == 0 {
 			lines = append(lines, "    - No tasks yet")
@@ -910,7 +1000,7 @@ func buildViewLines(state PlanState) []string {
 			if task.Checked {
 				taskMarker = "[x]"
 			}
-			lines = append(lines, fmt.Sprintf("    %s %s [%s]", taskMarker, task.Text, task.ID))
+			lines = append(lines, fmt.Sprintf("    %s %s [%s]", taskMarker, formatTaskText(task), formatTurnContextID(task.ID)))
 		}
 		lines = append(lines, "")
 	}
@@ -923,6 +1013,9 @@ type stateStore struct {
 	path    string
 	loaded  bool
 	loadErr error
+	// pathErr records a persistence fault independently of the active
+	// session state. Activating a session must never clear this fault.
+	pathErr error
 }
 
 func newStateStore() *stateStore {
@@ -944,15 +1037,19 @@ func (s *stateStore) load(dataDir, cwd string) error {
 	s.state = createEmptyState()
 	if strings.TrimSpace(dataDir) == "" {
 		s.loadErr = errors.New("host did not provide extension data_dir")
+		s.pathErr = s.loadErr
 		return s.loadErr
 	}
 	s.path = projectStatePath(dataDir, cwd)
 	if err := os.MkdirAll(filepath.Dir(s.path), 0o700); err != nil {
 		s.loadErr = fmt.Errorf("create state directory: %w", err)
+		s.pathErr = s.loadErr
 		return s.loadErr
 	}
+	// #nosec G302 -- this is a directory; 0700 is the minimum mode that permits traversal.
 	if err := os.Chmod(filepath.Dir(s.path), 0o700); err != nil {
 		s.loadErr = fmt.Errorf("restrict state directory: %w", err)
+		s.pathErr = s.loadErr
 		return s.loadErr
 	}
 	data, err := os.ReadFile(s.path)
@@ -961,10 +1058,12 @@ func (s *stateStore) load(dataDir, cwd string) error {
 	}
 	if err != nil {
 		s.loadErr = fmt.Errorf("read state: %w", err)
+		s.pathErr = s.loadErr
 		return s.loadErr
 	}
 	if err := os.Chmod(s.path, 0o600); err != nil {
 		s.loadErr = fmt.Errorf("restrict state file: %w", err)
+		s.pathErr = s.loadErr
 		return s.loadErr
 	}
 	if len(data) == 0 {
@@ -973,6 +1072,7 @@ func (s *stateStore) load(dataDir, cwd string) error {
 	var state PlanState
 	if err := json.Unmarshal(data, &state); err != nil {
 		s.loadErr = fmt.Errorf("parse state: %w", err)
+		s.pathErr = s.loadErr
 		return s.loadErr
 	}
 	s.state = ensureState(state)
@@ -988,8 +1088,8 @@ func (s *stateStore) activateSession(raw json.RawMessage) error {
 	if !s.loaded {
 		return errors.New("state has not been loaded from hello")
 	}
-	if s.path == "" && s.loadErr != nil {
-		return s.loadErr
+	if s.pathErr != nil {
+		return s.pathErr
 	}
 	if len(raw) == 0 || strings.TrimSpace(string(raw)) == "null" {
 		s.state = createEmptyState()
@@ -1022,6 +1122,9 @@ func (s *stateStore) transact(fn func(PlanState) (PlanState, string, error)) (Pl
 	defer s.mu.Unlock()
 	if !s.loaded {
 		return PlanState{}, "", errors.New("state has not been loaded from hello")
+	}
+	if s.pathErr != nil {
+		return cloneState(s.state), "", s.pathErr
 	}
 	if s.loadErr != nil {
 		return cloneState(s.state), "", s.loadErr

@@ -528,6 +528,45 @@ func TestBranchSessionCopiesExtensionStateAtFork(t *testing.T) {
 	}
 }
 
+func TestBranchSessionCarriesStateAcrossCompactionBoundary(t *testing.T) {
+	root := t.TempDir()
+	cwd := "/project"
+	parent, err := NewSession(root, cwd, "anthropic", "claude", "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, text := range []string{"before-a", "before-b"} {
+		if err := parent.AppendMessage(provider.Message{Role: provider.RoleUser, Content: []provider.Content{provider.TextBlock{Text: text}}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := parent.AppendExtensionState("tasked-phases", json.RawMessage(`{"version":1}`)); err != nil {
+		t.Fatal(err)
+	}
+	if err := parent.AppendCompaction([]provider.Message{
+		{Role: provider.RoleAssistant, Content: []provider.Content{provider.TextBlock{Text: "summary"}}},
+		{Role: provider.RoleUser, Content: []provider.Content{provider.TextBlock{Text: "tail"}}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := parent.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	branchPath, err := BranchSession(parent.Path, root, cwd, "test", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	branch, _, err := OpenSession(branchPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = branch.Close() })
+	if got := string(branch.ExtensionState["tasked-phases"]); got != `{"version":1}` {
+		t.Fatalf("compacted branch extension state = %q, want version 1", got)
+	}
+}
+
 // TestBuildSessionTree verifies parent/child edges are rebuilt
 // from meta + sibling-scan.
 func TestBuildSessionTree(t *testing.T) {

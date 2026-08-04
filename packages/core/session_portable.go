@@ -358,6 +358,23 @@ func readExtensionStateAtFork(path string, limit int) (map[string]json.RawMessag
 	defer f.Close()
 
 	state := make(map[string]json.RawMessage)
+	forkState := make(map[string]json.RawMessage)
+	cloneState := func(source map[string]json.RawMessage) map[string]json.RawMessage {
+		clone := make(map[string]json.RawMessage, len(source))
+		for name, raw := range source {
+			clone[name] = append(json.RawMessage(nil), raw...)
+		}
+		return clone
+	}
+	applyState := func(target map[string]json.RawMessage, row sessionLine) {
+		if len(row.State) == 0 || strings.TrimSpace(string(row.State)) == "null" {
+			delete(target, row.Extension)
+			return
+		}
+		if json.Valid(row.State) {
+			target[row.Extension] = append(json.RawMessage(nil), row.State...)
+		}
+	}
 	effectiveCount := 0
 	err = forEachStrictJSONLLine(f, func(line []byte, lineNo int) error {
 		var head sessionLineHead
@@ -378,18 +395,22 @@ func readExtensionStateAtFork(path string, limit int) (map[string]json.RawMessag
 				return fmt.Errorf("line %d: invalid compaction row: %w", lineNo, err)
 			}
 			effectiveCount = len(messages)
+			// A compaction replaces the effective transcript. State that was
+			// recorded anywhere before this boundary belongs to every fork
+			// inside the replacement transcript, even when its old message
+			// index was after the requested fork point.
+			forkState = cloneState(state)
 		case "extension_state":
 			var row sessionLine
 			if err := json.Unmarshal(line, &row); err != nil {
 				return fmt.Errorf("line %d: invalid extension state row: %w", lineNo, err)
 			}
-			if effectiveCount > limit || row.Extension == "" || len(row.State) > maxExtensionStateBytes {
+			if row.Extension == "" || len(row.State) > maxExtensionStateBytes {
 				return nil
 			}
-			if len(row.State) == 0 || strings.TrimSpace(string(row.State)) == "null" {
-				delete(state, row.Extension)
-			} else if json.Valid(row.State) {
-				state[row.Extension] = append(json.RawMessage(nil), row.State...)
+			applyState(state, row)
+			if effectiveCount <= limit {
+				applyState(forkState, row)
 			}
 		default:
 			return fmt.Errorf("line %d: unknown row type %q", lineNo, head.Type)
@@ -399,7 +420,7 @@ func readExtensionStateAtFork(path string, limit int) (map[string]json.RawMessag
 	if err != nil {
 		return nil, fmt.Errorf("branch: read extension state: %w", err)
 	}
-	return state, nil
+	return forkState, nil
 }
 
 func writeBranchSession(root, cwd, version string, parent SessionMeta, messages []provider.Message, checkpoints []SessionUsageCheckpoint, limit int, hideFromSessions bool, extensionState map[string]json.RawMessage) (string, error) {

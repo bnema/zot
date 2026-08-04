@@ -1186,6 +1186,7 @@ func (i *Interactive) extensionWidgetsKeyLocked() string {
 }
 
 const maxExtensionWidgetRows = 12
+const maxExtensionStatusRows = 6
 
 func (i *Interactive) extensionChromeLinesLocked(cols int) []string {
 	var out []string
@@ -1235,8 +1236,14 @@ func (i *Interactive) extensionChromeLinesLocked(cols int) []string {
 		out = append(out, i.cfg.Theme.FG256(i.cfg.Theme.Muted, truncateLine("  ... extension widgets truncated ...", cols)))
 	}
 
+	statusRows := 0
+	statusTruncated := false
 	for _, extName := range sortedNestedOuterKeys(i.extStatuses) {
 		for _, key := range sortedNestedInnerKeys(i.extStatuses, extName) {
+			if statusRows >= maxExtensionStatusRows-1 {
+				statusTruncated = true
+				break
+			}
 			status := i.extStatuses[extName][key]
 			color := i.cfg.Theme.Muted
 			switch status.Level {
@@ -1249,7 +1256,14 @@ func (i *Interactive) extensionChromeLinesLocked(cols int) []string {
 			}
 			label := "  [" + extName + "] " + status.Text
 			out = append(out, i.cfg.Theme.FG256(color, truncateLine(label, cols)))
+			statusRows++
 		}
+		if statusTruncated {
+			break
+		}
+	}
+	if statusTruncated {
+		out = append(out, i.cfg.Theme.FG256(i.cfg.Theme.Muted, truncateLine("  ... extension statuses truncated ...", cols)))
 	}
 	return out
 }

@@ -97,6 +97,7 @@ func main() {
 	restoreSession := func(event ext.Event) {
 		if err := a.store.activateSession(event.State); err != nil {
 			e.Logf("restore session state: %v", err)
+			a.publishUnavailableChrome()
 			return
 		}
 		if state, err := a.store.snapshot(); err == nil {
@@ -124,6 +125,7 @@ func main() {
 
 	if err := e.Run(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
 	}
 }
 
@@ -185,11 +187,28 @@ func (a *app) handleTool(args json.RawMessage) ext.ToolResult {
 	state, headline, err := a.store.transact(func(current PlanState) (PlanState, string, error) {
 		return applyAction(current, params)
 	})
-	a.publishChrome(state)
+	// A zero state means transact could not obtain a loaded snapshot. Do not
+	// replace persistent chrome with an invented empty plan. For action and
+	// persistence errors, transact returns the unchanged usable state, which
+	// should remain visible to help the user recover.
+	if err == nil || state.Version != 0 {
+		a.publishChrome(state)
+	}
 	if err == nil {
 		a.renderPanelIfOpen(state)
 	}
 	return toolResult(params.Action, state, headline, err)
+}
+
+func (a *app) publishUnavailableChrome() {
+	a.ext.SetStatus("progress", "plan unavailable")
+	a.ext.SetWidget("plan", "above_input", "Tasked phases", []string{"Plan state could not be restored for this session."})
+	a.panelMu.Lock()
+	open := a.panelOpen
+	a.panelMu.Unlock()
+	if open {
+		a.ext.RenderPanel(panelID, "Tasked phases", []string{"Plan state could not be restored for this session."}, "Escape closes this panel")
+	}
 }
 
 func (a *app) publishChrome(state PlanState) {

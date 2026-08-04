@@ -16,7 +16,7 @@ Use the `tasked_phases` tool as the source of truth for the spec, phases, curren
 5. Set the focus with `set_current_phase` and pass the target `phaseId`.
 6. Call `set_task_checked` immediately after each checklist task is completed.
 7. Use `set_phase_checked` to complete or reopen every task in a phase. The phase must already contain at least one task.
-8. When every task is checked, treat the plan as closed. For unrelated work, call `clear` before creating a new plan.
+8. When every task is checked, treat the plan as closed. For unrelated work, call `clear` to discard the plan, or call `set_spec` immediately followed by `replace_plan` to record a new spec and a new set of phases.
 
 ## Planning rules
 

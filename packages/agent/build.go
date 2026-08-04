@@ -61,6 +61,10 @@ type Resolved struct {
 	// messages to the provider transcript.
 	ContextFiles []ContextFile
 
+	// skillsEnabled is true when discovery ran, even when it found no
+	// skills. It is false only for an explicit clean-room disable.
+	skillsEnabled bool
+
 	// Bookkeeping for MergeExtensionTools. Captured at Resolve time
 	// so the system prompt can be rebuilt later without re-running
 	// resolve.
@@ -93,13 +97,17 @@ func (r *Resolved) MergeExtensionTools(mgr ExtensionToolSource) {
 		changed = true
 	}
 
-	// A nil SkillTool means skill discovery was explicitly disabled (for
-	// example --no-skill or a profile with inheritSkills=false). Bundled
-	// extension skills must honor that same clean-room switch.
-	if source, ok := mgr.(ExtensionSkillSource); ok && r.SkillTool != nil {
+	// A nil SkillTool can mean discovery ran and found nothing, so use the
+	// explicit disable flag rather than the discovery result as the gate.
+	if source, ok := mgr.(ExtensionSkillSource); ok && r.skillsEnabled {
 		if bundled := source.Skills(); len(bundled) > 0 {
 			merged := mergeExtensionSkills(r.SkillTool, bundled)
-			r.SkillTool.SetSkills(merged)
+			if r.SkillTool == nil {
+				r.SkillTool = skills.NewTool(merged)
+				r.ToolRegistry[r.SkillTool.Name()] = r.SkillTool
+			} else {
+				r.SkillTool.SetSkills(merged)
+			}
 			append_ := append([]string(nil), r.systemAppend...)
 			if r.skillAddendum != "" {
 				filtered := append_[:0]
@@ -701,8 +709,10 @@ func Resolve(args Args, requireCred bool) (Resolved, error) {
 		discovered    []*skills.Skill
 		skillTool     *skills.Tool
 		skillAddendum string
+		skillsEnabled bool
 	)
 	if !args.NoSkill && (selectedProfile == nil || selectedProfile.InheritSkills == nil || *selectedProfile.InheritSkills) {
+		skillsEnabled = true
 		homeDir, _ := os.UserHomeDir()
 		discovered, _ = skills.Discover(ZotHome(), args.CWD, homeDir, args.WithSkills)
 		if len(discovered) > 0 {
@@ -789,6 +799,7 @@ func Resolve(args Args, requireCred bool) (Resolved, error) {
 		MaxOutput:        resolvedModel.MaxOutput,
 		Sandbox:          sandbox,
 		SkillTool:        skillTool,
+		skillsEnabled:    skillsEnabled,
 		ContextFiles:     contextFiles,
 		systemAppend:     append_,
 		systemCustom:     custom,

@@ -1,6 +1,7 @@
 package modes
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -61,6 +62,23 @@ func TestPersistentExtensionWidgetRowsAreBounded(t *testing.T) {
 	}
 	if !strings.Contains(strings.Join(got, "\n"), "extension widgets truncated") {
 		t.Fatalf("bounded widget rows omitted truncation marker: %v", got)
+	}
+}
+
+func TestPersistentExtensionStatusRowsAreBounded(t *testing.T) {
+	i := newNotesTestInteractive()
+	for n := 0; n < maxExtensionStatusRows+4; n++ {
+		i.SetStatus("extension", fmt.Sprintf("status-%d", n), "info", "line")
+	}
+
+	i.mu.Lock()
+	got := i.extensionChromeLinesLocked(80)
+	i.mu.Unlock()
+	if len(got) != maxExtensionStatusRows {
+		t.Fatalf("status rows = %d, want %d: %v", len(got), maxExtensionStatusRows, got)
+	}
+	if !strings.Contains(strings.Join(got, "\n"), "extension statuses truncated") {
+		t.Fatalf("bounded status rows omitted truncation marker: %v", got)
 	}
 }
 

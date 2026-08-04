@@ -3,6 +3,7 @@ package extensions
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"os"
 
 	"github.com/patriceckhart/zot/packages/agent/extproto"
@@ -13,6 +14,30 @@ import (
 	"testing"
 	"time"
 )
+
+func TestLifecycleWriteDropsWhenSynchronousWriterOwnsLock(t *testing.T) {
+	ext := &Extension{stdin: &nopWriteCloser{}}
+	ext.writeMu.Lock()
+	defer ext.writeMu.Unlock()
+
+	done := make(chan error, 1)
+	go func() { done <- ext.tryWriteLifecycleFrame([]byte("lifecycle")) }()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("lifecycle write unexpectedly acquired the synchronous writer lock")
+		}
+	case <-time.After(lifecycleWriteGrace + time.Second):
+		t.Fatal("lifecycle write remained blocked on the synchronous writer lock")
+	}
+}
+
+type nopWriteCloser struct{}
+
+func (*nopWriteCloser) Write(data []byte) (int, error) { return len(data), nil }
+func (*nopWriteCloser) Close() error                   { return nil }
+
+var _ io.WriteCloser = (*nopWriteCloser)(nil)
 
 // stubHooks records every callback so the test can assert on them.
 type stubHooks struct {

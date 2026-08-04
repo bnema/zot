@@ -1027,6 +1027,8 @@ func (m *Manager) readLoop(ext *Extension, scanner *bufio.Scanner) {
 	}
 }
 
+const lifecycleWriteGrace = 250 * time.Millisecond
+
 func (ext *Extension) writeFrame(frame []byte) (int, error) {
 	if ext == nil || ext.stdin == nil {
 		return 0, fmt.Errorf("extension stdin is closed")
@@ -1034,6 +1036,35 @@ func (ext *Extension) writeFrame(frame []byte) (int, error) {
 	ext.writeMu.Lock()
 	defer ext.writeMu.Unlock()
 	return ext.stdin.Write(frame)
+}
+
+// tryWriteLifecycleFrame bounds only a lifecycle writer's wait for the shared
+// writer lock. Synchronous host frames retain their existing write behavior;
+// a stalled lifecycle snapshot is dropped rather than delaying them.
+func (ext *Extension) tryWriteLifecycleFrame(frame []byte) error {
+	if ext == nil || ext.stdin == nil {
+		return fmt.Errorf("extension stdin is closed")
+	}
+	if !ext.writeMu.TryLock() {
+		timer := time.NewTimer(lifecycleWriteGrace)
+		defer timer.Stop()
+		ticker := time.NewTicker(5 * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-timer.C:
+				return fmt.Errorf("extension lifecycle write is blocked")
+			case <-ticker.C:
+				if ext.writeMu.TryLock() {
+					goto locked
+				}
+			}
+		}
+	}
+locked:
+	defer ext.writeMu.Unlock()
+	_, err := ext.stdin.Write(frame)
+	return err
 }
 
 func (ext *Extension) startLifecycleWriter() {
@@ -1092,7 +1123,7 @@ func (ext *Extension) lifecycleWriter() {
 		case <-ext.lifecycleStop:
 			return
 		case frame := <-ext.lifecycleFrames:
-			if _, err := ext.writeFrame(frame); err != nil {
+			if err := ext.tryWriteLifecycleFrame(frame); err != nil {
 				return
 			}
 		}

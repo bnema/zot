@@ -3,6 +3,7 @@ package ext
 import (
 	"bufio"
 	"encoding/json"
+	"errors"
 	"io"
 	"strings"
 	"testing"
@@ -62,6 +63,25 @@ func newHarness(name string) *extHarness {
 	}()
 
 	return h
+}
+
+func (h *extHarness) startRun(t *testing.T) {
+	t.Helper()
+	runDone := make(chan error, 1)
+	go func() { runDone <- h.ext.Run() }()
+	t.Cleanup(func() {
+		if err := h.hostW.Close(); err != nil && !errors.Is(err, io.ErrClosedPipe) {
+			t.Errorf("close extension input: %v", err)
+		}
+		select {
+		case err := <-runDone:
+			if err != nil {
+				t.Errorf("extension Run: %v", err)
+			}
+		case <-time.After(2 * time.Second):
+			t.Error("extension Run did not exit after closing host input")
+		}
+	})
 }
 
 // next returns the next frame, timing out after 2 s.
@@ -222,7 +242,7 @@ func TestOpenPanelEmitsCorrectFrame(t *testing.T) {
 
 func TestPersistentChromeFrames(t *testing.T) {
 	h := newHarness("chrome-ext")
-	go h.ext.Run()
+	h.startRun(t)
 	h.handshake(t)
 
 	h.ext.SetStatus("progress", "2/4 tasks")
@@ -254,7 +274,6 @@ func TestPersistentChromeFrames(t *testing.T) {
 	if cf.ID != "plan" {
 		t.Fatalf("widget clear = %+v", cf)
 	}
-	h.hostW.Close()
 }
 
 func TestToolResultDetailsEmitsOpaqueMetadata(t *testing.T) {
@@ -262,7 +281,7 @@ func TestToolResultDetailsEmitsOpaqueMetadata(t *testing.T) {
 	h.ext.Tool("details", "returns metadata", json.RawMessage(`{"type":"object"}`), func(json.RawMessage) ToolResult {
 		return ToolResult{Content: []ToolContent{Text("ok")}, Details: JSONDetails(map[string]any{"state": 1})}
 	})
-	go h.ext.Run()
+	h.startRun(t)
 	h.handshake(t)
 	h.sendToExt(t, extproto.ToolCallFromHost{Type: "tool_call", ID: "call-1", Name: "details", Args: json.RawMessage(`{}`)})
 	frame := h.drainUntil(t, "tool_result")
@@ -273,14 +292,13 @@ func TestToolResultDetailsEmitsOpaqueMetadata(t *testing.T) {
 	if string(result.Details) != `{"state":1}` {
 		t.Fatalf("details = %s", result.Details)
 	}
-	h.hostW.Close()
 }
 
 func TestSessionEventCarriesIdentityAndState(t *testing.T) {
 	h := newHarness("session-ext")
 	received := make(chan Event, 1)
 	h.ext.On("session_opened", func(event Event) { received <- event })
-	go h.ext.Run()
+	h.startRun(t)
 	h.handshake(t)
 	h.sendToExt(t, extproto.EventFromHost{
 		Type: "event", Event: "session_opened",
@@ -295,7 +313,6 @@ func TestSessionEventCarriesIdentityAndState(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("timeout waiting for session event")
 	}
-	h.hostW.Close()
 }
 
 func TestTurnStartContextIsReturned(t *testing.T) {
@@ -303,7 +320,7 @@ func TestTurnStartContextIsReturned(t *testing.T) {
 	h.ext.InterceptTurnStart(func(int) TurnStartDecision {
 		return TurnStartDecision{Context: "current phase: parse"}
 	})
-	go h.ext.Run()
+	h.startRun(t)
 	h.handshake(t)
 	h.sendToExt(t, extproto.EventInterceptFromHost{Type: "event_intercept", ID: "intercept-1", Event: "turn_start", Step: 2})
 	frame := h.drainUntil(t, "event_intercept_response")
@@ -314,7 +331,6 @@ func TestTurnStartContextIsReturned(t *testing.T) {
 	if response.ID != "intercept-1" || response.Context != "current phase: parse" || response.Block {
 		t.Fatalf("intercept response = %+v", response)
 	}
-	h.hostW.Close()
 }
 
 func TestAlertEmitsStructuredFrame(t *testing.T) {

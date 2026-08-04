@@ -37,14 +37,31 @@ import (
 const maxBufferedInteractiveAlerts = 64
 
 type interactiveExtHooks struct {
-	mu            sync.Mutex
-	interactive   *modes.Interactive
-	pendingAlerts []interactiveAlert
+	mu              sync.Mutex
+	interactive     *modes.Interactive
+	pendingAlerts   []interactiveAlert
+	pendingStatuses map[string]interactiveStatus
+	pendingWidgets  map[string]interactiveWidget
 }
 
 type interactiveAlert struct {
 	extName string
 	alert   extproto.AlertRequest
+}
+
+type interactiveStatus struct {
+	extName string
+	key     string
+	level   string
+	text    string
+}
+
+type interactiveWidget struct {
+	extName  string
+	id       string
+	position string
+	title    string
+	lines    []string
 }
 
 func (h *interactiveExtHooks) iv() *modes.Interactive {
@@ -62,11 +79,21 @@ func (h *interactiveExtHooks) attachInteractive(iv *modes.Interactive) {
 	}
 	h.mu.Lock()
 	h.interactive = iv
-	pending := h.pendingAlerts
+	pendingAlerts := h.pendingAlerts
+	pendingStatuses := h.pendingStatuses
+	pendingWidgets := h.pendingWidgets
 	h.pendingAlerts = nil
+	h.pendingStatuses = nil
+	h.pendingWidgets = nil
 	h.mu.Unlock()
-	for _, item := range pending {
+	for _, item := range pendingAlerts {
 		iv.Alert(item.extName, item.alert)
+	}
+	for _, item := range pendingStatuses {
+		iv.SetStatus(item.extName, item.key, item.level, item.text)
+	}
+	for _, item := range pendingWidgets {
+		iv.SetWidget(item.extName, item.id, item.position, item.title, item.lines)
 	}
 }
 
@@ -131,20 +158,64 @@ func (h *interactiveExtHooks) ClosePanel(extName, panelID string) {
 		iv.ClosePanel(extName, panelID)
 	}
 }
+func pendingChromeKey(extName, key string) string { return extName + "\x00" + key }
+
 func (h *interactiveExtHooks) SetStatus(extName, key, level, text string) {
-	if iv := h.iv(); iv != nil {
-		iv.SetStatus(extName, key, level, text)
+	if h == nil {
+		return
 	}
+	h.mu.Lock()
+	if h.interactive == nil {
+		if h.pendingStatuses == nil {
+			h.pendingStatuses = map[string]interactiveStatus{}
+		}
+		pendingKey := pendingChromeKey(extName, key)
+		if strings.TrimSpace(text) == "" {
+			delete(h.pendingStatuses, pendingKey)
+		} else {
+			h.pendingStatuses[pendingKey] = interactiveStatus{extName: extName, key: key, level: level, text: text}
+		}
+		h.mu.Unlock()
+		return
+	}
+	iv := h.interactive
+	h.mu.Unlock()
+	iv.SetStatus(extName, key, level, text)
 }
 func (h *interactiveExtHooks) SetWidget(extName, id, position, title string, lines []string) {
-	if iv := h.iv(); iv != nil {
-		iv.SetWidget(extName, id, position, title, lines)
+	if h == nil {
+		return
 	}
+	h.mu.Lock()
+	if h.interactive == nil {
+		if h.pendingWidgets == nil {
+			h.pendingWidgets = map[string]interactiveWidget{}
+		}
+		h.pendingWidgets[pendingChromeKey(extName, id)] = interactiveWidget{
+			extName: extName, id: id, position: position, title: title, lines: append([]string(nil), lines...),
+		}
+		h.mu.Unlock()
+		return
+	}
+	iv := h.interactive
+	h.mu.Unlock()
+	iv.SetWidget(extName, id, position, title, lines)
 }
 func (h *interactiveExtHooks) ClearWidget(extName, id string) {
-	if iv := h.iv(); iv != nil {
-		iv.ClearWidget(extName, id)
+	if h == nil {
+		return
 	}
+	h.mu.Lock()
+	if h.interactive == nil {
+		if h.pendingWidgets != nil {
+			delete(h.pendingWidgets, pendingChromeKey(extName, id))
+		}
+		h.mu.Unlock()
+		return
+	}
+	iv := h.interactive
+	h.mu.Unlock()
+	iv.ClearWidget(extName, id)
 }
 
 // extToolAdapter bridges *extensions.Manager to the
