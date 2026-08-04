@@ -47,6 +47,17 @@ on run argv
 end run
 `
 
+func ReadClipboardImage() (ClipboardImage, bool, error) {
+	_, data, ok, err := ReadClipboardImagePNG()
+	if err != nil {
+		return ClipboardImage{}, false, err
+	}
+	if !ok {
+		return ClipboardImage{}, false, nil
+	}
+	return ClipboardImage{MimeType: "image/png", Data: data}, true, nil
+}
+
 func ReadClipboardImagePNG() (string, []byte, bool, error) {
 	dir := clipboardImageDir()
 	if err := os.MkdirAll(dir, 0o700); err != nil {

@@ -759,6 +759,10 @@ Opening `/model` refreshes the router and lists every loaded model under provide
 
 A model installed through Ollama is kept in Ollama's internal storage and is not automatically available as a llama.cpp GGUF file. Download a GGUF copy through `/llama` or place GGUF files in `~/llama-models`, then restart the router so it discovers files added manually.
 
+## Clipboard images
+
+In the main chat, `ctrl+v` checks the system clipboard for an image before falling back to text. A pasted image appears as a `[clipboard image #N]` marker and is attached when you submit the prompt; `esc` or `ctrl+c` clears pending image markers with the rest of the input. Wayland image paste uses `wl-paste` from `wl-clipboard`; X11 image paste uses `xclip` when available.
+
 ## Inline images
 
 When a tool returns an image (for example `read` on a PNG), zot renders it inline on terminals that support it: **Ghostty**, **Kitty**, **iTerm2**, **WezTerm**. On other terminals you see a text placeholder with MIME type, pixel dimensions, and byte size. Control with the `ZOT_INLINE_IMAGES` env var:
@@ -863,7 +867,7 @@ Slash commands also work while the agent is busy. Non-destructive ones (`/help`,
 | `ctrl+c` | Clear the input and queue (while idle) or arm the exit hint (while busy). Press again within 2s to exit. Use `esc` to cancel a running turn. |
 | `ctrl+d` | Exit on empty input. |
 | `ctrl+l` | Redraw the screen. |
-| `ctrl+v` | Paste clipboard text into the focused chat, side chat, dialog, filter, or credential input. On Linux this uses `wl-paste`, `xclip`, or `xsel`; terminal-native bracketed paste remains available without those commands. In the main chat on macOS, image-only clipboard content is saved as a temporary PNG and attached to the next prompt. |
+| `ctrl+v` | Paste clipboard text into the focused chat, side chat, dialog, filter, or credential input. In the main chat, image clipboard content is attached to the next prompt when the platform exposes it (macOS pasteboard, Wayland `wl-paste`, or X11 `xclip`). On Linux, text uses `wl-paste`, `xclip`, or `xsel`; terminal-native bracketed paste remains available without those commands. |
 | `ctrl+o` | Expand or collapse long tool results (read, write, edit, bash outputs over ~12 lines). |
 | `ctrl+1` ... `ctrl+9` | Switch to the model bound to that quick-model slot (configured in `/settings` -> model shortcuts). No-op while a turn is running. |
 | `@` | Open the file picker. Browse files and directories in the working directory. |
