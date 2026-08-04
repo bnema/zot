@@ -8,7 +8,7 @@ Rust, shell with `jq`, anything.
 
 Four phases shipped so far:
 
-- **Phase 1**: slash commands + chat notifications.
+- **Phase 1**: slash commands, chat notifications, and host alerts.
 - **Phase 2**: tools the LLM can call.
 - **Phase 3**: lifecycle event subscriptions + tool-call interception
   for guardrail extensions.
@@ -149,10 +149,10 @@ manifest tells zot how to launch it:
    (logged in the extension's own log file).
 5. **Runtime**: after `ready`, zot dispatches `command_invoked` frames
    when the user runs a registered command; the extension responds
-   with `command_response`. Extensions can also push `notify` frames
-   during runtime. Panel-capable extensions may open an interactive
-   panel, receive key events, and push redraws while the panel is
-   focused.
+   with `command_response`. Extensions can also push `notify` and
+   structured `alert` frames during runtime. Panel-capable extensions
+   may open an interactive panel, receive key events, and push redraws
+   while the panel is focused.
 6. **Shutdown**: when zot exits, it sends `shutdown` and waits up to
    2s for the extension to send `shutdown_ack`. Holdouts are
    SIGTERM'd, then SIGKILL'd.
@@ -166,8 +166,8 @@ restarted.
 All frames are one JSON object per line. Top-level `type` is the
 discriminator. Optional `id` correlates request frames with their
 responses. The canonical startup order is `hello`, `hello_ack`,
-registration frames, then `ready`. Do not send `notify`, logs, or any
-other stdout frame before `hello`.
+registration frames, then `ready`. Do not send `notify`, `alert`, logs,
+or any other stdout frame before `hello`.
 
 ### Extension → host
 
@@ -175,7 +175,7 @@ other stdout frame before `hello`.
 
 ```json
 {"type":"hello","name":"weather","version":"1.0.0",
- "capabilities":["commands","tools","panels"]}
+ "capabilities":["commands","tools","alerts","panels"]}
 ```
 
 #### `register_command`
@@ -380,6 +380,28 @@ Closes a previously-open panel.
 up below the transcript with the extension's name in brackets. Notes
 are one-shot: they clear automatically when the user sends their next
 prompt (and on `esc` / `/clear`).
+
+#### `alert` (one-way, any time)
+
+Requests a host-owned structured alert. The first supported kind is
+`bell`, which asks the interactive terminal to emit one terminal bell.
+`reason` is semantic metadata and is not rendered as terminal text.
+The shared terminal-alert setting in `/settings` applies to extension
+alerts too; disabled or non-interactive hosts may ignore the request.
+
+```json
+{"type":"alert","kind":"bell","reason":"question_ready"}
+```
+
+The Go SDK sends the same frame with:
+
+```go
+e.Alert(ext.AlertRequest{Kind: ext.AlertKindBell, Reason: "question_ready"})
+```
+
+Extensions must not write BEL, ANSI, or other terminal bytes to stdout;
+stdout is reserved for protocol frames. In `--mode rpc`, this becomes an
+`ext_alert` JSON event for the RPC client to interpret.
 
 #### `clear_notes` (one-way, any time)
 
@@ -682,7 +704,7 @@ trust or run zot under your platform's sandboxing tool (`bwrap` /
 Phase 1 (shipped):
 - [x] subprocess lifecycle + hello handshake
 - [x] `register_command` + `command_invoked`
-- [x] `notify` + `clear_notes`
+- [x] `notify` + `clear_notes` + structured terminal alerts
 - [x] `zot ext` CLI
 
 Phase 2 (shipped):

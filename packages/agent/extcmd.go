@@ -133,6 +133,7 @@ func extList() error {
 type extDoctorHooks struct{}
 
 func (extDoctorHooks) Notify(string, string, string)                        {}
+func (extDoctorHooks) Alert(string, extproto.AlertRequest)                  {}
 func (extDoctorHooks) Submit(string)                                        {}
 func (extDoctorHooks) SubmitSlash(string)                                   {}
 func (extDoctorHooks) Insert(string)                                        {}

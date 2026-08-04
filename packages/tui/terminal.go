@@ -43,6 +43,14 @@ func NewProcTerm() *ProcTerm {
 
 func (p *ProcTerm) Write(b []byte) (int, error) { return p.out.Write(b) }
 
+// WriteBell emits one standalone terminal alert character. Callers should
+// route it through the same output writer used for the rest of the terminal
+// so redraws and alerts share the host's output boundary.
+func WriteBell(w io.Writer) error {
+	_, err := io.WriteString(w, "\a")
+	return err
+}
+
 func (p *ProcTerm) Size() (int, int) {
 	w, h, err := term.GetSize(int(p.out.Fd()))
 	if err != nil || w <= 0 || h <= 0 {

@@ -49,10 +49,22 @@ func runRPCMode(ctx context.Context, args Args, version string) error {
 		return err
 	}
 
+	// Construct the RPC event sink before extension startup. Alerts can
+	// arrive as soon as an extension is ready; rpcServer queues them until
+	// the command loop has started and, when configured, authenticated.
+	server := &rpcServer{
+		ctx:      ctx,
+		args:     args,
+		provider: r.Provider,
+		model:    r.Model,
+		out:      os.Stdout,
+		version:  version,
+	}
+
 	// Extensions: same lifecycle as interactive mode, minus the
 	// host-hooks integration. Notify/Display calls from extensions
 	// emit RPC events instead of TUI lines so any consumer can react.
-	extHooks := &rpcExtHooks{}
+	extHooks := &rpcExtHooks{server: server}
 	extMgr := extensions.New(ZotHome(), r.CWD, version, r.Provider, r.Model, extHooks)
 	for _, e := range extMgr.LoadExplicit(ctx, args.Exts) {
 		fmt.Fprintln(os.Stderr, "extension load:", e)
@@ -67,6 +79,7 @@ func runRPCMode(ctx context.Context, args Args, version string) error {
 	r.MergeExtensionTools(&extToolAdapter{mgr: extMgr})
 
 	ag := r.NewAgent()
+	server.agent = ag
 	ag.BeforeToolExecute = func(call provider.ToolCallBlock) (bool, string, json.RawMessage) {
 		r := extMgr.InterceptToolCall(ctx, call.ID, call.Name, call.Arguments)
 		if r.Block {
@@ -103,16 +116,6 @@ func runRPCMode(ctx context.Context, args Args, version string) error {
 
 	extMgr.EmitEvent(extproto.EventFromHost{Event: "session_start"})
 
-	server := &rpcServer{
-		ctx:      ctx,
-		args:     args,
-		agent:    ag,
-		provider: r.Provider,
-		model:    r.Model,
-		out:      os.Stdout,
-		version:  version,
-	}
-	extHooks.server = server
 	return server.run(os.Stdin)
 }
 
@@ -126,7 +129,7 @@ type rpcExtHooks struct {
 
 func (h *rpcExtHooks) Notify(extName, level, message string) {
 	if h.server != nil {
-		h.server.writeEvent(map[string]any{
+		h.server.writeExtensionEvent(map[string]any{
 			"type":      "ext_notify",
 			"extension": extName,
 			"level":     level,
@@ -134,9 +137,19 @@ func (h *rpcExtHooks) Notify(extName, level, message string) {
 		})
 	}
 }
+func (h *rpcExtHooks) Alert(extName string, alert extproto.AlertRequest) {
+	if h.server != nil {
+		h.server.writeExtensionEvent(map[string]any{
+			"type":      "ext_alert",
+			"extension": extName,
+			"kind":      alert.Kind,
+			"reason":    alert.Reason,
+		})
+	}
+}
 func (h *rpcExtHooks) Display(extName, text string) {
 	if h.server != nil {
-		h.server.writeEvent(map[string]any{
+		h.server.writeExtensionEvent(map[string]any{
 			"type":      "ext_display",
 			"extension": extName,
 			"text":      text,
@@ -145,7 +158,7 @@ func (h *rpcExtHooks) Display(extName, text string) {
 }
 func (h *rpcExtHooks) ClearNotes(extName string) {
 	if h.server != nil {
-		h.server.writeEvent(map[string]any{
+		h.server.writeExtensionEvent(map[string]any{
 			"type":      "ext_clear_notes",
 			"extension": extName,
 		})
@@ -158,6 +171,8 @@ func (h *rpcExtHooks) OpenPanel(string, extproto.PanelSpec)                 {}
 func (h *rpcExtHooks) UpdatePanel(string, string, string, []string, string) {}
 func (h *rpcExtHooks) ClosePanel(string, string)                            {}
 
+const maxPendingRPCExtEvents = 64
+
 type rpcServer struct {
 	ctx      context.Context
 	args     Args
@@ -167,10 +182,12 @@ type rpcServer struct {
 	out      io.Writer
 	version  string
 
-	writeMu      sync.Mutex
-	turnMu       sync.Mutex // serialises one prompt at a time
-	activeCancel context.CancelFunc
-	authed       bool
+	writeMu          sync.Mutex
+	turnMu           sync.Mutex // serialises one prompt at a time
+	activeCancel     context.CancelFunc
+	started          bool
+	authed           bool
+	pendingExtEvents [][]byte
 
 	// inFlight tracks long-running command goroutines so run() can
 	// wait for them before returning when stdin closes. Without this,
@@ -186,7 +203,13 @@ type rpcServer struct {
 // still produces full output before the process exits.
 func (s *rpcServer) run(in io.Reader) error {
 	requireToken := os.Getenv("ZOTCORE_RPC_TOKEN") != ""
+	s.writeMu.Lock()
+	s.started = true
 	s.authed = !requireToken
+	if s.authed {
+		s.flushPendingExtEventsLocked()
+	}
+	s.writeMu.Unlock()
 
 	sc := bufio.NewScanner(in)
 	sc.Buffer(make([]byte, 0, 64*1024), 16*1024*1024)
@@ -203,7 +226,7 @@ func (s *rpcServer) run(in io.Reader) error {
 			s.writeError("", "", fmt.Sprintf("malformed json: %v", err))
 			continue
 		}
-		if !s.authed {
+		if !s.isAuthed() {
 			if head.Type != "hello" {
 				s.writeError(head.ID, head.Type, "auth required: send hello with token first")
 				continue
@@ -216,13 +239,7 @@ func (s *rpcServer) run(in io.Reader) error {
 				s.writeError(head.ID, head.Type, "invalid token")
 				return fmt.Errorf("rpc: bad auth token")
 			}
-			s.authed = true
-			s.writeResponse(head.ID, head.Type, map[string]any{
-				"protocol_version": 1,
-				"version":          s.version,
-				"provider":         s.provider,
-				"model":            s.model,
-			})
+			s.authenticate(head.ID, head.Type)
 			continue
 		}
 		s.dispatch(head.Type, head.ID, []byte(line))
@@ -463,6 +480,61 @@ func (s *rpcServer) writeEvent(payload map[string]any) {
 	s.write(payload)
 }
 
+func (s *rpcServer) writeExtensionEvent(payload map[string]any) {
+	b, err := json.Marshal(payload)
+	if err != nil {
+		return
+	}
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	if !s.started || !s.authed {
+		if len(s.pendingExtEvents) < maxPendingRPCExtEvents {
+			s.pendingExtEvents = append(s.pendingExtEvents, b)
+		}
+		return
+	}
+	s.writeLocked(b)
+}
+
+func (s *rpcServer) flushPendingExtEventsLocked() {
+	for _, b := range s.pendingExtEvents {
+		s.writeLocked(b)
+	}
+	s.pendingExtEvents = nil
+}
+
+func (s *rpcServer) isAuthed() bool {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	return s.authed
+}
+
+func (s *rpcServer) authenticate(id, cmd string) {
+	frame := map[string]any{
+		"type":    "response",
+		"command": cmd,
+		"success": true,
+		"data": map[string]any{
+			"protocol_version": 1,
+			"version":          s.version,
+			"provider":         s.provider,
+			"model":            s.model,
+		},
+	}
+	if id != "" {
+		frame["id"] = id
+	}
+	b, err := json.Marshal(frame)
+	if err != nil {
+		return
+	}
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	s.authed = true
+	s.writeLocked(b)
+	s.flushPendingExtEventsLocked()
+}
+
 func (s *rpcServer) write(v any) {
 	b, err := json.Marshal(v)
 	if err != nil {
@@ -470,6 +542,10 @@ func (s *rpcServer) write(v any) {
 	}
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
+	s.writeLocked(b)
+}
+
+func (s *rpcServer) writeLocked(b []byte) {
 	_, _ = s.out.Write(b)
 	_, _ = s.out.Write([]byte("\n"))
 }

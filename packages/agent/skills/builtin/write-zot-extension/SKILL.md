@@ -97,7 +97,7 @@ The very first frame the extension sends is `hello`:
 ```
 
 Capabilities are advisory; current values are `commands`, `tools`,
-`events`. Send all that apply.
+`events`, `alerts`, and `panels`. Send all that apply.
 
 zot replies with `hello_ack`:
 
@@ -150,6 +150,7 @@ process itself runs from the extension directory, so do not use
 {"type":"event_intercept_response","id":"ghi","block":true,
  "reason":"refused: command matches the danger pattern \"rm -rf\""}
 {"type":"notify","level":"info","message":"refreshed cache"}
+{"type":"alert","kind":"bell","reason":"question_ready"}
 {"type":"clear_notes"}
 {"type":"shutdown_ack"}
 ```
@@ -158,6 +159,12 @@ process itself runs from the extension directory, so do not use
 prompt (and on `esc` / `/clear`). Send `clear_notes` to retract every
 note this extension pushed earlier (e.g. a transient approval prompt)
 without waiting for the next turn; other extensions' notes are kept.
+
+`alert` is a host-owned, fire-and-forget request. The first supported
+kind is `bell`; `reason` is semantic metadata. The interactive host
+applies the user's shared terminal-alert setting and non-interactive
+hosts may ignore it. Extensions must never write BEL or ANSI bytes to
+stdout.
 
 `command_response.action` values:
 - `"prompt"` — submit `prompt` as a fresh user message
@@ -177,9 +184,9 @@ never stalls the agent.
 
 - **stdout is reserved for the protocol.** Anything you print to
   stdout that isn't a JSON frame breaks the wire. The first stdout
-  frame must be `hello`; do not send `notify`, logs, or registration
-  frames before that handshake starts. Use stderr for logs / debug
-  output (zot captures stderr to `$ZOT_HOME/logs/ext-<name>.log`).
+  frame must be `hello`; do not send `notify`, `alert`, logs, or
+  registration frames before that handshake starts. Use stderr for
+  logs / debug output (zot captures stderr to `$ZOT_HOME/logs/ext-<name>.log`).
 - **One JSON object per line.** No multi-line JSON. Always end
   every frame with `\n`.
 - **Flush after writing.** Most stdout writes are line-buffered when
@@ -243,6 +250,13 @@ host metadata such as `HostInfo.CWD`, `Provider`, `Model`, `ZotVersion`,
 `extension.json`:
 ```json
 {"name":"weather","version":"1.0.0","exec":"./weather","language":"go","enabled":true}
+```
+
+After the hello handshake completes inside `Run`, call `e.Alert` from a
+command, tool, or panel handler when the user needs to be drawn back to zot:
+
+```go
+e.Alert(ext.AlertRequest{Kind: ext.AlertKindBell, Reason: "question_ready"})
 ```
 
 ### TypeScript (no SDK; handles the protocol directly)

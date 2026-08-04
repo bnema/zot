@@ -202,6 +202,7 @@ Stream notifications during a `prompt` or `compact`. None carry an `id`.
 | `done` | (none) | The whole prompt/compact completed (success or error) |
 | `error` | `message` | Non-fatal error message |
 | `compact_done` | `summary` | Compaction finished, summary text included |
+| `ext_alert` | `extension`, `kind`, optional `reason` | An extension requested a host alert; RPC clients can map it to their own notification UI. |
 
 ## Message shape
 

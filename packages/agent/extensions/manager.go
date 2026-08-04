@@ -132,6 +132,13 @@ type HostHooks interface {
 	ClosePanel(extName, panelID string)
 }
 
+// AlertHostHooks is an optional extension to HostHooks. Hosts that support
+// structured alerts implement it without breaking older embedders that only
+// implement the original HostHooks surface.
+type AlertHostHooks interface {
+	Alert(extName string, alert extproto.AlertRequest)
+}
+
 type commandRegistration struct {
 	ext  *Extension
 	name string
@@ -844,6 +851,13 @@ func (m *Manager) readLoop(ext *Extension, scanner *bufio.Scanner) {
 			var n extproto.NotifyFromExt
 			if err := json.Unmarshal(line, &n); err == nil {
 				m.hooks.Notify(ext.Manifest.Name, n.Level, n.Message)
+			}
+		case "alert":
+			var a extproto.AlertFromExt
+			if err := json.Unmarshal(line, &a); err == nil {
+				if hooks, ok := m.hooks.(AlertHostHooks); ok {
+					hooks.Alert(ext.Manifest.Name, a.AlertRequest)
+				}
 			}
 		case "clear_notes":
 			m.hooks.ClearNotes(ext.Manifest.Name)
