@@ -312,6 +312,11 @@ func safeSessionToolBoundary(msgs []provider.Message) bool {
 			}
 		case provider.RoleTool:
 			if len(pending) == 0 {
+				if len(msg.AddedToolNames) > 0 {
+					// Deferred-tool activation rows intentionally carry
+					// provider-local state without a preceding tool call.
+					continue
+				}
 				return false
 			}
 			for _, content := range msg.Content {

@@ -187,6 +187,13 @@ func TestSessionTreePreflightIsAtomicOnMalformedFamilyMember(t *testing.T) {
 	}
 }
 
+func TestSanitizeSessionTreeTextPreservesTextAfterNonOSCExit(t *testing.T) {
+	input := "before\x1bM and \x1b(B after \x1b]0;window title\a tail"
+	if got, want := sanitizeSessionTreeText(input), "beforeM and (B after tail"; got != want {
+		t.Fatalf("sanitizeSessionTreeText = %q, want %q", got, want)
+	}
+}
+
 func TestSessionTreeRenderAndPagingAreWidthAndHeightSafe(t *testing.T) {
 	msgs := make([]provider.Message, 0, 20)
 	for i := 0; i < 20; i++ {
@@ -198,7 +205,7 @@ func TestSessionTreeRenderAndPagingAreWidthAndHeightSafe(t *testing.T) {
 	if !d.OpenMessages(msgs) {
 		t.Fatal("OpenMessages returned false")
 	}
-	if got := d.HandleKey(tui.Key{Kind: tui.KeyPageUp}); !got.Select && d.cursor != 17 {
+	if got := d.HandleKey(tui.Key{Kind: tui.KeyPageUp}); got.Select || d.cursor != 17 {
 		t.Fatalf("page up cursor = %d, action=%+v", d.cursor, got)
 	}
 	for _, width := range []int{0, 1, 7, 17} {

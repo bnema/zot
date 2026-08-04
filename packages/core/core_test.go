@@ -1,12 +1,23 @@
 package core
 
 import (
+	"context"
 	"os"
 	"testing"
 	"time"
 
 	"github.com/patriceckhart/zot/packages/provider"
 )
+
+func TestAgentRejectsEmptyPrompt(t *testing.T) {
+	ag := NewAgent(nil, "model", "", nil)
+	if err := ag.Prompt(context.Background(), "", nil, nil); err == nil {
+		t.Fatal("empty prompt was accepted")
+	}
+	if got := ag.Messages(); len(got) != 0 {
+		t.Fatalf("empty prompt appended %d messages", len(got))
+	}
+}
 
 func TestSessionRoundTrip(t *testing.T) {
 	dir := t.TempDir()

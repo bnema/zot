@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"syscall"
@@ -184,6 +185,21 @@ func trimMessagesForResume(msgs []provider.Message, keepTail int) []provider.Mes
 	}
 	var out []provider.Message
 	start := len(msgs) - keepTail
+	var carriedToolNames []string
+	addToolNames := func(names []string) {
+		for _, name := range names {
+			if name == "" || slices.Contains(carriedToolNames, name) {
+				continue
+			}
+			carriedToolNames = append(carriedToolNames, name)
+		}
+	}
+	// Activation markers in the discarded prefix still affect the retained
+	// provider request. Carry them onto its first message rather than dropping
+	// deferred-tool availability when the resume tail is shortened.
+	for _, msg := range msgs[:start] {
+		addToolNames(msg.AddedToolNames)
+	}
 	// Preserve the synthetic compaction summary when present so an
 	// already-compacted session stays compacted after resume.
 	if len(msgs) > 0 && msgs[0].Meta["compaction"] == "true" && start > 1 {
@@ -195,6 +211,14 @@ func trimMessagesForResume(msgs []provider.Message, keepTail int) []provider.Mes
 		start++
 	}
 	out = append(out, msgs[start:]...)
+	if len(carriedToolNames) > 0 && len(out) > 0 {
+		first := out[0]
+		for _, name := range first.AddedToolNames {
+			addToolNames([]string{name})
+		}
+		first.AddedToolNames = append([]string(nil), carriedToolNames...)
+		out[0] = first
+	}
 	return provider.RepairOrphanedToolResults(out)
 }
 
@@ -222,7 +246,14 @@ type sessionResumeCandidate struct {
 // The returned candidate owns session until its caller commits it. On any
 // error this function closes the candidate session and leaves the current
 // agent untouched.
-func prepareSessionResume(path string, current *core.Agent, currentProvider, currentModel string, buildAgentFor func(string, string) (*core.Agent, string, string, error)) (candidate sessionResumeCandidate, err error) {
+func prepareSessionResume(path string, current *core.Agent, currentProvider, currentModel string, buildAgentFor func(string, string) (*core.Agent, string, string, error)) (sessionResumeCandidate, error) {
+	return prepareSessionResumeWithOptions(path, current, currentProvider, currentModel, false, false, buildAgentFor)
+}
+
+// prepareSessionResumeWithOptions is the provider/model-aware implementation.
+// An explicit CLI provider or model keeps that field authoritative; an empty
+// field falls back to the selected session's metadata when it is complete.
+func prepareSessionResumeWithOptions(path string, current *core.Agent, currentProvider, currentModel string, explicitProvider, explicitModel bool, buildAgentFor func(string, string) (*core.Agent, string, string, error)) (candidate sessionResumeCandidate, err error) {
 	if current == nil {
 		return candidate, fmt.Errorf("no agent running; log in first")
 	}
@@ -263,21 +294,33 @@ func prepareSessionResume(path string, current *core.Agent, currentProvider, cur
 
 	// Old sessions may have either field absent. Only a complete stored
 	// selection is actionable; otherwise resume exactly as older zot did.
-	if storedProvider == "" || storedModel == "" ||
-		(storedProvider == currentProvider && storedModel == currentModel) {
+	if storedProvider == "" || storedModel == "" {
+		keepSession = true
+		return candidate, nil
+	}
+
+	resumeProvider := storedProvider
+	if explicitProvider {
+		resumeProvider = currentProvider
+	}
+	resumeModel := storedModel
+	if explicitModel {
+		resumeModel = currentModel
+	}
+	if resumeProvider == currentProvider && resumeModel == currentModel {
 		keepSession = true
 		return candidate, nil
 	}
 	if buildAgentFor == nil {
-		return sessionResumeCandidate{}, fmt.Errorf("cannot resume session with provider %q and model %q: no agent builder configured", storedProvider, storedModel)
+		return sessionResumeCandidate{}, fmt.Errorf("cannot resume session with provider %q and model %q: no agent builder configured", resumeProvider, resumeModel)
 	}
 
-	rebuilt, resolvedProvider, resolvedModel, err := buildAgentFor(storedProvider, storedModel)
+	rebuilt, resolvedProvider, resolvedModel, err := buildAgentFor(resumeProvider, resumeModel)
 	if err != nil {
-		return sessionResumeCandidate{}, fmt.Errorf("rebuild agent for session provider %q/model %q: %w", storedProvider, storedModel, err)
+		return sessionResumeCandidate{}, fmt.Errorf("rebuild agent for session provider %q/model %q: %w", resumeProvider, resumeModel, err)
 	}
 	if rebuilt == nil {
-		return sessionResumeCandidate{}, fmt.Errorf("rebuild agent for session provider %q/model %q returned no agent", storedProvider, storedModel)
+		return sessionResumeCandidate{}, fmt.Errorf("rebuild agent for session provider %q/model %q returned no agent", resumeProvider, resumeModel)
 	}
 	resolvedProvider = strings.TrimSpace(resolvedProvider)
 	resolvedModel = strings.TrimSpace(resolvedModel)
@@ -321,28 +364,37 @@ func buildNonInteractiveSessionAgent(ctx context.Context, args Args, base Resolv
 	return ag, resolved.Provider, resolved.Model, nil
 }
 
-// applyInitialSessionResume applies the same provider/model-aware candidate
-// contract used by interactive session switching to non-interactive startup
-// modes. The returned session owns the replacement append handle.
-func applyInitialSessionResume(ctx context.Context, args Args, base Resolved, extMgr *extensions.Manager, sess *core.Session, ag *core.Agent) (*core.Session, *core.Agent, string, string, error) {
+// applySessionResume shares the startup gate, candidate hydration, and
+// commit order used by interactive and non-interactive session opening. The
+// old append handle is closed only after the candidate has been prepared and
+// seeded successfully.
+func applySessionResume(sess *core.Session, ag *core.Agent, currentProvider, currentModel string, explicitProvider, explicitModel bool, buildAgentFor func(string, string) (*core.Agent, string, string, error)) (sessionResumeCandidate, error) {
+	candidate := sessionResumeCandidate{
+		session:          sess,
+		agent:            ag,
+		fullMessageCount: 0,
+		provider:         currentProvider,
+		model:            currentModel,
+	}
+	if ag != nil {
+		candidate.fullMessageCount = len(ag.Messages())
+	}
 	if sess == nil || ag == nil {
-		return sess, ag, base.Provider, base.Model, nil
+		return candidate, nil
 	}
 	// A newly created meta-only session is already on the active pair. Avoid
 	// reopening and closing it through the resume path: Close intentionally
 	// removes fresh empty sessions, and a second append handle would otherwise
 	// keep an unlinked file alive.
 	if len(ag.Messages()) == 0 &&
-		strings.TrimSpace(sess.Meta.Provider) == strings.TrimSpace(base.Provider) &&
-		strings.TrimSpace(sess.Meta.Model) == strings.TrimSpace(base.Model) {
-		return sess, ag, base.Provider, base.Model, nil
+		strings.TrimSpace(sess.Meta.Provider) == strings.TrimSpace(currentProvider) &&
+		strings.TrimSpace(sess.Meta.Model) == strings.TrimSpace(currentModel) {
+		return candidate, nil
 	}
-	candidate, err := prepareSessionResume(sess.Path, ag, base.Provider, base.Model, func(providerName, model string) (*core.Agent, string, string, error) {
-		return buildNonInteractiveSessionAgent(ctx, args, base, extMgr, providerName, model)
-	})
+	candidate, err := prepareSessionResumeWithOptions(sess.Path, ag, currentProvider, currentModel, explicitProvider, explicitModel, buildAgentFor)
 	if err != nil {
 		_ = sess.Close()
-		return nil, ag, "", "", err
+		return sessionResumeCandidate{}, err
 	}
 	if !candidate.rebuilt {
 		candidate.agent.SetMessages(candidate.messages)
@@ -350,6 +402,20 @@ func applyInitialSessionResume(ctx context.Context, args Args, base Resolved, ex
 		candidate.agent.SeedLastTurnUsage(candidate.lastTurn)
 	}
 	_ = sess.Close()
+	return candidate, nil
+}
+
+// applyInitialSessionResume applies the same provider/model-aware candidate
+// contract used by interactive session switching to non-interactive startup
+// modes. The returned session owns the replacement append handle.
+func applyInitialSessionResume(ctx context.Context, args Args, base Resolved, extMgr *extensions.Manager, sess *core.Session, ag *core.Agent) (*core.Session, *core.Agent, string, string, error) {
+	candidate, err := applySessionResume(sess, ag, base.Provider, base.Model,
+		strings.TrimSpace(args.Provider) != "", strings.TrimSpace(args.Model) != "", func(providerName, model string) (*core.Agent, string, string, error) {
+			return buildNonInteractiveSessionAgent(ctx, args, base, extMgr, providerName, model)
+		})
+	if err != nil {
+		return nil, ag, "", "", err
+	}
 	return candidate.session, candidate.agent, candidate.provider, candidate.model, nil
 }
 
@@ -1167,38 +1233,29 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 	// persistMu also guards sess + sessBaselineMsgs, so a session swap
 	// commits the transcript writer and live selection under the same lock.
 	if !args.NoSess && ag != nil {
-		sess, _ = openOrCreateSession(args, r, ag, version)
-		if ag != nil {
-			sessBaselineMsgs = len(ag.Messages())
+		var sessErr error
+		sess, sessErr = openOrCreateSession(args, r, ag, version)
+		if sessErr != nil {
+			return sessErr
 		}
+		sessBaselineMsgs = len(ag.Messages())
 		if sess != nil {
 			// Startup resume uses the same provider/model-aware preparation as
 			// the interactive session picker. This matters for --continue,
 			// --resume, and explicit --session paths whose latest meta row was
 			// written by another provider/model.
-			if !(len(ag.Messages()) == 0 &&
-				strings.TrimSpace(sess.Meta.Provider) == strings.TrimSpace(r.Provider) &&
-				strings.TrimSpace(sess.Meta.Model) == strings.TrimSpace(r.Model)) {
-				candidate, resumeErr := prepareSessionResume(sess.Path, ag, r.Provider, r.Model, buildAgentFor)
-				if resumeErr != nil {
-					_ = sess.Close()
-					return resumeErr
-				}
-				oldSess := sess
-				if !candidate.rebuilt {
-					candidate.agent.SetMessages(candidate.messages)
-					candidate.agent.SeedCost(candidate.cumulative)
-					candidate.agent.SeedLastTurnUsage(candidate.lastTurn)
-				}
-				_ = oldSess.Close()
-				sess = candidate.session
-				ag = candidate.agent
-				sessBaselineMsgs = candidate.fullMessageCount
-				activeProvider = candidate.provider
-				activeModel = candidate.model
-				r.Provider = candidate.provider
-				r.Model = candidate.model
+			candidate, resumeErr := applySessionResume(sess, ag, r.Provider, r.Model,
+				strings.TrimSpace(args.Provider) != "", strings.TrimSpace(args.Model) != "", buildAgentFor)
+			if resumeErr != nil {
+				return resumeErr
 			}
+			sess = candidate.session
+			ag = candidate.agent
+			sessBaselineMsgs = candidate.fullMessageCount
+			activeProvider = candidate.provider
+			activeModel = candidate.model
+			r.Provider = candidate.provider
+			r.Model = candidate.model
 		}
 	}
 	defer func() {
@@ -1789,17 +1846,16 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 			providerName = strings.TrimSpace(providerName)
 			model = strings.TrimSpace(model)
 			// Persist the active session metadata before publishing the
-			// selection used by future resumes. UpdateModel restores its old
-			// in-memory metadata when the append fails.
+			// selection used by future resumes. The live agent has already
+			// switched pairs, so keep the in-memory selection aligned even
+			// when the append fails and report that persistence error below.
 			persistMu.Lock()
 			var sessionErr error
 			if sess != nil {
 				sessionErr = sess.UpdateModel(providerName, model)
 			}
-			if sessionErr == nil {
-				activeProvider = providerName
-				activeModel = model
-			}
+			activeProvider = providerName
+			activeModel = model
 			persistMu.Unlock()
 			if sessionErr != nil {
 				if iv != nil {

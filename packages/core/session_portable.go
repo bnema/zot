@@ -668,15 +668,63 @@ func linkSessionTreeNodes(nodes map[string]*TreeNode, order []string) []*TreeNod
 	return roots
 }
 
-// readSessionMeta returns the latest validated metadata for path. It uses
-// the shared snapshot reader so tree linking, flat-session filtering, and
-// resume do not disagree when a session records a later meta row.
-func readSessionMeta(path string) (SessionMeta, error) {
-	snapshot, err := ReadSessionSnapshot(path)
+// scanSessionMeta reads JSONL rows without hydrating transcript content and
+// returns the latest valid metadata row. Listing and ID lookup only need this
+// small projection; full snapshot validation remains the responsibility of
+// resume, export, branching, and tree preflight callers.
+func scanSessionMeta(path string) (meta SessionMeta, err error) {
+	f, err := os.Open(path)
 	if err != nil {
 		return SessionMeta{}, err
 	}
-	return snapshot.Meta, nil
+	defer f.Close()
+
+	var sawMeta bool
+	err = forEachStrictJSONLLine(f, func(line []byte, lineNo int) error {
+		var head sessionLineHead
+		if err := json.Unmarshal(line, &head); err != nil {
+			return fmt.Errorf("line %d: invalid JSON: %w", lineNo, err)
+		}
+		if head.Type == "" {
+			return fmt.Errorf("line %d: missing row type", lineNo)
+		}
+		if !sawMeta && head.Type != "meta" {
+			return fmt.Errorf("line %d: first row is not meta", lineNo)
+		}
+		switch head.Type {
+		case "meta":
+			var row struct {
+				Meta *SessionMeta `json:"meta"`
+			}
+			if err := json.Unmarshal(line, &row); err != nil {
+				return fmt.Errorf("line %d: invalid meta row: %w", lineNo, err)
+			}
+			if row.Meta == nil || row.Meta.ID == "" {
+				return fmt.Errorf("line %d: meta row has no session id", lineNo)
+			}
+			meta = *row.Meta
+			sawMeta = true
+		case "message", "compaction", "usage", "rename":
+			// These rows are intentionally not hydrated here.
+		default:
+			return fmt.Errorf("line %d: unknown row type %q", lineNo, head.Type)
+		}
+		return nil
+	})
+	if err != nil {
+		return SessionMeta{}, fmt.Errorf("session metadata %q: %w", path, err)
+	}
+	if !sawMeta {
+		return SessionMeta{}, fmt.Errorf("session metadata %q: file is empty", path)
+	}
+	return meta, nil
+}
+
+// readSessionMeta returns the latest validated metadata for path without
+// reconstructing its transcript. Full snapshot validation is performed by
+// callers that need messages rather than listing metadata.
+func readSessionMeta(path string) (SessionMeta, error) {
+	return scanSessionMeta(path)
 }
 
 // FindSessionByID looks up a session file in root/cwd whose meta id
@@ -693,7 +741,7 @@ func FindSessionByID(root, cwd, id string) string {
 			continue
 		}
 		path := filepath.Join(dir, e.Name())
-		meta, err := readSessionMeta(path)
+		meta, err := scanSessionMeta(path)
 		if err != nil {
 			continue
 		}

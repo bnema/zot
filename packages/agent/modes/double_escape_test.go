@@ -126,6 +126,28 @@ func TestSessionTreeSelectionKeepsToolExchangeAtomic(t *testing.T) {
 	}
 }
 
+func TestSessionTreeSelectionAllowsDeferredToolActivation(t *testing.T) {
+	msgs := []provider.Message{
+		{
+			Role:           provider.RoleTool,
+			AddedToolNames: []string{"lookup_weather"},
+			Content:        []provider.Content{provider.ToolResultBlock{CallID: "call-1"}},
+		},
+		{Role: provider.RoleUser, Content: []provider.Content{provider.TextBlock{Text: "next"}}},
+	}
+	got, err := sessionTreeSelection(msgs, sessionTreeTarget{
+		EffectiveIndex:    0,
+		SelectionBoundary: 1,
+		Role:              provider.RoleTool,
+	})
+	if err != nil {
+		t.Fatalf("deferred-tool selection: %v", err)
+	}
+	if got.upTo != 1 {
+		t.Fatalf("deferred-tool boundary = %d, want 1", got.upTo)
+	}
+}
+
 func TestSessionTreeGateFailureDoesNotFlushOrOpenOverlay(t *testing.T) {
 	i := NewInteractive(InteractiveConfig{})
 	flushes := 0

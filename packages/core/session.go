@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -504,9 +505,16 @@ func repairSessionMessages(msgs []provider.Message) repairedSessionMessages {
 	}
 	for _, item := range repaired {
 		out.messages = append(out.messages, item.message)
-		for n := item.rawIndex + 1; n <= len(msgs); n++ {
-			out.counts[n]++
+	}
+	// rawIndex values are produced in source order. Accumulate the number of
+	// repaired messages before each raw prefix in one forward pass instead of
+	// revisiting every remaining prefix for every repaired message.
+	repairedIndex := 0
+	for rawCount := range out.counts {
+		for repairedIndex < len(repaired) && repaired[repairedIndex].rawIndex < rawCount {
+			repairedIndex++
 		}
+		out.counts[rawCount] = repairedIndex
 	}
 	return out
 }
@@ -855,6 +863,9 @@ func (s *Session) AppendMessage(m provider.Message) error {
 	if s == nil {
 		return nil
 	}
+	if len(m.Content) == 0 {
+		return errors.New("message has no content")
+	}
 	if err := s.writeLine(sessionLine{Type: "message", Message: &m}); err != nil {
 		return err
 	}
@@ -1004,7 +1015,7 @@ func hydrateMessageObject(rawMessage []byte) (provider.Message, error) {
 	if row.Role != provider.RoleUser && row.Role != provider.RoleAssistant && row.Role != provider.RoleTool {
 		return provider.Message{}, fmt.Errorf("message has invalid role %q", row.Role)
 	}
-	if row.Content == nil || len(row.Content) == 0 {
+	if len(row.Content) == 0 {
 		return provider.Message{}, fmt.Errorf("message has no content")
 	}
 	msg := provider.Message{Role: row.Role, Time: row.Time, Meta: row.Meta, AddedToolNames: row.AddedToolNames}

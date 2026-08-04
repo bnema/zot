@@ -2102,7 +2102,9 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 	// main input owns the key. Any other key, modified Escape, or visible
 	// child interaction resets the pending first tap before normal routing.
 	if !isUnmodifiedEscape(k) || i.sessionTreeEscapeBlocked() {
+		i.mu.Lock()
 		i.doubleEscape.Reset()
+		i.mu.Unlock()
 	}
 
 	// Dialogs route keys before the main clipboard handler below. Resolve text
@@ -2432,14 +2434,21 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 	// they cannot fall through into ordinary editor handling.
 	if isUnmodifiedEscape(k) {
 		now := i.sessionTreeEscapeNow()
-		if i.doubleEscape.Consume(now) {
+		i.mu.Lock()
+		consumed := i.doubleEscape.Consume(now)
+		i.mu.Unlock()
+		if consumed {
 			if i.canArmSessionTreeEscape() {
 				i.openSessionTree()
 				return false
 			}
+			i.mu.Lock()
 			i.doubleEscape.Reset()
+			i.mu.Unlock()
 		} else if i.canArmSessionTreeEscape() {
+			i.mu.Lock()
 			i.doubleEscape.Arm(now)
+			i.mu.Unlock()
 		}
 	}
 
@@ -3268,16 +3277,14 @@ func (i *Interactive) applyChangedCWD(ag *core.Agent, provider, model, cwd strin
 // agent cancel the active turn first via the same path the editor
 // uses for typed slash commands.
 func (i *Interactive) SubmitSlash(text string) {
+	i.mu.Lock()
 	i.doubleEscape.Reset()
+	i.mu.Unlock()
 	text = strings.TrimSpace(text)
 	if !strings.HasPrefix(text, "/") {
 		return
 	}
-	head := text
-	if idx := strings.IndexAny(text, " \t"); idx >= 0 {
-		head = text[:idx]
-	}
-	if slashCancelsTurn(head) {
+	if slashCommandCancelsTurn(text) {
 		i.cancelAndWaitForIdle()
 	}
 	i.runSlash(i.runCtx, text)

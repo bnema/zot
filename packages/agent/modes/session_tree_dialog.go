@@ -451,7 +451,7 @@ func flattenSessionNode(node *core.TreeNode, currentPath string, snapshots map[s
 	}
 	msgs := snapshot.messages
 	start := 0
-	selectionBoundary := 0
+	var selectionBoundary int
 	boundary := sessionTreeMessageBoundary
 	rawFork := 0
 	if !rootNode {
@@ -724,10 +724,10 @@ func sanitizeSessionTreeText(s string) string {
 			i = end
 			continue
 		}
-		if runes[i] == '\x1b' {
+		if runes[i] == '\x1b' && i+1 < len(runes) && runes[i+1] == ']' {
 			// OSC sequences end at BEL or ST. Drop the whole sequence when
-			// present; an isolated ESC is dropped as well.
-			i++
+			// present.
+			i += 2
 			for i < len(runes) && runes[i] != '\a' {
 				if runes[i] == '\x1b' && i+1 < len(runes) && runes[i+1] == '\\' {
 					i += 2
@@ -738,6 +738,11 @@ func sanitizeSessionTreeText(s string) string {
 			if i < len(runes) && runes[i] == '\a' {
 				i++
 			}
+			continue
+		}
+		if runes[i] == '\x1b' {
+			// An isolated ESC (or a two-byte escape) is dropped by itself.
+			i++
 			continue
 		}
 		if unicode.IsControl(runes[i]) {

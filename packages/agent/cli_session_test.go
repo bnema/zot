@@ -11,6 +11,28 @@ import (
 	"github.com/patriceckhart/zot/packages/provider"
 )
 
+func TestTrimMessagesForResumeCarriesDeferredToolActivation(t *testing.T) {
+	msgs := make([]provider.Message, 0, 101)
+	msgs = append(msgs, provider.Message{
+		Role:           provider.RoleTool,
+		AddedToolNames: []string{"lookup_weather"},
+		Content:        []provider.Content{provider.ToolResultBlock{CallID: "old-call"}},
+	})
+	for idx := 1; idx < 101; idx++ {
+		msgs = append(msgs, provider.Message{
+			Role:    provider.RoleUser,
+			Content: []provider.Content{provider.TextBlock{Text: "message"}},
+		})
+	}
+	trimmed := trimMessagesForResume(msgs, 100)
+	if len(trimmed) != 100 {
+		t.Fatalf("trimmed message count = %d, want 100", len(trimmed))
+	}
+	if len(trimmed[0].AddedToolNames) != 1 || trimmed[0].AddedToolNames[0] != "lookup_weather" {
+		t.Fatalf("trimmed activation markers = %v, want lookup_weather", trimmed[0].AddedToolNames)
+	}
+}
+
 func TestLiveInteractiveAgentUsesReplacementAgentForSessionResume(t *testing.T) {
 	startup := core.NewAgent(nil, "startup-model", "", nil)
 	startup.SetMessages([]provider.Message{{
@@ -195,5 +217,41 @@ func TestPrepareSessionResumeFailureLeavesCurrentAndCandidateFileUsable(t *testi
 	}
 	if _, err := os.Stat(path); err != nil {
 		t.Fatalf("candidate session disappeared after failed preparation: %v", err)
+	}
+}
+
+func TestPrepareSessionResumeHonorsExplicitProviderModelFields(t *testing.T) {
+	for _, tc := range []struct {
+		name             string
+		explicitProvider bool
+		explicitModel    bool
+		wantProvider     string
+		wantModel        string
+		wantBuild        bool
+	}{
+		{name: "both", explicitProvider: true, explicitModel: true, wantProvider: "current-provider", wantModel: "current-model"},
+		{name: "provider-only", explicitProvider: true, wantProvider: "current-provider", wantModel: "stored-model", wantBuild: true},
+		{name: "model-only", explicitModel: true, wantProvider: "stored-provider", wantModel: "current-model", wantBuild: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			old := core.NewAgent(nil, "old-model", "", nil)
+			path := syntheticSession(t, "stored-provider", "stored-model", provider.Usage{})
+			var gotProvider, gotModel string
+			candidate, err := prepareSessionResumeWithOptions(path, old, "current-provider", "current-model", tc.explicitProvider, tc.explicitModel, func(providerName, model string) (*core.Agent, string, string, error) {
+				gotProvider, gotModel = providerName, model
+				return core.NewAgent(nil, model, "", nil), providerName, model, nil
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer candidate.session.Close()
+			if tc.wantBuild {
+				if gotProvider != tc.wantProvider || gotModel != tc.wantModel {
+					t.Fatalf("builder selection = %q/%q, want %q/%q", gotProvider, gotModel, tc.wantProvider, tc.wantModel)
+				}
+			} else if candidate.provider != tc.wantProvider || candidate.model != tc.wantModel || candidate.rebuilt {
+				t.Fatalf("candidate selection = %q/%q rebuilt=%v, want %q/%q without rebuild", candidate.provider, candidate.model, candidate.rebuilt, tc.wantProvider, tc.wantModel)
+			}
+		})
 	}
 }

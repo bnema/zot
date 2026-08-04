@@ -219,6 +219,9 @@ func TestReaderParsesSGRMouseWheel(t *testing.T) {
 func readKey(t *testing.T, seq string) Key {
 	t.Helper()
 	return readReaderKey(t, NewReader(func() (byte, error) {
+		if len(seq) == 0 {
+			return 0, io.EOF
+		}
 		b := seq[0]
 		seq = seq[1:]
 		return b, nil

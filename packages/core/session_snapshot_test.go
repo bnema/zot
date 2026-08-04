@@ -11,6 +11,19 @@ import (
 	"github.com/patriceckhart/zot/packages/provider"
 )
 
+func TestAppendMessageRejectsEmptyContent(t *testing.T) {
+	session, err := NewSession(t.TempDir(), "/workspace", "provider", "model", "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := session.AppendMessage(provider.Message{Role: provider.RoleUser}); err == nil {
+		t.Fatal("empty message content was accepted")
+	}
+	if err := session.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestReadSessionSnapshotUsesLatestCompactionAndRepairsToolPairs(t *testing.T) {
 	root := t.TempDir()
 	session, err := NewSession(root, "/workspace", "anthropic", "claude", "test")
@@ -388,7 +401,7 @@ func TestBuildSessionTreeStrictRejectsMalformedSessionMember(t *testing.T) {
 		t.Fatal(err)
 	}
 	badPath := filepath.Join(SessionsDir(root, cwd), "bad.jsonl")
-	if err := os.WriteFile(badPath, []byte("{not-json}\\n"), 0o644); err != nil {
+	if err := os.WriteFile(badPath, []byte("{not-json}\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := BuildSessionTreeStrict(root, cwd); err == nil {
