@@ -2767,14 +2767,7 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 }
 
 func (i *Interactive) pasteClipboard(ctx context.Context) {
-	image, ok, err := tui.ReadClipboardImage(ctx)
-	if err != nil {
-		i.mu.Lock()
-		i.statusErr = "clipboard paste failed: " + err.Error()
-		i.statusOK = ""
-		i.mu.Unlock()
-		return
-	}
+	image, ok, _ := tui.ReadClipboardImage(ctx)
 	if ok {
 		i.mu.Lock()
 		marker := fmt.Sprintf("[clipboard image #%d]", len(i.clipboardImages)+1)

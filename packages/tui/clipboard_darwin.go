@@ -63,9 +63,7 @@ func ReadClipboardImage(ctx context.Context) (ClipboardImage, bool, error) {
 	if !ok {
 		return ClipboardImage{}, false, nil
 	}
-	if err := removeClipboardImageFile(path); err != nil {
-		return ClipboardImage{}, false, err
-	}
+	_ = removeClipboardImageFile(path)
 	return ClipboardImage{MimeType: "image/png", Data: data}, true, nil
 }
 
