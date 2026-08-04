@@ -59,6 +59,10 @@ type InteractiveConfig struct {
 	// the detected protocol when available.
 	InlineImagesEnabled *bool
 
+	// TerminalAlertsEnabled controls interactive alerts from the main
+	// agent and extensions. nil means enabled; false disables them.
+	TerminalAlertsEnabled *bool
+
 	// AutoSwarmEnabled mirrors the persisted config flag at startup so
 	// the /settings dialog can render the current state without
 	// re-reading config.json on every open.
@@ -354,6 +358,10 @@ type SettingsStore interface {
 	SetTheme(name string) error
 }
 
+type terminalAlertsSettingsStore interface {
+	SetTerminalAlertsEnabled(enabled bool) error
+}
+
 type showInstructionsSettingsStore interface {
 	SetShowInstructionsAtStartup(enabled bool) error
 }
@@ -376,6 +384,7 @@ type Interactive struct {
 	managedAutoSwarmAddenda []string
 	streaming               strings.Builder // what's currently painted on screen
 	streamOn                bool
+	pendingAlert            *extproto.AlertRequest
 
 	// streamPending is the runes buffered after each EvTextDelta that
 	// haven't yet been promoted into `streaming` for rendering. It
@@ -1755,6 +1764,11 @@ func (i *Interactive) redraw() {
 	}
 	_ = visibleChat // maintained for legacy scroll state/indicators; DrawLog owns chat viewport.
 	i.rend.DrawLog(chat, bottom, cursorRow, cursorCol)
+	if i.pendingAlert != nil && !i.busy && !i.streamOn && !i.streamFlushPending && len(i.streamPending) == 0 {
+		alert := *i.pendingAlert
+		i.pendingAlert = nil
+		i.emitAlertLocked(alert)
+	}
 }
 
 func hasImageEscape(line string) bool {
@@ -2978,6 +2992,45 @@ func (i *Interactive) Notify(extName, level, message string) {
 	i.invalidate()
 }
 
+// Alert is the manager's AlertFromExt entry point. Alerts are emitted
+// through the same terminal writer as redraws while holding the TUI mutex,
+// so a BEL cannot be interleaved with a frame update.
+func (i *Interactive) Alert(_ string, alert extproto.AlertRequest) {
+	i.mu.Lock()
+	i.emitAlertLocked(alert)
+	i.mu.Unlock()
+}
+
+func terminalAlertsEnabled(enabled *bool) bool {
+	return enabled == nil || *enabled
+}
+
+// emitAlertLocked applies the shared terminal-alert policy. The caller must
+// hold i.mu because terminal writes share the renderer's output boundary.
+func (i *Interactive) emitAlertLocked(alert extproto.AlertRequest) {
+	if alert.Kind != extproto.AlertKindBell || !terminalAlertsEnabled(i.cfg.TerminalAlertsEnabled) || i.cfg.Terminal == nil {
+		return
+	}
+	_ = tui.WriteBell(i.cfg.Terminal)
+}
+
+// scheduleMainAlert emits a main-session alert now when no paced text remains,
+// or defers it until the pacer drains and the next redraw commits the final frame.
+func (i *Interactive) scheduleMainAlert(reason string) {
+	if reason == "" {
+		return
+	}
+	i.mu.Lock()
+	if len(i.streamPending) > 0 {
+		i.pendingAlert = &extproto.AlertRequest{Kind: extproto.AlertKindBell, Reason: reason}
+		i.mu.Unlock()
+		i.invalidate()
+		return
+	}
+	i.emitAlertLocked(extproto.AlertRequest{Kind: extproto.AlertKindBell, Reason: reason})
+	i.mu.Unlock()
+}
+
 // ClearNotes removes every note line owned by extName from the
 // bottom-sticky ext-notes block. Extensions use this to retract a
 // transient status line (e.g. an approval prompt) once it no longer
@@ -3350,6 +3403,7 @@ func (i *Interactive) openSettingsDialog() {
 		imgHint = "terminal supports " + imageProtocolName(detected)
 	}
 
+	terminalAlerts := terminalAlertsEnabled(i.cfg.TerminalAlertsEnabled)
 	autoSwarm := false
 	if i.cfg.AutoSwarmEnabled != nil {
 		autoSwarm = *i.cfg.AutoSwarmEnabled
@@ -3458,6 +3512,12 @@ func (i *Interactive) openSettingsDialog() {
 			value:    imgEnabled,
 			disabled: imgDisabled,
 			hint:     imgHint,
+		},
+		{
+			key:   "terminal_alerts_enabled",
+			label: "terminal alerts",
+			desc:  "ring the terminal when the main session needs attention or an extension raises an alert",
+			value: terminalAlerts,
 		},
 		{
 			key:      "auto_swarm_enabled",
@@ -3792,6 +3852,23 @@ func (i *Interactive) applySettingToggle(key string, value bool) {
 		i.view.ImageProto = effectiveImageProtocol(i.cfg.InlineImagesEnabled)
 		i.view.InvalidateRenderCache()
 		i.statusOK = "inline image rendering " + onOff(value)
+		i.statusErr = ""
+		i.mu.Unlock()
+	case "terminal_alerts_enabled":
+		val := value
+		i.mu.Lock()
+		i.cfg.TerminalAlertsEnabled = &val
+		i.mu.Unlock()
+		if store, ok := i.cfg.SettingsStore.(terminalAlertsSettingsStore); ok {
+			if err := store.SetTerminalAlertsEnabled(value); err != nil {
+				i.mu.Lock()
+				i.statusErr = "settings: " + err.Error()
+				i.mu.Unlock()
+				return
+			}
+		}
+		i.mu.Lock()
+		i.statusOK = "terminal alerts " + onOff(value)
 		i.statusErr = ""
 		i.mu.Unlock()
 	case "auto_swarm_enabled":
@@ -5695,6 +5772,7 @@ func (i *Interactive) startTurnRequest(parent context.Context, prompt string, im
 	i.statusOK = ""
 	i.streaming.Reset()
 	i.streamOn = true
+	i.pendingAlert = nil
 	i.toolCalls = map[string]*tui.ToolCallView{}
 	i.toolOrder = nil
 	i.toolGate = map[string]int{}
@@ -5727,7 +5805,15 @@ func (i *Interactive) startTurnRequest(parent context.Context, prompt string, im
 	i.mu.Unlock()
 	i.invalidate()
 
+	var (
+		lastStop    provider.StopReason
+		lastTurnErr error
+	)
 	sink := func(ev core.AgentEvent) {
+		if e, ok := ev.(core.EvTurnEnd); ok {
+			lastStop = e.Stop
+			lastTurnErr = e.Err
+		}
 		i.handleEvent(ev)
 		i.invalidate()
 	}
@@ -5829,7 +5915,11 @@ func (i *Interactive) startTurnRequest(parent context.Context, prompt string, im
 			agentQueued = i.agent.QueuedMessageCount()
 		}
 		shouldAutoCompact := !awaitingPre && !hasNext && agentQueued == 0 && err == nil && ctx.Err() == nil && i.shouldAutoCompactLocked()
+		alertReason := mainAlertReason(ctx, err, lastTurnErr, lastStop, awaitingPre, hasNext || agentQueued > 0, offer, recoverContextOverflow, shouldAutoCompact)
 		i.mu.Unlock()
+		if alertReason != "" {
+			i.scheduleMainAlert(alertReason)
+		}
 		i.invalidate()
 		parent := i.runCtx
 		if parent == nil {
@@ -5850,6 +5940,25 @@ func (i *Interactive) startTurnRequest(parent context.Context, prompt string, im
 			i.runCompact(parent, true)
 		}
 	}()
+}
+
+func mainAlertReason(ctx context.Context, err, turnErr error, stop provider.StopReason, awaitingPre, hasNext, rescue, recovering, autoCompacting bool) string {
+	if awaitingPre || ctx.Err() != nil || hasNext || recovering || autoCompacting {
+		return ""
+	}
+	if rescue {
+		return "rescue_required"
+	}
+	if stop == provider.StopAborted {
+		return ""
+	}
+	if err != nil || turnErr != nil || stop == provider.StopError {
+		return "agent_error"
+	}
+	if stop == provider.StopLength {
+		return "response_truncated"
+	}
+	return "agent_done"
 }
 
 // openRescueDialog surfaces the rescue model picker after a recoverable

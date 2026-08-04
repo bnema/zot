@@ -19,6 +19,8 @@ type stubHooks struct {
 	mu          sync.Mutex
 	notifies    []string
 	displays    []string
+	alerts      []extproto.AlertRequest
+	alertExts   []string
 	submits     []string
 	submitSlash []string
 	clearNotes  []string
@@ -30,6 +32,12 @@ func (s *stubHooks) Notify(name, level, message string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.notifies = append(s.notifies, name+":"+level+":"+message)
+}
+func (s *stubHooks) Alert(name string, alert extproto.AlertRequest) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.alertExts = append(s.alertExts, name)
+	s.alerts = append(s.alerts, alert)
 }
 func (s *stubHooks) Submit(text string) {
 	s.mu.Lock()
@@ -459,6 +467,71 @@ done
 	}
 	if hooks.submits[0] != "explain this repository briefly" {
 		t.Fatalf("Submit text = %q", hooks.submits[0])
+	}
+}
+
+// TestSpontaneousAlert verifies that an extension sending an alert frame
+// causes the manager to call hooks.Alert with the structured request.
+func TestSpontaneousAlert(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("mock extension uses /bin/sh; skip on windows")
+	}
+
+	tmp := t.TempDir()
+	extDir := filepath.Join(tmp, "extensions", "alert-mock")
+	if err := os.MkdirAll(extDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	script := `#!/bin/sh
+printf '%s\n' '{"type":"hello","name":"alert-mock","version":"0.1","capabilities":["alerts"]}'
+printf '%s\n' '{"type":"ready"}'
+printf '%s\n' '{"type":"alert","kind":"bell","reason":"question_ready"}'
+while IFS= read -r line; do
+  case "$line" in
+    *'"type":"shutdown"'*)
+      printf '%s\n' '{"type":"shutdown_ack"}'
+      exit 0
+      ;;
+  esac
+done
+`
+	if err := os.WriteFile(filepath.Join(extDir, "run.sh"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	manifest, _ := json.Marshal(map[string]any{"name": "alert-mock", "exec": "./run.sh"})
+	if err := os.WriteFile(filepath.Join(extDir, "extension.json"), manifest, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	hooks := &stubHooks{}
+	mgr := New(tmp, "", "0.0.0-test", "anthropic", "claude-test", hooks)
+	if errs := mgr.Discover(context.Background()); len(errs) > 0 {
+		t.Fatalf("discover errors: %v", errs)
+	}
+	defer mgr.Stop(2 * time.Second)
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		hooks.mu.Lock()
+		n := len(hooks.alerts)
+		hooks.mu.Unlock()
+		if n > 0 {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	hooks.mu.Lock()
+	defer hooks.mu.Unlock()
+	if len(hooks.alerts) != 1 || len(hooks.alertExts) != 1 {
+		t.Fatalf("alerts = %#v, extensions = %#v; want one alert", hooks.alerts, hooks.alertExts)
+	}
+	if hooks.alertExts[0] != "alert-mock" {
+		t.Fatalf("alert extension = %q, want alert-mock", hooks.alertExts[0])
+	}
+	if got := hooks.alerts[0]; got.Kind != extproto.AlertKindBell || got.Reason != "question_ready" {
+		t.Fatalf("alert = %+v, want bell/question_ready", got)
 	}
 }
 

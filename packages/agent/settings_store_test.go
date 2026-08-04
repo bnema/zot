@@ -23,6 +23,27 @@ func TestConfigSettingsStorePersistsShowInstructionsAtStartup(t *testing.T) {
 	}
 }
 
+func TestConfigSettingsStorePersistsTerminalAlerts(t *testing.T) {
+	t.Setenv("ZOT_HOME", t.TempDir())
+	if err := SaveConfig(Config{Theme: "dark"}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := (configSettingsStore{}).SetTerminalAlertsEnabled(false); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.TerminalAlertsEnabled == nil || *cfg.TerminalAlertsEnabled {
+		t.Fatal("terminal_alerts_enabled was not persisted as disabled")
+	}
+	if cfg.Theme != "dark" {
+		t.Fatalf("unrelated config changed: theme = %q, want dark", cfg.Theme)
+	}
+}
+
 func TestConfigSettingsStorePersistsJailByDefault(t *testing.T) {
 	t.Setenv("ZOT_HOME", t.TempDir())
 	if err := SaveConfig(Config{Theme: "dark"}); err != nil {

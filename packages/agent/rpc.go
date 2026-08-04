@@ -134,6 +134,16 @@ func (h *rpcExtHooks) Notify(extName, level, message string) {
 		})
 	}
 }
+func (h *rpcExtHooks) Alert(extName string, alert extproto.AlertRequest) {
+	if h.server != nil {
+		h.server.writeEvent(map[string]any{
+			"type":      "ext_alert",
+			"extension": extName,
+			"kind":      alert.Kind,
+			"reason":    alert.Reason,
+		})
+	}
+}
 func (h *rpcExtHooks) Display(extName, text string) {
 	if h.server != nil {
 		h.server.writeEvent(map[string]any{

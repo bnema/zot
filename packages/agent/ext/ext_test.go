@@ -220,6 +220,24 @@ func TestOpenPanelEmitsCorrectFrame(t *testing.T) {
 	h.hostW.Close()
 }
 
+func TestAlertEmitsStructuredFrame(t *testing.T) {
+	h := newHarness("alert-ext")
+	go h.ext.Run()
+	h.handshake(t)
+
+	go h.ext.Alert(AlertRequest{Kind: AlertKindBell, Reason: "question_ready"})
+	f := h.drainUntil(t, "alert")
+
+	var alert extproto.AlertFromExt
+	if err := json.Unmarshal(f.raw, &alert); err != nil {
+		t.Fatalf("unmarshal alert: %v", err)
+	}
+	if alert.Kind != AlertKindBell || alert.Reason != "question_ready" {
+		t.Fatalf("alert = %+v, want bell/question_ready", alert)
+	}
+	h.hostW.Close()
+}
+
 func TestToolConfirmationRequestedEvent(t *testing.T) {
 	h := newHarness("confirmation-events")
 	received := make(chan Event, 1)

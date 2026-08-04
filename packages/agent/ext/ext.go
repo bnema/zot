@@ -158,6 +158,12 @@ type ToolResult struct {
 	ActivateTools []string
 }
 
+// AlertRequest asks the host to surface a structured alert. The host owns
+// the rendering policy; extensions never write terminal bytes directly.
+type AlertRequest = extproto.AlertRequest
+
+const AlertKindBell = extproto.AlertKindBell
+
 // ToolContent is one block of tool output. Either Text is set, or
 // MimeType+Data (base64-encoded). Use the Text/Image helpers below.
 type ToolContent struct {
@@ -311,7 +317,7 @@ func New(name, version string) *Extension {
 		eventHandlers: map[string]EventHandler{},
 		panelKeys:     map[string]func(key, text string){},
 		panelCloses:   map[string]func(){},
-		caps:          []string{"commands", "tools", "events", "panels"},
+		caps:          []string{"commands", "tools", "events", "alerts", "panels"},
 	}
 }
 
@@ -476,6 +482,15 @@ func (e *Extension) Notify(level, message string) {
 		Type:    "notify",
 		Level:   level,
 		Message: message,
+	})
+}
+
+// Alert asks the host to surface a structured alert. It is fire-and-forget;
+// hosts that do not support the requested kind may ignore it.
+func (e *Extension) Alert(alert AlertRequest) {
+	_ = e.send(extproto.AlertFromExt{
+		Type:         "alert",
+		AlertRequest: alert,
 	})
 }
 

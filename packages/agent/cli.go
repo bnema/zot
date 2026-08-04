@@ -48,6 +48,11 @@ func (h *interactiveExtHooks) Notify(extName, level, message string) {
 		iv.Notify(extName, level, message)
 	}
 }
+func (h *interactiveExtHooks) Alert(extName string, alert extproto.AlertRequest) {
+	if iv := h.iv(); iv != nil {
+		iv.Alert(extName, alert)
+	}
+}
 func (h *interactiveExtHooks) Submit(text string) {
 	if iv := h.iv(); iv != nil {
 		iv.SubmitOrQueue(text, nil)
@@ -273,6 +278,7 @@ type nonInteractiveExtHooks struct{}
 func (nonInteractiveExtHooks) Notify(ext, level, message string) {
 	fmt.Fprintf(os.Stderr, "[%s] %s: %s\n", ext, level, message)
 }
+func (nonInteractiveExtHooks) Alert(string, extproto.AlertRequest)                  {}
 func (nonInteractiveExtHooks) Submit(string)                                        {}
 func (nonInteractiveExtHooks) SubmitSlash(string)                                   {}
 func (nonInteractiveExtHooks) Insert(string)                                        {}
@@ -1286,6 +1292,7 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 		Terminal:                  term,
 		Theme:                     theme,
 		InlineImagesEnabled:       initialCfg.InlineImagesEnabled,
+		TerminalAlertsEnabled:     initialCfg.TerminalAlertsEnabled,
 		AutoSwarmEnabled:          initialCfg.AutoSwarmEnabled,
 		AutoCompactThreshold:      initialCfg.AutoCompactThreshold,
 		JailByDefault:             initialCfg.JailByDefault,

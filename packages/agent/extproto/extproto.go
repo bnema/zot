@@ -121,6 +121,22 @@ type PanelCloseFromExt struct {
 	PanelID string `json:"panel_id"`
 }
 
+const AlertKindBell = "bell"
+
+// AlertRequest is a host-owned alert request. Extensions provide semantic
+// metadata; the host decides whether and how to render it.
+type AlertRequest struct {
+	Kind   string `json:"kind"`
+	Reason string `json:"reason,omitempty"`
+}
+
+// AlertFromExt is a spontaneous one-way frame an extension can send at any
+// time to request a host alert.
+type AlertFromExt struct {
+	Type string `json:"type"`
+	AlertRequest
+}
+
 type NotifyFromExt struct {
 	Type    string `json:"type"`
 	Level   string `json:"level"`

@@ -41,6 +41,15 @@ func (configSettingsStore) SetInlineImages(enabled bool) error {
 	return SaveConfig(cfg)
 }
 
+func (configSettingsStore) SetTerminalAlertsEnabled(enabled bool) error {
+	cfg, err := LoadConfig()
+	if err != nil {
+		return err
+	}
+	cfg.TerminalAlertsEnabled = &enabled
+	return SaveConfig(cfg)
+}
+
 func (configSettingsStore) SetAutoSwarm(enabled bool) error {
 	cfg, err := LoadConfig()
 	if err != nil {

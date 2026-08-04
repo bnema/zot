@@ -53,6 +53,11 @@ type Config struct {
 	// detected protocol when available.
 	InlineImagesEnabled *bool `json:"inline_images_enabled,omitempty"`
 
+	// TerminalAlertsEnabled controls interactive terminal alerts from the
+	// main agent and extensions. nil/missing means enabled; false disables
+	// alerts. Toggle from /settings.
+	TerminalAlertsEnabled *bool `json:"terminal_alerts_enabled,omitempty"`
+
 	// AutoSwarmEnabled lets the main agent spawn background sub-agents
 	// for parallel sub-tasks via a built-in swarm_spawn tool. Off by
 	// default; nil/missing means disabled. Toggle from /settings.
