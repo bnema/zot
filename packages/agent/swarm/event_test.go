@@ -1,7 +1,12 @@
 package swarm
 
 import (
+	"bytes"
+	"encoding/json"
+	"fmt"
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -48,6 +53,44 @@ func TestEventLogAppendAndRead(t *testing.T) {
 // only write well-formed events, but a partial crash could leave
 // a half-written line; we don't want that to prevent the dashboard
 // from showing the rest.
+func TestReadVersionedEventMergesPayloadFields(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "events.jsonl")
+	wire := `{"version":1,"type":"turn.progress","message_id":"m1","agent_id":"a1","turn_id":"t1","timestamp":"2026-08-04T12:00:00Z","payload":{"text":"still working","future":{"step":2}}}` + "\n"
+	if err := os.WriteFile(path, []byte(wire), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got, err := ReadEventLog(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].Data["text"] != "still working" {
+		t.Fatalf("versioned payload was not replayed: %+v", got)
+	}
+	if future, ok := got[0].Data["future"].(map[string]any); !ok || future["step"] != float64(2) {
+		t.Fatalf("future payload field was lost: %+v", got[0].Data)
+	}
+}
+
+func TestReadEventLogSkipsOversizedLines(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "events.jsonl")
+	oversized := fmt.Sprintf("%s\n", strings.Repeat("x", maxEventLogLineBytes+100))
+	valid := NewEvent("valid", map[string]any{"ok": true})
+	data, err := json.Marshal(valid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, append([]byte(oversized), append(data, '\n')...), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got, err := ReadEventLog(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].Type != "valid" {
+		t.Fatalf("oversized line affected replay: %+v", got)
+	}
+}
+
 func TestReadEventLogIgnoresGarbage(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "events.jsonl")
 	log, err := OpenEventLog(path)
@@ -199,6 +242,38 @@ func TestFollowerEmitsNewEvents(t *testing.T) {
 		if ev.Type != "live" {
 			t.Errorf("event %d type = %q; want live", i, ev.Type)
 		}
+	}
+}
+
+func TestFollowerDoesNotSkipPartialFinalEvent(t *testing.T) {
+	seed := NewEvent("preexisting", nil)
+	seedBytes, err := json.Marshal(seed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seedBytes = append(seedBytes, '\n')
+	partial := NewEvent("partial", map[string]any{"ok": true})
+	partialBytes, err := json.Marshal(partial)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mid := len(partialBytes) / 2
+	incomplete := append(append([]byte(nil), seedBytes...), partialBytes[:mid]...)
+	events, offset := readFollowerEvents(bytes.NewReader(incomplete), 0)
+	if len(events) != 1 || events[0].Type != "preexisting" {
+		t.Fatalf("complete prefix = %+v", events)
+	}
+	if offset != int64(len(seedBytes)) {
+		t.Fatalf("offset = %d, want complete prefix %d", offset, len(seedBytes))
+	}
+
+	complete := append(append([]byte(nil), seedBytes...), append(partialBytes, '\n')...)
+	events, finalOffset := readFollowerEvents(bytes.NewReader(complete[offset:]), offset)
+	if len(events) != 1 || events[0].Type != "partial" {
+		t.Fatalf("completed event = %+v", events)
+	}
+	if finalOffset != int64(len(complete)) {
+		t.Fatalf("final offset = %d, want %d", finalOffset, len(complete))
 	}
 }
 

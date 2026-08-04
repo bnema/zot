@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"errors"
 	"fmt"
-	"io"
 	"net"
 	"os"
 	"path/filepath"
@@ -66,6 +65,20 @@ func (b *Inbox) Path() string { return b.path }
 // ErrNotReady so the TUI can retry or report "agent not listening
 // yet" rather than crashing.
 func (b *Inbox) SendInput(msg string) error {
+	return b.sendBytes([]byte(msg + "\n"))
+}
+
+// SendCommand sends a versioned JSONL command. SendInput remains available
+// for older children and tests; new supervisor paths use this method.
+func (b *Inbox) SendCommand(command Envelope) error {
+	line, err := MarshalJSONL(command)
+	if err != nil {
+		return err
+	}
+	return b.sendBytes(line)
+}
+
+func (b *Inbox) sendBytes(data []byte) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if b.conn == nil {
@@ -75,7 +88,7 @@ func (b *Inbox) SendInput(msg string) error {
 		}
 		b.conn = c
 	}
-	if _, err := io.WriteString(b.conn, msg+"\n"); err != nil {
+	if _, err := b.conn.Write(data); err != nil {
 		// Drop the connection so the next call redials. The
 		// previous error is more informative than the redial's
 		// would be, so surface this one.
@@ -147,6 +160,30 @@ func isNoListenerErr(err error) bool {
 	return errors.Is(err, syscall.ECONNREFUSED)
 }
 
+// inboxLive reports whether a process currently accepts connections on path.
+// A Unix socket inode can survive its owner, so os.Stat alone cannot
+// distinguish a live worker from a stale path. Callers use this probe before
+// resume/remove operations to avoid racing a detached worker's session and
+// workspace ownership.
+const inboxProbeLine = "__zot_swarm_probe__"
+
+func inboxLive(path string) bool {
+	if path == "" {
+		return false
+	}
+	conn, err := net.DialTimeout("unix", path, 100*time.Millisecond)
+	if err != nil {
+		return false
+	}
+	// Listener treats this first line as a health probe and does not
+	// replace the current supervisor connection. A bare connect would be
+	// enough to detect liveness, but sending an explicit probe lets the
+	// listener distinguish this side-effect-free check from a takeover.
+	_, writeErr := conn.Write([]byte(inboxProbeLine + "\n"))
+	_ = conn.Close()
+	return writeErr == nil
+}
+
 // Listener is the child-side end of the inbox. The swarm-agent
 // daemon mode constructs one with Listen, then iterates Lines
 // to receive supervisor messages. Designed so a single goroutine
@@ -158,35 +195,48 @@ type Listener struct {
 	// only expects one supervisor (the parent zot), so newer
 	// connections preempt older ones — the previous parent
 	// presumably crashed.
-	mu     sync.Mutex
-	active net.Conn
-	out    chan string
-	done   chan struct{}
-	wg     sync.WaitGroup
+	mu        sync.Mutex
+	active    net.Conn
+	conns     map[net.Conn]struct{}
+	out       chan string
+	done      chan struct{}
+	wg        sync.WaitGroup
+	closeOnce sync.Once
 }
 
 // Listen creates the socket at path and starts accepting. The
 // caller must call Close to remove the socket file on shutdown.
-// Returns the listener even if a stale socket exists from a
-// previous run: we unlink first, mirroring how most unix daemons
-// behave.
+// A live endpoint is preserved and rejected; only a refused probe
+// is treated as a stale socket eligible for removal.
 func Listen(path string) (*Listener, error) {
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return nil, fmt.Errorf("inbox dir: %w", err)
 	}
-	// Best-effort cleanup of a stale socket. If the parent
-	// process is still alive and using it, Listen will fail
-	// below and the caller surfaces that as a real conflict.
-	_ = os.Remove(path)
+	// Probe an existing endpoint before removing it. Unlinking an active
+	// Unix socket does not stop its listener, so blindly removing the path
+	// could let Resume start a second worker on the same session and event log.
+	if _, statErr := os.Stat(path); statErr == nil {
+		if inboxLive(path) {
+			return nil, fmt.Errorf("swarm inbox already has a live listener")
+		}
+		// A refused probe means the socket inode is stale. Remove only that
+		// endpoint; a live listener was handled above without unlinking it.
+		_ = os.Remove(path)
+	}
 	ln, err := net.Listen("unix", path)
 	if err != nil {
 		return nil, fmt.Errorf("inbox listen: %w", err)
 	}
+	// Unix sockets inherit the process umask but may otherwise be
+	// world-writable. The inbox carries prompts and control commands,
+	// so fail closed for other local users.
+	_ = os.Chmod(path, 0o600)
 	l := &Listener{
-		path: path,
-		ln:   ln,
-		out:  make(chan string, 16),
-		done: make(chan struct{}),
+		path:  path,
+		ln:    ln,
+		conns: make(map[net.Conn]struct{}),
+		out:   make(chan string, 16),
+		done:  make(chan struct{}),
 	}
 	go l.acceptLoop()
 	return l, nil
@@ -199,19 +249,16 @@ func (l *Listener) Lines() <-chan string { return l.out }
 // Close stops accepting, drops the active connection, removes
 // the socket file, and closes Lines. Idempotent.
 func (l *Listener) Close() error {
-	select {
-	case <-l.done:
-		return nil
-	default:
+	l.closeOnce.Do(func() {
 		close(l.done)
-	}
-	l.mu.Lock()
-	if l.active != nil {
-		_ = l.active.Close()
-	}
-	l.mu.Unlock()
-	_ = l.ln.Close()
-	_ = os.Remove(l.path)
+		l.mu.Lock()
+		for conn := range l.conns {
+			_ = conn.Close()
+		}
+		l.mu.Unlock()
+		_ = l.ln.Close()
+		_ = os.Remove(l.path)
+	})
 	return nil
 }
 
@@ -233,10 +280,7 @@ func (l *Listener) acceptLoop() {
 			}
 		}
 		l.mu.Lock()
-		if l.active != nil {
-			_ = l.active.Close()
-		}
-		l.active = c
+		l.conns[c] = struct{}{}
 		l.mu.Unlock()
 		l.wg.Add(1)
 		go func() {
@@ -247,24 +291,44 @@ func (l *Listener) acceptLoop() {
 }
 
 func (l *Listener) readLoop(c net.Conn) {
+	defer func() {
+		_ = c.Close()
+		l.mu.Lock()
+		delete(l.conns, c)
+		if l.active == c {
+			l.active = nil
+		}
+		l.mu.Unlock()
+	}()
+
 	br := bufio.NewReader(c)
+	firstLine := true
 	for {
 		line, err := br.ReadString('\n')
 		if line != "" {
+			message := trimRightNL(line)
+			if firstLine {
+				firstLine = false
+				if message == inboxProbeLine {
+					return
+				}
+				// The first real command claims ownership. Health probes do
+				// not preempt the current supervisor, while a replacement
+				// supervisor still gets the historical takeover behavior.
+				l.mu.Lock()
+				if l.active != nil && l.active != c {
+					_ = l.active.Close()
+				}
+				l.active = c
+				l.mu.Unlock()
+			}
 			select {
-			case l.out <- trimRightNL(line):
+			case l.out <- message:
 			case <-l.done:
-				_ = c.Close()
 				return
 			}
 		}
 		if err != nil {
-			_ = c.Close()
-			l.mu.Lock()
-			if l.active == c {
-				l.active = nil
-			}
-			l.mu.Unlock()
 			return
 		}
 	}

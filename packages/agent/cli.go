@@ -1183,7 +1183,37 @@ func reloadResourcesAfterStartupPre(ctx context.Context, args Args, extMgr *exte
 
 // ---- interactive mode: opens the TUI even without credentials ----
 
+func subagentPolicyFromConfig(cfg SubagentsConfig) swarm.SubagentPolicy {
+	parseDuration := func(value string) time.Duration {
+		if strings.TrimSpace(value) == "" {
+			return 0
+		}
+		parsed, err := time.ParseDuration(strings.TrimSpace(value))
+		if err != nil || parsed <= 0 {
+			return 0
+		}
+		return parsed
+	}
+	return swarm.SubagentPolicy{
+		MaxConcurrent:          cfg.MaxConcurrent,
+		MaxConcurrentPerParent: cfg.MaxConcurrentPerParent,
+		MaxTotalSpawned:        cfg.MaxTotalSpawned,
+		QueueTimeout:           parseDuration(cfg.QueueTimeout),
+		DefaultTimeout:         parseDuration(cfg.DefaultTimeout),
+		MaxTurns:               cfg.MaxTurns,
+		MaxOutputBytes:         cfg.MaxOutputBytes,
+		MaxOutputLines:         cfg.MaxOutputLines,
+		AllowedTools:           append([]string(nil), cfg.AllowedTools...),
+		AllowedRoots:           append([]string(nil), cfg.AllowedRoots...),
+		HeartbeatInterval:      parseDuration(cfg.HeartbeatInterval),
+		IdleTimeout:            parseDuration(cfg.IdleTimeout),
+		ReconnectTimeout:       parseDuration(cfg.ReconnectTimeout),
+		CancelGracePeriod:      parseDuration(cfg.CancelGracePeriod),
+	}
+}
+
 func runInteractive(ctx context.Context, args Args, version string) error {
+	initialCfg, _ := LoadConfig()
 	// Resolve WITHOUT requiring credentials.
 	r, err := Resolve(args, false)
 	if err != nil {
@@ -1256,18 +1286,40 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 	// in this outer scope rather than scoping it tighter.
 	var swarmMgr *swarm.Swarm
 	swarmMgr = swarm.New(swarm.Config{
-		Root:     filepath.Join(ZotHome(), "swarm"),
-		RepoRoot: r.CWD,
-		FastMode: r.FastMode,
+		Context:     ctx,
+		Root:        filepath.Join(ZotHome(), "swarm"),
+		RepoRoot:    r.CWD,
+		Provider:    r.Provider,
+		FastMode:    r.FastMode,
+		BaseURL:     r.BaseURL,
+		InsecureTLS: r.InsecureTLS,
+		Policy:      subagentPolicyFromConfig(initialCfg.Subagents),
+		// Keep an explicit launch key in this callback only. Swarm persists
+		// connection settings, but never stores credentials in Agent metadata
+		// or puts them in the worker's argv/environment.
 		ResolveCredential: func(ctx context.Context, providerID string) (swarm.Credential, error) {
-			if providerID == "ollama" {
+			childProvider := canonicalProvider(providerID)
+			persistMu.Lock()
+			hostProvider := canonicalProvider(activeProvider)
+			persistMu.Unlock()
+			if childProvider == "" {
+				childProvider = hostProvider
+			}
+			explicit := ""
+			// A launch-time API key is scoped to the provider selected at
+			// startup. Never send it to an explicitly different child
+			// provider; resolve that provider's own credential instead.
+			if args.APIKey != "" && childProvider == hostProvider {
+				explicit = args.APIKey
+			}
+			if childProvider == "ollama" && explicit == "" {
 				return swarm.Credential{Value: "ollama", Method: "apikey"}, nil
 			}
-			credential, method, accountID, err := ResolveCredentialFullContext(ctx, providerID, "")
+			credential, method, accountID, err := ResolveCredentialFullContext(ctx, childProvider, explicit)
 			if err != nil {
 				// Providers backed only by a local endpoint do not need a key.
 				// Leave stdin untouched and let the child resolve that endpoint.
-				if !CredentialAvailable(providerID) {
+				if !CredentialAvailable(childProvider) {
 					return swarm.Credential{}, nil
 				}
 				return swarm.Credential{}, err
@@ -1278,6 +1330,13 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 	// Pull any previously-spawned agents off disk so the dashboard
 	// shows them as detached and the user can resume / remove them.
 	_, _ = swarmMgr.Reload()
+	if args.PermissionSet != nil {
+		// Packaged zotfile agents have an explicit capability ceiling. A
+		// child process would otherwise rebuild a fresh unrestricted sandbox,
+		// so do not expose either slash or tool-based delegation from this
+		// restricted host until worker capability propagation exists.
+		swarmMgr = nil
+	}
 
 	// onSpawnedSwarm is the OnSpawned callback the swarm_spawn tool
 	// fires after every successful spawn. It hands the agent off to
@@ -1300,15 +1359,16 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 	// toggle live-mutates the running agent's registry separately so
 	// flipping the flag mid-session takes effect on the next turn.
 	injectSwarmSpawn := func(reg core.Registry) core.Registry {
-		if reg == nil {
+		if reg == nil || swarmMgr == nil || !autoSwarmToolAllowed(args) {
 			return reg
 		}
 		if !AutoSwarmEnabled() {
 			return reg
 		}
-		reg["swarm_spawn"] = &tools.SwarmSpawnTool{
-			Swarm:   swarmMgr,
-			Enabled: AutoSwarmEnabled,
+		canonical := &tools.SwarmSpawnTool{
+			ToolName: "subagent_spawn",
+			Swarm:    swarmMgr,
+			Enabled:  AutoSwarmEnabled,
 			DefaultModel: func() string {
 				persistMu.Lock()
 				defer persistMu.Unlock()
@@ -1323,6 +1383,10 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 			ResolveSubagent:  resolveSubagent,
 			OnSpawned:        onSpawnedSwarm,
 		}
+		reg[canonical.Name()] = canonical
+		legacy := *canonical
+		legacy.ToolName = "swarm_spawn"
+		reg[legacy.Name()] = &legacy
 		return reg
 	}
 	injectSwarmSpawn(r.ToolRegistry)
@@ -1407,6 +1471,10 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 			return nil, "", "", err
 		}
 		resolved.UseSandbox(sharedSandbox)
+		if swarmMgr != nil {
+			swarmMgr.SetProvider(resolved.Provider)
+			swarmMgr.SetProviderSettings(resolved.BaseURL, resolved.InsecureTLS)
+		}
 		resolved.MergeExtensionTools(extToolAdapter)
 		injectSwarmSpawn(resolved.ToolRegistry)
 		return wireAgentExt(resolved.NewAgent()), resolved.Provider, resolved.Model, nil
@@ -1426,6 +1494,10 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 			return nil, "", "", err
 		}
 		resolved.UseSandbox(sharedSandbox)
+		if swarmMgr != nil {
+			swarmMgr.SetProvider(resolved.Provider)
+			swarmMgr.SetProviderSettings(resolved.BaseURL, resolved.InsecureTLS)
+		}
 		resolved.MergeExtensionTools(extToolAdapter)
 		injectSwarmSpawn(resolved.ToolRegistry)
 		return wireAgentExt(resolved.NewAgent()), resolved.Provider, resolved.Model, nil
@@ -1453,6 +1525,10 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 			return nil, "", "", err
 		}
 		resolved.UseSandbox(sharedSandbox)
+		if swarmMgr != nil {
+			swarmMgr.SetProvider(resolved.Provider)
+			swarmMgr.SetProviderSettings(resolved.BaseURL, resolved.InsecureTLS)
+		}
 		resolved.MergeExtensionTools(extToolAdapter)
 		injectSwarmSpawn(resolved.ToolRegistry)
 		return wireAgentExt(resolved.NewAgent()), resolved.Provider, resolved.Model, nil
@@ -1943,7 +2019,6 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 		}()
 	}
 
-	initialCfg, _ := LoadConfig()
 	fastMode := r.FastMode
 	quickModelShortcuts := make([]modes.QuickModelShortcut, len(initialCfg.QuickModelShortcuts))
 	for idx, s := range initialCfg.QuickModelShortcuts {
@@ -1964,12 +2039,14 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 	// shows agents this session spawned (and any pre-upgrade unscoped
 	// agents — see SnapshotAll docs). Updated again whenever the
 	// user swaps sessions via loadSession below.
-	if sess != nil {
+	if sess != nil && swarmMgr != nil {
 		swarmMgr.SetActiveSession(sess.ID)
 	}
 	// Best-effort shutdown on interactive exit: stop all running
 	// agents so they don't outlive their parent zot.
-	defer swarmMgr.StopAll()
+	if swarmMgr != nil {
+		defer swarmMgr.StopAll()
+	}
 
 	var startupSkills []*skills.Skill
 	if r.SkillTool != nil {
@@ -1978,6 +2055,7 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 	homeDir, _ := os.UserHomeDir()
 	discoveredSubagents, _ := subagents.Discover(r.CWD, homeDir)
 	subagentsAddendum := subagents.SystemPromptAddendum(discoveredSubagents)
+	autoSwarmToolAllowedForSession := autoSwarmToolAllowed(args)
 
 	iv = modes.NewInteractive(modes.InteractiveConfig{
 		Terminal:                  term,
@@ -1986,6 +2064,7 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 		TerminalAlertsEnabled:     initialCfg.TerminalAlertsEnabled,
 		TerminalTitleEnabled:      initialCfg.TerminalTitleEnabled,
 		AutoSwarmEnabled:          initialCfg.AutoSwarmEnabled,
+		AutoSwarmToolAllowed:      &autoSwarmToolAllowedForSession,
 		FastMode:                  &fastMode,
 		LSPEnabled:                initialCfg.LSPEnabled,
 		SubagentLSPEnabled:        initialCfg.SubagentLSPEnabled,
@@ -2238,9 +2317,17 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 		}
 		closeAgentLSP(finalAg)
 		closeResolvedLSP(r)
+		// Stop supervised workers before exiting. os.Exit skips deferred
+		// cleanup, so relying only on the normal runInteractive defer would
+		// leave child daemons (and their descendants) alive after a TERM or
+		// HUP delivered to the host.
+		if swarmMgr != nil {
+			swarmMgr.StopAll()
+		}
 		// Exit cleanly. Re-raising the signal would skip os.Exit's
 		// at-exit hooks; explicit exit is fine because we've already
-		// flushed the only at-risk state (the session file).
+		// flushed the only at-risk state (the session file) and stopped
+		// supervised workers.
 		os.Exit(0)
 	}()
 

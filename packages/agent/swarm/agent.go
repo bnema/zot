@@ -3,6 +3,7 @@ package swarm
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -11,22 +12,50 @@ import (
 // Agent is one supervised task. Public fields are immutable after
 // Spawn; mutable state (status, activity, transcript) lives behind
 // the embedded mutex.
+type turnEndNotice struct {
+	step   int
+	errMsg string
+}
+
 type Agent struct {
 	ID      string
 	Task    string
-	Dir     string // always the host's RepoRoot; agents share its cwd.
+	Dir     string // shared checkout or isolated worktree used by the child.
 	Started time.Time
 
+	// ParentID and RootSessionID identify the supervisor/session that owns
+	// this worker. Empty ParentID means the main supervisor created it;
+	// child-originated spawning is rejected in v1.
+	ParentID         string
+	BatchID          string
+	RootSessionID    string
+	OriginalTask     string
+	RepositoryRoot   string
+	WorkspaceMode    WorkspaceMode
+	WorkspacePath    string
+	WorkspaceBase    string
+	WorkspaceCapture CaptureMode
+	MaxTurns         int
+	// Timeout is the effective per-agent lifetime, persisted so a resumed
+	// worker keeps the timeout selected at its spawn boundary.
+	Timeout           time.Duration
+	HeartbeatInterval time.Duration
+	Tools             []string
+
 	// Model and Provider, when non-empty, override the child
-	// subprocess's model resolution. Empty means "inherit whatever
-	// the child resolves on its own from config / env / flags" —
-	// the historical behaviour. Persisted in meta.json so Resume
-	// keeps using the same model across zot restarts.
-	Model     string
-	Provider  string
-	Reasoning string
-	FastMode  bool
-	Subagent  string
+	// subprocess's model resolution. BaseURL and InsecureTLS carry
+	// the effective provider connection settings from the supervisor.
+	// Empty values inherit whatever the child resolves on its own from
+	// config / env / flags. All four settings are persisted in meta.json
+	// so Resume keeps using the same provider configuration across zot
+	// restarts.
+	Model       string
+	Provider    string
+	BaseURL     string
+	InsecureTLS bool
+	Reasoning   string
+	FastMode    bool
+	Subagent    string
 
 	// SessionID, when non-empty, scopes the agent to a particular
 	// host zot session: the dashboard only surfaces agents whose
@@ -52,6 +81,16 @@ type Agent struct {
 	// an Inbox at this path; the child opens a Listener.
 	InboxPath string
 
+	// Attempt increments whenever the supervisor starts a process for this
+	// agent. It is persisted so recovery can distinguish a resumed worker
+	// from a first launch.
+	Attempt int
+
+	// ProcessPID identifies the current worker when known. It is persisted
+	// so a reloaded supervisor can force-kill a detached worker after a
+	// graceful shutdown deadline.
+	ProcessPID int
+
 	// EventLogPath is the durable JSONL event log for this agent.
 	// The runner appends every well-formed event from the child
 	// (plus lifecycle events of its own) here. /swarm open in any
@@ -75,6 +114,27 @@ type Agent struct {
 	finished      time.Time
 	lastErr       error
 
+	lifecycleMu      sync.Mutex
+	processState     ProcessState
+	turnState        TurnState
+	protocolVersion  int
+	currentTurnID    string
+	updatedAt        time.Time
+	lastActivity     time.Time
+	result           *TurnResult
+	resultRef        string
+	patchRef         string
+	changedFiles     []string
+	outputBytes      int
+	outputLines      int
+	outputTruncated  bool
+	maxOutputBytes   int
+	maxOutputLines   int
+	persistFn        func(*Agent)
+	stateDir         string
+	workspaceCleanup func() error
+	workspaceCapture func() (WorkspaceCapture, error)
+
 	// OnTurnEnd, if set, fires once per prompt-level turn_end event
 	// emitted by the swarm daemon wrapper. Provider/tool-loop
 	// turn_end events (for example stop=tool_use) are ignored by the
@@ -84,16 +144,25 @@ type Agent struct {
 	// daemon itself to exit — sub-agents keep running on the inbox
 	// even after the initial task completes, so Wait() never unblocks
 	// for them.
-	OnTurnEnd func(step int, errMsg string)
+	OnTurnEnd       func(step int, errMsg string)
+	pendingTurnEnds []turnEndNotice
 
 	ctx    context.Context
 	cancel context.CancelFunc
 	runner Runner
+	lease  *agentLease
+
+	// launchState is an admission gate for the scheduler's goroutine:
+	// 0=not admitted, 1=runner admitted, 2=stopped before admission. It
+	// prevents an immediate Stop from starting a runner after cancellation.
+	launchState int32
 
 	// done closes when the run goroutine finalises the agent's
 	// status (done / failed / killed). Wait blocks on this so
 	// callers don't have to poll.
-	done chan struct{}
+	done        chan struct{}
+	turnResults chan *TurnResult
+	doneOnce    sync.Once
 }
 
 // Inbox exposes the supervisor-side socket handle. Returns nil for
@@ -113,6 +182,124 @@ func (a *Agent) Activity() string {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	return a.activity
+}
+
+// ProcessState returns the child process lifecycle state.
+func (a *Agent) ProcessState() ProcessState {
+	a.lifecycleMu.Lock()
+	defer a.lifecycleMu.Unlock()
+	return a.processState
+}
+
+// TurnState returns the current delegated-turn state.
+func (a *Agent) TurnState() TurnState {
+	a.lifecycleMu.Lock()
+	defer a.lifecycleMu.Unlock()
+	return a.turnState
+}
+
+// CurrentTurnID returns the stable id of the current or most recent turn.
+func (a *Agent) CurrentTurnID() string {
+	a.lifecycleMu.Lock()
+	defer a.lifecycleMu.Unlock()
+	return a.currentTurnID
+}
+
+// ProcessPIDValue returns the current worker pid, when known.
+func (a *Agent) ProcessPIDValue() int {
+	a.lifecycleMu.Lock()
+	defer a.lifecycleMu.Unlock()
+	return a.ProcessPID
+}
+
+// LastActivity returns the last heartbeat or meaningful child event time.
+func (a *Agent) LastActivity() time.Time {
+	a.lifecycleMu.Lock()
+	defer a.lifecycleMu.Unlock()
+	return a.lastActivity
+}
+
+// Result returns a copy of the most recent structured turn result.
+func (a *Agent) Result() *TurnResult {
+	a.lifecycleMu.Lock()
+	defer a.lifecycleMu.Unlock()
+	return cloneTurnResult(a.result)
+}
+
+func (a *Agent) setProtocolVersion(version int) {
+	a.lifecycleMu.Lock()
+	if version > a.protocolVersion {
+		a.protocolVersion = version
+	}
+	a.updatedAt = time.Now()
+	a.lifecycleMu.Unlock()
+}
+
+func (a *Agent) protocolReady() bool {
+	a.lifecycleMu.Lock()
+	defer a.lifecycleMu.Unlock()
+	return a.protocolVersion >= ProtocolVersion
+}
+
+func (a *Agent) setProcessState(state ProcessState) {
+	a.lifecycleMu.Lock()
+	a.processState = state
+	a.updatedAt = time.Now()
+	a.lifecycleMu.Unlock()
+}
+
+func (a *Agent) incrementAttempt() int {
+	a.lifecycleMu.Lock()
+	a.Attempt++
+	a.updatedAt = time.Now()
+	attempt := a.Attempt
+	a.lifecycleMu.Unlock()
+	return attempt
+}
+
+func (a *Agent) setProcessPID(pid int) {
+	a.lifecycleMu.Lock()
+	a.ProcessPID = pid
+	a.updatedAt = time.Now()
+	a.lifecycleMu.Unlock()
+}
+
+func (a *Agent) releaseLease() error {
+	a.lifecycleMu.Lock()
+	lease := a.lease
+	a.lease = nil
+	a.lifecycleMu.Unlock()
+	if lease == nil {
+		return nil
+	}
+	return lease.Close()
+}
+
+func (a *Agent) setTurnState(state TurnState, turnID string) {
+	a.lifecycleMu.Lock()
+	a.turnState = state
+	if turnID != "" {
+		a.currentTurnID = turnID
+	}
+	a.updatedAt = time.Now()
+	a.lifecycleMu.Unlock()
+}
+
+func (a *Agent) markActivity(now time.Time) {
+	if now.IsZero() {
+		now = time.Now()
+	}
+	a.lifecycleMu.Lock()
+	a.lastActivity = now
+	a.updatedAt = now
+	a.lifecycleMu.Unlock()
+}
+
+func (a *Agent) setResult(result *TurnResult) {
+	a.lifecycleMu.Lock()
+	a.result = cloneTurnResult(result)
+	a.updatedAt = time.Now()
+	a.lifecycleMu.Unlock()
 }
 
 // Transcript returns a copy of the running transcript.
@@ -135,6 +322,35 @@ func (a *Agent) Err() error {
 // and by /swarm wait <id>.
 func (a *Agent) Wait() { <-a.done }
 
+func (a *Agent) waitForTurnResult(ctx context.Context) (*TurnResult, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	select {
+	case result := <-a.turnResults:
+		if result == nil {
+			return nil, fmt.Errorf("subagents: nil turn result for %s", a.ID)
+		}
+		return cloneTurnResult(result), nil
+	case <-a.done:
+		if result := a.Result(); result != nil {
+			return result, nil
+		}
+		return nil, fmt.Errorf("subagents: agent %s exited without a turn result", a.ID)
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
+func (a *Agent) closeDone() { a.doneOnce.Do(func() { close(a.done) }) }
+
+func (a *Agent) stateDirectory(defaultRoot string) string {
+	if a.stateDir != "" {
+		return a.stateDir
+	}
+	return filepath.Join(defaultRoot, "agents", a.ID)
+}
+
 // SetOnTurnEnd installs (or clears, with nil) the callback fired
 // from the runner when the child daemon emits a prompt-level
 // turn_end event with a step field. Safe to call from any goroutine:
@@ -142,19 +358,30 @@ func (a *Agent) Wait() { <-a.done }
 func (a *Agent) SetOnTurnEnd(fn func(step int, errMsg string)) {
 	a.mu.Lock()
 	a.OnTurnEnd = fn
+	pending := append([]turnEndNotice(nil), a.pendingTurnEnds...)
+	a.pendingTurnEnds = nil
 	a.mu.Unlock()
+	if fn != nil {
+		for _, notice := range pending {
+			go fn(notice.step, notice.errMsg)
+		}
+	}
 }
 
 func (a *Agent) setStatus(s Status) {
 	a.mu.Lock()
 	a.status = s
 	a.mu.Unlock()
+	if s == StatusRunning {
+		a.setProcessState(ProcessAlive)
+	}
 }
 
 func (a *Agent) setActivity(msg string) {
 	a.mu.Lock()
 	a.activity = strings.TrimSpace(msg)
 	a.mu.Unlock()
+	a.markActivity(time.Now())
 }
 
 func (a *Agent) appendTranscript(chunk string) {
@@ -180,22 +407,68 @@ func (a *Agent) appendTranscriptLocked(chunk, linePrefix string, assistant bool)
 		a.transcript = append(a.transcript, linePrefix+line)
 	}
 	if assistant {
-		a.lastAssistant = message
+		a.lastAssistant = boundInlineText(message, a.maxOutputBytes, a.maxOutputLines)
 	}
-	// Bound the transcript so dashboards don't hold gigabytes for
-	// long-running agents. 2000 lines is plenty for inspection;
-	// the durable record lives in the agent's session file.
-	const cap = 2000
-	if len(a.transcript) > cap {
-		a.transcript = a.transcript[len(a.transcript)-cap:]
+	// Bound the inline dashboard copy. The durable event log and session
+	// remain available through the logical history reference.
+	lineCap := a.maxOutputLines
+	if lineCap <= 0 {
+		lineCap = 2_000
+	}
+	byteCap := a.maxOutputBytes
+	if byteCap <= 0 {
+		byteCap = 500_000
+	}
+	for len(a.transcript) > lineCap {
+		a.transcript = a.transcript[1:]
+		a.outputTruncated = true
+	}
+	for len(a.transcript) > 0 {
+		bytes := 0
+		for _, line := range a.transcript {
+			bytes += len(line) + 1
+		}
+		if bytes <= byteCap {
+			a.outputBytes = bytes
+			a.outputLines = len(a.transcript)
+			break
+		}
+		a.transcript = a.transcript[1:]
+		a.outputTruncated = true
+	}
+	if len(a.transcript) == 0 {
+		a.outputBytes = 0
+		a.outputLines = 0
 	}
 	a.mu.Unlock()
+	a.markActivity(time.Now())
 }
 
 // newAgentID returns a short, mostly-collision-free identifier of the
 // form "<slug>-<nano>". The slug is derived from the task text so
 // dashboards stay readable; the nano suffix guarantees uniqueness
 // even when two agents are spawned in the same millisecond.
+func boundInlineText(value string, maxBytes, maxLines int) string {
+	const marker = "...[output truncated]"
+	if maxLines > 0 {
+		lines := strings.Split(value, "\n")
+		if len(lines) > maxLines {
+			if maxLines == 1 {
+				value = marker
+			} else {
+				value = strings.Join(lines[:maxLines-1], "\n") + "\n" + marker
+			}
+		}
+	}
+	if maxBytes > 0 && len([]byte(value)) > maxBytes {
+		if maxBytes <= len(marker) {
+			return truncateUTF8(value, maxBytes)
+		}
+		return truncateUTF8(value, maxBytes-len(marker)) + marker
+	}
+	return value
+}
+
 func newAgentID(task string, now time.Time) string {
 	slug := taskSlug(task)
 	return fmt.Sprintf("%s-%d", slug, now.UnixNano()%1_000_000)

@@ -213,7 +213,7 @@ func (configSettingsStore) SetTheme(name string) error {
 }
 
 // AutoSwarmEnabled reads the current auto-swarm flag from config.
-// Used by the swarm_spawn tool at call time to gate execution.
+// Used by the subagent_spawn/swarm_spawn tools at call time to gate execution.
 func AutoSwarmEnabled() bool {
 	cfg, err := LoadConfig()
 	if err != nil {
@@ -226,10 +226,10 @@ func AutoSwarmEnabled() bool {
 // auto-swarm is enabled, so the model knows it may delegate to
 // background sub-agents without the user having to mention the tool
 // by name. Kept short so it doesn't bloat the cached prompt prefix.
-const AutoSwarmSystemAddendum = `Auto-swarm is enabled. You have a swarm_spawn tool that forks background sub-agents working in parallel in this same working directory.
+const AutoSwarmSystemAddendum = `Auto-swarm is enabled. You have a subagent_spawn tool (with swarm_spawn as a compatibility alias) that starts background sub-agents in separate long-lived processes.
 
-Use it proactively when the user's request naturally splits into independent sub-tasks that can run concurrently (e.g. "refactor module A and module B", "write the implementation and the tests", "investigate three separate files"). Spawn one sub-agent per independent sub-task with a self-contained task description (sub-agents start with no context from this conversation). If [subagents_list] is present, choose the named profile whose description best matches the task and pass its name as the tool's agent field. Continue working on the remaining or coordinating work yourself in parallel; do not wait for sub-agents to finish before responding. Briefly tell the user which sub-agents you spawned and what each is doing.
+Use it proactively when the user's request naturally splits into independent sub-tasks that can run concurrently; prefer isolation:"worktree" for parallel coding and use the returned result_ref/event path for completion (e.g. "refactor module A and module B", "write the implementation and the tests", "investigate three separate files"). Spawn one sub-agent per independent sub-task with a self-contained task description (sub-agents start with no context from this conversation). If [subagents_list] is present, choose the named profile whose description best matches the task and pass its name as the tool's agent field. Continue working on the remaining or coordinating work yourself in parallel; do not wait for sub-agents to finish before responding. Briefly tell the user which sub-agents you spawned and what each is doing.
 
-Do NOT use swarm_spawn for trivial single-step work, for tasks that depend on each other sequentially, or when the user explicitly asked you to do the work yourself.
+Do NOT use subagent_spawn for trivial single-step work, for tasks that depend on each other sequentially, or when the user explicitly asked you to do the work yourself. Child workers cannot recursively spawn more sub-agents in v1.
 
-When every sub-agent you spawned reaches a terminal state, the host injects a single [auto-swarm update] message recapping each agent's status, task, and transcript tail. Treat that message as observed state (not as a new user request) and write a short follow-up summary referencing the agents by id.`
+When every sub-agent you spawned reaches a terminal state, the host injects a single [auto-swarm update] message recapping each agent's status, task, and result reference. Treat that message as observed state (not as a new user request) and write a short follow-up summary referencing each agent by id.`

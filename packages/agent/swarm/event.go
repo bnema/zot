@@ -28,21 +28,41 @@ import (
 // stat the file size and read from their last offset on every
 // poll.
 type Event struct {
-	Time time.Time      `json:"time"`
-	Type string         `json:"type"`
-	Data map[string]any `json:"-"`
-	Raw  map[string]any `json:"-"` // includes type+time+data for replay
+	Time      time.Time      `json:"time"`
+	Type      string         `json:"type"`
+	Version   int            `json:"version,omitempty"`
+	MessageID string         `json:"message_id,omitempty"`
+	AgentID   string         `json:"agent_id,omitempty"`
+	TurnID    string         `json:"turn_id,omitempty"`
+	Data      map[string]any `json:"-"`
+	Raw       map[string]any `json:"-"` // includes type+time+data for replay
 }
 
 // MarshalJSON flattens Data into the top-level object so consumers
 // see {type, time, ...fields} rather than {type, time, data:{...}}.
 func (e Event) MarshalJSON() ([]byte, error) {
-	out := make(map[string]any, len(e.Data)+2)
+	out := make(map[string]any, len(e.Data)+7)
 	for k, v := range e.Data {
 		out[k] = v
 	}
 	out["type"] = e.Type
 	out["time"] = e.Time
+	if e.Version != 0 {
+		out["version"] = e.Version
+	}
+	if e.MessageID != "" {
+		out["message_id"] = e.MessageID
+	}
+	if e.AgentID != "" {
+		out["agent_id"] = e.AgentID
+	}
+	if e.TurnID != "" {
+		out["turn_id"] = e.TurnID
+	}
+	if e.Version != 0 {
+		out["timestamp"] = e.Time
+		out["payload"] = e.Data
+	}
 	return json.Marshal(out)
 }
 
@@ -56,17 +76,45 @@ func (e *Event) UnmarshalJSON(b []byte) error {
 	e.Raw = m
 	e.Data = map[string]any{}
 	for k, v := range m {
-		if k == "type" || k == "time" {
+		if k == "type" || k == "time" || k == "timestamp" || k == "version" || k == "message_id" || k == "agent_id" || k == "turn_id" || k == "payload" {
 			continue
 		}
 		e.Data[k] = v
+	}
+	// Versioned events keep their forward-compatible payload under a
+	// dedicated object. The child also flattens known fields for legacy
+	// readers, but a newer event may contain payload fields that were not
+	// flattened by the producer. Merge those fields so replay sees the same
+	// data regardless of which wire shape was written.
+	if payload, ok := m["payload"].(map[string]any); ok {
+		for k, v := range payload {
+			if _, exists := e.Data[k]; !exists {
+				e.Data[k] = v
+			}
+		}
+	}
+	if version, ok := m["version"].(float64); ok {
+		e.Version = int(version)
+	}
+	if messageID, ok := m["message_id"].(string); ok {
+		e.MessageID = messageID
+	}
+	if agentID, ok := m["agent_id"].(string); ok {
+		e.AgentID = agentID
+	}
+	if turnID, ok := m["turn_id"].(string); ok {
+		e.TurnID = turnID
 	}
 	if t, ok := m["type"].(string); ok {
 		e.Type = t
 	} else {
 		return errors.New("swarm event: missing type")
 	}
-	if ts, ok := m["time"].(string); ok {
+	ts, _ := m["time"].(string)
+	if ts == "" {
+		ts, _ = m["timestamp"].(string)
+	}
+	if ts != "" {
 		parsed, err := time.Parse(time.RFC3339Nano, ts)
 		if err == nil {
 			e.Time = parsed
@@ -74,6 +122,14 @@ func (e *Event) UnmarshalJSON(b []byte) error {
 	}
 	return nil
 }
+
+const (
+	// Event log lines are produced by a child process and may contain model
+	// payloads. Bound both per-line decoding and replay memory so a corrupt or
+	// hostile log cannot force an unbounded allocation during Reload.
+	maxEventLogLineBytes = 2 * 1024 * 1024
+	maxEventLogEvents    = 100_000
+)
 
 // EventLog is an append-only writer for events.jsonl. Safe for
 // concurrent writers (the child only has one writer, but tests
@@ -87,13 +143,14 @@ type EventLog struct {
 // OpenEventLog opens (or creates) the events.jsonl file at path.
 // Parent directories are created as needed.
 func OpenEventLog(path string) (*EventLog, error) {
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return nil, fmt.Errorf("event log dir: %w", err)
 	}
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
 	if err != nil {
 		return nil, fmt.Errorf("event log open: %w", err)
 	}
+	_ = f.Chmod(0o600)
 	return &EventLog{path: path, f: f}, nil
 }
 
@@ -107,6 +164,9 @@ func (l *EventLog) Path() string { return l.path }
 func (l *EventLog) Append(ev Event) error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	if l.f == nil {
+		return errors.New("event log: closed")
+	}
 	if ev.Time.IsZero() {
 		ev.Time = time.Now()
 	}
@@ -114,8 +174,14 @@ func (l *EventLog) Append(ev Event) error {
 	if err != nil {
 		return err
 	}
+	if len(b) > maxEventLogLineBytes {
+		return fmt.Errorf("event log: event exceeds %d bytes", maxEventLogLineBytes)
+	}
 	b = append(b, '\n')
-	_, err = l.f.Write(b)
+	n, err := l.f.Write(b)
+	if err == nil && n != len(b) {
+		return io.ErrShortWrite
+	}
 	return err
 }
 
@@ -156,19 +222,24 @@ func ReadEventLog(path string) ([]Event, error) {
 
 func readEvents(r io.Reader) ([]Event, error) {
 	br := bufio.NewReader(r)
-	var out []Event
+	out := make([]Event, 0, 256)
 	for {
-		line, err := br.ReadBytes('\n')
-		if len(line) > 0 {
+		line, err, truncated := readBoundedLine(br, maxEventLogLineBytes)
+		if len(line) > 0 && !truncated {
 			var ev Event
 			if jerr := json.Unmarshal(line, &ev); jerr == nil {
 				if !isLikelyDoubleWrite(ev, out) {
-					out = append(out, ev)
+					if len(out) >= maxEventLogEvents {
+						copy(out, out[1:])
+						out[len(out)-1] = ev
+					} else {
+						out = append(out, ev)
+					}
 				}
 			}
-			// Malformed lines are skipped silently; the dashboard
-			// renders only well-formed events and the child is the
-			// only writer.
+			// Malformed and oversized lines are skipped silently; the
+			// dashboard renders only well-formed events and the child is
+			// the only writer.
 		}
 		if err != nil {
 			if errors.Is(err, io.EOF) {
@@ -177,6 +248,38 @@ func readEvents(r io.Reader) ([]Event, error) {
 			return out, err
 		}
 	}
+}
+
+// readFollowerEvents parses only newline-terminated records from a live log.
+// A follower must not advance past an incomplete final line: another process
+// may be in the middle of appending that record, and skipping its start would
+// make the completed event invisible on the next poll.
+func readFollowerEvents(r io.Reader, offset int64) ([]Event, int64) {
+	br := bufio.NewReader(r)
+	out := make([]Event, 0, 256)
+	committed := offset
+	for {
+		line, err, truncated, consumed, complete := readBoundedLineStats(br, maxEventLogLineBytes)
+		if !complete {
+			break
+		}
+		committed += consumed
+		if len(line) > 0 && !truncated {
+			var ev Event
+			if jerr := json.Unmarshal(line, &ev); jerr == nil && !isLikelyDoubleWrite(ev, out) {
+				if len(out) >= maxEventLogEvents {
+					copy(out, out[1:])
+					out[len(out)-1] = ev
+				} else {
+					out = append(out, ev)
+				}
+			}
+		}
+		if err != nil {
+			break
+		}
+	}
+	return out, committed
 }
 
 // isLikelyDoubleWrite reports whether ev is a back-to-back duplicate
@@ -296,8 +399,7 @@ func (f *EventFollower) loop() {
 			_ = fh.Close()
 			continue
 		}
-		evs, _ := readEvents(fh)
-		newOffset, _ := fh.Seek(0, io.SeekCurrent)
+		evs, newOffset := readFollowerEvents(fh, offset)
 		_ = fh.Close()
 		offset = newOffset
 		for _, ev := range evs {

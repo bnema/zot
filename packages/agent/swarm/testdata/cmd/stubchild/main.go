@@ -27,6 +27,8 @@ import (
 	"os"
 	"sync"
 	"time"
+
+	"github.com/patriceckhart/zot/packages/agent/swarm"
 )
 
 func main() {
@@ -35,7 +37,8 @@ func main() {
 		sessionPath string
 		cwd         string
 	)
-	flag.StringVar(&inboxPath, "swarm-agent", "", "inbox socket path")
+	flag.StringVar(&inboxPath, "subagent-worker", "", "inbox socket path")
+	flag.StringVar(&inboxPath, "swarm-agent", "", "compatibility inbox socket path")
 	flag.StringVar(&sessionPath, "session", "", "session file path")
 	flag.StringVar(&cwd, "cwd", "", "working directory")
 	flag.Parse()
@@ -81,16 +84,33 @@ func main() {
 			line, err := br.ReadString('\n')
 			if line != "" {
 				msg := trimNL(line)
-				switch {
-				case msg == "shutdown":
-					emit("agent_stopped", map[string]any{"reason": "shutdown"})
-					_ = c.Close()
-					return
-				case msg == "cancel":
-					emit("turn_end", map[string]any{"stop": "cancelled"})
-				case len(msg) > 5 && msg[:5] == "user ":
-					runTurn(emit, msg[5:], turn)
-					turn++
+				if command, parseErr := swarm.ParseCommand(msg); parseErr == nil {
+					switch command.Type {
+					case swarm.CommandAgentShutdown:
+						emit("agent_stopped", map[string]any{"reason": "shutdown"})
+						_ = c.Close()
+						return
+					case swarm.CommandTurnCancel:
+						emit("turn_end", map[string]any{"stop": "cancelled"})
+					case swarm.CommandTurnStart:
+						var payload swarm.TurnStartPayload
+						if command.DecodePayload(&payload) == nil {
+							runTurn(emit, payload.Prompt, turn)
+							turn++
+						}
+					}
+				} else {
+					switch {
+					case msg == "shutdown":
+						emit("agent_stopped", map[string]any{"reason": "shutdown"})
+						_ = c.Close()
+						return
+					case msg == "cancel":
+						emit("turn_end", map[string]any{"stop": "cancelled"})
+					case len(msg) > 5 && msg[:5] == "user ":
+						runTurn(emit, msg[5:], turn)
+						turn++
+					}
 				}
 			}
 			if err != nil {
@@ -125,11 +145,17 @@ type emitter = func(string, map[string]any)
 func newEmitter() emitter {
 	var mu sync.Mutex
 	enc := json.NewEncoder(os.Stdout)
+	versioned := os.Getenv("ZOT_STUB_PROTOCOL") == "1"
 	return func(typ string, data map[string]any) {
 		mu.Lock()
 		defer mu.Unlock()
 		if data == nil {
 			data = map[string]any{}
+		}
+		if versioned {
+			envelope := swarm.NewEventEnvelope(typ, "stub-agent", "", data)
+			_ = enc.Encode(envelope)
+			return
 		}
 		data["type"] = typ
 		data["time"] = time.Now().Format(time.RFC3339Nano)

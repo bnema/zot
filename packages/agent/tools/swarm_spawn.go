@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/patriceckhart/zot/packages/agent/subagents"
 	"github.com/patriceckhart/zot/packages/agent/swarm"
@@ -22,6 +23,10 @@ import (
 // can flip it off mid-session and the next call refuses cleanly
 // without re-registering the tool.
 type SwarmSpawnTool struct {
+	// ToolName selects the public spelling. Empty preserves the historical
+	// swarm_spawn alias; the CLI registers the canonical subagent_spawn name.
+	ToolName string
+
 	// Swarm is the supervisor used to spawn agents. Nil means
 	// "auto-swarm not available in this mode" and the tool always
 	// errors.
@@ -51,6 +56,10 @@ type SwarmSpawnTool struct {
 	OnSpawned func(agent *swarm.Agent, task string)
 }
 
+// SubagentSpawnTool is the canonical spelling; SwarmSpawnTool remains an
+// alias for integrations that used the original API.
+type SubagentSpawnTool = SwarmSpawnTool
+
 type swarmSpawnArgs struct {
 	Task      string `json:"task"`
 	Agent     string `json:"agent,omitempty"`
@@ -58,6 +67,9 @@ type swarmSpawnArgs struct {
 	Provider  string `json:"provider,omitempty"`
 	Reasoning string `json:"reasoning,omitempty"`
 	Thinking  string `json:"thinking,omitempty"`
+	Isolation string `json:"isolation,omitempty"`
+	Timeout   string `json:"timeout,omitempty"`
+	MaxTurns  int    `json:"max_turns,omitempty"`
 }
 
 const swarmSpawnSchema = `{
@@ -88,23 +100,43 @@ const swarmSpawnSchema = `{
       "type": "string",
       "enum": ["off", "minimum", "low", "medium", "high", "xhigh", "max"],
       "description": "Alias for reasoning, accepted for compatibility with common agent profile terminology. Prefer reasoning when both are available."
+    },
+    "isolation": {
+      "type": "string",
+      "enum": ["shared", "worktree"],
+      "description": "Workspace mode. Shared preserves legacy behavior; worktree captures a patch without merging it."
+    },
+    "timeout": {
+      "type": "string",
+      "description": "Optional Go duration such as 20m."
+    },
+    "max_turns": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Maximum prompt-level turns for this worker."
     }
   },
   "required": ["task"]
 }`
 
-func (t *SwarmSpawnTool) Name() string { return "swarm_spawn" }
+func (t *SwarmSpawnTool) Name() string {
+	if strings.TrimSpace(t.ToolName) != "" {
+		return strings.TrimSpace(t.ToolName)
+	}
+	return "swarm_spawn"
+}
 func (t *SwarmSpawnTool) Description() string {
-	return "Spawn a background sub-agent to work on a parallel sub-task. Optionally select a named markdown profile with agent and set its model/provider/reasoning. Named profiles may restrict fast mode but cannot enable it when the host setting is off. Returns the sub-agent id immediately; the sub-agent keeps running while this conversation continues. The sub-agent shares this working directory."
+	return "Spawn a background sub-agent to work on a parallel sub-task. Optionally select a named markdown profile, model/provider/reasoning, timeout, turn limit, shared/worktree isolation, and fast-mode preference. Returns the sub-agent id immediately; completion arrives through the result/event path."
 }
 func (t *SwarmSpawnTool) Schema() json.RawMessage { return json.RawMessage(swarmSpawnSchema) }
 
 func (t *SwarmSpawnTool) Execute(ctx context.Context, raw json.RawMessage, progress func(string)) (core.ToolResult, error) {
+	prefix := t.Name()
 	if t.Swarm == nil {
-		return protocolToolError("swarm_spawn: swarm supervisor not available in this mode")
+		return protocolToolError(prefix + ": swarm supervisor not available in this mode")
 	}
 	if t.Enabled == nil || !t.Enabled() {
-		return protocolToolError("swarm_spawn: auto-swarm is disabled. Ask the user to enable it from /settings before delegating sub-tasks.")
+		return protocolToolError(prefix + ": auto-swarm is disabled. Ask the user to enable it from /settings before delegating sub-tasks.")
 	}
 	var a swarmSpawnArgs
 	if err := json.Unmarshal(raw, &a); err != nil {
@@ -112,7 +144,26 @@ func (t *SwarmSpawnTool) Execute(ctx context.Context, raw json.RawMessage, progr
 	}
 	task := strings.TrimSpace(a.Task)
 	if task == "" {
-		return protocolToolError("swarm_spawn: task is required")
+		return protocolToolError(prefix + ": task is required")
+	}
+
+	workspaceMode := swarm.WorkspaceShared
+	if value := strings.TrimSpace(a.Isolation); value != "" {
+		workspaceMode = swarm.WorkspaceMode(value)
+		if workspaceMode != swarm.WorkspaceShared && workspaceMode != swarm.WorkspaceWorktree {
+			return protocolToolError(prefix + ": isolation must be shared or worktree")
+		}
+	}
+	var timeout time.Duration
+	if value := strings.TrimSpace(a.Timeout); value != "" {
+		parsed, parseErr := time.ParseDuration(value)
+		if parseErr != nil || parsed <= 0 {
+			return protocolToolError(prefix + ": timeout must be a positive duration")
+		}
+		timeout = parsed
+	}
+	if a.MaxTurns < 0 {
+		return protocolToolError(prefix + ": max_turns must be positive")
 	}
 
 	agentName := strings.TrimSpace(a.Agent)
@@ -120,15 +171,15 @@ func (t *SwarmSpawnTool) Execute(ctx context.Context, raw json.RawMessage, progr
 	var fastModeOverride *bool
 	if agentName != "" {
 		if t.ResolveSubagent == nil {
-			return protocolToolError("swarm_spawn: named subagent profiles are unavailable")
+			return protocolToolError(prefix + ": named subagent profiles are unavailable")
 		}
 		var err error
 		profile, err = t.ResolveSubagent(agentName)
 		if err != nil {
-			return protocolToolError("swarm_spawn: " + err.Error())
+			return protocolToolError(prefix + ": " + err.Error())
 		}
 		if profile == nil {
-			return protocolToolError("swarm_spawn: unknown subagent profile " + agentName)
+			return protocolToolError(prefix + ": unknown subagent profile " + agentName)
 		}
 		agentName = profile.Name
 		fastModeOverride = profile.FastMode
@@ -136,55 +187,63 @@ func (t *SwarmSpawnTool) Execute(ctx context.Context, raw json.RawMessage, progr
 
 	model := strings.TrimSpace(a.Model)
 	providerID := strings.TrimSpace(a.Provider)
+	var profileTools []string
+	if profile != nil {
+		profileTools = append([]string(nil), profile.Tools...)
+	}
 	if (model == "") != (providerID == "") {
-		return protocolToolError("swarm_spawn: omit both model/provider to inherit the host or profile, or provide both explicitly")
+		return protocolToolError(prefix + ": omit both model/provider to inherit the host or profile, or provide both explicitly")
 	}
-	if model == "" && providerID == "" && profile != nil {
-		// A fully-qualified profile model is useful metadata for the
-		// supervisor and also lets it inherit the right credential route.
-		// Bare profile model ids remain child-resolved so the configured
-		// provider is preserved.
+	if profile != nil {
+		// A profile may specify a qualified model, a bare model, a provider,
+		// or neither. Fill only missing pieces so explicit spawn options win;
+		// the parent session supplies whatever the profile leaves unspecified.
 		profileProvider, profileModel := profile.ModelSelection()
-		if profileProvider != "" && profileModel != "" {
-			providerID, model = profileProvider, profileModel
+		if model == "" {
+			model = profileModel
+		}
+		if providerID == "" {
+			providerID = profileProvider
 		}
 	}
-	if model == "" && providerID == "" && profile == nil {
-		if t.DefaultModel != nil {
-			model = strings.TrimSpace(t.DefaultModel())
-		}
-		if t.DefaultProvider != nil {
-			providerID = strings.TrimSpace(t.DefaultProvider())
-		}
+	if model == "" && t.DefaultModel != nil {
+		model = strings.TrimSpace(t.DefaultModel())
+	}
+	if providerID == "" && t.DefaultProvider != nil {
+		providerID = strings.TrimSpace(t.DefaultProvider())
 	}
 
 	reasoning, err := reasoningOverride(a.Reasoning, a.Thinking)
 	if err != nil {
-		return protocolToolError("swarm_spawn: " + err.Error())
+		return protocolToolError(prefix + ": " + err.Error())
 	}
 	if reasoning == "" && profile != nil && strings.TrimSpace(profile.Thinking) != "" {
 		reasoning, err = reasoningOverride(profile.Thinking, "")
 		if err != nil {
-			return protocolToolError("swarm_spawn: profile " + profile.Name + ": " + err.Error())
+			return protocolToolError(prefix + ": profile " + profile.Name + ": " + err.Error())
 		}
 	}
 	if reasoning == "" && t.DefaultReasoning != nil {
 		reasoning, err = reasoningOverride(t.DefaultReasoning(), "")
 		if err != nil {
-			return protocolToolError("swarm_spawn: host " + err.Error())
+			return protocolToolError(prefix + ": host " + err.Error())
 		}
 	}
 
 	agent, err := t.Swarm.SpawnReq(ctx, swarm.SpawnRequest{
-		Task:      task,
-		Model:     model,
-		Provider:  providerID,
-		Reasoning: reasoning,
-		FastMode:  fastModeOverride,
-		Subagent:  agentName,
+		Task:          task,
+		Model:         model,
+		Provider:      providerID,
+		Reasoning:     reasoning,
+		FastMode:      fastModeOverride,
+		Subagent:      agentName,
+		Timeout:       timeout,
+		MaxTurns:      a.MaxTurns,
+		WorkspaceMode: workspaceMode,
+		Tools:         profileTools,
 	})
 	if err != nil {
-		return core.ToolResult{}, fmt.Errorf("swarm_spawn: %w", err)
+		return core.ToolResult{}, fmt.Errorf("%s: %w", prefix, err)
 	}
 	if t.OnSpawned != nil {
 		t.OnSpawned(agent, task)
@@ -192,6 +251,8 @@ func (t *SwarmSpawnTool) Execute(ctx context.Context, raw json.RawMessage, progr
 
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "spawned sub-agent %s\n", agent.ID)
+	fmt.Fprintf(&sb, "state: %s/%s\n", agent.ProcessState(), agent.TurnState())
+	fmt.Fprintf(&sb, "workspace: %s\n", agent.WorkspaceMode)
 	fmt.Fprintf(&sb, "task: %s\n", truncateTask(task, 200))
 	if agentName != "" {
 		fmt.Fprintf(&sb, "agent: %s\n", agentName)
@@ -208,18 +269,25 @@ func (t *SwarmSpawnTool) Execute(ctx context.Context, raw json.RawMessage, progr
 	if agent.FastMode {
 		sb.WriteString("fast mode: enabled\n")
 	}
-	sb.WriteString("\nThe sub-agent is running in the background. Use /swarm in the TUI to monitor it. ")
+	sb.WriteString("\nThe sub-agent is running in the background. Use /subagents in the TUI to monitor it. ")
 	sb.WriteString("This conversation continues immediately; do not wait for the sub-agent to finish before working on the next thing.")
 	return core.ToolResult{
 		Content: []provider.Content{provider.TextBlock{Text: sb.String()}},
 		Details: map[string]any{
-			"agent_id":  agent.ID,
-			"task":      task,
-			"agent":     agentName,
-			"model":     model,
-			"provider":  providerID,
-			"reasoning": reasoning,
-			"fast_mode": agent.FastMode,
+			"agent_id":      agent.ID,
+			"task":          task,
+			"agent":         agentName,
+			"model":         model,
+			"provider":      providerID,
+			"reasoning":     reasoning,
+			"fast_mode":     agent.FastMode,
+			"isolation":     string(workspaceMode),
+			"timeout":       timeout.String(),
+			"max_turns":     agent.MaxTurns,
+			"state":         agent.Status(),
+			"process_state": string(agent.ProcessState()),
+			"turn_state":    string(agent.TurnState()),
+			"result_ref":    swarm.ResultRef(agent.ID),
 		},
 	}, nil
 }

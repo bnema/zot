@@ -6,10 +6,29 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/patriceckhart/zot/packages/agent/swarm"
 )
+
+// TestWorkerOutputLimitsUseSupervisorPolicy verifies that the child reads
+// the effective output caps propagated by the supervisor and retains safe
+// defaults for standalone workers.
+func TestWorkerOutputLimitsUseSupervisorPolicy(t *testing.T) {
+	t.Setenv("ZOT_SWARM_MAX_OUTPUT_BYTES", "123")
+	t.Setenv("ZOT_SWARM_MAX_OUTPUT_LINES", "7")
+	bytesLimit, linesLimit := workerOutputLimits()
+	if bytesLimit != 123 || linesLimit != 7 {
+		t.Fatalf("worker output limits = (%d, %d), want (123, 7)", bytesLimit, linesLimit)
+	}
+	t.Setenv("ZOT_SWARM_MAX_OUTPUT_BYTES", "invalid")
+	t.Setenv("ZOT_SWARM_MAX_OUTPUT_LINES", "0")
+	bytesLimit, linesLimit = workerOutputLimits()
+	if bytesLimit != 500_000 || linesLimit != 5_000 {
+		t.Fatalf("invalid worker output limits = (%d, %d), want defaults", bytesLimit, linesLimit)
+	}
+}
 
 // TestSwarmEmitterMirrorDormantUntilStdoutBreaks regresses the
 // "everything is doubled after reopening a swarm agent" bug.
@@ -84,6 +103,51 @@ func TestSwarmEmitterMirrorDormantUntilStdoutBreaks(t *testing.T) {
 // wire-format contract: each emitted event lands on stdout as one
 // JSON object per line with type+time at top level alongside the
 // data fields. The supervisor's runner parses this exact shape.
+func TestSwarmEmitterLargeResultIsNotDuplicatedOnWire(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "events.jsonl")
+	file, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+
+	em := newSwarmEmitter(file, nil)
+	em.setProtocolIdentity("agent-1")
+	em.emit("turn.result", map[string]any{
+		"status":  "succeeded",
+		"turn_id": "turn-1",
+		"output":  strings.Repeat("x", 500_000),
+	})
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	wire, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(wire) >= 900_000 {
+		t.Fatalf("large result appears duplicated on wire: %d bytes", len(wire))
+	}
+	var object map[string]any
+	if err := json.Unmarshal(bytes.TrimSpace(wire), &object); err != nil {
+		t.Fatal(err)
+	}
+	if _, exists := object["output"]; exists {
+		t.Fatal("large output was flattened a second time")
+	}
+	payload, ok := object["payload"].(map[string]any)
+	if !ok || len(payload["output"].(string)) != 500_000 {
+		t.Fatal("canonical payload lost the complete bounded output")
+	}
+	events, err := swarm.ReadEventLog(path)
+	if err != nil || len(events) != 1 {
+		t.Fatalf("supervisor event parser could not recover the large result: events=%d err=%v", len(events), err)
+	}
+	if output, ok := events[0].Data["output"].(string); !ok || len(output) != 500_000 {
+		t.Fatal("supervisor parser lost the large result payload")
+	}
+}
+
 func TestSwarmEmitterStdoutShapeMatchesSupervisorParser(t *testing.T) {
 	// Pipe so we can read what the emitter wrote.
 	r, w, err := os.Pipe()

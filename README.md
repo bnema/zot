@@ -290,7 +290,7 @@ Slash command names are case-insensitive in the TUI and messaging backends; argu
 | `/session` | Four ops on the current session: `export` to a portable `.zotsession` file, `import` one back in, `fork` from a past user message into a new branch, `tree` to switch between branches. Opens a picker without an argument; direct forms: `/session export [path]`, `/session import <path>`, `/session fork`, `/session tree`. Default export destination is `~/Downloads`. `Esc` `Esc` from an idle, empty editor is a shortcut for `/session tree` when the terminal supplies two parsed bare Escape events. |
 | `/jump` | Scroll the chat to a previous turn (or `/jump <text>` to filter). |
 | `/btw` | Side chat with full context that doesn't add to the main thread. |
-| `/swarm` | Spawn, monitor, and chat with background subagents. Each runs in parallel with your main session and shares its working directory. Named profiles can be selected with `agent`; see [docs/subagents.md](docs/subagents.md). |
+| `/subagents` | Spawn, monitor, and chat with background subagents. Each is a separate long-lived process with bounded lifecycle state, structured results, and optional Git worktree isolation. `/swarm` remains a compatibility alias. Named profiles can be selected with `agent`; see [docs/subagents.md](docs/subagents.md). |
 | `/skills` | List discovered skills (SKILL.md files) and preview their bodies. |
 | `/compact` | Summarize the transcript into one message to free up context. |
 | `/study` | Run the canned prompt "Read and understand everything in the current directory." so the agent has full project context before you start asking targeted questions. Pass a path — typed, drag-dropped, or selected via `@` — to target a specific file or directory instead: `/study [dir:packages/]`, `/study cmd/zot/main.go`. |
@@ -346,28 +346,28 @@ Each question runs an isolated agent turn against `system + main transcript + si
 
 Inside the overlay: `enter` sends, `esc` cancels an in-flight call (or closes the overlay if idle), `ctrl+c` closes immediately. Side-chat exchanges never touch the transcript and aren't persisted to the session file.
 
-### `/swarm`
+### `/subagents`
 
-Background subagents that run alongside your main session. Each one is a separate `zot` subprocess with its own model loop, its own persistent session file, and its own chat in the dashboard — but they all run in **the same working directory as the host**, so they see and edit the same files you do. Spawn one for a side task (“draft the migration”, “investigate this stack trace”, “write the test harness for module X”), keep going in the main thread, check in on it whenever you want.
+Background subagents that run alongside your main session. Each one is a separate `zot` subprocess with its own model loop, persistent session file, versioned JSONL control protocol, structured turn result, and lifecycle state. Shared checkout mode preserves the historical behavior; worktree mode creates a temporary detached Git worktree, captures a patch and changed-file list, and never merges automatically.
 
-> **Agents edit the same files you do.** They use the same `read` / `write` / `edit` / `bash` tools as the main agent against the host's working directory. There's no per-agent worktree or branch. If you need parallel edits on isolated checkouts, set that up yourself with `git worktree` outside zot.
+> **Choose the workspace deliberately.** Use `isolation:"worktree"` for parallel coding so children cannot edit the host checkout. Use shared mode for read-only review or explicitly coordinated work. Worktree isolation is an accident-prevention guardrail, not a security sandbox.
 
 ```
-/swarm                            # open the dashboard
-/swarm new <task>                 # spawn an agent
-/swarm new --agent reviewer <task> # use a named markdown profile
-/swarm new --model gpt-5 <task>    # pin the new agent to a specific model
-/swarm new --reasoning high <task> # set the child reasoning level
-/swarm logs <id>                  # jump straight into one agent's transcript
-/swarm send <id> <text>           # send a follow-up without opening the dashboard
-/swarm resume                     # pick a stopped agent to bring back
-/swarm resume <id>                # bring a specific agent back
-/swarm kill <id>                  # stop a running agent (its state stays)
-/swarm remove <id>                # delete the agent's session and state
-/swarm list                       # alias for opening the dashboard
+/subagents                                      # open the dashboard
+/subagents new <task>                           # spawn an agent (shared mode)
+/subagents new --agent reviewer <task>          # use a named markdown profile
+/subagents new --reasoning high <task>          # set child reasoning
+/subagents logs <id>                            # open one agent's transcript
+/subagents send <id> <text>                     # send a follow-up turn
+/subagents result <id>                          # show the structured result reference
+/subagents resume-session <id>                  # continue without replaying the task
+/subagents restart-task <id>                   # intentionally run the stored task again
+/subagents kill <id>                            # cancel gracefully, then force-stop
+/subagents remove <id>                          # delete durable state
+# /swarm remains an alias for /subagents
 ```
 
-**Dashboard (`/swarm` with no arg)** — a list of every agent for the current session, with status, age, and current activity. Keys:
+**Dashboard (`/subagents` with no arg)** — a list of every agent for the current session, with process/turn state, queue position, age, workspace mode, and current activity. Keys:
 
 | Key | Action |
 |---|---|
@@ -386,17 +386,17 @@ Background subagents that run alongside your main session. Each one is a separat
 
 **Session scoping** — each agent is stamped with the host session that spawned it and only shows up in that session's dashboard. Swap sessions with `/sessions` and the dashboard re-narrows accordingly. Agents from other sessions keep running in the background and reappear when you switch back.
 
-**Persistence across zot restarts** — every spawn writes a `meta.json` next to its event log and session file under `$ZOT_HOME/swarm/agents/<id>/`. On the next `zot` launch they show up in the dashboard as **detached**; press `R` (or `/swarm resume <id>`) to bring one back. Resumed agents reattach to the same session and inbox socket, so the conversation continues from where it left off.
+**Persistence across zot restarts** — every spawn writes a durable manifest, append-only event log, session file, and structured `result.json` under `$ZOT_HOME/swarm/agents/<id>/`. On the next `zot` launch they show up as **detached**; use `R` or `/subagents resume-session <id>` to continue the existing session. `/subagents restart-task <id>` is the explicit operation that intentionally replays the stored task. Existing `$ZOT_HOME/swarm` state remains readable.
 
-**Where state lives** — everything per-agent (session file, events log, inbox socket, meta) lives under `$ZOT_HOME/swarm/agents/<id>/`. The agent's actual code edits land directly in your repo; track them with normal `git status` / `git diff`.
+**Where state lives** — per-agent manifests, session files, events, results, and patches live under `$ZOT_HOME/swarm/agents/<id>/`; inbox sockets are runtime-only and permission-restricted. Shared-mode edits land directly in the repo. Worktree-mode edits are captured as durable patches and changed-file summaries before cleanup.
 
 **`/session export` does NOT bundle subagents.** A `.zotsession` is just the main chat transcript; per-agent state (session file, unix-socket inbox) is machine-local and doesn't round-trip through a JSONL file. To share what an agent said, copy it out of the transcript view manually.
 
-**Auto-swarm.** With `/settings` -> auto-swarm on, the main agent gets a built-in `swarm_spawn` tool and a system-prompt nudge to use it. It can then fork sub-agents on its own when a request naturally splits into independent parallel work ("implement A and B", "investigate three files"). If named markdown profiles are available, zot adds a compact `[subagents_list]` to the main prompt; the model can choose a profile with the tool's `agent` field and optionally override its `model`, `provider`, or `reasoning`. Each spawn returns the sub-agent id immediately and the main turn keeps going. When every sub-agent the agent spawned in that batch finishes its initial task, zot injects one `[auto-swarm update]` message back into the main chat recapping each agent's status, task, and complete final response. If an agent produced no assistant response, zot includes a truncated transcript tail for diagnostics instead. The main agent then writes a short follow-up summary referencing the agents by id. Off by default; toggle from `/settings`.
+**Auto-swarm.** With `/settings` -> auto-swarm on, the main agent gets the canonical `subagent_spawn` tool (`swarm_spawn` remains an alias) and a system-prompt nudge to delegate independent work. The tool returns the child id and lifecycle state immediately; completion is a durable `turn.result` with a `subagent://<id>/result` reference. It accepts named profiles, timeout, `max_turns`, and `isolation:"shared"` or `isolation:"worktree"`. Global concurrency and total-spawn budgets apply equally to slash commands, tool calls, and batches. Off by default; toggle from `/settings`.
 
 ### Named subagent profiles
 
-zot discovers the common markdown/frontmatter profile layout from `~/.agents/agents/*.md` by default. With auto-swarm enabled, the main agent receives `[subagents_list]` metadata and can select a named profile through `swarm_spawn`. Profile bodies are applied only to the selected child. See [docs/subagents.md](docs/subagents.md) for discovery, supported fields, reasoning levels, and examples.
+zot discovers the common markdown/frontmatter profile layout from `~/.agents/agents/*.md` by default. With auto-swarm enabled, the main agent receives `[subagents_list]` metadata and can select a named profile through `subagent_spawn` (`swarm_spawn` remains an alias). Profile bodies are applied only to the selected child. See [docs/subagents.md](docs/subagents.md) for discovery, supported fields, reasoning levels, and examples.
 
 ### `/settings`
 
@@ -405,7 +405,7 @@ Opens a dialog with every persistent setting. `up`/`down` to navigate, `enter` o
 - **render images when supported** — draw screenshots / `read`-returned images inline using the terminal's image protocol, or fall back to a text placeholder. Auto-detected from `TERM_PROGRAM`; the toggle overrides the detection. The row is greyed out and forced off on terminals that don't speak any image protocol.
 - **terminal alerts** — emit a terminal bell when the main session stops with work that may need attention, or when an extension raises a structured alert. Enabled by default; changes apply immediately and persist as `terminal_alerts_enabled`. Terminal emulators may render the bell audibly, visually, or not at all.
 - **AI terminal titles** — after the first real prompt of a fresh interactive session, make one small hidden request to the active model and set the terminal title to `zot: <title>`. The title is limited to 40 Unicode characters, persisted with the session, restored on resume, and never added to the conversation. Enabled by default; disable it to avoid the extra model request. The toggle applies immediately, but title generation still waits for the first real prompt and never starts from startup context, resumed history, or slash commands. Persists as `terminal_title_enabled`.
-- **auto-swarm** — let the main agent spawn background sub-agents in parallel via a built-in `swarm_spawn` tool. Off by default. When on, the tool is registered with the running agent, the system prompt gains a short addendum telling the model to delegate independent sub-tasks proactively, and available named profiles are rendered in `[subagents_list]`. The tool accepts a profile name through `agent` and a per-child `reasoning`/`thinking` override. zot watches every sub-agent the main agent spawns. As soon as the last sub-agent in a batch finishes its initial task, an `[auto-swarm update]` message is injected back into the chat with each agent's status / task / transcript tail, so the main agent can summarise the collective outcome. Flipping off mid-session removes the tool from the live agent and strips the addendum on the next turn — the model stops trying to delegate. See `/swarm` and [docs/subagents.md](docs/subagents.md) for details.
+- **auto-swarm** — let the main agent spawn background sub-agents in parallel via the canonical `subagent_spawn` tool (`swarm_spawn` remains an alias). Off by default. The tool accepts named profiles, reasoning, timeout, turn limits, and shared/worktree isolation; lifecycle and result references are persisted. Completion updates still arrive through the auto-swarm watcher. See `/subagents` and [docs/subagents.md](docs/subagents.md) for details.
 - **fast mode** — request OpenAI's Fast service tier for OpenAI, OpenAI Responses, and OpenAI Codex models. Off by default; changes apply on the next model call and persist as `fast_mode`. Other providers return an unsupported-provider error. Fast mode may cost more and depends on the selected OpenAI model/account.
 - **lsp in main session** — enable the built-in `lsp` tool and code diagnostics for the main agent. Enabled by default; changes persist as `lsp_enabled`.
 - **lsp in sub-agents** — allow newly spawned background sub-agents to use the built-in `lsp` tool. Enabled by default; changes persist as `subagent_lsp_enabled` and apply when a child starts.

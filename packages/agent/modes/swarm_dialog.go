@@ -1006,7 +1006,7 @@ func (d *swarmDialog) Render(th tui.Theme, width int) []string {
 		return d.renderTranscript(th, width)
 	}
 
-	out := []string{frameHeader(th, "swarm (n new, p prompt, R resume, ↑/↓ move, enter view, k kill, r remove, esc close)", width)}
+	out := []string{frameHeader(th, "subagents (n new, p prompt, R resume, ↑/↓ move, enter view, k kill, r remove, esc close)", width)}
 	if d.prompting {
 		return d.renderPromptEditor(th, width, out)
 	}
@@ -1067,7 +1067,7 @@ func (d *swarmDialog) Render(th tui.Theme, width int) []string {
 	}
 
 	// Column header for readability.
-	header := fmt.Sprintf("  %-9s  %-26s  %-8s  %s", "STATUS", "ID", "AGE", "ACTIVITY")
+	header := fmt.Sprintf("  %-18s  %-26s  %-8s  %s", "PROCESS/TURN STATUS", "ID", "AGE", "ACTIVITY")
 	out = append(out, th.FG256(th.Muted, header))
 
 	for i, r := range d.rows {
@@ -1384,8 +1384,11 @@ func (d *swarmDialog) renderPromptEditor(th tui.Theme, width int, out []string) 
 //	✓ done    write-tests-67890           1h        done
 func formatSwarmRow(r swarm.AgentSnapshot, maxWidth int) string {
 	status := statusLabel(r.Status)
+	if r.ProcessState != "" && r.TurnState != "" {
+		status = truncateLineSafe(status+" "+string(r.ProcessState)+"/"+string(r.TurnState), 18)
+	}
 	age := formatAge(r.Started)
-	left := fmt.Sprintf("%-9s  %-26s  %-8s  ", status, truncateLineSafe(r.ID, 26), age)
+	left := fmt.Sprintf("%-18s  %-26s  %-8s  ", status, truncateLineSafe(r.ID, 26), age)
 	room := maxWidth - len([]rune(left))
 	if room < 10 {
 		room = 10

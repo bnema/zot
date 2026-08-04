@@ -19,13 +19,15 @@ func (noopSwarmRunner) Run(context.Context, swarm.Sink) error { return nil }
 func newTestSwarm(t *testing.T) *swarm.Swarm {
 	t.Helper()
 	root := t.TempDir()
-	return swarm.New(swarm.Config{
+	manager := swarm.New(swarm.Config{
 		Root:     filepath.Join(root, "swarm"),
 		RepoRoot: root,
 		NewRunner: func(*swarm.Agent) swarm.Runner {
 			return noopSwarmRunner{}
 		},
 	})
+	t.Cleanup(manager.StopAll)
+	return manager
 }
 
 func TestSwarmSpawnInheritsHostModelAndProviderWhenOmitted(t *testing.T) {

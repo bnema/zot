@@ -73,6 +73,10 @@ type InteractiveConfig struct {
 	// re-reading config.json on every open.
 	AutoSwarmEnabled *bool
 
+	// AutoSwarmToolAllowed is nil for normal sessions and false when the
+	// launch-time --no-tools/--tools policy excludes delegation.
+	AutoSwarmToolAllowed *bool
+
 	// FastMode mirrors the persisted OpenAI fast-mode flag at startup.
 	// nil/missing means disabled. Unsupported providers reject attempts
 	// to enable it and reject requests when it remains enabled.
@@ -1692,6 +1696,7 @@ func (i *Interactive) redraw() {
 		Provider:       i.cfg.Provider,
 		Model:          i.cfg.Model,
 		Reasoning:      i.cfg.Reasoning,
+		FastMode:       i.cfg.FastMode != nil && *i.cfg.FastMode,
 		Busy:           i.busy,
 		BusyPrefix:     statusBusyPrefix,
 		CWD:            i.cfg.CWD,
@@ -3979,7 +3984,7 @@ func (i *Interactive) openSettingsDialog() {
 		{
 			key:      "auto_swarm_enabled",
 			label:    "auto-swarm",
-			desc:     "let the agent spawn background sub-agents in parallel via the swarm_spawn tool",
+			desc:     "let the agent spawn background sub-agents in parallel via the subagent_spawn tool",
 			value:    autoSwarm,
 			disabled: autoSwarmDisabled,
 			hint:     autoSwarmHint,
@@ -5210,7 +5215,7 @@ func (i *Interactive) runSlash(ctx context.Context, cmd string) (done bool) {
 			break
 		}
 		i.openSessionOpsDialog()
-	case "/swarm":
+	case "/subagents", "/swarm":
 		i.runSwarm(ctx, parts[1:])
 	default:
 		// Last-resort fallback: try the extension manager. Built-in
@@ -7419,13 +7424,15 @@ func (i *Interactive) applyAutoSwarmTool(active bool) {
 	current := i.agent.Tools
 	next := core.Registry{}
 	for name, t := range current {
-		if name == "swarm_spawn" {
+		if name == "swarm_spawn" || name == "subagent_spawn" {
 			continue
 		}
 		next[name] = t
 	}
-	if active && i.cfg.Swarm != nil {
-		next["swarm_spawn"] = &tools.SwarmSpawnTool{
+	toolAllowed := i.cfg.AutoSwarmToolAllowed == nil || *i.cfg.AutoSwarmToolAllowed
+	if active && toolAllowed && i.cfg.Swarm != nil {
+		canonical := &tools.SwarmSpawnTool{
+			ToolName:         "subagent_spawn",
 			Swarm:            i.cfg.Swarm,
 			Enabled:          func() bool { return true },
 			DefaultModel:     func() string { return i.cfg.Model },
@@ -7434,6 +7441,10 @@ func (i *Interactive) applyAutoSwarmTool(active bool) {
 			ResolveSubagent:  i.cfg.ResolveSubagent,
 			OnSpawned:        i.trackSwarmAgent,
 		}
+		next[canonical.Name()] = canonical
+		legacy := *canonical
+		legacy.ToolName = "swarm_spawn"
+		next[legacy.Name()] = &legacy
 	}
 	i.agent.SetTools(next)
 }

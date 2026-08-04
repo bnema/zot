@@ -1,26 +1,16 @@
-// Package swarm implements zot's multi-agent supervisor.
+// Package swarm implements zot's subagent supervisor.
 //
-// A Swarm manages a set of headless zot subprocesses ("agents")
-// that share the host's working directory. The interactive TUI
-// exposes the supervisor through the /swarm slash command and a
-// dashboard dialog; non-TUI code can drive it directly through
-// this package.
+// A Swarm manages headless, long-lived zot subprocesses and keeps their
+// process/turn state, event logs, sessions, results, and optional worktree
+// artifacts durable across supervisor restarts. The canonical user-facing
+// name is "subagents"; this package and the /swarm command remain for
+// compatibility with existing callers.
 //
-// Every agent runs with cwd == the parent zot's RepoRoot — the
-// same files the user sees, the same files the main agent edits.
-// There is no git worktree, no per-agent branch, no isolation. If
-// you want parallel edits on a separate branch, use normal git
-// tooling (a real worktree, a different terminal) yourself.
-//
-// Each Agent has:
-//   - a unique id (short slug + nanoseconds)
-//   - a Runner (the thing that actually executes the task)
-//   - a Status string + Activity string that the dashboard reads
-//
-// The Runner abstraction means tests can swap a fake in instead of
-// really spawning a subprocess; the production Runner shells out to
-// `zot --swarm-agent ...` so we reuse zot's own model resolution
-// and tooling without re-implementing the agent loop.
+// Shared workspaces preserve the historical behavior, while an explicit
+// worktree request gives a child an isolated checkout whose patch is captured
+// before cleanup. The Runner abstraction lets tests inject a fake process;
+// production uses `zot --subagent-worker ...` with the legacy flag accepted as
+// a compatibility alias.
 package swarm
 
 import (
@@ -32,6 +22,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -49,18 +40,42 @@ const (
 
 // Config configures a Swarm.
 type Config struct {
+	// Context is the supervisor lifetime. Child workers use it as their
+	// parent context rather than inheriting an individual tool/model-turn
+	// context. A nil value means context.Background().
+	Context context.Context
+
 	// Root is the directory under which per-agent state files live.
 	// Typically <ZotHome>/swarm, but tests pass a tempdir.
 	Root string
 
-	// RepoRoot is the working directory every spawned agent runs
-	// in — the same cwd the parent zot is using. There is no
-	// per-agent isolation: agents edit the host's files directly.
+	// LegacyRoots are older state roots that Reload also reads. New
+	// agents are always written below Root; this keeps the swarm ->
+	// subagents rename from making existing sessions disappear.
+	LegacyRoots []string
+
+	// Policy owns concurrency, timeout, output, and path safety limits.
+	Policy SubagentPolicy
+
+	// RepoRoot is the repository used by spawned agents. Shared-mode children
+	// run here; worktree-mode children use an isolated checkout created from
+	// this root.
 	RepoRoot string
+
+	// Provider is the active host provider. It is used only to decide whether
+	// an explicit child provider may inherit the host endpoint settings.
+	Provider string
 
 	// FastMode is copied to every newly spawned child and persisted so
 	// child subprocesses use the same OpenAI service-tier setting.
 	FastMode bool
+
+	// BaseURL and InsecureTLS are the effective provider connection
+	// settings inherited by newly spawned children. They are copied to
+	// each Agent and persisted so a reload/resume does not silently fall
+	// back to the child's independent provider configuration.
+	BaseURL     string
+	InsecureTLS bool
 
 	// NewRunner produces the Runner for an Agent. If nil, the default
 	// `zot --swarm-agent ...` exec runner is used. Tests inject a fake
@@ -110,9 +125,18 @@ type Sink interface {
 type Swarm struct {
 	cfg Config
 
-	mu     sync.Mutex
-	agents map[string]*Agent
-	order  []string // creation order for stable listing
+	mu             sync.Mutex
+	operationMu    sync.Mutex
+	lifetimeCtx    context.Context
+	lifetimeCancel context.CancelFunc
+	agents         map[string]*Agent
+	order          []string // creation order for stable listing
+	queue          []*Agent
+	active         int
+	activeByParent map[string]int
+	activeByBatch  map[string]int
+	totalSpawned   int
+	batches        map[string]*Batch
 
 	// activeSession is the host session id the dashboard is
 	// currently scoped to. When non-empty, SnapshotAll filters out
@@ -137,15 +161,37 @@ func New(cfg Config) *Swarm {
 			return &execRunner{agent: a, resolveCredential: cfg.ResolveCredential}
 		}
 	}
+	cfg.Policy.normalize()
+	lifetimeParent := cfg.Context
+	if lifetimeParent == nil {
+		lifetimeParent = context.Background()
+	}
+	lifetimeCtx, lifetimeCancel := context.WithCancel(lifetimeParent)
 	return &Swarm{
-		cfg:    cfg,
-		agents: map[string]*Agent{},
+		cfg:            cfg,
+		lifetimeCtx:    lifetimeCtx,
+		lifetimeCancel: lifetimeCancel,
+		agents:         map[string]*Agent{},
+		activeByParent: map[string]int{},
+		activeByBatch:  map[string]int{},
+		batches:        map[string]*Batch{},
 	}
 }
 
 // SetRepoRoot updates the shared working directory for subsequently
 // spawned agents. Existing agents keep the directory they were started
 // with; callers use this when the host session changes cwd.
+func (f *Swarm) workerContext(timeout time.Duration) (context.Context, context.CancelFunc) {
+	base := f.lifetimeCtx
+	if base == nil {
+		base = context.Background()
+	}
+	if timeout > 0 {
+		return context.WithTimeout(base, timeout)
+	}
+	return context.WithCancel(base)
+}
+
 func (f *Swarm) SetRepoRoot(root string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -174,6 +220,32 @@ func (f *Swarm) FastMode() bool {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.cfg.FastMode
+}
+
+// SetProviderSettings updates the effective connection settings used by
+// subsequently spawned children. Existing agents keep their persisted values
+// so a model/provider switch cannot silently change a running or resumed
+// worker's endpoint.
+func (f *Swarm) SetProvider(provider string) {
+	f.mu.Lock()
+	f.cfg.Provider = strings.TrimSpace(provider)
+	f.mu.Unlock()
+}
+
+func (f *Swarm) SetProviderSettings(baseURL string, insecureTLS bool) {
+	f.mu.Lock()
+	f.cfg.BaseURL = strings.TrimSpace(baseURL)
+	f.cfg.InsecureTLS = insecureTLS
+	f.mu.Unlock()
+}
+
+// ProviderSettings returns the settings used by subsequently spawned
+// children. It is primarily useful to host integrations that need to verify
+// the manager follows the active provider selection.
+func (f *Swarm) ProviderSettings() (string, bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.cfg.BaseURL, f.cfg.InsecureTLS
 }
 
 // SetActiveSession scopes the dashboard view (and Spawn stamping)
@@ -211,6 +283,18 @@ func (f *Swarm) agentStateDir(id string) string {
 	return filepath.Join(f.cfg.Root, "agents", id)
 }
 
+func (f *Swarm) uniqueAgentIDLocked(base string) string {
+	id := base
+	for suffix := 2; ; suffix++ {
+		_, inMemory := f.agents[id]
+		_, onDiskErr := os.Stat(f.agentStateDir(id))
+		if !inMemory && onDiskErr != nil {
+			return id
+		}
+		id = fmt.Sprintf("%s-%d", base, suffix)
+	}
+}
+
 // SpawnRequest configures a Spawn. Only Task is required; the rest
 // are optional. Model + Provider, when set, get baked into the
 // child argv as --model / --provider so the agent runs against the
@@ -220,57 +304,116 @@ func (f *Swarm) agentStateDir(id string) string {
 // as --reasoning when set. FastMode restricts the host setting when a
 // selected profile declares a fastMode preference.
 type SpawnRequest struct {
-	Task      string
-	Model     string // optional override; child resolves default if empty
-	Provider  string // optional override; usually paired with Model
-	Reasoning string // optional reasoning/thinking level override
+	Task     string
+	Model    string // optional override; child resolves default if empty
+	Provider string // optional override; usually paired with Model
+	BaseURL  string // optional provider endpoint override
+	// InsecureTLS enables the child to skip TLS verification for its
+	// effective custom provider endpoint.
+	InsecureTLS bool
+	Reasoning   string // optional reasoning/thinking level override
 	// FastMode is an optional profile restriction. A non-nil false value
 	// disables fast mode for this child; true still cannot enable fast mode
 	// when Config.FastMode is false. Nil inherits Config.FastMode.
 	FastMode *bool
-	Subagent string // optional named markdown profile
+	Subagent  string // optional named markdown profile
+
+	// ParentID is metadata used for per-parent scheduling limits. A
+	// non-empty RequesterAgentID identifies an untrusted child request;
+	// recursive spawning is rejected in v1.
+	ParentID         string
+	BatchID          string
+	RootSessionID    string
+	RequesterAgentID string
+
+	Timeout          time.Duration
+	MaxTurns         int
+	Tools            []string
+	WorkspaceMode    WorkspaceMode
+	WorkspaceBase    string
+	WorkspaceCapture CaptureMode
 }
 
-// Spawn creates a new Agent for the given task, allocates its
-// on-disk state directory (events log, inbox socket path, session
-// file path), and starts the Runner on a background goroutine. The
-// returned Agent is already in StatusRunning (or StatusFailed if
-// state setup failed before the goroutine started). This is the
-// historical signature; callers that want to override the child's
-// model use SpawnReq instead.
+// Spawn creates a new Agent for the given task, allocates its on-disk
+// state directory (events log, inbox socket path, session file path), and
+// queues it for the manager-owned scheduler. The returned Agent is pending
+// when the concurrency budget is full and transitions to running when a slot
+// opens. This is the historical signature; callers that want to override the
+// child's model or workspace use SpawnReq instead.
 func (f *Swarm) Spawn(ctx context.Context, task string) (*Agent, error) {
 	return f.SpawnReq(ctx, SpawnRequest{Task: task})
 }
 
-// SpawnReq is the full-fat variant of Spawn that accepts a
-// SpawnRequest. Existing callers can keep using Spawn; new code that
-// wants to pin the child's model uses this.
-//
-// Every spawned agent runs with cwd == cfg.RepoRoot — the same
-// working directory as the host. No per-agent worktree, no branch,
-// no isolation. The user explicitly opted out of the worktree flow.
+// SpawnReq is the full-fat variant of Spawn that accepts a SpawnRequest.
+// Existing callers can keep using Spawn; new code that wants to pin the
+// child's model, policy, or workspace uses this.
 func (f *Swarm) SpawnReq(ctx context.Context, req SpawnRequest) (*Agent, error) {
 	task := strings.TrimSpace(req.Task)
 	if task == "" {
-		return nil, errors.New("swarm: empty task")
+		return nil, errors.New("subagents: empty task")
 	}
-	id := newAgentID(task, f.cfg.Now())
+	if req.RequesterAgentID != "" {
+		return nil, errors.New("subagents: child-originated spawning is disabled")
+	}
+	if err := f.validateSpawnRequest(req); err != nil {
+		return nil, err
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
 
-	// Snapshot the shared cwd together with the active session so a
-	// concurrent /cd cannot race a spawn or produce a mixed snapshot.
+	now := f.cfg.Now()
+	baseID := newAgentID(task, now)
+
+	// Reserve a spawn budget before touching disk. This makes the total
+	// budget race-free across slash commands, tools, and batch callers.
 	f.mu.Lock()
+	id := f.uniqueAgentIDLocked(baseID)
+	if f.totalSpawned >= f.cfg.Policy.MaxTotalSpawned {
+		f.mu.Unlock()
+		return nil, fmt.Errorf("subagents: total spawn budget exhausted (%d)", f.cfg.Policy.MaxTotalSpawned)
+	}
+	f.totalSpawned++
 	dir := f.cfg.RepoRoot
 	fastMode := f.cfg.FastMode
+	configProvider := f.cfg.Provider
+	configBaseURL := f.cfg.BaseURL
+	configInsecureTLS := f.cfg.InsecureTLS
 	sessionID := f.activeSession
 	f.mu.Unlock()
 	if req.FastMode != nil {
 		fastMode = fastMode && *req.FastMode
 	}
+	childProvider := strings.TrimSpace(req.Provider)
+	inheritProviderSettings := childProvider == "" || configProvider == "" || strings.EqualFold(childProvider, strings.TrimSpace(configProvider))
+	baseURL := strings.TrimSpace(req.BaseURL)
+	if baseURL == "" && inheritProviderSettings {
+		baseURL = strings.TrimSpace(configBaseURL)
+	}
+	insecureTLS := req.InsecureTLS || (inheritProviderSettings && configInsecureTLS)
+	reserved := true
+	defer func() {
+		if reserved {
+			f.mu.Lock()
+			f.totalSpawned--
+			f.mu.Unlock()
+		}
+	}()
 
 	stateDir := f.agentStateDir(id)
-	if err := os.MkdirAll(stateDir, 0o755); err != nil {
-		return nil, fmt.Errorf("swarm state dir: %w", err)
+	if err := os.MkdirAll(stateDir, 0o700); err != nil {
+		return nil, fmt.Errorf("subagents state dir: %w", err)
 	}
+	lease, err := acquireAgentLease(stateDir)
+	if err != nil {
+		return nil, fmt.Errorf("subagents agent lease: %w", err)
+	}
+	leaseOwned := true
+	defer func() {
+		if leaseOwned {
+			_ = lease.Close()
+		}
+	}()
 	logPath := filepath.Join(stateDir, "events.jsonl")
 	sessionPath := filepath.Join(stateDir, "session.json")
 	// Keep the transient unix socket outside the durable state root.
@@ -278,43 +421,120 @@ func (f *Swarm) SpawnReq(ctx context.Context, req SpawnRequest) (*Agent, error) 
 	// regular state files but cannot host unix socket nodes.
 	inboxPath, err := inboxSocketPath(f.cfg.Root, id)
 	if err != nil {
-		return nil, fmt.Errorf("swarm inbox path: %w", err)
+		_ = lease.Close()
+		leaseOwned = false
+		_ = os.RemoveAll(stateDir)
+		return nil, fmt.Errorf("subagents inbox path: %w", err)
+	}
+
+	workspaceMode := req.WorkspaceMode
+	if workspaceMode == "" {
+		workspaceMode = WorkspaceShared
+	}
+	workspace, err := PrepareWorkspace(ctx, WorkspaceRequest{
+		Mode:           workspaceMode,
+		RepositoryRoot: dir,
+		StateDir:       stateDir,
+		AgentID:        id,
+		Base:           req.WorkspaceBase,
+		Capture:        req.WorkspaceCapture,
+		AllowedRoots:   append([]string(nil), f.cfg.Policy.AllowedRoots...),
+	})
+	if err != nil {
+		_ = lease.Close()
+		leaseOwned = false
+		_ = os.RemoveAll(stateDir)
+		return nil, err
+	}
+	dir = workspace.Dir()
+	maxTurns := req.MaxTurns
+	if maxTurns <= 0 {
+		maxTurns = f.cfg.Policy.MaxTurns
+	}
+	timeout := req.Timeout
+	if timeout <= 0 {
+		timeout = f.cfg.Policy.DefaultTimeout
+	}
+	runCtx, cancel := f.workerContext(timeout)
+	tools := append([]string(nil), req.Tools...)
+	if len(tools) == 0 && len(f.cfg.Policy.AllowedTools) > 0 {
+		tools = append([]string(nil), f.cfg.Policy.AllowedTools...)
 	}
 
 	a := &Agent{
-		ID:           id,
-		Task:         task,
-		Dir:          dir,
-		Started:      f.cfg.Now(),
-		Model:        strings.TrimSpace(req.Model),
-		Provider:     strings.TrimSpace(req.Provider),
-		Reasoning:    strings.TrimSpace(req.Reasoning),
-		FastMode:     fastMode,
-		Subagent:     strings.TrimSpace(req.Subagent),
-		SessionID:    sessionID,
-		InboxPath:    inboxPath,
-		EventLogPath: logPath,
-		SessionPath:  sessionPath,
-		inbox:        NewInbox(inboxPath),
-		status:       StatusPending,
-		activity:     "queued",
-		done:         make(chan struct{}),
+		ID:                id,
+		Task:              task,
+		OriginalTask:      task,
+		Dir:               dir,
+		RepositoryRoot:    workspace.RepositoryRoot(),
+		WorkspacePath:     workspace.Dir(),
+		Started:           now,
+		ParentID:          strings.TrimSpace(req.ParentID),
+		BatchID:           strings.TrimSpace(req.BatchID),
+		RootSessionID:     strings.TrimSpace(req.RootSessionID),
+		Model:             strings.TrimSpace(req.Model),
+		Provider:          strings.TrimSpace(req.Provider),
+		BaseURL:           baseURL,
+		InsecureTLS:       insecureTLS,
+		Reasoning:         strings.TrimSpace(req.Reasoning),
+		FastMode:          fastMode,
+		Subagent:          strings.TrimSpace(req.Subagent),
+		SessionID:         sessionID,
+		WorkspaceMode:     workspaceMode,
+		WorkspaceBase:     strings.TrimSpace(req.WorkspaceBase),
+		WorkspaceCapture:  req.WorkspaceCapture,
+		MaxTurns:          maxTurns,
+		Timeout:           timeout,
+		HeartbeatInterval: f.cfg.Policy.HeartbeatInterval,
+		Tools:             tools,
+		InboxPath:         inboxPath,
+		EventLogPath:      logPath,
+		SessionPath:       sessionPath,
+		inbox:             NewInbox(inboxPath),
+		status:            StatusPending,
+		activity:          "queued",
+		processState:      ProcessPending,
+		turnState:         TurnQueued,
+		updatedAt:         now,
+		lastActivity:      now,
+		stateDir:          stateDir,
+		lease:             lease,
+		maxOutputBytes:    f.cfg.Policy.MaxOutputBytes,
+		maxOutputLines:    f.cfg.Policy.MaxOutputLines,
+		done:              make(chan struct{}),
+		turnResults:       make(chan *TurnResult, 16),
 	}
-	a.ctx, a.cancel = context.WithCancel(ctx)
+	if a.RootSessionID == "" {
+		a.RootSessionID = sessionID
+	}
+	a.ctx, a.cancel = runCtx, cancel
+	a.persistFn = f.persistAgent
+	a.workspaceCleanup = func() error { return workspace.Cleanup(context.Background()) }
+	a.workspaceCapture = func() (WorkspaceCapture, error) { return workspace.Capture(context.Background()) }
 	a.runner = f.cfg.NewRunner(a)
+	if err := writeAgentMeta(stateDir, a); err != nil {
+		if a.cancel != nil {
+			a.cancel()
+		}
+		_ = workspace.Cleanup(context.Background())
+		_ = lease.Close()
+		leaseOwned = false
+		_ = os.RemoveAll(stateDir)
+		return nil, fmt.Errorf("subagents initial metadata: %w", err)
+	}
 
 	f.mu.Lock()
 	f.agents[id] = a
 	f.order = append(f.order, id)
+	f.queue = append(f.queue, a)
 	f.mu.Unlock()
+	leaseOwned = false
 
-	// Persist the agent's identity so a later `zot` invocation can
-	// reload it from disk via Swarm.Reload. Best-effort: if the disk
-	// is read-only we still let the runner start, the user just won't
-	// see this agent on the next launch.
-	_ = writeAgentMeta(stateDir, a)
-
-	go f.run(a)
+	// Persisted metadata was written before queue admission, so a later
+	// supervisor can reconstruct work that never reached a process.
+	f.armQueueTimeout(a)
+	f.schedule()
+	reserved = false
 	return a, nil
 }
 
@@ -336,22 +556,77 @@ func (f *Swarm) SendInput(id, msg string) error {
 // SendUserTurn is sugar for the common "send the next user turn"
 // case. It quotes nothing and forwards verbatim; callers are
 // expected to have already trimmed and expanded the text.
+// CancelTurn requests cancellation of the current turn while keeping the
+// worker process alive for a later follow-up.
+func (f *Swarm) CancelTurn(id string) error {
+	a := f.Get(id)
+	if a == nil {
+		return fmt.Errorf("subagents: no such agent %q", id)
+	}
+	if a.inbox == nil {
+		return fmt.Errorf("subagents: agent %s has no inbox", a.ID)
+	}
+	a.setTurnState(TurnCanceling, a.CurrentTurnID())
+	if !a.protocolReady() {
+		return a.inbox.SendInput("cancel")
+	}
+	return a.inbox.SendCommand(NewCommand(CommandTurnCancel, a.ID, a.CurrentTurnID(), TurnCancelPayload{Reason: "user"}))
+}
+
 func (f *Swarm) SendUserTurn(id, text string) error {
-	return f.SendInput(id, "user "+text)
+	a := f.Get(id)
+	if a == nil {
+		return fmt.Errorf("subagents: no such agent %q", id)
+	}
+	if a.inbox == nil {
+		return fmt.Errorf("subagents: agent %s has no inbox", a.ID)
+	}
+	if !a.protocolReady() {
+		// Until agent.ready arrives, use the legacy spelling so a prompt
+		// sent immediately after Spawn is not lost during compatibility
+		// negotiation. The worker accepts both forms.
+		return a.inbox.SendInput("user " + text)
+	}
+	return a.inbox.SendCommand(NewCommand(CommandTurnStart, a.ID, a.CurrentTurnID(), TurnStartPayload{Prompt: text}))
 }
 
 func (f *Swarm) run(a *Agent) {
-	a.setStatus(StatusRunning)
-	a.setActivity("starting")
-	err := a.runner.Run(a.ctx, agentSink{a: a})
+	a.mu.Lock()
+	killedBeforeStart := a.status == StatusKilled
+	ctxErr := error(nil)
+	if a.ctx != nil {
+		ctxErr = a.ctx.Err()
+	}
+	a.mu.Unlock()
+	var err error
+	if killedBeforeStart || ctxErr != nil || !atomic.CompareAndSwapInt32(&a.launchState, 0, 1) {
+		if ctxErr != nil {
+			err = ctxErr
+		} else {
+			err = context.Canceled
+		}
+	} else {
+		a.setActivity("starting")
+		if a.runner == nil {
+			err = errors.New("subagents: agent has no runner")
+		} else {
+			err = a.runner.Run(a.ctx, agentSink{a: a})
+		}
+	}
+
 	a.mu.Lock()
 	a.finished = f.cfg.Now()
 	switch {
 	case a.status == StatusKilled:
-		// Already finalised by Stop.
+		// Stop requested a terminal state; preserve it.
 	case errors.Is(err, context.Canceled):
 		a.status = StatusKilled
 		a.activity = "cancelled"
+		a.lastErr = err
+	case errors.Is(err, context.DeadlineExceeded):
+		a.status = StatusFailed
+		a.activity = "timeout"
+		a.lastErr = err
 	case err != nil:
 		a.status = StatusFailed
 		a.activity = "error: " + truncate(err.Error(), 120)
@@ -360,8 +635,46 @@ func (f *Swarm) run(a *Agent) {
 		a.status = StatusDone
 		a.activity = "done"
 	}
+	finalStatus := a.status
 	a.mu.Unlock()
-	close(a.done)
+
+	switch finalStatus {
+	case StatusKilled:
+		a.setProcessState(ProcessKilled)
+		a.setTurnState(TurnCanceled, a.CurrentTurnID())
+	case StatusFailed:
+		a.setProcessState(ProcessExited)
+		a.setTurnState(TurnFailed, a.CurrentTurnID())
+	default:
+		a.setProcessState(ProcessExited)
+		if a.TurnState() == TurnRunning || a.TurnState() == TurnIdle {
+			a.setTurnState(TurnSucceeded, a.CurrentTurnID())
+		}
+	}
+
+	// The process slot is no longer occupied once Runner.Run has returned.
+	// Release it before potentially slow artifact capture and workspace
+	// cleanup so queued work can start without waiting on git/filesystem I/O.
+	f.releaseCapacity(a)
+
+	// Capture isolated output and write the structured result before the
+	// temporary workspace is removed. This ordering is the recovery
+	// invariant: a user can always inspect a durable result after failure.
+	f.captureWorkspace(a)
+	f.ensureResult(a, finalStatus, err)
+	if a.cancel != nil {
+		a.cancel()
+	}
+	if a.inbox != nil {
+		_ = a.inbox.Close()
+	}
+	a.setProcessPID(0)
+	f.persistAgent(a)
+	if a.workspaceCleanup != nil {
+		_ = a.workspaceCleanup()
+	}
+	_ = a.releaseLease()
+	a.closeDone()
 }
 
 // List returns a snapshot of every agent in creation order. The
@@ -407,41 +720,169 @@ func (f *Swarm) Get(id string) *Agent {
 // socket about to be unlinked.
 //
 // Stop is a no-op for any agent that's not in a live runnable state
-// — Done / Failed / Killed (already finalised) and Detached (no
-// in-process runner; reloaded from disk). Calling Stop on a detached
-// agent must not crash: buildDetachedAgent doesn't allocate a
-// context/cancel pair because there's nothing to cancel.
+// — Done / Failed / Killed (already finalised). Reloaded Detached agents
+// are probed first: if their worker survived the supervisor, Stop sends the
+// shutdown command through the durable inbox instead of pretending no
+// process exists.
 func (f *Swarm) Stop(id string) error {
+	f.operationMu.Lock()
+	defer f.operationMu.Unlock()
 	a := f.Get(id)
 	if a == nil {
 		return fmt.Errorf("no such agent %q", id)
 	}
+
+	// Coordinate the status transition with schedule. Holding f.mu while
+	// checking and changing a.status closes the small window where Stop could
+	// observe pending, schedule could promote the same agent to running, and
+	// the pending cleanup below could then finalize an agent that was already
+	// admitted to the runner.
+	f.mu.Lock()
 	a.mu.Lock()
-	switch a.status {
-	case StatusDone, StatusFailed, StatusKilled, StatusDetached:
+	status := a.status
+	if status == StatusDone || status == StatusFailed || status == StatusKilled {
 		a.mu.Unlock()
+		f.mu.Unlock()
+		return nil
+	}
+	if status == StatusDetached {
+		path := a.InboxPath
+		inbox := a.inbox
+		pid := a.ProcessPIDValue()
+		protocolReady := a.protocolReady()
+		a.mu.Unlock()
+		f.mu.Unlock()
+		if inbox == nil || !inboxLive(path) {
+			return nil
+		}
+		var err error
+		if protocolReady {
+			err = inbox.SendCommand(NewCommand(CommandAgentShutdown, a.ID, a.CurrentTurnID(), AgentShutdownPayload{}))
+		} else {
+			err = inbox.SendInput("shutdown")
+		}
+		if err != nil {
+			return err
+		}
+		a.setActivity("shutdown requested")
+		grace := f.cfg.Policy.CancelGracePeriod
+		if grace <= 0 {
+			grace = 10 * time.Second
+		}
+		deadline := time.Now().Add(grace)
+		for inboxLive(path) {
+			if time.Now().After(deadline) {
+				if pid <= 0 {
+					return fmt.Errorf("agent %s live worker did not stop within %s and has no recorded pid", a.ID, grace)
+				}
+				if killErr := forceKillProcess(pid); killErr != nil {
+					return fmt.Errorf("agent %s force-stop: %w", a.ID, killErr)
+				}
+				forceDeadline := time.Now().Add(time.Second)
+				for inboxLive(path) && time.Now().Before(forceDeadline) {
+					time.Sleep(20 * time.Millisecond)
+				}
+				if inboxLive(path) {
+					return fmt.Errorf("agent %s live worker did not stop after force-stop", a.ID)
+				}
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+		a.mu.Lock()
+		a.status = StatusKilled
+		a.activity = "killed"
+		a.mu.Unlock()
+		a.setProcessState(ProcessKilled)
+		a.setTurnState(TurnCanceled, a.CurrentTurnID())
+		a.setProcessPID(0)
+		f.persistAgent(a)
 		return nil
 	}
 	a.status = StatusKilled
-	a.activity = "stopped"
+	a.activity = "canceling"
+	atomic.CompareAndSwapInt32(&a.launchState, 0, 2)
+	if status == StatusPending {
+		for i, queued := range f.queue {
+			if queued == a {
+				f.queue = append(f.queue[:i], f.queue[i+1:]...)
+				break
+			}
+		}
+	}
 	a.mu.Unlock()
-	// Belt-and-braces guard against the cancel-less case (detached
-	// agents skip this branch above, but a future code path that
-	// builds an Agent without a runner shouldn't crash the
-	// supervisor).
-	if a.cancel != nil {
+	f.mu.Unlock()
+	a.setTurnState(TurnCanceling, a.CurrentTurnID())
+
+	if status == StatusPending {
+		a.setProcessState(ProcessKilled)
+		a.setTurnState(TurnCanceled, a.CurrentTurnID())
+		f.captureWorkspace(a)
+		f.ensureResult(a, StatusKilled, context.Canceled)
+		if a.cancel != nil {
+			a.cancel()
+		}
+		f.persistAgent(a)
+		if a.workspaceCleanup != nil {
+			_ = a.workspaceCleanup()
+		}
+		_ = a.releaseLease()
+		a.closeDone()
+		f.schedule()
+		return nil
+	}
+
+	// Ask a live worker to shut down cleanly first. If the socket is not
+	// ready, fall back immediately; a forceful context cancellation is
+	// safer than leaving a supervisor entry running forever.
+	graceful := false
+	if a.inbox != nil {
+		var err error
+		if a.protocolReady() {
+			err = a.inbox.SendCommand(NewCommand(CommandAgentShutdown, a.ID, a.CurrentTurnID(), AgentShutdownPayload{}))
+		} else {
+			err = a.inbox.SendInput("shutdown")
+		}
+		if err == nil {
+			graceful = true
+		}
+	}
+	if !graceful && a.cancel != nil {
 		a.cancel()
 	}
-	if a.inbox != nil {
-		_ = a.inbox.Close()
+	if graceful {
+		grace := f.cfg.Policy.CancelGracePeriod
+		if grace <= 0 {
+			grace = 10 * time.Second
+		}
+		go func() {
+			timer := time.NewTimer(grace)
+			defer timer.Stop()
+			select {
+			case <-a.done:
+			case <-timer.C:
+				if a.cancel != nil {
+					a.cancel()
+				}
+				if a.inbox != nil {
+					_ = a.inbox.Close()
+				}
+			}
+		}()
 	}
 	return nil
 }
 
 // StopAll cancels every running agent. Used on shutdown.
 func (f *Swarm) StopAll() {
-	for _, a := range f.List() {
+	agents := f.List()
+	for _, a := range agents {
 		_ = f.Stop(a.ID)
+	}
+	for _, a := range agents {
+		a.Wait()
+	}
+	if f.lifetimeCancel != nil {
+		f.lifetimeCancel()
 	}
 }
 
@@ -451,25 +892,42 @@ func (f *Swarm) StopAll() {
 // (reloaded from disk) remove cleanly because they have no live
 // runner racing for the same files.
 //
-// Agents share the host's working tree, so Remove never touches
-// any source file — it only deletes the agent's state directory
+// Shared-workspace agents never touch source files during Remove; worktree
+// agents have already captured their output and removed the isolated checkout
+// during finalization. Remove then deletes the agent's durable state directory
 // under <root>/agents/<id>/.
 func (f *Swarm) Remove(id string) error {
+	f.operationMu.Lock()
+	defer f.operationMu.Unlock()
 	a := f.Get(id)
 	if a == nil {
 		return fmt.Errorf("no such agent %q", id)
 	}
 	a.mu.Lock()
 	st := a.status
+	inboxPath := a.InboxPath
 	a.mu.Unlock()
 	if st == StatusRunning || st == StatusPending {
 		return fmt.Errorf("agent %s still %s", a.ID, st)
 	}
+	if inboxLive(inboxPath) {
+		return fmt.Errorf("agent %s still has a live worker; stop it first", a.ID)
+	}
+	select {
+	case <-a.done:
+	default:
+		return fmt.Errorf("agent %s is still finalizing", a.ID)
+	}
+	lease, err := acquireAgentLease(a.stateDirectory(f.cfg.Root))
+	if err != nil {
+		return fmt.Errorf("agent %s state is owned by another supervisor: %w", a.ID, err)
+	}
+	_ = lease.Close()
 	// Best-effort cleanup of the per-agent state directory
 	// (meta.json, events.jsonl, session.json). Failing here would leave
 	// the user with no recourse,
 	// so swallow the error.
-	_ = os.RemoveAll(f.agentStateDir(a.ID))
+	_ = os.RemoveAll(a.stateDirectory(f.cfg.Root))
 	f.mu.Lock()
 	delete(f.agents, a.ID)
 	for i, k := range f.order {
@@ -485,32 +943,48 @@ func (f *Swarm) Remove(id string) error {
 // Snapshot returns a read-only view of one agent. Safe for the TUI
 // goroutine to call repeatedly; never blocks on the Runner.
 type AgentSnapshot struct {
-	ID            string
-	Task          string
-	Dir           string
-	Status        Status
-	Activity      string
-	Started       time.Time
-	Finished      time.Time
-	Err           string
-	Tail          string   // last few transcript lines, joined with "\n"
-	Lines         []string // full transcript (already capped by Agent.appendTranscript)
-	LastAssistant string   // complete final assistant message, without role formatting
+	ID              string
+	Task            string
+	Dir             string
+	Status          Status
+	ProcessState    ProcessState
+	TurnState       TurnState
+	CurrentTurnID   string
+	Attempt         int
+	Activity        string
+	Started         time.Time
+	Finished        time.Time
+	CreatedAt       time.Time
+	UpdatedAt       time.Time
+	LastActivity    time.Time
+	Err             string
+	Tail            string   // last few transcript lines, joined with "\n"
+	Lines           []string // full transcript (already capped by Agent.appendTranscript)
+	LastAssistant   string   // complete final assistant message, without role formatting
+	Result          *TurnResult
+	ResultRef       string
+	PatchRef        string
+	ChangedFiles    []string
+	OutputTruncated bool
 
-	// Model, Provider, and Reasoning expose the per-agent overrides set
-	// at Spawn time (empty when the agent inherits the child's default
-	// resolution). Subagent is the selected named markdown profile.
-	// The dashboard surfaces these so the user can confirm the child
-	// configuration.
-	Model     string
-	Provider  string
-	Reasoning string
-	FastMode  bool
-	Subagent  string
+	// Model, Provider, Reasoning, and the provider connection settings
+	// expose the per-agent configuration captured at Spawn time. Empty
+	// values inherit the child's defaults. Subagent is the selected named
+	// markdown profile. The dashboard surfaces these so the user can
+	// confirm the child configuration.
+	Model         string
+	Provider      string
+	BaseURL       string
+	InsecureTLS   bool
+	Reasoning     string
+	FastMode      bool
+	Subagent      string
+	WorkspaceMode WorkspaceMode
+	WorkspacePath string
 
 	// Paths to the agent's durable state. Surface them in the
-	// snapshot so the dashboard / /swarm open can read events.jsonl
-	// or resume the session without going back through the Agent.
+	// snapshot so the dashboard /subagents (or compatibility /swarm) view can
+	// read events.jsonl or resume the session without going back through the Agent.
 	InboxPath    string
 	EventLogPath string
 	SessionPath  string
@@ -520,7 +994,6 @@ type AgentSnapshot struct {
 // inspect at leisure.
 func (a *Agent) Snapshot() AgentSnapshot {
 	a.mu.Lock()
-	defer a.mu.Unlock()
 	tail := strings.Join(lastN(a.transcript, 6), "\n")
 	lines := make([]string, len(a.transcript))
 	copy(lines, a.transcript)
@@ -528,20 +1001,38 @@ func (a *Agent) Snapshot() AgentSnapshot {
 	if a.lastErr != nil {
 		errStr = a.lastErr.Error()
 	}
+	status := a.status
+	activity := a.activity
+	lastAssistant := a.lastAssistant
+	finished := a.finished
+	a.mu.Unlock()
+
+	a.lifecycleMu.Lock()
+	processState := a.processState
+	turnState := a.turnState
+	currentTurnID := a.currentTurnID
+	attempt := a.Attempt
+	lastActivity := a.lastActivity
+	updatedAt := a.updatedAt
+	result := cloneTurnResult(a.result)
+	resultRef := a.resultRef
+	patchRef := a.patchRef
+	changedFiles := append([]string(nil), a.changedFiles...)
+	outputTruncated := a.outputTruncated
+	a.lifecycleMu.Unlock()
 	return AgentSnapshot{
 		ID: a.ID, Task: a.Task, Dir: a.Dir,
-		Status: a.status, Activity: a.activity,
-		Started: a.Started, Finished: a.finished,
+		Status: status, ProcessState: processState, TurnState: turnState,
+		CurrentTurnID: currentTurnID, Attempt: attempt, Activity: activity,
+		Started: a.Started, Finished: finished, CreatedAt: a.Started, UpdatedAt: updatedAt, LastActivity: lastActivity,
 		Err: errStr, Tail: tail, Lines: lines,
-		LastAssistant: a.lastAssistant,
-		Model:         a.Model,
-		Provider:      a.Provider,
-		Reasoning:     a.Reasoning,
-		FastMode:      a.FastMode,
-		Subagent:      a.Subagent,
-		InboxPath:     a.InboxPath,
-		EventLogPath:  a.EventLogPath,
-		SessionPath:   a.SessionPath,
+		LastAssistant: lastAssistant, Result: result, ResultRef: resultRef,
+		PatchRef: patchRef, ChangedFiles: changedFiles, OutputTruncated: outputTruncated,
+		Model: a.Model, Provider: a.Provider, BaseURL: a.BaseURL,
+		InsecureTLS: a.InsecureTLS, Reasoning: a.Reasoning,
+		FastMode: a.FastMode, Subagent: a.Subagent, WorkspaceMode: a.WorkspaceMode,
+		WorkspacePath: a.WorkspacePath, InboxPath: a.InboxPath,
+		EventLogPath: a.EventLogPath, SessionPath: a.SessionPath,
 	}
 }
 
@@ -551,11 +1042,10 @@ func (a *Agent) Snapshot() AgentSnapshot {
 // Scoping rules:
 //   - activeSession == "": no filter, every agent is returned
 //     (historical behaviour; used by tests and scripted callers).
-//   - activeSession != "": include only agents whose SessionID
-//     matches activeSession OR is empty. The empty-id pass-through
-//     keeps pre-upgrade agents (their meta.json was written before
-//     session_id existed) visible from any session so the user
-//     doesn't lose access after the schema bump.
+//   - activeSession != "": include live agents whose SessionID matches
+//     activeSession, plus unscoped legacy agents. Detached and terminal
+//     agents from another host session remain visible so restart/recovery
+//     does not hide durable work.
 func (f *Swarm) SnapshotAll() []AgentSnapshot {
 	agents := f.List()
 	f.mu.Lock()
@@ -565,7 +1055,13 @@ func (f *Swarm) SnapshotAll() []AgentSnapshot {
 	out := make([]AgentSnapshot, 0, len(agents))
 	for _, a := range agents {
 		if active != "" && a.SessionID != "" && a.SessionID != active {
-			continue
+			// Keep detached/terminal entries visible after a normal host
+			// restart so durable recovery remains discoverable. Hide only
+			// live work belonging to another in-process host session.
+			status := a.Status()
+			if status == StatusRunning || status == StatusPending {
+				continue
+			}
 		}
 		out = append(out, a.Snapshot())
 	}

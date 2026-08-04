@@ -58,6 +58,38 @@ func TestCredentialStdinHelperProcess(t *testing.T) {
 	os.Exit(0)
 }
 
+func TestWorkerEnvironmentRedactsProviderSecrets(t *testing.T) {
+	t.Setenv("OPENAI_API_KEY", "openai-secret")
+	t.Setenv("CUSTOM_PROVIDER_API_KEY", "custom-secret")
+	t.Setenv("HF_TOKEN", "hf-secret")
+	t.Setenv("GITHUB_TOKEN", "github-secret")
+	t.Setenv("CUSTOM_PROVIDER_TOKEN", "token-secret")
+	t.Setenv("GOOGLE_APPLICATION_CREDENTIALS", "/tmp/service-account.json")
+	t.Setenv("ZOT_SWARM_TEST_VALUE", "not-secret")
+	env := strings.Join(workerEnvironment("openai"), "\n")
+	for _, secret := range []string{
+		"OPENAI_API_KEY=openai-secret",
+		"CUSTOM_PROVIDER_API_KEY=custom-secret",
+		"HF_TOKEN=hf-secret",
+		"GITHUB_TOKEN=github-secret",
+		"CUSTOM_PROVIDER_TOKEN=token-secret",
+		"GOOGLE_APPLICATION_CREDENTIALS=/tmp/service-account.json",
+	} {
+		if strings.Contains(env, secret) {
+			t.Fatalf("worker environment leaked %s", secret)
+		}
+	}
+	if !strings.Contains(env, "ZOT_SWARM_TEST_VALUE=not-secret") {
+		t.Fatal("worker environment dropped unrelated variables")
+	}
+
+	t.Setenv("AWS_BEARER_TOKEN_BEDROCK", "bedrock-secret")
+	bedrockEnv := strings.Join(workerEnvironment("amazon-bedrock"), "\n")
+	if !strings.Contains(bedrockEnv, "AWS_BEARER_TOKEN_BEDROCK=bedrock-secret") {
+		t.Fatal("Bedrock ambient credential chain was unexpectedly removed")
+	}
+}
+
 func TestExecRunnerTransfersCredentialOnlyOnStdin(t *testing.T) {
 	t.Setenv("ZOT_SWARM_CREDENTIAL_HELPER", "1")
 	root := t.TempDir()
@@ -152,6 +184,43 @@ func TestSwarmAgentArgs(t *testing.T) {
 		if strings.Contains(joined, bad) {
 			t.Fatalf("argv contains stale/wrong flag %q: %s", bad, joined)
 		}
+	}
+}
+
+func TestSwarmAgentArgsPropagatesProviderConnectionSettings(t *testing.T) {
+	args := swarmAgentArgs(swarmAgentArgsOpts{
+		Exe:         "/zot",
+		Dir:         "/work",
+		SessionPath: "/state/session.json",
+		InboxPath:   "/state/inbox.sock",
+		BaseURL:     "https://gateway.example.test/v1",
+		InsecureTLS: true,
+	})
+	if i := indexOf(args, "--base-url"); i < 0 || safeAt(args, i+1) != "https://gateway.example.test/v1" {
+		t.Fatalf("argv = %v, want --base-url with inherited endpoint", args)
+	}
+	if !containsArg(args, "--insecure") {
+		t.Fatalf("argv = %v, want inherited --insecure", args)
+	}
+	for _, arg := range args {
+		if strings.Contains(arg, "api-key") || strings.Contains(arg, "secret") {
+			t.Fatalf("argv contains credential material: %v", args)
+		}
+	}
+}
+
+func TestDefaultChildArgsPropagatesProviderConnectionSettings(t *testing.T) {
+	a := &Agent{
+		Dir:         "/work",
+		BaseURL:     "https://gateway.example.test/v1",
+		InsecureTLS: true,
+	}
+	args := defaultChildArgs("/zot", a, "/state/session.json", "/state/inbox.sock")
+	if i := indexOf(args, "--base-url"); i < 0 || safeAt(args, i+1) != a.BaseURL {
+		t.Fatalf("argv = %v, want Agent.BaseURL propagated", args)
+	}
+	if !containsArg(args, "--insecure") {
+		t.Fatalf("argv = %v, want Agent.InsecureTLS propagated", args)
 	}
 }
 

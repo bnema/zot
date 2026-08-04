@@ -62,7 +62,7 @@ func (i *Interactive) runSwarm(ctx context.Context, args []string) {
 		return i.cfg.Swarm.SendUserTurn(id, text)
 	}
 	resumeAdapter := func(id string) error {
-		_, err := i.cfg.Swarm.Resume(ctx, id)
+		_, err := i.cfg.Swarm.ResumeSession(ctx, id)
 		return err
 	}
 
@@ -99,6 +99,7 @@ func (i *Interactive) runSwarm(ctx context.Context, args []string) {
 		// Anything that isn't a recognised flag terminates parsing and
 		// the rest becomes the task; only leading flags are consumed.
 		model, provider, reasoning, subagent, task := parseSpawnFlags(rest)
+		var profileTools []string
 		var fastModeOverride *bool
 		if task == "" {
 			i.swarmStatus("", "/swarm new: missing task (after any spawn flags)")
@@ -119,16 +120,24 @@ func (i *Interactive) runSwarm(ctx context.Context, args []string) {
 				return
 			}
 			subagent = profile.Name
+			profileTools = append([]string(nil), profile.Tools...)
 			fastModeOverride = profile.FastMode
-			if model == "" && provider == "" {
-				profileProvider, profileModel := profile.ModelSelection()
-				if profileProvider != "" && profileModel != "" {
-					provider, model = profileProvider, profileModel
-				}
+			profileProvider, profileModel := profile.ModelSelection()
+			if model == "" {
+				model = profileModel
+			}
+			if provider == "" {
+				provider = profileProvider
 			}
 			if reasoning == "" {
 				reasoning = profile.Thinking
 			}
+		}
+		if model == "" {
+			model = i.cfg.Model
+		}
+		if provider == "" {
+			provider = i.cfg.Provider
 		}
 		if reasoning == "" {
 			reasoning = i.cfg.Reasoning
@@ -144,6 +153,7 @@ func (i *Interactive) runSwarm(ctx context.Context, args []string) {
 		a, err := i.cfg.Swarm.SpawnReq(ctx, swarm.SpawnRequest{
 			Task: task, Model: model, Provider: provider, Reasoning: reasoning,
 			FastMode: fastModeOverride, Subagent: subagent,
+			Tools: profileTools,
 		})
 		if err != nil {
 			i.swarmStatus("", "spawn: "+err.Error())
@@ -158,7 +168,7 @@ func (i *Interactive) runSwarm(ctx context.Context, args []string) {
 		i.swarmStatus(status, "")
 	case "kill", "stop":
 		if rest == "" {
-			i.swarmStatus("", "/swarm kill <id>: missing id")
+			i.swarmStatus("", "/subagents kill <id>: missing id")
 			return
 		}
 		if err := i.cfg.Swarm.Stop(rest); err != nil {
@@ -166,6 +176,16 @@ func (i *Interactive) runSwarm(ctx context.Context, args []string) {
 			return
 		}
 		i.swarmStatus("stopped "+rest, "")
+	case "cancel":
+		if rest == "" {
+			i.swarmStatus("", "/subagents cancel <id>: missing id")
+			return
+		}
+		if err := i.cfg.Swarm.CancelTurn(rest); err != nil {
+			i.swarmStatus("", "cancel: "+err.Error())
+			return
+		}
+		i.swarmStatus("canceling turn "+rest, "")
 	case "remove", "rm":
 		if rest == "" {
 			i.swarmStatus("", "/swarm remove <id>: missing id")
@@ -194,13 +214,38 @@ func (i *Interactive) runSwarm(ctx context.Context, args []string) {
 		if !ok {
 			i.swarmStatus("", "/swarm logs: no agent matching "+rest)
 		}
-	case "resume", "reattach", "reopen":
+	case "result", "inspect":
 		if rest == "" {
-			// No id given: open the dashboard with the cursor
-			// pre-positioned on the first resumable agent, and
-			// tell the user how many there are so they know what
-			// to expect. Pressing R confirms; ↑/↓ to pick a
-			// different row first.
+			i.swarmStatus("", "/subagents result <id>: missing id")
+			return
+		}
+		result, err := i.cfg.Swarm.ReadResult(rest)
+		if err != nil {
+			i.swarmStatus("", "result: "+err.Error())
+			return
+		}
+		status := fmt.Sprintf("%s result %s", result.Status, i.cfg.Swarm.ResultReference(rest))
+		if result.Summary != "" {
+			status += ": " + truncateStatus(result.Summary, 160)
+		}
+		i.swarmStatus(status, "")
+	case "wait":
+		if rest == "" {
+			i.swarmStatus("", "/subagents wait <id>: missing id")
+			return
+		}
+		a := i.cfg.Swarm.Get(rest)
+		if a == nil {
+			i.swarmStatus("", "wait: no such agent "+rest)
+			return
+		}
+		go func() {
+			a.Wait()
+			i.swarmStatus("completed "+a.ID, "")
+		}()
+		i.swarmStatus("waiting for "+a.ID, "")
+	case "resume-session", "resume", "reattach", "reopen":
+		if rest == "" {
 			count := i.swarmDialog.OpenForResume(
 				i.cfg.Swarm.SnapshotAll,
 				i.cfg.Swarm.Stop,
@@ -212,7 +257,7 @@ func (i *Interactive) runSwarm(ctx context.Context, args []string) {
 			)
 			switch count {
 			case 0:
-				i.swarmStatus("", "/swarm resume: no resumable agents (none detached or terminated)")
+				i.swarmStatus("", "/subagents resume-session: no resumable agents")
 			case 1:
 				i.swarmStatus("1 resumable agent, press R to resume", "")
 			default:
@@ -220,12 +265,23 @@ func (i *Interactive) runSwarm(ctx context.Context, args []string) {
 			}
 			return
 		}
-		a, err := i.cfg.Swarm.Resume(ctx, rest)
+		a, err := i.cfg.Swarm.ResumeSession(ctx, rest)
 		if err != nil {
-			i.swarmStatus("", "resume: "+err.Error())
+			i.swarmStatus("", "resume-session: "+err.Error())
 			return
 		}
 		i.swarmStatus("resumed "+a.ID, "")
+	case "restart-task", "restart":
+		if rest == "" {
+			i.swarmStatus("", "/subagents restart-task <id>: missing id")
+			return
+		}
+		a, err := i.cfg.Swarm.RestartTask(ctx, rest)
+		if err != nil {
+			i.swarmStatus("", "restart-task: "+err.Error())
+			return
+		}
+		i.swarmStatus("restarted task "+a.ID, "")
 	case "send", "prompt", "msg":
 		// /swarm send <id> <text...> is the non-interactive
 		// counterpart of pressing 'p' in the dashboard. We split the
@@ -255,7 +311,7 @@ func (i *Interactive) runSwarm(ctx context.Context, args []string) {
 		// feature. Point the user at /swarm logs in the meantime.
 		i.swarmStatus("", "/swarm attach: not implemented yet (needs PTY reparenting). Use /swarm logs "+firstWord(rest)+" to watch its transcript.")
 	default:
-		i.swarmStatus("", "/swarm: unknown subcommand "+sub+" (try list / new / kill / remove / logs / send / resume)")
+		i.swarmStatus("", "/subagents: unknown subcommand "+sub+" (try list / new / kill / remove / logs / send / result / resume-session / restart-task)")
 	}
 }
 
@@ -373,6 +429,17 @@ func firstWord(s string) string {
 		return s[:i]
 	}
 	return s
+}
+
+func truncateStatus(value string, max int) string {
+	value = strings.ReplaceAll(strings.TrimSpace(value), "\n", " ")
+	if len([]rune(value)) <= max {
+		return value
+	}
+	if max <= 3 {
+		return string([]rune(value)[:max])
+	}
+	return string([]rune(value)[:max-3]) + "..."
 }
 
 func (i *Interactive) swarmStatus(ok, errMsg string) {

@@ -1,14 +1,18 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/patriceckhart/zot/packages/agent/modes"
 	"github.com/patriceckhart/zot/packages/agent/swarm"
@@ -108,28 +112,76 @@ func runSwarmAgentMode(ctx context.Context, args Args, version string) error {
 	}
 
 	em := newSwarmEmitter(os.Stdout, logMirror)
-
-	em.emit("agent_ready", map[string]any{
+	em.setProtocolIdentity(os.Getenv("ZOT_SWARM_AGENT_ID"))
+	em.emit("agent.ready", map[string]any{
 		"version": version,
 		"cwd":     r.CWD,
 		"model":   r.Model,
 	})
 
-	// turnCtx is the per-turn context. We keep a per-process
-	// cancel so the "cancel" inbox message can interrupt an
-	// in-flight turn without tearing down the whole daemon.
+	// Heartbeats make a live-but-detached child distinguishable from a
+	// failed turn after supervisor reconnect. The parent still treats
+	// unknown event types as forward-compatible.
+	heartbeatDone := make(chan struct{})
+	defer close(heartbeatDone)
+	go func() {
+		interval := 10 * time.Second
+		if raw := os.Getenv("ZOT_SWARM_HEARTBEAT_INTERVAL"); raw != "" {
+			if parsed, parseErr := time.ParseDuration(raw); parseErr == nil && parsed > 0 {
+				interval = parsed
+			}
+		}
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-heartbeatDone:
+				return
+			case <-ticker.C:
+				em.emit("agent.heartbeat", map[string]any{"activity": "alive"})
+			}
+		}
+	}()
+
+	// Keep a per-turn cancel so the "cancel" inbox message can interrupt
+	// an in-flight turn without tearing down the whole daemon.
 	var (
-		mu       sync.Mutex
-		turnCtx  context.Context = ctx
-		cancelFn context.CancelFunc
-		busyTurn bool
-		stopping bool
-		turnNo   int
-		turns    sync.WaitGroup
+		mu           sync.Mutex
+		cancelFn     context.CancelFunc
+		busyTurn     bool
+		turnNo       = initialTurnNumber(os.Getenv("ZOT_SWARM_EVENT_LOG"))
+		turnWG       sync.WaitGroup
+		closing      bool
+		shutdown     = make(chan struct{})
+		shutdownOnce sync.Once
 	)
+	maxOutputBytes, maxOutputLines := workerOutputLimits()
 
 	runOne := func(prompt string) {
 		mu.Lock()
+		// launchTurn admits the goroutine to turnWG before it starts so
+		// shutdown can join it. A shutdown can win the scheduling race
+		// after that admission but before this goroutine acquires mu; in
+		// that case do not start a new Prompt after waitForActiveTurn has
+		// declared the worker closing.
+		if closing {
+			mu.Unlock()
+			return
+		}
+		if args.SubagentMaxTurns > 0 && turnNo >= args.SubagentMaxTurns {
+			// Consume a unique rejected attempt so repeated prompts after
+			// the limit cannot reuse the same turn id in the event log.
+			turnNo++
+			step := turnNo
+			mu.Unlock()
+			turnID := fmt.Sprintf("turn-%d", step)
+			errPayload := map[string]any{"code": "max_turns", "message": "maximum subagent turns reached"}
+			em.emit("turn.result", map[string]any{"status": "failed", "turn_id": turnID, "error": errPayload})
+			em.emit("turn.failed", map[string]any{"turn_id": turnID, "error": errPayload})
+			em.emit("turn_end", map[string]any{"step": step, "turn_id": turnID, "error": errPayload["message"]})
+			em.emit("agent.idle", map[string]any{"turn_id": turnID})
+			return
+		}
 		if busyTurn {
 			// Drop concurrent turns rather than queuing. The
 			// supervisor protocol assumes one outstanding turn per
@@ -142,11 +194,12 @@ func runSwarmAgentMode(ctx context.Context, args Args, version string) error {
 		busyTurn = true
 		turnNo++
 		step := turnNo
-		turnCtx, cancelFn = context.WithCancel(ctx)
-		c := turnCtx
+		c, cancel := context.WithCancel(ctx)
+		cancelFn = cancel
 		mu.Unlock()
 
-		em.emit("turn_start", map[string]any{"step": step})
+		turnID := fmt.Sprintf("turn-%d", step)
+		em.emit("turn.started", map[string]any{"step": step, "turn_id": turnID})
 
 		sink := func(ev core.AgentEvent) {
 			em.emit(ev.Type(), modes.EventToJSON(ev))
@@ -156,10 +209,32 @@ func runSwarmAgentMode(ctx context.Context, args Args, version string) error {
 		err := ag.Prompt(c, prompt, nil, sink)
 		WriteNewTranscript(ag, sess, start)
 
+		output := finalAssistantText(ag.Messages()[start:])
+		resultStatus := "succeeded"
+		if err != nil {
+			if errors.Is(err, context.Canceled) {
+				resultStatus = "canceled"
+			} else {
+				resultStatus = "failed"
+			}
+		}
+		resultPayload := map[string]any{
+			"status":  resultStatus,
+			"turn_id": turnID,
+			"summary": boundedResultSummary(output),
+			"output":  boundedResultOutput(output, maxOutputBytes, maxOutputLines),
+			"error":   resultErrorPayload(err),
+		}
+		em.emit("turn.result", resultPayload)
+		if err != nil {
+			em.emit("turn.failed", map[string]any{"turn_id": turnID, "error": resultErrorPayload(err)})
+		}
 		em.emit("turn_end", map[string]any{
-			"step":  step,
-			"error": errString(err),
+			"step":    step,
+			"turn_id": turnID,
+			"error":   errString(err),
 		})
+		em.emit("agent.idle", map[string]any{"turn_id": turnID})
 
 		mu.Lock()
 		busyTurn = false
@@ -167,35 +242,46 @@ func runSwarmAgentMode(ctx context.Context, args Args, version string) error {
 		mu.Unlock()
 	}
 
-	startTurn := func(prompt string) {
+	launchTurn := func(prompt string) {
 		mu.Lock()
-		if stopping {
+		if closing {
 			mu.Unlock()
 			return
 		}
-		turns.Add(1)
+		// Register the goroutine before launching it. Shutdown can then
+		// close the gate and wait for every turn that was admitted, even
+		// if runOne has not acquired mu and set busyTurn yet.
+		turnWG.Add(1)
 		mu.Unlock()
 		go func() {
-			defer turns.Done()
+			defer turnWG.Done()
 			runOne(prompt)
 		}()
 	}
-	stopAndWait := func(reason string) {
+
+	waitForActiveTurn := func(cancel bool) {
 		mu.Lock()
-		stopping = true
-		if cancelFn != nil {
-			cancelFn()
-		}
+		closing = true
+		activeCancel := cancelFn
 		mu.Unlock()
-		turns.Wait()
-		em.emit("agent_stopped", map[string]any{"reason": reason})
+		if cancel && activeCancel != nil {
+			activeCancel()
+		}
+		turnWG.Wait()
+	}
+
+	requestShutdown := func() {
+		mu.Lock()
+		closing = true
+		mu.Unlock()
+		shutdownOnce.Do(func() { close(shutdown) })
 	}
 
 	// Initial task: run before processing the inbox so the agent
 	// "starts working" the moment it boots, matching what users
 	// expect from `/swarm new <task>`.
 	if args.Prompt != "" {
-		startTurn(args.Prompt)
+		launchTurn(args.Prompt)
 	}
 
 	// Inbox loop: one supervisor message at a time. We don't spawn
@@ -205,30 +291,50 @@ func runSwarmAgentMode(ctx context.Context, args Args, version string) error {
 	for {
 		select {
 		case <-ctx.Done():
-			stopAndWait("cancelled")
+			waitForActiveTurn(true)
+			em.emit("agent.exited", map[string]any{"reason": "cancelled"})
 			return ctx.Err()
+		case <-shutdown:
+			// Shutdown is an explicit supervisor stop. Cancel an active
+			// turn before joining it so a detached worker cannot remain
+			// alive indefinitely while the host waits for its socket to
+			// disappear.
+			waitForActiveTurn(true)
+			em.emit("agent.exited", map[string]any{"reason": "shutdown"})
+			return nil
 		case msg, ok := <-ln.Lines():
 			if !ok {
-				stopAndWait("inbox-closed")
+				waitForActiveTurn(true)
+				em.emit("agent.exited", map[string]any{"reason": "inbox-closed"})
 				return nil
 			}
-			switch {
-			case msg == "shutdown":
-				stopAndWait("shutdown")
-				return nil
-			case msg == "cancel":
+			command, parseErr := swarm.ParseCommand(msg)
+			if parseErr != nil {
+				em.emit("error", map[string]any{"message": "invalid supervisor command"})
+				continue
+			}
+			switch command.Type {
+			case swarm.CommandAgentShutdown:
+				requestShutdown()
+			case swarm.CommandTurnCancel:
 				mu.Lock()
 				if cancelFn != nil {
 					cancelFn()
 				}
 				mu.Unlock()
-			case strings.HasPrefix(msg, "user "):
-				prompt := strings.TrimPrefix(msg, "user ")
-				startTurn(prompt)
+			case swarm.CommandAgentPing:
+				em.emit("agent.heartbeat", map[string]any{"activity": "alive"})
+			case swarm.CommandTurnStart:
+				var payload swarm.TurnStartPayload
+				if err := command.DecodePayload(&payload); err != nil {
+					em.emit("error", map[string]any{"message": "invalid turn.start payload"})
+					continue
+				}
+				launchTurn(payload.Prompt)
 			default:
-				em.emit("error", map[string]any{
-					"message": "unknown supervisor message: " + truncateForLog(msg, 200),
-				})
+				// Unknown commands are rejected rather than interpreted as
+				// child-originated control requests.
+				em.emit("error", map[string]any{"message": "unknown supervisor command"})
 			}
 		}
 	}
@@ -238,9 +344,11 @@ func runSwarmAgentMode(ctx context.Context, args Args, version string) error {
 // durable log file. Concurrent goroutines call emit so we have to
 // hold a mutex around the encoder.
 type swarmEmitter struct {
-	mu     sync.Mutex
-	w      *os.File
-	mirror *swarm.EventLog
+	mu        sync.Mutex
+	w         *os.File
+	mirror    *swarm.EventLog
+	agentID   string
+	versioned bool
 
 	// orphan flips true the first time a stdout write fails (broken
 	// pipe — the supervisor died). Until then the mirror stays
@@ -258,46 +366,190 @@ func newSwarmEmitter(w *os.File, mirror *swarm.EventLog) *swarmEmitter {
 	return &swarmEmitter{w: w, mirror: mirror}
 }
 
+func (e *swarmEmitter) setProtocolIdentity(agentID string) {
+	e.mu.Lock()
+	e.agentID = agentID
+	e.versioned = true
+	e.mu.Unlock()
+}
+
 func (e *swarmEmitter) emit(typ string, data map[string]any) {
 	if data == nil {
 		data = map[string]any{}
 	}
-	data["type"] = typ
-	data["time"] = time.Now().Format(time.RFC3339Nano)
+	payload := make(map[string]any, len(data))
+	for key, value := range data {
+		payload[key] = value
+	}
+	turnID, _ := payload["turn_id"].(string)
 
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
-	if !e.orphan {
-		// Encode to a buffer first so we can detect the stdout write
-		// error — json.Encoder swallows partial writes silently, but
-		// a direct Write on *os.File returns broken-pipe immediately.
-		line, err := json.Marshal(data)
+	wireType := typ
+	if e.versioned {
+		wireType = canonicalWorkerEvent(typ)
+	}
+	var line []byte
+	var err error
+	if e.versioned {
+		envelope := swarm.NewEventEnvelope(wireType, e.agentID, turnID, payload)
+		line, err = swarm.MarshalJSONL(envelope)
 		if err == nil {
-			line = append(line, '\n')
-			if _, werr := e.w.Write(line); werr != nil {
-				// Supervisor's stdout pipe is gone (parent zot exited
-				// but we kept running). Switch to mirror-only mode so
-				// subsequent events still get persisted; also retro-
-				// actively log this very event to the mirror so it
-				// doesn't get lost in the handoff.
-				e.orphan = true
+			// Flatten payload fields as a compatibility courtesy. New peers
+			// read `payload`; old peers can still inspect `step`, `content`,
+			// and similar fields at the top level.
+			var object map[string]any
+			if json.Unmarshal(bytes.TrimSpace(line), &object) == nil {
+				for key, value := range payload {
+					if _, exists := object[key]; exists {
+						continue
+					}
+					// Keep the compatibility flattening useful for old peers,
+					// but do not duplicate large result/output fields on the
+					// wire. New peers read the canonical payload object; a
+					// duplicated 500 KiB output would otherwise exceed the
+					// supervisor's bounded JSONL frame budget.
+					if !compatibilityFlatValue(value) {
+						continue
+					}
+					object[key] = value
+				}
+				line, err = json.Marshal(object)
+				line = append(line, '\n')
 			}
+		}
+	} else {
+		payload["type"] = typ
+		payload["time"] = time.Now().Format(time.RFC3339Nano)
+		line, err = json.Marshal(payload)
+		line = append(line, '\n')
+	}
+
+	if !e.orphan && err == nil {
+		if _, werr := e.w.Write(line); werr != nil {
+			// Supervisor's stdout pipe is gone (parent zot exited but we
+			// kept running). Switch to mirror-only mode and preserve this
+			// event in the durable log.
+			e.orphan = true
 		}
 	}
 
 	if e.orphan && e.mirror != nil {
-		// Drop "type" + "time" out of data into Event fields so the
-		// mirror file matches what the supervisor would have written.
-		flat := map[string]any{}
-		for k, v := range data {
-			if k == "type" || k == "time" {
-				continue
-			}
-			flat[k] = v
-		}
-		_ = e.mirror.Append(swarm.NewEvent(typ, flat))
+		_ = e.mirror.Append(swarm.NewEvent(wireType, payload))
 	}
+}
+
+const compatibilityFlatValueBytes = 64 * 1024
+
+func compatibilityFlatValue(value any) bool {
+	switch v := value.(type) {
+	case string:
+		return len(v) <= compatibilityFlatValueBytes
+	case json.RawMessage:
+		return len(v) <= compatibilityFlatValueBytes
+	default:
+		return true
+	}
+}
+
+func canonicalWorkerEvent(typ string) string {
+	switch typ {
+	case "agent_ready":
+		return swarm.EventAgentReady
+	case "agent_stopped":
+		return swarm.EventAgentExited
+	case "turn_start":
+		return swarm.EventTurnStarted
+	case "turn_progress":
+		return swarm.EventTurnProgress
+	case "tool_call":
+		return swarm.EventToolStarted
+	case "tool_result":
+		return swarm.EventToolFinished
+	case "text_delta":
+		return swarm.EventMessageDelta
+	default:
+		return typ
+	}
+}
+
+func finalAssistantText(messages []provider.Message) string {
+	var out strings.Builder
+	for _, message := range messages {
+		if message.Role != provider.RoleAssistant {
+			continue
+		}
+		for _, block := range message.Content {
+			if text, ok := block.(provider.TextBlock); ok {
+				if out.Len() > 0 {
+					out.WriteByte('\n')
+				}
+				out.WriteString(text.Text)
+			}
+		}
+	}
+	return out.String()
+}
+
+func firstLine(text string) string {
+	return strings.Split(strings.TrimSpace(text), "\n")[0]
+}
+
+func boundedResultSummary(text string) string {
+	return boundedResultOutput(firstLine(text), 4*1024, 1)
+}
+
+func workerOutputLimits() (maxBytes, maxLines int) {
+	maxBytes, maxLines = 500_000, 5_000
+	if value, err := strconv.Atoi(strings.TrimSpace(os.Getenv("ZOT_SWARM_MAX_OUTPUT_BYTES"))); err == nil && value > 0 {
+		maxBytes = value
+	}
+	if value, err := strconv.Atoi(strings.TrimSpace(os.Getenv("ZOT_SWARM_MAX_OUTPUT_LINES"))); err == nil && value > 0 {
+		maxLines = value
+	}
+	return maxBytes, maxLines
+}
+
+func boundedResultOutput(text string, maxBytes, maxLines int) string {
+	const marker = "...[output truncated]"
+	lines := strings.Split(text, "\n")
+	if maxLines > 0 && len(lines) > maxLines {
+		if maxLines == 1 {
+			text = marker
+		} else {
+			text = strings.Join(append(lines[:maxLines-1], marker), "\n")
+		}
+	}
+	if maxBytes > 0 && len([]byte(text)) > maxBytes {
+		if maxBytes <= len(marker) {
+			return truncateOutputUTF8(text, maxBytes)
+		}
+		return truncateOutputUTF8(text, maxBytes-len(marker)) + marker
+	}
+	return text
+}
+
+func truncateOutputUTF8(value string, maxBytes int) string {
+	if maxBytes <= 0 {
+		return ""
+	}
+	data := []byte(value)
+	if len(data) <= maxBytes {
+		return value
+	}
+	data = data[:maxBytes]
+	for len(data) > 0 && !utf8.Valid(data) {
+		data = data[:len(data)-1]
+	}
+	return string(data)
+}
+
+func resultErrorPayload(err error) map[string]any {
+	if err == nil {
+		return nil
+	}
+	return map[string]any{"code": "turn_failed", "message": truncateForLog(err.Error(), 500)}
 }
 
 func errString(err error) string {
@@ -305,6 +557,28 @@ func errString(err error) string {
 		return ""
 	}
 	return err.Error()
+}
+
+func initialTurnNumber(path string) int {
+	if strings.TrimSpace(path) == "" {
+		return 0
+	}
+	events, err := swarm.ReadEventLog(path)
+	if err != nil {
+		return 0
+	}
+	maxStep := 0
+	for _, ev := range events {
+		if step, ok := ev.Data["step"].(float64); ok && int(step) > maxStep {
+			maxStep = int(step)
+		}
+		if strings.HasPrefix(ev.TurnID, "turn-") {
+			if n, parseErr := strconv.Atoi(strings.TrimPrefix(ev.TurnID, "turn-")); parseErr == nil && n > maxStep {
+				maxStep = n
+			}
+		}
+	}
+	return maxStep
 }
 
 func truncateForLog(s string, n int) string {

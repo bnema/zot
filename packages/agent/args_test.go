@@ -22,6 +22,16 @@ func TestParseArgsNoLSP(t *testing.T) {
 	}
 }
 
+func TestParseArgsAllowsLeadingDashPromptAfterTerminator(t *testing.T) {
+	args, err := ParseArgs([]string{"--subagent-worker", "/tmp/in.sock", "--", "--inspect", "auth flow"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if args.Prompt != "--inspect auth flow" {
+		t.Fatalf("prompt = %q, want leading-dash task preserved", args.Prompt)
+	}
+}
+
 func TestParseArgsTemperatureAllowsZero(t *testing.T) {
 	args, err := ParseArgs([]string{"--temperature", "0"})
 	if err != nil {

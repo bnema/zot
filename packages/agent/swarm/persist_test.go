@@ -133,6 +133,81 @@ func TestReloadRebuildsDetachedAgents(t *testing.T) {
 	}
 }
 
+func TestResumePreservesPerAgentTimeout(t *testing.T) {
+	root := t.TempDir()
+	wantTimeout := 37 * time.Minute
+	first := New(Config{
+		Root: root, RepoRoot: root,
+		NewRunner: func(a *Agent) Runner {
+			return RunnerFunc(func(ctx context.Context, _ Sink) error {
+				<-ctx.Done()
+				return ctx.Err()
+			})
+		},
+	})
+	a, err := first.SpawnReq(context.Background(), SpawnRequest{Task: "timeout test", Timeout: wantTimeout})
+	if err != nil {
+		t.Fatal(err)
+	}
+	first.StopAll()
+	a.Wait()
+
+	var observed time.Duration
+	second := New(Config{
+		Root: root, RepoRoot: root,
+		Policy: SubagentPolicy{DefaultTimeout: time.Hour},
+		NewRunner: func(a *Agent) Runner {
+			observed = a.Timeout
+			return RunnerFunc(func(ctx context.Context, _ Sink) error {
+				<-ctx.Done()
+				return ctx.Err()
+			})
+		},
+	})
+	if loaded, errs := second.Reload(); loaded != 1 || len(errs) != 0 {
+		t.Fatalf("reload loaded=%d errs=%v", loaded, errs)
+	}
+	resumed, err := second.ResumeSession(context.Background(), a.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resumed.Timeout != wantTimeout || observed != wantTimeout {
+		t.Fatalf("resumed timeout = %s, runner observed %s; want %s", resumed.Timeout, observed, wantTimeout)
+	}
+	second.StopAll()
+	resumed.Wait()
+}
+
+func TestReloadRejectsMetadataPathsOutsideState(t *testing.T) {
+	root := t.TempDir()
+	outside := filepath.Join(t.TempDir(), "outside.json")
+	if err := os.WriteFile(outside, []byte("keep"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	stateDir := filepath.Join(root, "agents", "agent-1")
+	if err := os.MkdirAll(stateDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	meta := agentMeta{
+		ID: "agent-1", Task: "malicious", Dir: root,
+		EventLogPath: outside, SessionPath: outside, InboxPath: outside,
+	}
+	data, err := json.Marshal(meta)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(stateDir, "meta.json"), data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	f := New(Config{Root: root, RepoRoot: root})
+	if loaded, errs := f.Reload(); loaded != 0 || len(errs) == 0 {
+		t.Fatalf("malicious metadata reload loaded=%d errs=%v", loaded, errs)
+	}
+	if got, err := os.ReadFile(outside); err != nil || string(got) != "keep" {
+		t.Fatalf("outside path was touched: data=%q err=%v", got, err)
+	}
+}
+
 // TestReloadIsIdempotent calls Reload twice in a row and asserts the
 // second call neither duplicates rows nor errors.
 func TestReloadIsIdempotent(t *testing.T) {
@@ -308,6 +383,7 @@ func TestResumeRestartsRunnerOnSameSession(t *testing.T) {
 	if a.Status() != StatusKilled {
 		t.Fatalf("post-stop status = %q; want killed", a.Status())
 	}
+	previousAttempt := a.Snapshot().Attempt
 
 	// Now resume.
 	a2, err := f.Resume(context.Background(), a.ID)
@@ -325,6 +401,9 @@ func TestResumeRestartsRunnerOnSameSession(t *testing.T) {
 	}
 	if a2.InboxPath != originalInbox {
 		t.Errorf("resume changed inbox path: %s vs %s", a2.InboxPath, originalInbox)
+	}
+	if got := a2.Snapshot().Attempt; got != previousAttempt+1 {
+		t.Errorf("resume attempt = %d; want %d", got, previousAttempt+1)
 	}
 	// Two runner invocations: spawn + resume.
 	deadline = time.Now().Add(time.Second)
@@ -523,6 +602,180 @@ func TestResumeAfterReload(t *testing.T) {
 		time.Sleep(5 * time.Millisecond)
 	}
 	t.Fatalf("resumed transcript missing fresh line: %v", a2.Transcript())
+}
+
+func TestStopMustFinishBeforeResumeOrRemove(t *testing.T) {
+	root := t.TempDir()
+	started := make(chan struct{})
+	release := make(chan struct{})
+	f := New(Config{
+		Root: root, RepoRoot: root,
+		NewRunner: func(*Agent) Runner {
+			return RunnerFunc(func(context.Context, Sink) error {
+				close(started)
+				<-release
+				return nil
+			})
+		},
+	})
+	a, err := f.Spawn(context.Background(), "slow stop")
+	if err != nil {
+		t.Fatal(err)
+	}
+	<-started
+	if err := f.Stop(a.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.Resume(context.Background(), a.ID); err == nil || !strings.Contains(err.Error(), "finalizing") {
+		t.Fatalf("immediate resume error = %v, want finalizing", err)
+	}
+	if err := f.Remove(a.ID); err == nil || !strings.Contains(err.Error(), "finalizing") {
+		t.Fatalf("immediate remove error = %v, want finalizing", err)
+	}
+	close(release)
+	a.Wait()
+}
+
+func TestResumeFencesLiveReloadedWorker(t *testing.T) {
+	root := t.TempDir()
+	first := New(Config{
+		Root: root, RepoRoot: root,
+		NewRunner: func(*Agent) Runner {
+			return RunnerFunc(func(context.Context, Sink) error { return nil })
+		},
+	})
+	a, err := first.Spawn(context.Background(), "live worker")
+	if err != nil {
+		t.Fatal(err)
+	}
+	a.Wait()
+	ln, err := Listen(a.InboxPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+
+	second := New(Config{Root: root, RepoRoot: root})
+	if loaded, errs := second.Reload(); loaded != 1 || len(errs) != 0 {
+		t.Fatalf("reload loaded=%d errs=%v", loaded, errs)
+	}
+	if got := second.Get(a.ID).ProcessState(); got != ProcessAlive {
+		t.Fatalf("reloaded process state = %s, want alive", got)
+	}
+	if _, err := second.Resume(context.Background(), a.ID); err == nil || !strings.Contains(err.Error(), "live worker") {
+		t.Fatalf("resume error = %v, want live-worker fence", err)
+	}
+}
+
+func TestSwarmProviderSettingsPersistAcrossReloadAndResume(t *testing.T) {
+	root := t.TempDir()
+	newSwarm := func(baseURL string, insecureTLS bool) *Swarm {
+		return New(Config{
+			Root:        root,
+			RepoRoot:    root,
+			BaseURL:     baseURL,
+			InsecureTLS: insecureTLS,
+			NewRunner: func(a *Agent) Runner {
+				return RunnerFunc(func(ctx context.Context, _ Sink) error {
+					<-ctx.Done()
+					return ctx.Err()
+				})
+			},
+		})
+	}
+
+	first := newSwarm("https://parent.example.test/v1", true)
+	a, err := first.SpawnReq(context.Background(), SpawnRequest{Task: "x"})
+	if err != nil {
+		t.Fatalf("spawn: %v", err)
+	}
+	if a.BaseURL != "https://parent.example.test/v1" || !a.InsecureTLS {
+		t.Fatalf("spawned settings = (%q, %v), want inherited config", a.BaseURL, a.InsecureTLS)
+	}
+	if snap := a.Snapshot(); snap.BaseURL != a.BaseURL || snap.InsecureTLS != a.InsecureTLS {
+		t.Fatalf("snapshot settings = (%q, %v), want (%q, %v)", snap.BaseURL, snap.InsecureTLS, a.BaseURL, a.InsecureTLS)
+	}
+	if err := first.Stop(a.ID); err != nil {
+		t.Fatalf("stop: %v", err)
+	}
+	a.Wait()
+
+	metaBytes, err := os.ReadFile(filepath.Join(root, "agents", a.ID, "meta.json"))
+	if err != nil {
+		t.Fatalf("read meta.json: %v", err)
+	}
+	var meta agentMeta
+	if err := json.Unmarshal(metaBytes, &meta); err != nil {
+		t.Fatalf("decode meta.json: %v", err)
+	}
+	if meta.BaseURL != a.BaseURL || !meta.InsecureTLS {
+		t.Fatalf("metadata settings = (%q, %v), want (%q, %v)", meta.BaseURL, meta.InsecureTLS, a.BaseURL, a.InsecureTLS)
+	}
+	if strings.Contains(string(metaBytes), "api_key") || strings.Contains(string(metaBytes), "parent-secret") {
+		t.Fatalf("metadata contains credential material: %s", metaBytes)
+	}
+
+	second := newSwarm("https://different.example.test/v1", false)
+	if loaded, errs := second.Reload(); loaded != 1 || len(errs) != 0 {
+		t.Fatalf("reload loaded=%d errs=%v", loaded, errs)
+	}
+	reloaded := second.Get(a.ID)
+	if reloaded == nil || reloaded.BaseURL != a.BaseURL || !reloaded.InsecureTLS {
+		t.Fatalf("reloaded settings = (%q, %v), want (%q, %v)", reloaded.BaseURL, reloaded.InsecureTLS, a.BaseURL, a.InsecureTLS)
+	}
+	resumed, err := second.Resume(context.Background(), a.ID)
+	if err != nil {
+		t.Fatalf("resume: %v", err)
+	}
+	if resumed.BaseURL != a.BaseURL || !resumed.InsecureTLS {
+		t.Fatalf("resumed settings = (%q, %v), want (%q, %v)", resumed.BaseURL, resumed.InsecureTLS, a.BaseURL, a.InsecureTLS)
+	}
+	if err := second.Stop(resumed.ID); err != nil {
+		t.Fatalf("stop resumed: %v", err)
+	}
+	resumed.Wait()
+}
+
+func TestExplicitChildProviderDoesNotInheritHostEndpoint(t *testing.T) {
+	f := New(Config{
+		Root: t.TempDir(), RepoRoot: t.TempDir(), Provider: "anthropic",
+		BaseURL: "https://host.example.test/v1", InsecureTLS: true,
+		NewRunner: func(*Agent) Runner {
+			return RunnerFunc(func(context.Context, Sink) error { return nil })
+		},
+	})
+	a, err := f.SpawnReq(context.Background(), SpawnRequest{Task: "x", Provider: "openai"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	a.Wait()
+	if a.BaseURL != "" || a.InsecureTLS {
+		t.Fatalf("explicit provider inherited host settings: (%q, %v)", a.BaseURL, a.InsecureTLS)
+	}
+}
+
+func TestSpawnRequestProviderSettingsOverrideConfig(t *testing.T) {
+	root := t.TempDir()
+	f := New(Config{
+		Root:     root,
+		RepoRoot: root,
+		BaseURL:  "https://config.example.test/v1",
+		NewRunner: func(*Agent) Runner {
+			return RunnerFunc(func(context.Context, Sink) error { return nil })
+		},
+	})
+	a, err := f.SpawnReq(context.Background(), SpawnRequest{
+		Task:        "x",
+		BaseURL:     "https://request.example.test/v1",
+		InsecureTLS: true,
+	})
+	if err != nil {
+		t.Fatalf("spawn: %v", err)
+	}
+	a.Wait()
+	if a.BaseURL != "https://request.example.test/v1" || !a.InsecureTLS {
+		t.Fatalf("spawned settings = (%q, %v), want request override", a.BaseURL, a.InsecureTLS)
+	}
 }
 
 // TestSpawnReqPersistsModel confirms that the per-agent model
@@ -727,6 +980,37 @@ func TestRemoveAlsoCleansStateDir(t *testing.T) {
 	}
 }
 
+func TestRemoveReloadedAgentKeepsSiblingState(t *testing.T) {
+	root := t.TempDir()
+	first := New(Config{
+		Root: root, RepoRoot: root,
+		NewRunner: func(*Agent) Runner {
+			return RunnerFunc(func(context.Context, Sink) error { return nil })
+		},
+	})
+	a1, err := first.Spawn(context.Background(), "first")
+	if err != nil {
+		t.Fatal(err)
+	}
+	a2, err := first.Spawn(context.Background(), "second")
+	if err != nil {
+		t.Fatal(err)
+	}
+	a1.Wait()
+	a2.Wait()
+
+	second := New(Config{Root: root, RepoRoot: root})
+	if loaded, errs := second.Reload(); loaded != 2 || len(errs) != 0 {
+		t.Fatalf("reload loaded=%d errs=%v", loaded, errs)
+	}
+	if err := second.Remove(a1.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "agents", a2.ID, "meta.json")); err != nil {
+		t.Fatalf("removing reloaded sibling deleted surviving metadata: %v", err)
+	}
+}
+
 // TestActiveSessionScopesSnapshotAll proves the session filter the
 // user asked for: a single Swarm with agents spawned under two
 // different active sessions only surfaces the agents matching the
@@ -826,10 +1110,11 @@ func TestSessionIDPersistsAcrossReload(t *testing.T) {
 		t.Errorf("after reload + scope to sess-keep, ids = %v; want [%s]", got, a.ID)
 	}
 
-	// Scope to a different session: agent must be hidden.
+	// A terminal persisted agent remains visible from another host session
+	// so a normal restart does not hide durable recovery state.
 	g.SetActiveSession("sess-other")
-	if got := snapshotIDs(g.SnapshotAll()); len(got) != 0 {
-		t.Errorf("scoped to other session, ids = %v; want []", got)
+	if got := snapshotIDs(g.SnapshotAll()); len(got) != 1 || got[0] != a.ID {
+		t.Errorf("scoped to other session, ids = %v; want [%s]", got, a.ID)
 	}
 }
 

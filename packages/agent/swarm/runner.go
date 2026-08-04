@@ -11,12 +11,13 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 )
 
-// execRunner spawns `zot --swarm-agent <inbox> --session <path>` in
-// the host's working directory (Agent.Dir, which is always the parent
-// zot's RepoRoot) and consumes its JSONL event stream on stdout.
+// execRunner spawns `zot --subagent-worker <inbox> --session <path>` in
+// Agent.Dir (the shared repository root or an isolated worktree) and consumes
+// its JSONL event stream on stdout.
 //
 // Why a long-lived daemon and not `zot --print`: the supervisor and
 // the user expect agents to keep accepting follow-up prompts. A
@@ -31,13 +32,13 @@ import (
 //
 // The on-disk log is the durable record. The Sink updates are an
 // in-memory mirror so the dashboard doesn't have to tail the file
-// for the parent's own agents. /swarm open in a separate zot would
+// for the parent's own agents. /subagents open in a separate zot would
 // read the log directly.
 type execRunner struct {
 	agent             *Agent
 	resolveCredential func(context.Context, string) (Credential, error)
 
-	// Command overrides the default `zot --swarm-agent ...`
+	// Command overrides the default `zot --subagent-worker ...`
 	// invocation. Tests set this to a fake binary (or `go run`
 	// against a tiny stub program) so the supervisor logic can be
 	// tested without a real child. Production code leaves it nil.
@@ -66,10 +67,14 @@ type swarmAgentArgsOpts struct {
 	Task        string
 	Model       string
 	Provider    string
+	BaseURL     string
+	InsecureTLS bool
 	Reasoning   string
 	FastMode    bool
 	FastModeSet bool
 	Subagent    string
+	MaxTurns    int
+	Tools       []string
 }
 
 // defaultChildArgs builds the argv execRunner uses when its Command
@@ -99,10 +104,14 @@ func defaultChildArgs(exe string, a *Agent, sessionPath, inboxPath string) []str
 		Task:        task,
 		Model:       a.Model,
 		Provider:    a.Provider,
+		BaseURL:     a.BaseURL,
+		InsecureTLS: a.InsecureTLS,
 		Reasoning:   a.Reasoning,
 		FastMode:    a.FastMode,
 		FastModeSet: true,
 		Subagent:    a.Subagent,
+		MaxTurns:    a.MaxTurns,
+		Tools:       a.Tools,
 	})
 }
 
@@ -112,6 +121,9 @@ func defaultChildArgs(exe string, a *Agent, sessionPath, inboxPath string) []str
 func swarmAgentArgs(opts swarmAgentArgsOpts) []string {
 	args := []string{
 		opts.Exe,
+		"--subagent-worker", opts.InboxPath,
+		// Keep the old flag during the compatibility window. The child
+		// parser accepts both and canonicalises the mode internally.
 		"--swarm-agent", opts.InboxPath,
 		"--session", opts.SessionPath,
 		"--cwd", opts.Dir,
@@ -121,6 +133,12 @@ func swarmAgentArgs(opts swarmAgentArgsOpts) []string {
 	}
 	if opts.Provider != "" {
 		args = append(args, "--provider", opts.Provider)
+	}
+	if opts.BaseURL != "" {
+		args = append(args, "--base-url", opts.BaseURL)
+	}
+	if opts.InsecureTLS {
+		args = append(args, "--insecure")
 	}
 	if opts.Reasoning != "" {
 		args = append(args, "--reasoning", opts.Reasoning)
@@ -135,10 +153,17 @@ func swarmAgentArgs(opts swarmAgentArgsOpts) []string {
 	if opts.Subagent != "" {
 		args = append(args, "--subagent", opts.Subagent)
 	}
+	if opts.MaxTurns > 0 {
+		args = append(args, "--max-turns", fmt.Sprint(opts.MaxTurns))
+	}
+	if len(opts.Tools) > 0 {
+		args = append(args, "--tools", strings.Join(opts.Tools, ","))
+	}
 	if opts.Task != "" {
 		// First task is positional so the child treats it as the
-		// initial user turn; subsequent turns arrive via the inbox.
-		args = append(args, opts.Task)
+		// initial user turn; the terminator keeps flag-like task text
+		// from being parsed as a child CLI option.
+		args = append(args, "--", opts.Task)
 	}
 	return args
 }
@@ -191,11 +216,21 @@ func (r *execRunner) Run(ctx context.Context, sink Sink) error {
 	}
 
 	cmd := exec.CommandContext(ctx, args[0], args[1:]...)
+	configureWorkerProcess(cmd)
 	cmd.Dir = r.agent.Dir
-	cmd.Env = append(os.Environ(),
+	cmd.Env = append(workerEnvironment(r.agent.Provider),
 		"ZOT_SWARM_AGENT_ID="+r.agent.ID,
 		"ZOT_SWARM_EVENT_LOG="+logPath,
 	)
+	if r.agent.HeartbeatInterval > 0 {
+		cmd.Env = append(cmd.Env, "ZOT_SWARM_HEARTBEAT_INTERVAL="+r.agent.HeartbeatInterval.String())
+	}
+	if r.agent.maxOutputBytes > 0 {
+		cmd.Env = append(cmd.Env, fmt.Sprintf("ZOT_SWARM_MAX_OUTPUT_BYTES=%d", r.agent.maxOutputBytes))
+	}
+	if r.agent.maxOutputLines > 0 {
+		cmd.Env = append(cmd.Env, fmt.Sprintf("ZOT_SWARM_MAX_OUTPUT_LINES=%d", r.agent.maxOutputLines))
+	}
 	if r.resolveCredential != nil {
 		credential, resolveErr := r.resolveCredential(ctx, r.agent.Provider)
 		if resolveErr != nil {
@@ -226,6 +261,32 @@ func (r *execRunner) Run(ctx context.Context, sink Sink) error {
 	if err := cmd.Start(); err != nil {
 		return err
 	}
+	r.agent.setProcessPID(cmd.Process.Pid)
+	if r.agent.persistFn != nil {
+		r.agent.persistFn(r.agent)
+	}
+
+	var logErrMu sync.Mutex
+	var logErr error
+	var stopOnLogErr sync.Once
+	appendLog := func(ev Event) {
+		if err := log.Append(ev); err != nil {
+			logErrMu.Lock()
+			if logErr == nil {
+				logErr = err
+			}
+			logErrMu.Unlock()
+			// A durable event log is part of the runner's recovery contract.
+			// Stop the worker rather than letting it continue in a state the
+			// supervisor cannot reconstruct after restart.
+			stopOnLogErr.Do(func() { _ = killProcessGroup(cmd) })
+		}
+	}
+	firstLogErr := func() error {
+		logErrMu.Lock()
+		defer logErrMu.Unlock()
+		return logErr
+	}
 
 	// stdout: parsed as JSONL. Every well-formed event is appended
 	// to the durable log AND forwarded to the in-memory sink so the
@@ -235,34 +296,39 @@ func (r *execRunner) Run(ctx context.Context, sink Sink) error {
 	go func() {
 		defer func() { done <- struct{}{} }()
 		dec := bufio.NewReader(stdout)
+		lineLimit := r.agent.maxOutputBytes + 64*1024
+		if lineLimit <= 0 {
+			lineLimit = 512 * 1024
+		}
+		if lineLimit > maxEventLogLineBytes {
+			lineLimit = maxEventLogLineBytes
+		}
 		for {
-			line, err := dec.ReadBytes('\n')
+			line, err, truncated := readBoundedLine(dec, lineLimit)
 			if len(line) > 0 {
 				trimmed := strings.TrimRight(string(line), "\r\n")
-				if trimmed == "" {
-					goto next
-				}
-				if ev, ok := parseEventLine(trimmed); ok {
-					_ = log.Append(ev)
-					applyEventToSink(ev, sink)
-					// Fan prompt-level task completions up to any
-					// subscriber on the supervised Agent. The child
-					// also forwards provider/tool-loop turn_end
-					// events (for example stop=tool_use); those do
-					// not contain step and must not be treated as
-					// swarm task completion.
-					notifyPromptTurnEnd(r.agent, ev)
-				} else {
-					// Non-JSON output. Keep it as transcript so an
-					// accidental fmt.Println in the child still
-					// shows up in the dashboard, and log a
-					// lifecycle event so the durable record stays
-					// in sync.
+				if trimmed != "" && !truncated {
+					if ev, ok := parseEventLine(trimmed); ok {
+						appendLog(ev)
+						updateAgentFromEvent(r.agent, ev)
+						applyEventToSink(ev, sink)
+						// Fan prompt-level task completions up to any
+						// subscriber on the supervised Agent. The child
+						// also forwards provider/tool-loop turn_end
+						// events (for example stop=tool_use); those do
+						// not contain step and must not be treated as
+						// swarm task completion.
+						notifyPromptTurnEnd(r.agent, ev)
+					} else {
+						sink.Transcript(trimmed)
+						appendLog(NewEvent("stdout", map[string]any{"text": trimmed}))
+					}
+				} else if trimmed != "" {
+					trimmed += "\n...[line truncated]"
 					sink.Transcript(trimmed)
-					_ = log.Append(NewEvent("stdout", map[string]any{"text": trimmed}))
+					appendLog(NewEvent("stdout", map[string]any{"text": trimmed, "truncated": true}))
 				}
 			}
-		next:
 			if err != nil {
 				return
 			}
@@ -276,12 +342,22 @@ func (r *execRunner) Run(ctx context.Context, sink Sink) error {
 	go func() {
 		defer func() { done <- struct{}{} }()
 		br := bufio.NewReader(stderr)
+		lineLimit := r.agent.maxOutputBytes + 64*1024
+		if lineLimit <= 0 {
+			lineLimit = 512 * 1024
+		}
+		if lineLimit > maxEventLogLineBytes {
+			lineLimit = maxEventLogLineBytes
+		}
 		for {
-			line, err := br.ReadString('\n')
-			if line != "" {
-				txt := strings.TrimRight(line, "\r\n")
+			line, err, truncated := readBoundedLine(br, lineLimit)
+			if len(line) > 0 {
+				txt := strings.TrimRight(string(line), "\r\n")
+				if truncated {
+					txt += "\n...[line truncated]"
+				}
 				sink.Transcript("stderr: " + txt)
-				_ = log.Append(NewEvent("stderr", map[string]any{"text": txt}))
+				appendLog(NewEvent("stderr", map[string]any{"text": txt, "truncated": truncated}))
 			}
 			if err != nil {
 				return
@@ -298,16 +374,105 @@ func (r *execRunner) Run(ctx context.Context, sink Sink) error {
 		exit = ee.ExitCode()
 	}
 	if err != nil && ctx.Err() != nil {
-		_ = log.Append(NewEvent("agent_stopped", map[string]any{"reason": "cancelled"}))
+		appendLog(NewEvent("agent_stopped", map[string]any{"reason": "cancelled"}))
+		if logErr := firstLogErr(); logErr != nil {
+			return fmt.Errorf("swarm event log: %w", logErr)
+		}
 		return ctx.Err()
 	}
 	if err != nil {
-		_ = log.Append(NewEvent("agent_stopped", map[string]any{"reason": "exit", "code": exit, "error": err.Error()}))
+		appendLog(NewEvent("agent_stopped", map[string]any{"reason": "exit", "code": exit, "error": err.Error()}))
+		if logErr := firstLogErr(); logErr != nil {
+			return fmt.Errorf("swarm event log: %v; worker: %w", logErr, err)
+		}
 		return err
 	}
-	_ = log.Append(NewEvent("agent_stopped", map[string]any{"reason": "exit", "code": 0}))
+	appendLog(NewEvent("agent_stopped", map[string]any{"reason": "exit", "code": 0}))
+	if logErr := firstLogErr(); logErr != nil {
+		return fmt.Errorf("swarm event log: %w", logErr)
+	}
 	sink.Activity("done")
 	return nil
+}
+
+func workerEnvironment(provider string) []string {
+	// Provider credentials are resolved by the supervisor and transferred
+	// over the child's stdin. Do not inherit API-key/token variables into the
+	// worker environment, where child tools, crash reports, or diagnostics
+	// could expose them. Bedrock's current client still resolves bearer/IAM
+	// credentials directly from AWS environment variables, so preserve that
+	// provider's ambient AWS chain until it has a structured stdin handoff.
+	provider = strings.ToLower(strings.TrimSpace(provider))
+	var env []string
+	for _, entry := range os.Environ() {
+		name, _, ok := strings.Cut(entry, "=")
+		if ok && workerSecretEnvName(name) && !(provider == "amazon-bedrock" && isBedrockCredentialEnv(name)) {
+			continue
+		}
+		env = append(env, entry)
+	}
+	return env
+}
+
+func isBedrockCredentialEnv(name string) bool {
+	switch strings.ToUpper(strings.TrimSpace(name)) {
+	case "AWS_BEARER_TOKEN_BEDROCK", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN":
+		return true
+	default:
+		return false
+	}
+}
+
+func workerSecretEnvName(name string) bool {
+	name = strings.ToUpper(strings.TrimSpace(name))
+	for _, suffix := range []string{"_API_KEY", "_OAUTH_TOKEN", "_TOKEN", "_SECRET", "_PASSWORD", "_CREDENTIAL", "_CREDENTIALS"} {
+		if strings.HasSuffix(name, suffix) {
+			return true
+		}
+	}
+	switch name {
+	case "HF_TOKEN", "AWS_BEARER_TOKEN_BEDROCK", "COPILOT_GITHUB_TOKEN", "GITHUB_COPILOT_TOKEN", "GOOGLE_APPLICATION_CREDENTIALS":
+		return true
+	default:
+		return false
+	}
+}
+
+func readBoundedLine(r *bufio.Reader, limit int) ([]byte, error, bool) {
+	line, err, truncated, _, _ := readBoundedLineStats(r, limit)
+	return line, err, truncated
+}
+
+// readBoundedLineStats reads through one newline or EOF while retaining the
+// number of source bytes consumed and whether a newline terminated the record.
+// The follower uses those extra values to avoid advancing past a partial final
+// JSONL record that may be completed by a concurrent append.
+func readBoundedLineStats(r *bufio.Reader, limit int) ([]byte, error, bool, int64, bool) {
+	if limit <= 0 {
+		limit = 512 * 1024
+	}
+	var line []byte
+	var consumed int64
+	truncated := false
+	for {
+		chunk, err := r.ReadSlice('\n')
+		consumed += int64(len(chunk))
+		if len(chunk) > 0 {
+			if len(line) < limit {
+				keep := len(chunk)
+				if remaining := limit - len(line); keep > remaining {
+					keep = remaining
+					truncated = true
+				}
+				line = append(line, chunk[:keep]...)
+			} else {
+				truncated = true
+			}
+		}
+		if err != bufio.ErrBufferFull {
+			return line, err, truncated, consumed, len(chunk) > 0 && chunk[len(chunk)-1] == '\n'
+		}
+	}
 }
 
 // parseEventLine attempts to decode one JSONL line as an Event.
@@ -315,6 +480,18 @@ func (r *execRunner) Run(ctx context.Context, sink Sink) error {
 func parseEventLine(line string) (Event, bool) {
 	if len(line) == 0 || line[0] != '{' {
 		return Event{}, false
+	}
+	if env, err := ParseEvent([]byte(line)); err == nil && !env.Legacy {
+		if ev, convertErr := env.LegacyEvent(); convertErr == nil {
+			ev.Version = env.Version
+			ev.MessageID = env.MessageID
+			ev.AgentID = env.AgentID
+			ev.TurnID = env.TurnID
+			if ev.Time.IsZero() {
+				ev.Time = time.Now()
+			}
+			return ev, true
+		}
 	}
 	var ev Event
 	if err := json.Unmarshal([]byte(line), &ev); err != nil {
@@ -327,6 +504,85 @@ func parseEventLine(line string) (Event, bool) {
 		ev.Time = time.Now()
 	}
 	return ev, true
+}
+
+func updateAgentFromEvent(a *Agent, ev Event) {
+	if a == nil {
+		return
+	}
+	now := ev.Time
+	if now.IsZero() {
+		now = time.Now()
+	}
+	if ev.Version > 0 {
+		a.setProtocolVersion(ev.Version)
+	}
+	a.markActivity(now)
+	persist := false
+	switch ev.Type {
+	case EventAgentReady, "agent_ready":
+		a.setProcessState(ProcessAlive)
+		a.setTurnState(TurnIdle, ev.TurnID)
+		persist = true
+	case EventAgentHeartbeat, "agent_heartbeat":
+		a.setProcessState(ProcessAlive)
+		persist = true
+	case EventTurnStarted, "turn_start":
+		turnID := ev.TurnID
+		if turnID == "" {
+			if step, ok := ev.Data["step"].(float64); ok {
+				turnID = fmt.Sprintf("turn-%d", int(step))
+			}
+		}
+		a.setProcessState(ProcessAlive)
+		a.setTurnState(TurnRunning, turnID)
+		persist = true
+	case EventTurnResult, "turn_result":
+		if result, err := decodeTurnResultEvent(ev, a.ID, a.maxOutputBytes, a.maxOutputLines); err == nil {
+			a.setResult(result)
+			if a.turnResults != nil {
+				select {
+				case a.turnResults <- result:
+				default:
+				}
+			}
+			if a.stateDir != "" {
+				if err := writeTurnResult(a.stateDir, result); err == nil {
+					a.lifecycleMu.Lock()
+					a.resultRef = ResultRef(a.ID)
+					a.lifecycleMu.Unlock()
+				}
+			}
+			switch result.Status {
+			case ResultCanceled:
+				a.setTurnState(TurnCanceled, result.TurnID)
+			case ResultFailed:
+				a.setTurnState(TurnFailed, result.TurnID)
+			default:
+				a.setTurnState(TurnSucceeded, result.TurnID)
+			}
+		}
+		persist = true
+	case EventTurnFailed, "turn_failed":
+		a.setTurnState(TurnFailed, ev.TurnID)
+		persist = true
+	case EventAgentIdle, "agent_idle":
+		a.setTurnState(TurnIdle, ev.TurnID)
+		persist = true
+	case EventAgentExited, "agent_exited", "agent_stopped":
+		a.setProcessState(ProcessExited)
+		persist = true
+	case "turn_end":
+		if message, _ := ev.Data["error"].(string); message != "" {
+			a.setTurnState(TurnFailed, ev.TurnID)
+		} else {
+			a.setTurnState(TurnSucceeded, ev.TurnID)
+		}
+		persist = true
+	}
+	if persist && a.persistFn != nil {
+		a.persistFn(a)
+	}
 }
 
 // notifyPromptTurnEnd calls Agent.OnTurnEnd only for the swarm
@@ -342,13 +598,16 @@ func notifyPromptTurnEnd(a *Agent, ev Event) {
 		return
 	}
 
+	errMsg, _ := ev.Data["error"].(string)
 	a.mu.Lock()
 	fn := a.OnTurnEnd
-	a.mu.Unlock()
-	if fn != nil {
-		errMsg, _ := ev.Data["error"].(string)
-		go fn(int(step), errMsg)
+	if fn == nil {
+		a.pendingTurnEnds = append(a.pendingTurnEnds, turnEndNotice{step: int(step), errMsg: errMsg})
+		a.mu.Unlock()
+		return
 	}
+	a.mu.Unlock()
+	go fn(int(step), errMsg)
 }
 
 // applyEventToSink translates an Event into Sink updates. Only a
@@ -395,17 +654,17 @@ func applyEventToSink(ev Event, sink Sink) {
 		if ev.Type == "assistant_message" {
 			sink.Activity("idle")
 		}
-	case "turn_start":
+	case "turn_start", EventTurnStarted:
 		sink.Activity("thinking")
-	case "tool_call":
+	case "tool_call", EventToolStarted:
 		if name, _ := ev.Data["name"].(string); name != "" {
 			sink.Activity("tool: " + truncate(name, 60))
 		}
-	case "tool_result":
+	case "tool_result", EventToolFinished:
 		sink.Activity("idle")
-	case "turn_end":
+	case "turn_end", EventTurnResult, EventAgentIdle:
 		sink.Activity("idle")
-	case "agent_ready":
+	case "agent_ready", EventAgentReady, EventAgentHeartbeat:
 		sink.Activity("idle")
 	case "agent_stopped":
 		// terminal status is decided by Swarm.run from the runner's

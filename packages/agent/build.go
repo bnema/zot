@@ -737,7 +737,7 @@ func Resolve(args Args, requireCred bool) (Resolved, error) {
 		append_ = append(append_, skillAddendum)
 	}
 	interactiveMode := args.Mode == "" || args.Mode == ModeInteractive
-	if selectedProfile == nil && interactiveMode && cfg.AutoSwarmEnabled != nil && *cfg.AutoSwarmEnabled {
+	if selectedProfile == nil && interactiveMode && autoSwarmToolAllowed(args) && cfg.AutoSwarmEnabled != nil && *cfg.AutoSwarmEnabled {
 		homeDir, _ := os.UserHomeDir()
 		profiles, _ := subagents.Discover(args.CWD, homeDir)
 		if subagentsAddendum := subagents.SystemPromptAddendum(profiles); subagentsAddendum != "" {
@@ -1183,6 +1183,21 @@ func lspManagerNeeded(args Args, diagnosticsOnWrite, diagnosticsOnEdit bool) boo
 			if diagnosticsOnEdit {
 				return true
 			}
+		}
+	}
+	return false
+}
+
+func autoSwarmToolAllowed(args Args) bool {
+	if args.NoTools || args.PermissionSet != nil {
+		return false
+	}
+	if len(args.Tools) == 0 {
+		return true
+	}
+	for _, name := range args.Tools {
+		if name == "subagent_spawn" || name == "swarm_spawn" {
+			return true
 		}
 	}
 	return false

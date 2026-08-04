@@ -39,7 +39,7 @@ Supported metadata:
 
 | Field | Meaning |
 |---|---|
-| `name` | Name passed to `swarm_spawn`'s `agent` field. Falls back to the filename. |
+| `name` | Name passed to `subagent_spawn`'s `agent` field (`swarm_spawn` is a compatibility alias). Falls back to the filename. |
 | `description` | Short description shown to the main agent. |
 | `tools` | Comma-separated or list-form tool names. zot enforces its built-in `read`, `write`, `edit`, `bash`, and `lsp` registry; the conditional `skill` tool is available when skills are enabled. Unknown names do not grant capabilities. |
 | `model` | Optional model ID. A qualified value such as `openai-codex/gpt-5.6-luna` selects both provider and model. |
@@ -50,11 +50,11 @@ Supported metadata:
 | `inheritSkills` | Set to `false` to omit skill discovery and the conditional `skill` loader from the child; `--no-skill` has the same effect for a run. |
 | `fastMode` | Optional fast-mode restriction. Omit it to inherit the host setting; `false` disables fast mode for this profile; `true` only permits fast mode when the host setting is enabled. |
 
-Other frontmatter from another agent host is ignored when zot does not have an equivalent setting. For example, `maxSubagentDepth` is currently not enforced by zot.
+Other frontmatter from another agent host is ignored when zot does not have an equivalent setting. Recursive child spawning is disabled in v1; a worker cannot invoke `subagent_spawn` to create descendants.
 
 ## Selecting a profile
 
-When **auto-swarm** is enabled in `/settings`, the main agent receives a compact `[subagents_list]` section in its system prompt and can select a profile:
+When **auto-swarm** is enabled in `/settings`, the main agent receives a compact `[subagents_list]` section in its system prompt and can select a profile for `subagent_spawn`:
 
 ```json
 {
@@ -80,8 +80,29 @@ A per-spawn reasoning override is also accepted:
 The interactive command also supports the same selection explicitly:
 
 ```text
-/swarm new --agent reviewer Review the authentication package
-/swarm new --agent implementer --reasoning high Implement the parser change
+/subagents new --agent reviewer Review the authentication package
+/subagents new --agent implementer --reasoning high Implement the parser change
 ```
 
-All swarm children still share the host working directory. Named profiles change the child's instructions and configuration; they do not create a worktree, branch, or security sandbox. Fast mode is inherited by default. A profile with `fastMode: false` opts out, while `fastMode: true` cannot enable fast mode when the host setting is off. Non-OpenAI child providers return an unsupported-provider error instead of silently ignoring an enabled setting.
+Shared mode preserves the historical host working directory. For parallel coding, pass `isolation:"worktree"` to `subagent_spawn`; zot creates a detached Git worktree, captures changed files and a patch, and never merges automatically. Named profiles change the child's instructions and configuration; they are not a security sandbox. Child credentials are transferred over stdin rather than argv or persisted metadata, and the active provider endpoint/TLS setting is inherited only when the child uses that provider. Fast mode is inherited by default. A profile with `fastMode: false` opts out, while `fastMode: true` cannot enable fast mode when the host setting is off. Non-OpenAI child providers return an unsupported-provider error instead of silently ignoring an enabled setting.
+
+## Lifecycle, results, and recovery
+
+Every child has independent process and turn state. A process may be `alive` while its turn is `idle`; a supervisor restart marks the process `detached` without claiming that its last turn failed. Durable manifests include the task, parent/root session identity, workspace mode, attempt, process/turn state, heartbeat timestamps, and logical result references.
+
+The worker and supervisor communicate over newline-delimited JSON. Current messages use version `1` envelopes with `version`, `message_id`, `agent_id`, `turn_id`, `timestamp`, and `payload`. Unknown event names and payload fields are retained. Older flat JSON events and text commands (`user ...`, `cancel`, `shutdown`) remain readable during the compatibility window.
+
+A completed worker emits a `turn.result` event and writes `result.json`. The inline output is bounded; inspect the full session through the stable references:
+
+```text
+subagent://<id>
+subagent://<id>/history
+subagent://<id>/result
+subagent://<id>/patch
+```
+
+Use `/subagents resume-session <id>` to continue the existing session without replaying its original task. Use `/subagents restart-task <id>` only when intentionally starting the stored task again. Cancellation requests graceful shutdown first, then forcefully cancels after the configured grace period.
+
+## Resource policy
+
+The persisted `subagents` config object supports `max_concurrent`, `max_concurrent_per_parent`, `max_total_spawned`, `queue_timeout`, `default_timeout`, `max_turns`, output caps, allowed tools/roots, heartbeat and idle timeouts. Limits apply to slash commands, `subagent_spawn`, and batch operations. A child cannot create descendants in v1. Per-agent timeouts are retained across reload/resume. Packaged `zot run` agents keep their declared capability ceiling by disabling subagent delegation; profiles are not a substitute for that permission boundary.

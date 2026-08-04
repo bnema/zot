@@ -40,6 +40,7 @@ func TestRunnerEndToEndWithStubChild(t *testing.T) {
 	}
 
 	exe := buildStubChild(t)
+	t.Setenv("ZOT_STUB_PROTOCOL", "1")
 
 	root := t.TempDir()
 	repo := t.TempDir()

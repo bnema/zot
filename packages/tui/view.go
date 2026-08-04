@@ -2408,6 +2408,7 @@ type StatusBarParams struct {
 	Provider   string
 	Model      string
 	Reasoning  string // "" means thinking off
+	FastMode   bool   // show the provider's opt-in fast tier when enabled
 	Busy       bool
 	BusyPrefix string // spinner + funny line when busy
 	CWD        string
@@ -2509,8 +2510,15 @@ func StatusBar(p StatusBarParams) []string {
 	if reasoning != "" {
 		reasoningText = "reasoning: " + reasoning
 	}
+	fastText := ""
+	if p.FastMode {
+		fastText = "fast mode"
+	}
 	statsText := strings.Join(stats, " ")
-	middleParts := make([]string, 0, 2)
+	middleParts := make([]string, 0, 3)
+	if fastText != "" {
+		middleParts = append(middleParts, fastText)
+	}
 	if reasoningText != "" {
 		middleParts = append(middleParts, reasoningText)
 	}
@@ -2570,7 +2578,7 @@ func StatusBar(p StatusBarParams) []string {
 		modelLine := pad + th.FG256(th.Muted, left)
 		lines := []string{busyLine}
 		if middle != "" && visibleWidth(modelLine+pad+th.FG256(th.Muted, middle)) > p.Cols {
-			lines = appendWrappedStatusLines(lines, th, pad, left, reasoningText, statsText, p.Cols)
+			lines = appendWrappedStatusLines(lines, th, pad, left, fastText, reasoningText, statsText, p.Cols)
 		} else {
 			var infoBuilder strings.Builder
 			infoBuilder.WriteString(modelLine)
@@ -2592,7 +2600,7 @@ func StatusBar(p StatusBarParams) []string {
 	// into an awkward position on small widths.
 	if p.Cols > 0 && p.BusyPrefix == "" && middle != "" && visibleWidth(primary) > p.Cols {
 		var lines []string
-		lines = appendWrappedStatusLines(lines, th, pad, left, reasoningText, statsText, p.Cols)
+		lines = appendWrappedStatusLines(lines, th, pad, left, fastText, reasoningText, statsText, p.Cols)
 		if cwd != "" {
 			lines = append(lines, pad+th.FG256(th.Muted, cwd))
 		}
@@ -2609,9 +2617,17 @@ func StatusBar(p StatusBarParams) []string {
 	return []string{primary, cwdRendered}
 }
 
-func appendWrappedStatusLines(lines []string, th Theme, pad, modelText, reasoningText, statsText string, cols int) []string {
+func appendWrappedStatusLines(lines []string, th Theme, pad, modelText, fastText, reasoningText, statsText string, cols int) []string {
 	modelLine := pad + th.FG256(th.Muted, modelText)
-	if reasoningText == "" {
+	infoParts := make([]string, 0, 2)
+	if fastText != "" {
+		infoParts = append(infoParts, fastText)
+	}
+	if reasoningText != "" {
+		infoParts = append(infoParts, reasoningText)
+	}
+	infoText := strings.Join(infoParts, pad)
+	if infoText == "" {
 		lines = append(lines, modelLine)
 		if statsText != "" {
 			lines = append(lines, pad+th.FG256(th.Muted, statsText))
@@ -2619,13 +2635,21 @@ func appendWrappedStatusLines(lines []string, th Theme, pad, modelText, reasonin
 		return lines
 	}
 
-	modelReasoningPlain := pad + modelText + pad + reasoningText
-	reasoningColor := reasoningStatusColor(th, reasoningText)
-	if cols <= 0 || visibleWidth(modelReasoningPlain) <= cols {
-		lines = append(lines, pad+th.FG256(reasoningColor, modelText+pad+reasoningText))
+	modelInfoPlain := pad + modelText + pad + infoText
+	infoColor := th.Muted
+	if reasoningText != "" {
+		infoColor = reasoningStatusColor(th, reasoningText)
+	}
+	if cols <= 0 || visibleWidth(modelInfoPlain) <= cols {
+		lines = append(lines, pad+th.FG256(infoColor, modelText+pad+infoText))
 	} else {
 		lines = append(lines, modelLine)
-		lines = append(lines, pad+th.FG256(reasoningColor, reasoningText))
+		if fastText != "" {
+			lines = append(lines, pad+th.FG256(th.Muted, fastText))
+		}
+		if reasoningText != "" {
+			lines = append(lines, pad+th.FG256(reasoningStatusColor(th, reasoningText), reasoningText))
+		}
 	}
 	if statsText != "" {
 		lines = append(lines, pad+th.FG256(th.Muted, statsText))

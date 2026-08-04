@@ -22,6 +22,25 @@ type QuickModelShortcut struct {
 	Model    string `json:"model"`
 }
 
+// SubagentsConfig contains the persisted supervisor policy. Duration values
+// use Go strings such as "20m" so config files remain readable.
+type SubagentsConfig struct {
+	MaxConcurrent          int      `json:"max_concurrent,omitempty"`
+	MaxConcurrentPerParent int      `json:"max_concurrent_per_parent,omitempty"`
+	MaxTotalSpawned        int      `json:"max_total_spawned,omitempty"`
+	QueueTimeout           string   `json:"queue_timeout,omitempty"`
+	DefaultTimeout         string   `json:"default_timeout,omitempty"`
+	MaxTurns               int      `json:"max_turns,omitempty"`
+	MaxOutputBytes         int      `json:"max_output_bytes,omitempty"`
+	MaxOutputLines         int      `json:"max_output_lines,omitempty"`
+	AllowedTools           []string `json:"allowed_tools,omitempty"`
+	AllowedRoots           []string `json:"allowed_roots,omitempty"`
+	HeartbeatInterval      string   `json:"heartbeat_interval,omitempty"`
+	IdleTimeout            string   `json:"idle_timeout,omitempty"`
+	ReconnectTimeout       string   `json:"reconnect_timeout,omitempty"`
+	CancelGracePeriod      string   `json:"cancel_grace_period,omitempty"`
+}
+
 // Config is the persisted user configuration.
 type Config struct {
 	Provider    string   `json:"provider"`
@@ -67,6 +86,9 @@ type Config struct {
 	// updates in interactive mode. nil/missing means enabled; false disables
 	// both so no extra provider request is made. Toggle from /settings.
 	TerminalTitleEnabled *bool `json:"terminal_title_enabled,omitempty"`
+
+	// Subagents controls manager-owned child lifecycle and resource policy.
+	Subagents SubagentsConfig `json:"subagents,omitempty"`
 
 	// AutoSwarmEnabled lets the main agent spawn background sub-agents
 	// for parallel sub-tasks via a built-in swarm_spawn tool. Off by
