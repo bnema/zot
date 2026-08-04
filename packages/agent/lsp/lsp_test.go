@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -103,6 +104,12 @@ func TestFileURIPathRoundTrip(t *testing.T) {
 	if filepath.Clean(got) != filepath.Clean(abs) {
 		t.Fatalf("round-trip path = %q, want %q", got, abs)
 	}
+	if runtime.GOOS != "windows" {
+		posixPath, err := uriToPath("file:///x:tmp/main.go")
+		if err != nil || posixPath != "/x:tmp/main.go" {
+			t.Fatalf("POSIX drive-like URI = %q, err = %v", posixPath, err)
+		}
+	}
 	if runtime.GOOS == "windows" {
 		unc := `\\server\share\main.go`
 		uncURI, err := pathToURI(unc)
@@ -116,6 +123,25 @@ func TestFileURIPathRoundTrip(t *testing.T) {
 		if err != nil || filepath.Clean(uncPath) != filepath.Clean(unc) {
 			t.Fatalf("UNC round trip = %q, err = %v", uncPath, err)
 		}
+	}
+}
+
+func TestFramingRejectsMalformedAndOversizedMessages(t *testing.T) {
+	cases := []string{
+		"\r\n{}",
+		"Content-Length: -1\r\n\r\n",
+		"Content-Length: nope\r\n\r\n",
+		"Content-Length: 1\r\n" + strings.Repeat("X", maxHeaderBytes) + "\r\n",
+		"Content-Length: " + strconv.Itoa(maxMessageBytes+1) + "\r\n\r\n",
+	}
+	for _, wire := range cases {
+		if _, err := ReadMessage(bufio.NewReader(strings.NewReader(wire))); err == nil {
+			t.Fatalf("accepted malformed frame %q", wire[:min(len(wire), 80)])
+		}
+	}
+	var out bytes.Buffer
+	if err := WriteMessage(&out, make([]byte, maxMessageBytes+1)); err == nil {
+		t.Fatal("accepted oversized outbound frame")
 	}
 }
 
@@ -190,7 +216,7 @@ func TestLoadConfigAcceptsPiLSPBridgeProviders(t *testing.T) {
 	root := t.TempDir()
 	zotHome := t.TempDir()
 	t.Setenv("ZOT_HOME", zotHome)
-	if err := os.WriteFile(filepath.Join(root, "go.mod"), []byte("module example\\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(root, "go.mod"), []byte("module example\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	configFile := `{
@@ -221,7 +247,7 @@ func TestLoadConfigAcceptsPiLSPBridgeProviders(t *testing.T) {
 func TestLoadConfigAutoDetectFalseKeepsExplicitProviders(t *testing.T) {
 	root := t.TempDir()
 	t.Setenv("ZOT_HOME", t.TempDir())
-	if err := os.WriteFile(filepath.Join(root, "go.mod"), []byte("module example\\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(root, "go.mod"), []byte("module example\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(root, "lsp.json"), []byte(`{"autoDetect":false,"providers":["gopls"]}`), 0o644); err != nil {
@@ -374,7 +400,7 @@ func TestWorkspaceEditPreflightsAllTargets(t *testing.T) {
 	_, err = prepareEditTargets(rootReal, map[string][]TextEdit{
 		URIForPath(inside):  {{Range: Range{}, NewText: "inside"}},
 		URIForPath(outside): {{Range: Range{}, NewText: "outside"}},
-	})
+	}, nil)
 	if err == nil {
 		t.Fatal("workspace edit accepted an unsafe target after a safe target")
 	}

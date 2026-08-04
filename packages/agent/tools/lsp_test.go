@@ -64,7 +64,7 @@ func TestLSPToolGlobRespectsJailForSymlinkMatches(t *testing.T) {
 
 func TestBoundLSPText(t *testing.T) {
 	value := boundLSPText(strings.Repeat("x", maxLSPToolOutput+10))
-	if len(value) <= maxLSPToolOutput || !strings.Contains(value, "truncated") {
+	if len(value) > maxLSPToolOutput || !strings.Contains(value, "truncated") {
 		t.Fatalf("bound output = %d bytes", len(value))
 	}
 	unicodeValue := boundLSPText(strings.Repeat("界", maxLSPToolOutput/3+10))

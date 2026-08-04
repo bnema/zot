@@ -115,7 +115,9 @@ func runRPCMode(ctx context.Context, args Args, version string) error {
 		resolved.MergeExtensionTools(adapter)
 		oldTools := ag.Tools
 		ag.SetTools(resolved.ToolRegistry)
-		_ = tools.CloseLSPManagers(oldTools)
+		if closeErr := tools.CloseLSPManagers(oldTools); closeErr != nil {
+			fmt.Fprintln(os.Stderr, "reload LSP cleanup:", closeErr)
+		}
 	})
 
 	extMgr.EmitEvent(extproto.EventFromHost{Event: "session_start"})

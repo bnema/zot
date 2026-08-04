@@ -2,6 +2,7 @@ package tools
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"time"
 
@@ -58,6 +59,17 @@ func attachWriteDiagnostics(ctx context.Context, cwd, path string, manager *lsp.
 	defer cancel()
 	diagnostics, err := manager.Diagnostics(diagnosticsCtx, cwd, path)
 	if err != nil {
+		if details, ok := result.Details.(map[string]any); ok {
+			status := "unavailable"
+			switch {
+			case errors.Is(err, context.DeadlineExceeded):
+				status = "timeout"
+			case errors.Is(err, context.Canceled):
+				status = "canceled"
+			}
+			details["diagnostics_status"] = status
+			details["diagnostics_error"] = err.Error()
+		}
 		return
 	}
 	diagnostics = manager.ReduceDiagnostics(cwd, path, diagnostics)

@@ -173,7 +173,7 @@ func (t *LSPTool) executeLanguageAction(ctx context.Context, cwd, path string, a
 	}
 	position := lsp.Position{Line: args.Line - 1, Character: args.Column - 1}
 	method := map[string]string{"definition": "textDocument/definition", "references": "textDocument/references", "hover": "textDocument/hover", "symbols": "textDocument/documentSymbol", "rename": "textDocument/rename", "code_actions": "textDocument/codeAction", "type_definition": "textDocument/typeDefinition", "implementation": "textDocument/implementation"}[args.Action]
-	var params any
+	var params map[string]any
 	if args.Action == "symbols" {
 		if args.Query != "" {
 			method, params = "workspace/symbol", map[string]any{"query": args.Query}
@@ -183,7 +183,7 @@ func (t *LSPTool) executeLanguageAction(ctx context.Context, cwd, path string, a
 	} else {
 		params = map[string]any{"textDocument": map[string]any{"uri": fileURI(path)}, "position": position}
 		if args.Action == "references" {
-			params.(map[string]any)["context"] = map[string]any{"includeDeclaration": true}
+			params["context"] = map[string]any{"includeDeclaration": true}
 		}
 		if args.Action == "code_actions" {
 			params = map[string]any{"textDocument": map[string]any{"uri": fileURI(path)}, "range": lsp.Range{Start: position, End: position}, "context": map[string]any{"diagnostics": []any{}}}
@@ -192,7 +192,7 @@ func (t *LSPTool) executeLanguageAction(ctx context.Context, cwd, path string, a
 			if strings.TrimSpace(args.NewName) == "" {
 				return "", nil, fmt.Errorf("new_name is required for rename")
 			}
-			params.(map[string]any)["newName"] = args.NewName
+			params["newName"] = args.NewName
 		}
 	}
 	responses := t.Manager.RequestAll(ctx, cwd, path, method, params)
@@ -234,6 +234,7 @@ func formatResponses(cwd string, responses []lsp.Response, action string, apply 
 	var b strings.Builder
 	applied := 0
 	var firstErr error
+	pendingEdits := make([]lsp.WorkspaceEdit, 0)
 	for _, response := range responses {
 		if response.Error != nil {
 			fmt.Fprintf(&b, "%s: error: %s\n", response.Server, response.Error)
@@ -244,17 +245,17 @@ func formatResponses(cwd string, responses []lsp.Response, action string, apply 
 		}
 		fmt.Fprintf(&b, "%s:\n%s\n", response.Server, prettyJSON(response.Result))
 		if apply && (action == "rename" || action == "code_actions") {
-			edits := workspaceEdits(response.Result, action)
-			for _, edit := range edits {
-				if err := manager.ApplyEdit(cwd, edit); err != nil {
-					if firstErr == nil {
-						firstErr = err
-					}
-					fmt.Fprintf(&b, "apply: error: %s\n", err)
-				} else {
-					applied++
-				}
+			pendingEdits = append(pendingEdits, workspaceEdits(response.Result, action)...)
+		}
+	}
+	if len(pendingEdits) > 0 {
+		if err := manager.ApplyEdits(cwd, pendingEdits); err != nil {
+			if firstErr == nil {
+				firstErr = err
 			}
+			fmt.Fprintf(&b, "apply: error: %s\n", err)
+		} else {
+			applied = len(pendingEdits)
 		}
 	}
 	if b.Len() == 0 {
@@ -340,9 +341,11 @@ func boundLSPText(value string) string {
 	if len(value) <= maxLSPToolOutput {
 		return value
 	}
-	cut := value[:maxLSPToolOutput]
+	suffix := fmt.Sprintf("\n... [truncated at %d bytes]", maxLSPToolOutput)
+	available := maxLSPToolOutput - len(suffix)
+	cut := value[:available]
 	for len(cut) > 0 && !utf8.ValidString(cut) {
 		cut = cut[:len(cut)-1]
 	}
-	return cut + fmt.Sprintf("\n... [truncated at %d bytes]", maxLSPToolOutput)
+	return cut + suffix
 }

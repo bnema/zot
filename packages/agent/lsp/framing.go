@@ -10,7 +10,11 @@ import (
 	"strings"
 )
 
-const maxMessageBytes = 32 * 1024 * 1024
+const (
+	maxMessageBytes = 32 * 1024 * 1024
+	maxHeaderBytes  = 8 * 1024
+	maxHeaderLines  = 64
+)
 
 // WriteMessage writes one LSP Content-Length framed JSON-RPC message.
 func WriteMessage(w io.Writer, payload []byte) error {
@@ -34,18 +38,28 @@ func WriteMessage(w io.Writer, payload []byte) error {
 // headers (including Content-Type) and either CRLF or LF header endings.
 func ReadMessage(r *bufio.Reader) ([]byte, error) {
 	length := -1
+	headerBytes := 0
+	headerLines := 0
 	for {
-		line, err := r.ReadString('\n')
+		line, err := r.ReadSlice('\n')
 		if err != nil {
+			if err == bufio.ErrBufferFull {
+				return nil, errors.New("LSP headers are too large")
+			}
 			return nil, err
 		}
-		line = strings.TrimRight(line, "\r\n")
-		if line == "" {
+		headerBytes += len(line)
+		headerLines++
+		if headerBytes > maxHeaderBytes || headerLines > maxHeaderLines {
+			return nil, errors.New("LSP headers are too large")
+		}
+		lineText := strings.TrimRight(string(line), "\r\n")
+		if lineText == "" {
 			break
 		}
-		key, value, ok := strings.Cut(line, ":")
+		key, value, ok := strings.Cut(lineText, ":")
 		if !ok {
-			return nil, fmt.Errorf("malformed LSP header %q", line)
+			return nil, fmt.Errorf("malformed LSP header %q", lineText)
 		}
 		if strings.EqualFold(strings.TrimSpace(key), "content-length") {
 			n, err := strconv.Atoi(strings.TrimSpace(value))
@@ -72,6 +86,8 @@ func ReadMessage(r *bufio.Reader) ([]byte, error) {
 // message. It returns the exact wire representation.
 func Frame(payload []byte) []byte {
 	var b bytes.Buffer
-	_ = WriteMessage(&b, payload)
+	if err := WriteMessage(&b, payload); err != nil {
+		panic(err)
+	}
 	return b.Bytes()
 }

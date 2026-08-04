@@ -58,15 +58,16 @@ type Client struct {
 	stdout  io.ReadCloser
 	stderr  io.ReadCloser
 
-	writeMu   sync.Mutex
-	mu        sync.Mutex
-	pending   map[int64]chan rpcResponse
-	nextID    int64
-	closed    bool
-	closeOnce sync.Once
-	done      chan struct{}
-	doneOnce  sync.Once
-	readErr   atomic.Value // string; one concrete type keeps atomic.Value safe
+	writeMu     sync.Mutex
+	applyEditMu sync.Mutex
+	mu          sync.Mutex
+	pending     map[int64]chan rpcResponse
+	nextID      int64
+	closed      bool
+	closeOnce   sync.Once
+	done        chan struct{}
+	doneOnce    sync.Once
+	readErr     atomic.Value // string; one concrete type keeps atomic.Value safe
 
 	options ClientOptions
 	capMu   sync.RWMutex
@@ -259,15 +260,13 @@ func (c *Client) DidOpen(path, languageID, text string) error {
 	if err != nil {
 		return err
 	}
-	c.docsMu.Lock()
-	version := c.docs[uri]
-	if version == 0 {
-		version = 1
-	} else {
-		version++
+	version, alreadyOpen := c.nextDocumentVersion(uri)
+	if alreadyOpen {
+		return c.Notify("textDocument/didChange", map[string]any{
+			"textDocument":   map[string]any{"uri": uri, "version": version},
+			"contentChanges": []map[string]any{{"text": text}},
+		})
 	}
-	c.docs[uri] = version
-	c.docsMu.Unlock()
 	return c.Notify("textDocument/didOpen", map[string]any{
 		"textDocument": map[string]any{"uri": uri, "languageId": languageID, "version": version, "text": text},
 	})
@@ -280,19 +279,25 @@ func (c *Client) DidChange(path, text string) error {
 	if err != nil {
 		return err
 	}
+	version, _ := c.nextDocumentVersion(uri)
+	return c.Notify("textDocument/didChange", map[string]any{
+		"textDocument":   map[string]any{"uri": uri, "version": version},
+		"contentChanges": []map[string]any{{"text": text}},
+	})
+}
+
+func (c *Client) nextDocumentVersion(uri string) (int, bool) {
 	c.docsMu.Lock()
+	defer c.docsMu.Unlock()
 	version := c.docs[uri]
+	alreadyOpen := version != 0
 	if version == 0 {
 		version = 1
 	} else {
 		version++
 	}
 	c.docs[uri] = version
-	c.docsMu.Unlock()
-	return c.Notify("textDocument/didChange", map[string]any{
-		"textDocument":   map[string]any{"uri": uri, "version": version},
-		"contentChanges": []map[string]any{{"text": text}},
-	})
+	return version, alreadyOpen
 }
 
 func (c *Client) DidSave(path, text string) error {
@@ -338,12 +343,10 @@ func (c *Client) readLoop() {
 			continue
 		}
 		if envelope.Method != "" {
-			// Diagnostics are ordered state: process publications on the
-			// reader goroutine so a rapid clear/update sequence cannot be
-			// reordered by notification handlers. Server requests may
-			// block while they wait for an edit response, so those remain
-			// asynchronous.
-			if envelope.Method == "textDocument/publishDiagnostics" {
+			// Notifications carry ordered state, so handle them on the
+			// reader goroutine. Server requests may block while they wait
+			// for an edit response, so those remain asynchronous.
+			if len(envelope.ID) == 0 || string(envelope.ID) == "null" {
 				c.handleServerMessage(envelope)
 			} else {
 				go c.handleServerMessage(envelope)
@@ -387,7 +390,9 @@ func (c *Client) handleServerMessage(message rpcEnvelope) {
 			_ = c.respond(message.ID, map[string]any{"applied": false, "failureReason": err.Error()}, nil)
 			return
 		}
+		c.applyEditMu.Lock()
 		err := c.applyEdit(params.Edit)
+		c.applyEditMu.Unlock()
 		result := map[string]any{"applied": err == nil}
 		if err != nil {
 			result["failureReason"] = err.Error()
@@ -449,7 +454,7 @@ func (c *Client) applyEdit(edit WorkspaceEdit) error {
 }
 
 func (c *Client) respond(id json.RawMessage, result any, rpcErr *rpcError) error {
-	message := map[string]any{"jsonrpc": "2.0", "id": json.RawMessage(id)}
+	message := map[string]any{"jsonrpc": "2.0", "id": id}
 	if rpcErr != nil {
 		message["error"] = rpcErr
 	} else {
@@ -538,10 +543,18 @@ func (c *Client) Close() error {
 		_ = c.stdin.Close()
 		c.writeMu.Unlock()
 		killed := false
-		if c.cmd.Process != nil && c.cmd.ProcessState == nil {
-			killed = c.cmd.Process.Kill() == nil
+		exited := make(chan error, 1)
+		go func() { exited <- c.cmd.Wait() }()
+		timer := time.NewTimer(500 * time.Millisecond)
+		select {
+		case waitErr = <-exited:
+			timer.Stop()
+		case <-timer.C:
+			if c.cmd.Process != nil && c.cmd.ProcessState == nil {
+				killed = c.cmd.Process.Kill() == nil
+			}
+			waitErr = <-exited
 		}
-		waitErr = c.cmd.Wait()
 		if killed {
 			// A process terminated by this cleanup path normally returns an
 			// ExitError; preserve unrelated wait failures such as pipe
@@ -603,7 +616,7 @@ func ResolveCommand(cwd, command string) (string, error) {
 		// executable lives at the repository root. Search each workspace
 		// ancestor before falling back to PATH.
 		for dir := cwd; dir != ""; dir = filepath.Dir(dir) {
-			for _, local := range []string{filepath.Join("node_modules", ".bin"), filepath.Join(".venv", "bin"), "bin"} {
+			for _, local := range []string{filepath.Join("node_modules", ".bin"), filepath.Join(".venv", "bin"), filepath.Join(".venv", "Scripts"), "bin", "Scripts"} {
 				candidates = append(candidates, filepath.Join(dir, local, command))
 			}
 			next := filepath.Dir(dir)

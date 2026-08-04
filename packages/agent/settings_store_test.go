@@ -149,10 +149,15 @@ func TestConfigLSPEnabledForDefaultsToTrue(t *testing.T) {
 	if cfg.LSPEnabledFor(false) || cfg.LSPEnabledFor(true) {
 		t.Fatal("explicitly disabled LSP settings were ignored")
 	}
+	yesSub := true
+	cfg.SubagentLSPEnabled = &yesSub
 	write, edit := true, true
 	cfg.LSPDiagnosticsOnWrite = &write
 	cfg.LSPDiagnosticsOnEdit = &edit
-	if cfg.LSPDiagnosticsOnWriteEnabled() || cfg.LSPDiagnosticsOnEditEnabled() {
+	if cfg.LSPDiagnosticsOnWriteEnabled(false) || cfg.LSPDiagnosticsOnEditEnabled(false) {
 		t.Fatal("diagnostics remained enabled with main-session LSP disabled")
+	}
+	if !cfg.LSPDiagnosticsOnWriteEnabled(true) || !cfg.LSPDiagnosticsOnEditEnabled(true) {
+		t.Fatal("sub-agent diagnostics did not follow sub-agent LSP settings")
 	}
 }

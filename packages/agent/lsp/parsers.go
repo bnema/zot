@@ -190,7 +190,7 @@ func parseGeneric(provider, cwd, output string) []Diagnostic {
 		columnNo, _ := strconv.Atoi(match[3])
 		message := strings.TrimSpace(match[5])
 		if message == "" {
-			message = strings.TrimSpace(match[4])
+			message = line
 		}
 		severity := normalizeSeverity(match[4])
 		out = append(out, Diagnostic{Path: normalizeDiagnosticPath(cwd, match[1]), Server: provider, Source: provider, Severity: severity, Message: message, Range: oneBasedRange(lineNo, columnNo, lineNo, columnNo)})

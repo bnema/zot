@@ -624,7 +624,7 @@ func Resolve(args Args, requireCred bool) (Resolved, error) {
 	}
 	subagentSession := args.Mode == ModeSwarmAgent || strings.TrimSpace(args.Subagent) != ""
 	lspEnabled := !args.NoLSP && cfg.LSPEnabledFor(subagentSession)
-	reg := buildToolRegistry(args, args.CWD, sandbox, lspEnabled, cfg.LSPDiagnosticsOnWriteEnabled(), cfg.LSPDiagnosticsOnEditEnabled())
+	reg := buildToolRegistry(args, args.CWD, sandbox, lspEnabled, cfg.LSPDiagnosticsOnWriteEnabled(subagentSession), cfg.LSPDiagnosticsOnEditEnabled(subagentSession))
 
 	docsDir, _ := zotdocs.EnsureInstalled(ZotHome())
 
@@ -1055,7 +1055,11 @@ func buildToolRegistry(args Args, cwd string, sandbox *tools.Sandbox, lspEnabled
 	}
 	var manager *lsp.Manager
 	if lspEnabled && lspManagerNeeded(args, diagnosticsOnWrite, diagnosticsOnEdit) {
-		manager = lsp.NewManager()
+		options := lsp.ManagerOptions{}
+		if sandbox != nil {
+			options.CheckWritePath = sandbox.CheckWritePath
+		}
+		manager = lsp.NewManagerWithOptions(options)
 	}
 	all := map[string]core.Tool{
 		"read":  &tools.ReadTool{CWD: cwd, Sandbox: sandbox},

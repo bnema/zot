@@ -658,7 +658,13 @@ func runPrintMode(ctx context.Context, args Args, version string) error {
 	defer stopExt()
 
 	ag := r.NewAgent()
-	defer closeAgentLSP(ag)
+	initialAg := ag
+	defer func() {
+		closeAgentLSP(ag)
+		if ag != initialAg {
+			closeAgentLSP(initialAg)
+		}
+	}()
 	wireNonInteractiveAgentExtHooks(ctx, ag, extMgr)
 	sess, err := openOrCreateSession(args, r, ag, version)
 	if err != nil {
@@ -713,7 +719,13 @@ func runStreamMode(ctx context.Context, args Args, version string) error {
 	defer stopExt()
 
 	ag := r.NewAgent()
-	defer closeAgentLSP(ag)
+	initialAg := ag
+	defer func() {
+		closeAgentLSP(ag)
+		if ag != initialAg {
+			closeAgentLSP(initialAg)
+		}
+	}()
 	wireNonInteractiveAgentExtHooks(ctx, ag, extMgr)
 	sess, err := openOrCreateSession(args, r, ag, version)
 	if err != nil {
@@ -807,7 +819,13 @@ func runJSONMode(ctx context.Context, args Args, version string) error {
 	defer stopExt()
 
 	ag := r.NewAgent()
-	defer closeAgentLSP(ag)
+	initialAg := ag
+	defer func() {
+		closeAgentLSP(ag)
+		if ag != initialAg {
+			closeAgentLSP(initialAg)
+		}
+	}()
 	wireNonInteractiveAgentExtHooks(ctx, ag, extMgr)
 	sess, err := openOrCreateSession(args, r, ag, version)
 	if err != nil {

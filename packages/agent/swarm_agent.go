@@ -59,7 +59,13 @@ func runSwarmAgentMode(ctx context.Context, args Args, version string) error {
 	defer stopExt()
 
 	ag := r.NewAgent()
-	defer closeAgentLSP(ag)
+	initialAg := ag
+	defer func() {
+		closeAgentLSP(ag)
+		if ag != initialAg {
+			closeAgentLSP(initialAg)
+		}
+	}()
 	wireNonInteractiveAgentExtHooks(ctx, ag, extMgr)
 	sess, err := openOrCreateSession(args, r, ag, version)
 	if err != nil {
@@ -115,8 +121,9 @@ func runSwarmAgentMode(ctx context.Context, args Args, version string) error {
 		turnCtx  context.Context = ctx
 		cancelFn context.CancelFunc
 		busyTurn bool
+		stopping bool
 		turnNo   int
-		shutdown = make(chan struct{})
+		turns    sync.WaitGroup
 	)
 
 	runOne := func(prompt string) {
@@ -158,11 +165,35 @@ func runSwarmAgentMode(ctx context.Context, args Args, version string) error {
 		mu.Unlock()
 	}
 
+	startTurn := func(prompt string) {
+		mu.Lock()
+		if stopping {
+			mu.Unlock()
+			return
+		}
+		turns.Add(1)
+		mu.Unlock()
+		go func() {
+			defer turns.Done()
+			runOne(prompt)
+		}()
+	}
+	stopAndWait := func(reason string) {
+		mu.Lock()
+		stopping = true
+		if cancelFn != nil {
+			cancelFn()
+		}
+		mu.Unlock()
+		turns.Wait()
+		em.emit("agent_stopped", map[string]any{"reason": reason})
+	}
+
 	// Initial task: run before processing the inbox so the agent
 	// "starts working" the moment it boots, matching what users
 	// expect from `/swarm new <task>`.
 	if args.Prompt != "" {
-		go runOne(args.Prompt)
+		startTurn(args.Prompt)
 	}
 
 	// Inbox loop: one supervisor message at a time. We don't spawn
@@ -172,19 +203,17 @@ func runSwarmAgentMode(ctx context.Context, args Args, version string) error {
 	for {
 		select {
 		case <-ctx.Done():
-			em.emit("agent_stopped", map[string]any{"reason": "cancelled"})
+			stopAndWait("cancelled")
 			return ctx.Err()
-		case <-shutdown:
-			em.emit("agent_stopped", map[string]any{"reason": "shutdown"})
-			return nil
 		case msg, ok := <-ln.Lines():
 			if !ok {
-				em.emit("agent_stopped", map[string]any{"reason": "inbox-closed"})
+				stopAndWait("inbox-closed")
 				return nil
 			}
 			switch {
 			case msg == "shutdown":
-				close(shutdown)
+				stopAndWait("shutdown")
+				return nil
 			case msg == "cancel":
 				mu.Lock()
 				if cancelFn != nil {
@@ -193,7 +222,7 @@ func runSwarmAgentMode(ctx context.Context, args Args, version string) error {
 				mu.Unlock()
 			case strings.HasPrefix(msg, "user "):
 				prompt := strings.TrimPrefix(msg, "user ")
-				go runOne(prompt)
+				startTurn(prompt)
 			default:
 				em.emit("error", map[string]any{
 					"message": "unknown supervisor message: " + truncateForLog(msg, 200),

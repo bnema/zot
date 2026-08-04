@@ -1,6 +1,7 @@
 package lsp
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -15,6 +16,10 @@ const maxWorkspaceEditFileBytes = 8 * 1024 * 1024
 // rename, delete, non-file URIs, symlink escapes, malformed ranges, and files
 // larger than the bounded safety limit.
 func ApplyWorkspaceEdit(root string, edit WorkspaceEdit) error {
+	return applyWorkspaceEdit(root, edit, nil)
+}
+
+func applyWorkspaceEdit(root string, edit WorkspaceEdit, checkWritePath func(string) error) error {
 	root, err := filepath.Abs(root)
 	if err != nil {
 		return err
@@ -43,13 +48,29 @@ func ApplyWorkspaceEdit(root string, edit WorkspaceEdit) error {
 		}
 		all[change.TextDocument.URI] = append(all[change.TextDocument.URI], change.Edits...)
 	}
-	targets, err := prepareEditTargets(rootReal, all)
+	targets, err := prepareEditTargets(rootReal, all, checkWritePath)
 	if err != nil {
 		return err
 	}
+	type plannedEdit struct {
+		location editTarget
+		output   []byte
+		mode     os.FileMode
+	}
+	plans := make([]plannedEdit, 0, len(targets))
 	for _, location := range targets {
-		if err := applyTextEdits(location.target, location.changes); err != nil {
-			return fmt.Errorf("apply edit to %s: %w", location.path, err)
+		if len(location.changes) == 0 {
+			continue
+		}
+		output, mode, err := prepareTextEdits(location.target, location.changes)
+		if err != nil {
+			return fmt.Errorf("validate edit to %s: %w", location.path, err)
+		}
+		plans = append(plans, plannedEdit{location: location, output: output, mode: mode})
+	}
+	for _, plan := range plans {
+		if err := writeTextEdits(plan.location.target, plan.output, plan.mode); err != nil {
+			return fmt.Errorf("apply edit to %s: %w", plan.location.path, err)
 		}
 	}
 	return nil
@@ -61,7 +82,7 @@ type editTarget struct {
 	changes []TextEdit
 }
 
-func prepareEditTargets(rootReal string, all map[string][]TextEdit) ([]editTarget, error) {
+func prepareEditTargets(rootReal string, all map[string][]TextEdit, checkWritePath func(string) error) ([]editTarget, error) {
 	targets := make([]editTarget, 0, len(all))
 	for uri, changes := range all {
 		path, err := uriToPath(uri)
@@ -78,6 +99,11 @@ func prepareEditTargets(rootReal string, all map[string][]TextEdit) ([]editTarge
 		if err := safeWorkspacePath(rootReal, target); err != nil {
 			return nil, err
 		}
+		if checkWritePath != nil {
+			if err := checkWritePath(target); err != nil {
+				return nil, err
+			}
+		}
 		targets = append(targets, editTarget{path: path, target: target, changes: changes})
 	}
 	return targets, nil
@@ -89,12 +115,12 @@ func safeWorkspacePath(root, path string) error {
 		return err
 	}
 	candidate := abs
-	if real, err := filepath.EvalSymlinks(abs); err == nil {
-		candidate = real
+	if resolved, err := filepath.EvalSymlinks(abs); err == nil {
+		candidate = resolved
 	} else {
 		parent := filepath.Dir(abs)
-		if real, parentErr := filepath.EvalSymlinks(parent); parentErr == nil {
-			candidate = filepath.Join(real, filepath.Base(abs))
+		if resolvedParent, parentErr := filepath.EvalSymlinks(parent); parentErr == nil {
+			candidate = filepath.Join(resolvedParent, filepath.Base(abs))
 		}
 	}
 	rel, err := filepath.Rel(root, candidate)
@@ -110,33 +136,30 @@ type byteEdit struct {
 	text  string
 }
 
-func applyTextEdits(path string, edits []TextEdit) error {
-	if len(edits) == 0 {
-		return nil
-	}
+func prepareTextEdits(path string, edits []TextEdit) ([]byte, os.FileMode, error) {
 	info, err := os.Stat(path)
 	if err != nil {
-		return err
+		return nil, 0, err
 	}
 	if info.Size() > maxWorkspaceEditFileBytes {
-		return fmt.Errorf("file is larger than %d bytes", maxWorkspaceEditFileBytes)
+		return nil, 0, fmt.Errorf("file is larger than %d bytes", maxWorkspaceEditFileBytes)
 	}
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return err
+		return nil, 0, err
 	}
 	converted := make([]byteEdit, 0, len(edits))
 	for _, edit := range edits {
 		start, err := positionOffset(data, edit.Range.Start)
 		if err != nil {
-			return err
+			return nil, 0, err
 		}
 		end, err := positionOffset(data, edit.Range.End)
 		if err != nil {
-			return err
+			return nil, 0, err
 		}
 		if end < start {
-			return fmt.Errorf("edit range ends before it starts")
+			return nil, 0, fmt.Errorf("edit range ends before it starts")
 		}
 		converted = append(converted, byteEdit{start: start, end: end, text: edit.NewText})
 	}
@@ -148,20 +171,29 @@ func applyTextEdits(path string, edits []TextEdit) error {
 	})
 	for i := 1; i < len(converted); i++ {
 		if converted[i].end > converted[i-1].start {
-			return fmt.Errorf("workspace text edits overlap")
+			return nil, 0, fmt.Errorf("workspace text edits overlap")
 		}
 	}
-	out := append([]byte(nil), data...)
-	for _, edit := range converted {
-		out = append(append(append([]byte(nil), out[:edit.start]...), []byte(edit.text)...), out[edit.end:]...)
+	var builder bytes.Buffer
+	cursor := 0
+	for i := len(converted) - 1; i >= 0; i-- {
+		edit := converted[i]
+		_, _ = builder.Write(data[cursor:edit.start])
+		_, _ = builder.WriteString(edit.text)
+		cursor = edit.end
 	}
+	_, _ = builder.Write(data[cursor:])
+	return builder.Bytes(), info.Mode().Perm(), nil
+}
+
+func writeTextEdits(path string, out []byte, mode os.FileMode) error {
 	tmp, err := os.CreateTemp(filepath.Dir(path), ".zot-lsp-edit-*")
 	if err != nil {
 		return err
 	}
 	tmpName := tmp.Name()
 	defer func() { _ = os.Remove(tmpName) }()
-	if err := tmp.Chmod(info.Mode().Perm()); err != nil {
+	if err := tmp.Chmod(mode); err != nil {
 		_ = tmp.Close()
 		return err
 	}

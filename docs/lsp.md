@@ -130,8 +130,13 @@ explicit tool list omits `lsp`. Both settings can also be controlled through
 
 ## Safety and lifecycle
 
-Language servers and linters run as local child processes. The `lsp` tool never
-executes configured commands through a shell. Workspace edits returned by
+Language servers and linters run as local child processes. Project and
+global LSP configuration is executable local configuration: review configured
+commands, arguments, environment variables, and workspace-local binaries before
+using it. zot does not add a separate trust prompt or sandbox around those child
+processes; it does avoid shell expansion and keeps returned workspace edits
+inside the session workspace. The `lsp` tool never executes configured commands
+through a shell. Workspace edits returned by
 rename and code actions are restricted to the session workspace, reject
 resource operations, validate UTF-16 LSP positions, and write through a
 temporary file before replacement. Server-initiated `workspace/applyEdit`

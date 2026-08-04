@@ -57,7 +57,7 @@ func BuiltinServers() []ServerConfig {
 		{ID: "vscode-json-language-server", Kind: "lsp", Command: "vscode-json-language-server", Args: []string{"--stdio"}, FileTypes: []string{"json", "jsonc", ".json", ".jsonc"}, Description: "JSON language server"},
 		{ID: "bash-language-server", Kind: "lsp", Command: "bash-language-server", Args: []string{"start"}, FileTypes: []string{"shellscript", "bash", "sh", "zsh", ".sh", ".bash", ".zsh"}, RootMarkers: []string{".shellcheckrc"}, Description: "Bash language server"},
 		{ID: "eslint", Kind: "cli", Command: "eslint", Args: []string{"--format", "json"}, FileTypes: []string{"javascript", "javascriptreact", "typescript", "typescriptreact", ".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx", ".mts", ".cts"}, RootMarkers: []string{"eslint.config.js", "eslint.config.cjs", "eslint.config.mjs", "eslint.config.ts", ".eslintrc", ".eslintrc.json", ".eslintrc.js", ".eslintrc.cjs", ".eslintrc.yaml", ".eslintrc.yml"}, Parser: "eslint-json", Mode: "files", Description: "ESLint diagnostics"},
-		{ID: "golangci-lint", Kind: "cli", Command: "golangci-lint", Args: []string{"run", "--out-format", "json"}, FileTypes: []string{"go", ".go"}, RootMarkers: []string{".golangci.yml", ".golangci.yaml", ".golangci.toml", ".golangci.json"}, Parser: "golangci-lint-json", Mode: "workspace", Description: "golangci-lint diagnostics"},
+		{ID: "golangci-lint", Kind: "cli", Command: "golangci-lint", Args: []string{"run", "--output.json.path", "stdout"}, FileTypes: []string{"go", ".go"}, RootMarkers: []string{".golangci.yml", ".golangci.yaml", ".golangci.toml", ".golangci.json"}, Parser: "golangci-lint-json", Mode: "workspace", Description: "golangci-lint diagnostics"},
 		{ID: "ruff", Kind: "cli", Command: "ruff", Args: []string{"check", "--output-format", "json"}, FileTypes: []string{"python", "py", ".py"}, RootMarkers: []string{"ruff.toml", ".ruff.toml", "pyproject.toml"}, Parser: "ruff-json", Mode: "files", Description: "Ruff diagnostics"},
 	}
 }
@@ -219,7 +219,10 @@ func hasMatchingFile(cwd string, types []string) bool {
 	normalizedTypes := normalizeFileTypes(types)
 	var found bool
 	_ = filepath.WalkDir(cwd, func(path string, entry os.DirEntry, err error) error {
-		if err != nil || found {
+		if err != nil {
+			return nil
+		}
+		if found {
 			return filepath.SkipAll
 		}
 		if entry.IsDir() {

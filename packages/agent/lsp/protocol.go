@@ -150,7 +150,7 @@ func uriToPath(uri string) (string, error) {
 	if path == "" {
 		return "", fmt.Errorf("document URI has no path")
 	}
-	if len(path) >= 3 && path[0] == '/' && path[2] == ':' { // file:///C:/...
+	if runtime.GOOS == "windows" && len(path) >= 3 && path[0] == '/' && path[2] == ':' { // file:///C:/...
 		path = path[1:]
 	}
 	return filepath.Clean(filepath.FromSlash(path)), nil

@@ -151,10 +151,10 @@ func SummarizeDiagnostics(input []Diagnostic, root string, cap int) string {
 			displayed++
 		}
 		if displayed < cap && missingModuleName(diagnostic) != "" && !emittedSecondary[diagnostic.Path] {
-			if secondaryLine := formatSecondaryForFile(diagnostic.Path, diagnostics, secondary, root); secondaryLine != "" {
+			if secondaryLine, secondaryCount := formatSecondaryForFile(diagnostic.Path, diagnostics, secondary, root); secondaryLine != "" {
 				lines = append(lines, "- "+secondaryLine)
 				emittedSecondary[diagnostic.Path] = true
-				displayed++
+				displayed += secondaryCount
 			}
 		}
 	}
@@ -235,7 +235,7 @@ func moduleSecondary(diagnostics []Diagnostic) map[string]bool {
 	return secondary
 }
 
-func formatSecondaryForFile(path string, diagnostics []Diagnostic, secondary map[string]bool, root string) string {
+func formatSecondaryForFile(path string, diagnostics []Diagnostic, secondary map[string]bool, root string) (string, int) {
 	count := 0
 	modules := make(map[string]bool)
 	for _, diagnostic := range diagnostics {
@@ -247,7 +247,7 @@ func formatSecondaryForFile(path string, diagnostics []Diagnostic, secondary map
 		}
 	}
 	if count == 0 {
-		return ""
+		return "", 0
 	}
 	shownPath := path
 	if root != "" {
@@ -260,7 +260,7 @@ func formatSecondaryForFile(path string, diagnostics []Diagnostic, secondary map
 		moduleNames = append(moduleNames, name)
 	}
 	sort.Strings(moduleNames)
-	return fmt.Sprintf("SECONDARY: grouped %d additional diagnostics in %s under module-resolution error (%s). Fix the root import error first, then re-check.", count, shownPath, strings.Join(moduleNames, ", "))
+	return fmt.Sprintf("SECONDARY: grouped %d additional diagnostics in %s under module-resolution error (%s). Fix the root import error first, then re-check.", count, shownPath, strings.Join(moduleNames, ", ")), count
 }
 
 func missingModuleName(diagnostic Diagnostic) string {

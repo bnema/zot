@@ -23,6 +23,7 @@ type ManagerOptions struct {
 	LinterTimeout   time.Duration
 	Settings        map[string]any
 	OnLog           func(server, message string)
+	CheckWritePath  func(path string) error
 }
 
 // Response is one raw request result tagged with the server which produced
@@ -163,7 +164,9 @@ func (m *Manager) ensureClient(ctx context.Context, ws *workspace, spec ServerCo
 			// A server's LSP root may be an ancestor of the session cwd.
 			// Keep server-initiated edits inside the session workspace rather
 			// than trusting that broader project root.
-			ApplyEdit: func(edit WorkspaceEdit) error { return ApplyWorkspaceEdit(ws.cwd, edit) },
+			ApplyEdit: func(edit WorkspaceEdit) error {
+				return applyWorkspaceEdit(ws.cwd, edit, m.options.CheckWritePath)
+			},
 		}
 		startCtx, cancel := context.WithTimeout(ctx, m.options.RequestTimeout)
 		client, err := NewClientWithContext(startCtx, spec, root, opts)
@@ -494,11 +497,24 @@ func (m *Manager) RequestAll(ctx context.Context, cwd, path, method string, para
 
 // ApplyEdit applies a workspace edit under the selected workspace root.
 func (m *Manager) ApplyEdit(cwd string, edit WorkspaceEdit) error {
+	return m.ApplyEdits(cwd, []WorkspaceEdit{edit})
+}
+
+// ApplyEdits preflights and applies multiple workspace edits as one operation.
+// This prevents a later unsafe edit from leaving earlier edits applied.
+func (m *Manager) ApplyEdits(cwd string, edits []WorkspaceEdit) error {
 	ws, err := m.workspace(cwd)
 	if err != nil {
 		return err
 	}
-	return ApplyWorkspaceEdit(ws.cwd, edit)
+	merged := WorkspaceEdit{Changes: make(map[string][]TextEdit)}
+	for _, edit := range edits {
+		for uri, changes := range edit.Changes {
+			merged.Changes[uri] = append(merged.Changes[uri], changes...)
+		}
+		merged.DocumentChanges = append(merged.DocumentChanges, edit.DocumentChanges...)
+	}
+	return applyWorkspaceEdit(ws.cwd, merged, m.options.CheckWritePath)
 }
 
 // Status describes configured and cached servers without starting missing
@@ -519,16 +535,25 @@ func (m *Manager) Status(cwd, path string) ([]ServerStatus, error) {
 	if err != nil {
 		return nil, err
 	}
+	specs := m.applicable(ws, path)
+	roots := make(map[string]string, len(specs))
+	resolveErrors := make(map[string]error, len(specs))
+	for _, spec := range specs {
+		roots[spec.ID] = displayWorkspacePath(ws.cwd, FindRoot(ws.cwd, spec.RootMarkers))
+		if _, resolveErr := ResolveCommand(ws.cwd, spec.Command); resolveErr != nil {
+			resolveErrors[spec.ID] = resolveErr
+		}
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	out := make([]ServerStatus, 0)
-	for _, spec := range m.applicable(ws, path) {
-		status := ServerStatus{ID: spec.ID, Kind: spec.Kind, Command: spec.Command, Root: displayWorkspacePath(ws.cwd, FindRoot(ws.cwd, spec.RootMarkers)), State: ws.statuses[spec.ID]}
+	out := make([]ServerStatus, 0, len(specs))
+	for _, spec := range specs {
+		status := ServerStatus{ID: spec.ID, Kind: spec.Kind, Command: spec.Command, Root: roots[spec.ID], State: ws.statuses[spec.ID]}
 		if status.State == "" {
 			status.State = "stopped"
 		}
 		if status.State == "stopped" {
-			if _, resolveErr := ResolveCommand(ws.cwd, spec.Command); resolveErr != nil {
+			if resolveErr := resolveErrors[spec.ID]; resolveErr != nil {
 				status.State = "missing"
 				status.Error = resolveErr.Error()
 			}
