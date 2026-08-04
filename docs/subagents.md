@@ -23,7 +23,7 @@ Profiles are read-only inputs. zot does not execute files from these directories
 ---
 name: reviewer
 description: Read-only code reviewer
-tools: read, write, edit, bash
+tools: read
 model: openai-codex/gpt-5.6-luna
 thinking: max
 systemPromptMode: replace
@@ -40,13 +40,13 @@ Supported metadata:
 |---|---|
 | `name` | Name passed to `swarm_spawn`'s `agent` field. Falls back to the filename. |
 | `description` | Short description shown to the main agent. |
-| `tools` | Comma-separated or list-form tool names. zot currently enforces its own `read`, `write`, `edit`, and `bash` registry; unknown names do not grant capabilities. |
+| `tools` | Comma-separated or list-form tool names. zot enforces its built-in `read`, `write`, `edit`, `bash`, and `lsp` registry; the conditional `skill` tool is available when skills are enabled. Unknown names do not grant capabilities. |
 | `model` | Optional model ID. A qualified value such as `openai-codex/gpt-5.6-luna` selects both provider and model. |
 | `provider` | Optional separate provider ID for a model without a provider prefix. |
 | `thinking` / `reasoning` | Optional reasoning level: `off`, `minimum`, `low`, `medium`, `high`, `xhigh`, or `max`. |
 | `systemPromptMode` | `append` (default) or `replace`. |
 | `inheritProjectContext` | Set to `false` to omit `AGENTS.md` context from the child. |
-| `inheritSkills` | Set to `false` to omit skill discovery from the child. |
+| `inheritSkills` | Set to `false` to omit skill discovery and the conditional `skill` loader from the child; `--no-skill` has the same effect for a run. |
 
 Other frontmatter from another agent host is ignored when zot does not have an equivalent setting. For example, `maxSubagentDepth` is currently not enforced by zot.
 

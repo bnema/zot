@@ -77,6 +77,14 @@ type InteractiveConfig struct {
 	// to enable it and reject requests when it remains enabled.
 	FastMode *bool
 
+	// LSPEnabled controls the main session's built-in lsp tool. nil means
+	// enabled by default.
+	LSPEnabled *bool
+
+	// SubagentLSPEnabled controls whether newly spawned swarm children
+	// receive the lsp tool. nil means enabled by default.
+	SubagentLSPEnabled *bool
+
 	// AutoCompactThreshold is the context-window percentage that triggers
 	// automatic compaction. nil means 85; zero disables percentage-based
 	// triggers while preserving payload-too-large recovery.
@@ -158,6 +166,10 @@ type InteractiveConfig struct {
 	// model turn), before deferred InitialInput is applied. Hosts use
 	// it to rediscover skills / reload extensions installed by pre.
 	OnStartupPreDone func()
+
+	// RefreshTools re-resolves the live agent registry after a setting
+	// changes the main session's tool availability. Optional for embedders.
+	RefreshTools func()
 
 	// AutoSubmitInitial, when true, auto-submits InitialInput after
 	// StartupPre completes (or immediately when StartupPre is empty).
@@ -402,6 +414,11 @@ type terminalAlertsSettingsStore interface {
 
 type terminalTitleSettingsStore interface {
 	SetTerminalTitleEnabled(enabled bool) error
+}
+
+type lspSettingsStore interface {
+	SetLSPEnabled(enabled bool) error
+	SetSubagentLSPEnabled(enabled bool) error
 }
 
 type showInstructionsSettingsStore interface {
@@ -3631,6 +3648,8 @@ func (i *Interactive) openSettingsDialog() {
 	if !provider.SupportsFastMode(i.cfg.Provider) {
 		fastModeHint = "only supported for OpenAI providers"
 	}
+	lspEnabled := i.cfg.LSPEnabled == nil || *i.cfg.LSPEnabled
+	subagentLSPEnabled := i.cfg.SubagentLSPEnabled == nil || *i.cfg.SubagentLSPEnabled
 
 	jailByDefault := i.cfg.JailByDefault != nil && *i.cfg.JailByDefault
 	recursiveFiles := i.cfg.RecursiveFileSuggest != nil && *i.cfg.RecursiveFileSuggest
@@ -3756,6 +3775,18 @@ func (i *Interactive) openSettingsDialog() {
 			desc:  "request OpenAI's fast service tier; unsupported providers return an error",
 			value: fastMode,
 			hint:  fastModeHint,
+		},
+		{
+			key:   "lsp_enabled",
+			label: "lsp in main session",
+			desc:  "enable the lsp tool and code diagnostics for the main agent",
+			value: lspEnabled,
+		},
+		{
+			key:   "subagent_lsp_enabled",
+			label: "lsp in sub-agents",
+			desc:  "allow newly spawned background sub-agents to use the lsp tool",
+			value: subagentLSPEnabled,
 		},
 		{
 			key:     "auto_compact_threshold",
@@ -4194,6 +4225,39 @@ func (i *Interactive) applySettingToggle(key string, value bool) {
 		}
 		i.mu.Lock()
 		i.statusOK = "fast mode " + onOff(value)
+		i.statusErr = ""
+		i.mu.Unlock()
+	case "lsp_enabled":
+		if store, ok := i.cfg.SettingsStore.(lspSettingsStore); ok {
+			if err := store.SetLSPEnabled(value); err != nil {
+				i.mu.Lock()
+				i.statusErr = "settings: " + err.Error()
+				i.mu.Unlock()
+				return
+			}
+		}
+		val := value
+		i.cfg.LSPEnabled = &val
+		if i.cfg.RefreshTools != nil {
+			i.cfg.RefreshTools()
+		}
+		i.mu.Lock()
+		i.statusOK = "lsp in main session " + onOff(value)
+		i.statusErr = ""
+		i.mu.Unlock()
+	case "subagent_lsp_enabled":
+		if store, ok := i.cfg.SettingsStore.(lspSettingsStore); ok {
+			if err := store.SetSubagentLSPEnabled(value); err != nil {
+				i.mu.Lock()
+				i.statusErr = "settings: " + err.Error()
+				i.mu.Unlock()
+				return
+			}
+		}
+		val := value
+		i.cfg.SubagentLSPEnabled = &val
+		i.mu.Lock()
+		i.statusOK = "lsp in sub-agents " + onOff(value)
 		i.statusErr = ""
 		i.mu.Unlock()
 	case "jail_by_default":
@@ -5130,7 +5194,10 @@ func (i *Interactive) doLogout(target string) {
 	if clearedCurrent {
 		// The running agent was using a credential we just wiped. Drop
 		// it so prompts can't go out with the stale client, and hint at
-		// /login.
+		// /login. Close any LSP processes owned by its tools first.
+		if i.agent != nil {
+			_ = tools.CloseLSPManagers(i.agent.Tools)
+		}
 		i.agent = nil
 		i.statusOK = "logged out of " + strings.Join(providers, ", ") + ". type /login to sign back in."
 	} else {
@@ -5722,6 +5789,9 @@ func (i *Interactive) swapModelUnserialized(prov, model string, builder func(str
 	}
 	ag.SeedCost(carryCost)
 
+	if i.agent != nil && i.agent != ag {
+		_ = tools.CloseLSPManagers(i.agent.Tools)
+	}
 	i.mu.Lock()
 	i.agent = ag
 	i.cfg.Provider = p
@@ -5764,12 +5834,16 @@ func (i *Interactive) handleAuthEvent(ev auth.Event) {
 		}
 		commitLogin := func() {
 			i.mu.Lock()
+			oldAgent := i.agent
 			i.agent = ag
 			i.cfg.Provider = prov
 			i.cfg.Model = model
 			i.statusErr = ""
 			i.statusOK = "logged in to " + ev.Provider + " via " + ev.Method
 			i.mu.Unlock()
+			if oldAgent != nil {
+				_ = tools.CloseLSPManagers(oldAgent.Tools)
+			}
 			i.applyAutoSwarmTool(i.autoSwarmEnabled())
 			i.applyTelegramTools(i.telegramBridge != nil && i.telegramBridge.Active())
 			// Authentication can change the provider used by the live

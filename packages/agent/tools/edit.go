@@ -8,14 +8,17 @@ import (
 	"os"
 	"strings"
 
+	"github.com/patriceckhart/zot/packages/agent/lsp"
 	"github.com/patriceckhart/zot/packages/core"
 	"github.com/patriceckhart/zot/packages/provider"
 )
 
 // EditTool applies one or more exact-match replacements to a file.
 type EditTool struct {
-	CWD     string
-	Sandbox *Sandbox
+	CWD            string
+	Sandbox        *Sandbox
+	LSP            *lsp.Manager
+	LSPDiagnostics bool
 }
 
 type editOp struct {
@@ -60,6 +63,9 @@ func (t *EditTool) Execute(ctx context.Context, raw json.RawMessage, progress fu
 	}
 	if err := os.WriteFile(plan.path, plan.final, 0o644); err != nil {
 		return core.ToolResult{}, err
+	}
+	if t.LSPDiagnostics {
+		attachWriteDiagnostics(ctx, t.CWD, plan.path, t.LSP, &plan.result)
 	}
 	return plan.result, nil
 }

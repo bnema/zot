@@ -218,6 +218,7 @@ func botRun(spec *botSpec, rawTail []string, version string) error {
 	if err != nil {
 		return err
 	}
+	defer closeResolvedLSP(resolved)
 
 	if ok, cerr := spec.configured(ZotHome()); cerr != nil {
 		return cerr
@@ -269,6 +270,7 @@ func botRun(spec *botSpec, rawTail []string, version string) error {
 			if err != nil {
 				return err
 			}
+			defer closeResolvedLSP(next)
 			agent.Client = next.NewClient()
 			agent.Model = next.Model
 			runner.UpdateRuntimeConfig(next.Provider, next.Model, next.AuthMethod, next.CWD)

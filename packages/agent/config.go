@@ -73,6 +73,23 @@ type Config struct {
 	// default; nil/missing means disabled. Toggle from /settings.
 	AutoSwarmEnabled *bool `json:"auto_swarm_enabled,omitempty"`
 
+	// LSPEnabled controls the built-in lsp tool and write-time diagnostics
+	// for the main session. nil/missing means enabled. Toggle from
+	// /settings.
+	LSPEnabled *bool `json:"lsp_enabled,omitempty"`
+
+	// SubagentLSPEnabled controls LSP availability in swarm sub-agent
+	// processes. nil/missing means enabled. Toggle from /settings.
+	SubagentLSPEnabled *bool `json:"subagent_lsp_enabled,omitempty"`
+
+	// LSPDiagnosticsOnWrite enables bounded diagnostics after a successful
+	// write. nil/missing means enabled when LSP itself is enabled.
+	LSPDiagnosticsOnWrite *bool `json:"lsp_diagnostics_on_write,omitempty"`
+
+	// LSPDiagnosticsOnEdit enables bounded diagnostics after a successful
+	// edit. nil/missing means disabled to keep multi-edit sequences quiet.
+	LSPDiagnosticsOnEdit *bool `json:"lsp_diagnostics_on_edit,omitempty"`
+
 	// AutoCompactThreshold is the percentage of the model context window
 	// that triggers automatic transcript compaction in interactive mode.
 	// nil/missing means 85; zero disables percentage-based triggers.
@@ -194,6 +211,29 @@ func (c Config) CompactUserInput() bool {
 		}
 	}
 	return c.CompactInput != nil && *c.CompactInput
+}
+
+// LSPEnabledFor reports whether LSP is enabled for a main or swarm
+// sub-agent session. Both settings default to true so new installations
+// get code intelligence without a migration or generated config file.
+func (c Config) LSPEnabledFor(subagent bool) bool {
+	value := c.LSPEnabled
+	if subagent {
+		value = c.SubagentLSPEnabled
+	}
+	return value == nil || *value
+}
+
+// LSPDiagnosticsOnWriteEnabled reports the default-on write diagnostics
+// preference without requiring a generated config entry.
+func (c Config) LSPDiagnosticsOnWriteEnabled(subagent bool) bool {
+	return c.LSPEnabledFor(subagent) && (c.LSPDiagnosticsOnWrite == nil || *c.LSPDiagnosticsOnWrite)
+}
+
+// LSPDiagnosticsOnEditEnabled reports the default-off edit diagnostics
+// preference without requiring a generated config entry.
+func (c Config) LSPDiagnosticsOnEditEnabled(subagent bool) bool {
+	return c.LSPEnabledFor(subagent) && c.LSPDiagnosticsOnEdit != nil && *c.LSPDiagnosticsOnEdit
 }
 
 // AuthPath returns the path to auth.json.

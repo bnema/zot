@@ -15,6 +15,7 @@ import (
 	"github.com/patriceckhart/zot/packages/agent/extensions"
 	"github.com/patriceckhart/zot/packages/agent/extproto"
 	"github.com/patriceckhart/zot/packages/agent/modes"
+	"github.com/patriceckhart/zot/packages/agent/tools"
 	"github.com/patriceckhart/zot/packages/core"
 	"github.com/patriceckhart/zot/packages/provider"
 )
@@ -79,6 +80,7 @@ func runRPCMode(ctx context.Context, args Args, version string) error {
 	r.MergeExtensionTools(&extToolAdapter{mgr: extMgr})
 
 	ag := r.NewAgent()
+	defer closeAgentLSP(ag)
 	server.agent = ag
 	ag.BeforeToolExecute = func(call provider.ToolCallBlock) (bool, string, json.RawMessage) {
 		r := extMgr.InterceptToolCall(ctx, call.ID, call.Name, call.Arguments)
@@ -111,7 +113,11 @@ func runRPCMode(ctx context.Context, args Args, version string) error {
 			return
 		}
 		resolved.MergeExtensionTools(adapter)
+		oldTools := ag.Tools
 		ag.SetTools(resolved.ToolRegistry)
+		if closeErr := tools.CloseLSPManagers(oldTools); closeErr != nil {
+			fmt.Fprintln(os.Stderr, "reload LSP cleanup:", closeErr)
+		}
 	})
 
 	extMgr.EmitEvent(extproto.EventFromHost{Event: "session_start"})

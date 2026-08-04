@@ -30,6 +30,7 @@ import (
 	"sync"
 
 	"github.com/patriceckhart/zot/packages/agent"
+	agenttools "github.com/patriceckhart/zot/packages/agent/tools"
 	"github.com/patriceckhart/zot/packages/core"
 	"github.com/patriceckhart/zot/packages/provider"
 )
@@ -74,8 +75,8 @@ type Config struct {
 	// BaseURL overrides the provider base url (for tests / proxies).
 	BaseURL string
 
-	// Tools is the list of tools to enable. Nil/empty = all four
-	// (read, write, edit, bash). Pass an empty-but-non-nil slice
+	// Tools is the list of tools to enable. Nil/empty = all built-in
+	// tools (read, write, edit, bash, lsp). Pass an empty-but-non-nil slice
 	// (e.g. []string{}) plus NoTools=true to disable everything.
 	Tools []string
 
@@ -95,8 +96,9 @@ type Runtime struct {
 	model    string
 	cwd      string
 
-	// activeCancel is set while a Prompt is streaming.
+	// activeCancel is set while a Prompt or Compact is running.
 	activeCancel context.CancelFunc
+	activeDone   chan struct{}
 
 	// closed signals that Close has been called.
 	closed bool
@@ -217,7 +219,9 @@ func (r *Runtime) Prompt(ctx context.Context, text string, images []Image) (<-ch
 		return nil, fmt.Errorf("sdk: no agent (login first via /login or set credentials)")
 	}
 	subCtx, cancel := context.WithCancel(ctx)
+	done := make(chan struct{})
 	r.activeCancel = cancel
+	r.activeDone = done
 	r.mu.Unlock()
 
 	imgBlocks := make([]provider.ImageBlock, 0, len(images))
@@ -231,6 +235,8 @@ func (r *Runtime) Prompt(ctx context.Context, text string, images []Image) (<-ch
 		defer func() {
 			r.mu.Lock()
 			r.activeCancel = nil
+			r.activeDone = nil
+			close(done)
 			r.mu.Unlock()
 		}()
 		err := r.agent.Prompt(subCtx, text, imgBlocks, func(ev core.AgentEvent) {
@@ -266,11 +272,15 @@ func (r *Runtime) Compact(ctx context.Context, customInstructions string) (Compa
 		return CompactResult{}, ErrBusy
 	}
 	subCtx, cancel := context.WithCancel(ctx)
+	done := make(chan struct{})
 	r.activeCancel = cancel
+	r.activeDone = done
 	r.mu.Unlock()
 	defer func() {
 		r.mu.Lock()
 		r.activeCancel = nil
+		r.activeDone = nil
+		close(done)
 		r.mu.Unlock()
 	}()
 
@@ -339,9 +349,19 @@ func (r *Runtime) Close() error {
 	}
 	r.closed = true
 	cancel := r.activeCancel
+	done := r.activeDone
 	r.mu.Unlock()
 	if cancel != nil {
 		cancel()
+	}
+	if done != nil {
+		<-done
+	}
+	r.mu.Lock()
+	ag := r.agent
+	r.mu.Unlock()
+	if ag != nil {
+		return agenttools.CloseLSPManagers(ag.Tools)
 	}
 	return nil
 }

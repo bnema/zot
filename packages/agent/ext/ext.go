@@ -395,7 +395,7 @@ func (e *Extension) Command(name, description string, fn CommandHandler) {
 // OpenAI accept). Call this BEFORE Run(); zot folds extension tools
 // into the agent's registry once the extension's ready frame fires.
 //
-// Naming conflicts with built-in tools (read, write, edit, bash,
+// Naming conflicts with built-in tools (read, write, edit, bash, lsp,
 // skill) are silently shadowed by the built-in.
 func (e *Extension) Tool(name, description string, schema json.RawMessage, fn ToolHandler) {
 	e.registerTool(name, description, schema, false, fn)

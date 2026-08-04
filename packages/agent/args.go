@@ -63,6 +63,7 @@ type Args struct {
 
 	CWD      string
 	NoTools  bool
+	NoLSP    bool
 	Tools    []string
 	MaxSteps int
 
@@ -177,6 +178,8 @@ func ParseArgs(in []string) (Args, error) {
 			a.NoSess = true
 		case "--no-tools":
 			a.NoTools = true
+		case "--no-lsp":
+			a.NoLSP = true
 		case "--list-models":
 			a.ListModels = true
 		case "--experimental-oauth":
@@ -459,7 +462,8 @@ func PrintHelp(version string) {
 	section("workspace, tools, skills",
 		row{"--cwd PATH", "treat PATH as the working directory"},
 		row{"--no-tools", "disable all tools"},
-		row{"--tools csv", "only enable the listed tools"},
+		row{"--no-lsp", "disable the built-in LSP/linter tool"},
+		row{"--tools csv", "only enable the listed tools (include lsp explicitly)"},
 		row{"--no-yolo", "ask before running every tool call"},
 		row{"-y, --yes", "accept zot run consent without prompting"},
 		row{"--no-ext", "skip extension discovery for this run"},

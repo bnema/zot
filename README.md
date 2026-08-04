@@ -19,7 +19,7 @@ Yet another coding agent harness, lightweight and written (vibe-slopped) in go.
 
 - one static binary.
 - built-in providers for Anthropic, OpenAI/Codex/Responses, Kimi, DeepSeek, Google Gemini/Vertex, GitHub Copilot, Bedrock, Azure OpenAI, OpenRouter, Groq, Cerebras, xAI, Together, Hugging Face, Mistral, Moonshot, Z.AI, Xiaomi, MiniMax, Fireworks, Vercel AI Gateway, OpenCode, Cloudflare AI, and Ollama/local models.
-- four tools (read, write, edit, bash).
+- five core built-in tools (read, write, edit, bash, and lsp); the conditional `skill` tool is available when skills are enabled.
 - three run modes (interactive tui, print, json).
 - built-in telegram bot.
 - extensions in any language via subprocess + json-rpc. None installed by default; opt in with `zot ext install` or `zot --ext`. See [docs/extensions.md](docs/extensions.md).
@@ -219,7 +219,8 @@ Print-mode stats contain `provider`, `model`, `prompt_tokens`, `reasoning_tokens
 | `--no-session` | Don't read or write session files. |
 | `--cwd <path>` | Use `<path>` as the working directory. |
 | `--no-tools` | Disable all tools. |
-| `--tools <csv>` | Only enable the listed tools. |
+| `--no-lsp` | Disable the built-in LSP/linter tool for this run. |
+| `--tools <csv>` | Only enable the listed tools. Include `lsp` to select it explicitly. |
 | `--max-steps <n>` | Cap agent loop iterations (default 50). |
 | `-e`, `--ext <path>` | Load an extension from `<path>` for this run (repeatable; wins against installed extensions of the same name). |
 | `--no-ext` | Skip extension discovery for this run. `--ext` still works on top, so `--no-ext --ext ./x` runs only `x`. |
@@ -232,8 +233,9 @@ Print-mode stats contain `provider`, `model`, `prompt_tokens`, `reasoning_tokens
 - `write`: create or overwrite files, making parent directories as needed.
 - `edit`: one or more exact-match replacements in an existing file.
 - `bash`: run a command in the session cwd with merged stdout/stderr and a timeout. On Unix, zot uses `/bin/bash -c` when available, then `bash -c` from `PATH`, and falls back to POSIX `/bin/sh -c` when Bash is unavailable. On Windows, it uses `cmd /C`. macOS ships Bash 3.2 by default, so newer Bash features may be unavailable.
+- `lsp`: query configured language servers and linters for diagnostics, definitions, references, hover information, symbols, renames, code actions, capabilities, and raw protocol requests. LSP servers use stdio JSON-RPC; project `lsp.json` files can add or override servers and CLI linters. Diagnostics are bounded, sorted, deduplicated by path/severity/code/start position, and repeated issues are grouped before they reach the model. See [docs/lsp.md](docs/lsp.md).
 
-When the sandbox is on (see `/jail`), all four tools refuse paths outside the session cwd.
+When the sandbox is on (see `/jail`), filesystem tools and LSP workspace edits refuse paths outside the session cwd.
 
 ## Modes
 
@@ -290,7 +292,7 @@ Slash command names are case-insensitive in the TUI and messaging backends; argu
 | `/unjail` | Allow tools to touch paths outside again. |
 | `/reload-ext` | Hot-reload all extensions (re-read manifests, respawn subprocesses, rebuild tool registry). |
 | `/telegram` | Connect, disconnect, or show status of the Telegram bridge (takes `connect` / `disconnect` / `status` as an optional argument; opens a picker without one). When connected, DMs from the paired user become prompts in the running session and the assistant's replies are mirrored back to Telegram. Alias: `/tg`. |
-| `/settings` | Change persistent settings, including inline images, terminal alerts, AI terminal titles, auto-swarm, fast mode, and the auto-compact threshold. Saved to `$ZOT_HOME/config.json`; setting changes apply without a restart, while AI title generation waits for the first real prompt. |
+| `/settings` | Change persistent settings, including inline images, terminal alerts, AI terminal titles, auto-swarm, fast mode, main/sub-agent LSP access, and the auto-compact threshold. Saved to `$ZOT_HOME/config.json`; setting changes apply without a restart, while AI title generation waits for the first real prompt. |
 | `/clear` | Clear the chat transcript. |
 | `/exit` | Exit zot. |
 
@@ -399,6 +401,8 @@ Opens a dialog with every persistent setting. `up`/`down` to navigate, `enter` o
 - **AI terminal titles** — after the first real prompt of a fresh interactive session, make one small hidden request to the active model and set the terminal title to `zot: <title>`. The title is limited to 40 Unicode characters, persisted with the session, restored on resume, and never added to the conversation. Enabled by default; disable it to avoid the extra model request. The toggle applies immediately, but title generation still waits for the first real prompt and never starts from startup context, resumed history, or slash commands. Persists as `terminal_title_enabled`.
 - **auto-swarm** — let the main agent spawn background sub-agents in parallel via a built-in `swarm_spawn` tool. Off by default. When on, the tool is registered with the running agent, the system prompt gains a short addendum telling the model to delegate independent sub-tasks proactively, and available named profiles are rendered in `[subagents_list]`. The tool accepts a profile name through `agent` and a per-child `reasoning`/`thinking` override. zot watches every sub-agent the main agent spawns. As soon as the last sub-agent in a batch finishes its initial task, an `[auto-swarm update]` message is injected back into the chat with each agent's status / task / transcript tail, so the main agent can summarise the collective outcome. Flipping off mid-session removes the tool from the live agent and strips the addendum on the next turn — the model stops trying to delegate. See `/swarm` and [docs/subagents.md](docs/subagents.md) for details.
 - **fast mode** — request OpenAI's Fast service tier for OpenAI, OpenAI Responses, and OpenAI Codex models. Off by default; changes apply on the next model call and persist as `fast_mode`. Other providers return an unsupported-provider error. Fast mode may cost more and depends on the selected OpenAI model/account.
+- **lsp in main session** — enable the built-in `lsp` tool and code diagnostics for the main agent. Enabled by default; changes persist as `lsp_enabled`.
+- **lsp in sub-agents** — allow newly spawned background sub-agents to use the built-in `lsp` tool. Enabled by default; changes persist as `subagent_lsp_enabled` and apply when a child starts.
 - **auto-compact threshold** — choose `off`, `70%`, `80%`, `85%` (default), or `90%` of the model's advertised context window. The selected percentage controls automatic compaction before and after interactive turns and persists as `auto_compact_threshold`. After a successful threshold compaction, zot automatically resumes an unfinished most-recent intent; a prompt queued during compaction takes priority. `off` disables percentage-based triggers but keeps manual `/compact` and automatic recovery from context-window and payload-too-large responses.
 - **jail new sessions by default**: start every new agent with tools confined to its working directory. Off by default. The setting applies to interactive, print, JSON, RPC, and background-agent runs, persists as `jail_by_default`, and immediately updates the current interactive session. `/jail` and `/unjail` remain session-scoped overrides and do not change this default.
 - **compact transcript rendering**: reduce visual chrome in the chat transcript. Tool calls render as a quiet header plus indented output instead of a bordered box, and sent messages render without padded background bubbles. Off by default. Changes apply immediately and persist to `config.json` as `compact_mode`.
@@ -876,7 +880,7 @@ Slash commands also work while the agent is busy. Non-destructive ones (`/help`,
 | `ctrl+d` | Exit on empty input. |
 | `ctrl+l` | Redraw the screen. |
 | `ctrl+v` | Paste clipboard text into the focused chat, side chat, dialog, filter, or credential input. In the main chat, image clipboard content is attached to the next prompt when the platform exposes it (macOS pasteboard, Wayland `wl-paste`, or X11 `xclip`). On Linux, text uses `wl-paste`, `xclip`, or `xsel`; terminal-native bracketed paste remains available without those commands. |
-| `ctrl+o` | Expand or collapse long tool results (read, write, edit, bash outputs over ~12 lines). |
+| `ctrl+o` | Expand or collapse long tool results (read, write, edit, bash, and lsp outputs over ~12 lines). |
 | `ctrl+1` ... `ctrl+9` | Switch to the model bound to that quick-model slot (configured in `/settings` -> model shortcuts). No-op while a turn is running. |
 | `@` | Open the file picker. Browse files and directories in the working directory. |
 
@@ -1038,12 +1042,13 @@ packages/provider/auth/               credential store, api-key probe, oauth, lo
 packages/core/                        agent loop, sessions, cost tracking, compaction
 packages/tui/                         terminal raw-mode, input parser, editor, renderer, markdown, view
 packages/agent/                       cli wiring, arg parsing, system prompt, config
+packages/agent/lsp/                    LSP clients, server discovery, linters, diagnostics
 packages/agent/extensions/            extension subprocess manager
 packages/agent/extproto/              extension wire-format types
 packages/agent/modes/                 interactive tui, print, json, dialogs
 packages/agent/modes/bot/             protocol-agnostic bot runner (BotAdapter interface)
 packages/agent/modes/telegram/        telegram adapter, api client, daemon
-packages/agent/tools/                 read, write, edit, bash, sandbox
+packages/agent/tools/                 read, write, edit, bash, lsp, sandbox
 packages/agent/skills/                skill discovery, frontmatter parser, skill tool
 packages/agent/subagents/             named markdown profile discovery and dispatch
 packages/agent/swarm/                 background subagent runtime
