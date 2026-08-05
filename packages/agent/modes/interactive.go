@@ -1078,11 +1078,14 @@ func (i *Interactive) Run(ctx context.Context) error {
 			}
 			changelog = nil // single-shot
 		case event, ok := <-i.sessionLoads:
+			i.mu.Lock()
 			if !ok {
 				i.sessionLoads = nil
+				i.sessionDialog.ApplyLoadClosed()
+				i.mu.Unlock()
+				i.invalidate()
 				break
 			}
-			i.mu.Lock()
 			i.sessionDialog.ApplyLoad(event)
 			i.mu.Unlock()
 			i.invalidate()
@@ -2522,27 +2525,36 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 		i.invalidate()
 		return false
 	}
-	if i.sessionDialog.Active() {
+	i.mu.Lock()
+	sessionDialogActive := i.sessionDialog.Active()
+	i.mu.Unlock()
+	if sessionDialogActive {
 		if k.Kind == tui.KeyCtrlC {
+			i.mu.Lock()
 			i.sessionDialog.Close()
 			i.sessionLoads = nil
+			i.mu.Unlock()
 			i.invalidate()
 			return false
 		}
-		manualRenameCurrent := false
+		manualRenamePath := ""
+		i.mu.Lock()
 		if k.Kind == tui.KeyEnter && i.sessionDialog.renaming && core.NormalizeSessionTitle(i.sessionDialog.rename) != "" && i.sessionDialog.cursor >= 0 && i.sessionDialog.cursor < len(i.sessionDialog.sessions) && i.cfg.CurrentSessionPath != nil {
-			path := i.sessionDialog.sessions[i.sessionDialog.cursor].Path
-			manualRenameCurrent = i.cfg.CurrentSessionPath() == path
-			if manualRenameCurrent {
-				i.markSessionTitleSwitching()
-			}
+			manualRenamePath = i.sessionDialog.sessions[i.sessionDialog.cursor].Path
 		}
+		i.mu.Unlock()
+		manualRenameCurrent := manualRenamePath != "" && i.cfg.CurrentSessionPath() == manualRenamePath
+		if manualRenameCurrent {
+			i.markSessionTitleSwitching()
+		}
+		i.mu.Lock()
 		act := i.sessionDialog.HandleKey(k)
+		if act.Select || act.Close {
+			i.sessionLoads = nil
+		}
+		i.mu.Unlock()
 		if act.Select {
-			i.sessionLoads = nil
 			i.applySessionSelection(act.Path)
-		} else if act.Close {
-			i.sessionLoads = nil
 		}
 		if act.Err != nil {
 			if manualRenameCurrent {

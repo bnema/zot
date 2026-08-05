@@ -29,6 +29,7 @@ func TestSessionDialogLoadsEntriesWithoutBlockingOpen(t *testing.T) {
 
 	d := newSessionDialog()
 	events := d.Open(context.Background(), root, cwd)
+	t.Cleanup(d.Close)
 	if !d.Active() || !d.Loading() {
 		t.Fatalf("dialog state after Open = active %v, loading %v; want active and loading", d.Active(), d.Loading())
 	}
@@ -44,7 +45,6 @@ func TestSessionDialogLoadsEntriesWithoutBlockingOpen(t *testing.T) {
 	for event := range events {
 		d.ApplyLoad(event)
 	}
-	defer d.Close()
 
 	if d.Loading() {
 		t.Fatal("dialog still loading after final result")
@@ -72,6 +72,30 @@ func TestSessionDialogCanceledParentDoesNotRemainLoading(t *testing.T) {
 	}
 	if _, ok := <-events; ok {
 		t.Fatal("canceled dialog emitted a load event")
+	}
+}
+
+func TestSessionDialogCancellationFinishesLoading(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	d := newSessionDialog()
+	events := d.Open(ctx, t.TempDir(), t.TempDir())
+	cancel()
+	for range events {
+	}
+	d.ApplyLoadClosed()
+	if d.Loading() {
+		t.Fatal("dialog remained loading after parent cancellation")
+	}
+}
+
+func TestSessionDialogEscapeCancelsLoading(t *testing.T) {
+	d := newSessionDialog()
+	events := d.Open(context.Background(), t.TempDir(), t.TempDir())
+	act := d.HandleKey(tui.Key{Kind: tui.KeyEsc})
+	if !act.Close || d.Active() || d.Loading() {
+		t.Fatalf("escape action = %+v, active %v, loading %v; want closed dialog", act, d.Active(), d.Loading())
+	}
+	for range events {
 	}
 }
 

@@ -292,6 +292,9 @@ func ReadSessionSnapshot(path string) (SessionSnapshot, error) {
 }
 
 func readSessionSnapshot(ctx context.Context, path string) (SessionSnapshot, error) {
+	if err := contextErr(ctx); err != nil {
+		return SessionSnapshot{}, err
+	}
 	f, err := os.Open(path)
 	if err != nil {
 		return SessionSnapshot{}, fmt.Errorf("session snapshot: open %q: %w", path, err)
@@ -1086,28 +1089,41 @@ func ListSessionsContext(ctx context.Context, root, cwd string) []string {
 		return nil
 	}
 	dir := SessionsDir(root, cwd)
-	entries, err := os.ReadDir(dir)
+	dirFile, err := os.Open(dir)
 	if err != nil {
 		return nil
 	}
+	defer dirFile.Close()
 	type rec struct {
 		path string
 		mod  time.Time
 	}
 	var files []rec
-	for _, e := range entries {
+	for {
 		if err := contextErr(ctx); err != nil {
 			return nil
 		}
-		if e.IsDir() || !strings.HasSuffix(e.Name(), ".jsonl") {
-			continue
+		entries, readErr := dirFile.ReadDir(128)
+		if readErr != nil && readErr != io.EOF {
+			return nil
 		}
-		p := filepath.Join(dir, e.Name())
-		info, err := e.Info()
-		if err != nil {
-			continue
+		for _, e := range entries {
+			if err := contextErr(ctx); err != nil {
+				return nil
+			}
+			if e.IsDir() || !strings.HasSuffix(e.Name(), ".jsonl") {
+				continue
+			}
+			p := filepath.Join(dir, e.Name())
+			info, err := e.Info()
+			if err != nil {
+				continue
+			}
+			files = append(files, rec{path: p, mod: info.ModTime()})
 		}
-		files = append(files, rec{path: p, mod: info.ModTime()})
+		if readErr == io.EOF {
+			break
+		}
 	}
 	sort.Slice(files, func(i, j int) bool {
 		if !files[i].mod.Equal(files[j].mod) {

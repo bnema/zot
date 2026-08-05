@@ -212,13 +212,30 @@ func (d *sessionDialog) ApplyLoad(event sessionLoadEvent) {
 		d.loadSlots[event.index] = sessionLoadSlot{loaded: true, summary: event.summary}
 		d.loadingDone++
 	case sessionLoadFinished:
+		d.finishLoad(true)
+	}
+}
+
+// ApplyLoadClosed finalizes a load whose producer stopped without delivering a
+// terminal event, such as when its parent context is canceled.
+func (d *sessionDialog) ApplyLoadClosed() {
+	if !d.active || !d.loading {
+		return
+	}
+	d.finishLoad(false)
+}
+
+func (d *sessionDialog) finishLoad(complete bool) {
+	if complete {
 		d.rebuildLoadedSessions()
-		d.loading = false
-		d.loadSlots = nil
-		if d.loadCancel != nil {
-			d.loadCancel()
-			d.loadCancel = nil
-		}
+	} else {
+		d.sessions = nil
+	}
+	d.loading = false
+	d.loadSlots = nil
+	if d.loadCancel != nil {
+		d.loadCancel()
+		d.loadCancel = nil
 	}
 }
 
