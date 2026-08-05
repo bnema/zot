@@ -141,6 +141,70 @@ func TestStopCancelsRunningAgent(t *testing.T) {
 	}
 }
 
+func TestStopContextCallerCancellationDoesNotEndGracePeriod(t *testing.T) {
+	const grace = 250 * time.Millisecond
+	started := make(chan struct{})
+	canceled := make(chan struct{})
+	f := New(Config{
+		Root:     t.TempDir(),
+		RepoRoot: t.TempDir(),
+		Policy: SubagentPolicy{
+			CancelGracePeriod: grace,
+		},
+		NewRunner: func(a *Agent) Runner {
+			return RunnerFunc(func(ctx context.Context, sink Sink) error {
+				listener, err := Listen(a.InboxPath)
+				if err != nil {
+					return err
+				}
+				defer listener.Close()
+				close(started)
+				select {
+				case <-listener.Lines():
+				case <-ctx.Done():
+					close(canceled)
+					return ctx.Err()
+				}
+				<-ctx.Done()
+				close(canceled)
+				return ctx.Err()
+			})
+		},
+	})
+	a, err := f.Spawn(context.Background(), "graceful stop")
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("runner did not start")
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	if err := f.StopContext(ctx, a.ID); err != nil {
+		t.Fatal(err)
+	}
+	cancel()
+
+	early := time.NewTimer(grace / 2)
+	defer early.Stop()
+	select {
+	case <-canceled:
+		t.Fatal("agent canceled when StopContext caller context was canceled")
+	case <-early.C:
+	}
+
+	deadline := time.NewTimer(grace * 2)
+	defer deadline.Stop()
+	select {
+	case <-canceled:
+	case <-deadline.C:
+		t.Fatal("agent was not canceled after the grace period")
+	}
+	a.Wait()
+}
+
 func TestStopContextCancelsDetachedWaitWithoutHoldingOperationLock(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("subagent inbox transport uses Unix-domain sockets")

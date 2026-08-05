@@ -603,6 +603,10 @@ type Interactive struct {
 	subagentWatchMu sync.Mutex
 	subagentWatch   []*subagentWatchEntry
 
+	// subagentsWaitWatcherDone is an optional test hook invoked when a
+	// /subagents wait watcher exits.
+	subagentsWaitWatcherDone func()
+
 	// pendingFork is true when the user ran /session fork: the next
 	// jump-picker selection should branch off that message instead
 	// of scrolling. Flag resets after the action fires or the dialog
@@ -7400,6 +7404,9 @@ func removeLastAutoSubagentsAddendum(system, addendum string) (string, bool) {
 // The profile manifest and delegation guidance are managed together so
 // toggling auto-subagents never leaves the model with names but no tool.
 func (i *Interactive) applyAutoSubagentsSystemPrompt(active bool) {
+	// i.mu is sufficient here: this path updates the existing agent's system
+	// prompt and managed addenda in place; it does not replace the agent or
+	// its tool registry, so agentMu is not required.
 	i.mu.Lock()
 	defer i.mu.Unlock()
 	if i.agent == nil {

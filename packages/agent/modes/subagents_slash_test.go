@@ -81,8 +81,11 @@ func TestRunSupervisorSubcommandsDoNotPanic(t *testing.T) {
 			iv.runSubagents(context.Background(), args)
 		}()
 	}
-	if !strings.Contains(iv.statusErr, "cancel") || !strings.Contains(iv.statusErr, "wait") {
-		t.Fatalf("unknown-command hint = %q; want cancel and wait", iv.statusErr)
+	iv.mu.Lock()
+	statusErr := iv.statusErr
+	iv.mu.Unlock()
+	if !strings.Contains(statusErr, "cancel") || !strings.Contains(statusErr, "wait") {
+		t.Fatalf("unknown-command hint = %q; want cancel and wait", statusErr)
 	}
 }
 
@@ -242,6 +245,8 @@ func TestRunSupervisorWaitHonorsRunContext(t *testing.T) {
 		t.Fatal(err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
+	watcherDone := make(chan struct{})
+	iv.subagentsWaitWatcherDone = func() { close(watcherDone) }
 	iv.runSubagents(ctx, []string{"wait", a.ID})
 	iv.mu.Lock()
 	status := iv.statusOK
@@ -253,7 +258,13 @@ func TestRunSupervisorWaitHonorsRunContext(t *testing.T) {
 
 	// The wait watcher must stop observing the run context and must not
 	// later overwrite the status with a false completion after cleanup.
-	time.Sleep(20 * time.Millisecond)
+	deadline := time.NewTimer(time.Second)
+	defer deadline.Stop()
+	select {
+	case <-watcherDone:
+	case <-deadline.C:
+		t.Fatal("timed out waiting for wait watcher to exit")
+	}
 	iv.mu.Lock()
 	status = iv.statusOK
 	iv.mu.Unlock()

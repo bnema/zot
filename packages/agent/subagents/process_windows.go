@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 )
@@ -17,11 +18,22 @@ import (
 // configureWorkerProcess makes CommandContext cancellation terminate the
 // worker and its descendants on Windows. Windows does not provide a Unix-like
 // process-group kill operation, so killProcessGroup uses taskkill's tree mode.
-func configureWorkerProcess(cmd *exec.Cmd, _ ...io.Closer) {
+func configureWorkerProcess(cmd *exec.Cmd, pipes ...io.Closer) {
 	setProcessGroup(cmd)
 	cmd.WaitDelay = workerProcessWaitDelay
+	var closePipes sync.Once
 	cmd.Cancel = func() error {
-		return killProcessGroup(cmd)
+		err := killProcessGroup(cmd)
+		closePipes.Do(func() { closeWorkerPipes(pipes) })
+		return err
+	}
+}
+
+func closeWorkerPipes(pipes []io.Closer) {
+	for _, pipe := range pipes {
+		if pipe != nil {
+			_ = pipe.Close()
+		}
 	}
 }
 

@@ -313,7 +313,7 @@ type SpawnRequest struct {
 	// disables fast mode for this child; true still cannot enable fast mode
 	// when Config.FastMode is false. Nil inherits Config.FastMode.
 	FastMode *bool
-	Subagent  string // optional named markdown profile
+	Subagent string // optional named markdown profile
 
 	// ParentID is metadata used for per-parent scheduling limits. A
 	// non-empty RequesterAgentID identifies an untrusted child request;
@@ -847,13 +847,6 @@ func (f *Supervisor) stop(ctx context.Context, id string) error {
 			defer timer.Stop()
 			select {
 			case <-a.done:
-			case <-ctx.Done():
-				if a.cancel != nil {
-					a.cancel()
-				}
-				if a.inbox != nil {
-					_ = a.inbox.Close()
-				}
 			case <-timer.C:
 				if a.cancel != nil {
 					a.cancel()

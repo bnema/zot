@@ -216,15 +216,23 @@ type eventRing struct {
 }
 
 func newEventRing() eventRing {
-	return eventRing{events: make([]Event, maxEventLogEvents)}
+	return eventRing{events: make([]Event, 0)}
 }
 
 func (r *eventRing) append(ev Event) {
+	if r.count < maxEventLogEvents {
+		r.events = append(r.events, ev)
+		r.count++
+		if r.count == maxEventLogEvents {
+			r.next = 0
+		} else {
+			r.next = r.count
+		}
+		return
+	}
+
 	r.events[r.next] = ev
 	r.next = (r.next + 1) % len(r.events)
-	if r.count < len(r.events) {
-		r.count++
-	}
 }
 
 func (r *eventRing) last() (Event, bool) {

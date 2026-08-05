@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/patriceckhart/zot/packages/agent/subagents"
 	"github.com/patriceckhart/zot/packages/provider"
@@ -72,6 +73,44 @@ func TestSubagentSpawnInheritsHostModelAndProviderWhenOmitted(t *testing.T) {
 	}
 	if agents[0].MaxTurns != 3 {
 		t.Fatalf("omitted max_turns = %d, want default 3", agents[0].MaxTurns)
+	}
+}
+
+func TestSubagentSpawnDetailsUseEffectiveTimeoutAndTurns(t *testing.T) {
+	root := t.TempDir()
+	manager := subagents.New(subagents.Config{
+		Root:     filepath.Join(root, "subagents"),
+		RepoRoot: root,
+		Policy: subagents.SubagentPolicy{
+			DefaultTimeout: 37 * time.Minute,
+			MaxTurns:       7,
+		},
+		NewRunner: func(*subagents.Agent) subagents.Runner {
+			return noopSupervisorRunner{}
+		},
+	})
+	t.Cleanup(manager.StopAll)
+	tool := &SubagentSpawnTool{
+		Supervisor: manager,
+		Enabled:    func() bool { return true },
+	}
+
+	res, err := tool.Execute(context.Background(), json.RawMessage(`{"task":"research docs"}`), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.IsError {
+		t.Fatalf("unexpected tool error: %s", textResult(res.Content))
+	}
+	details, ok := res.Details.(map[string]any)
+	if !ok {
+		t.Fatalf("details type = %T, want map[string]any", res.Details)
+	}
+	if got := details["timeout"]; got != (37 * time.Minute).String() {
+		t.Fatalf("omitted timeout detail = %v, want %s", got, (37 * time.Minute).String())
+	}
+	if got := details["max_turns"]; got != 7 {
+		t.Fatalf("max_turns detail = %v, want 7", got)
 	}
 }
 

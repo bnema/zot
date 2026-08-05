@@ -243,7 +243,13 @@ func (i *Interactive) runSubagents(ctx context.Context, args []string) {
 			i.subagentsStatus("", "wait: no such agent "+rest)
 			return
 		}
+		waitWatcherDone := i.subagentsWaitWatcherDone
 		go func() {
+			defer func() {
+				if waitWatcherDone != nil {
+					waitWatcherDone()
+				}
+			}()
 			if err := a.WaitContext(ctx); err != nil {
 				return
 			}

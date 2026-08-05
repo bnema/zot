@@ -171,7 +171,14 @@ func TestResumePreservesPerAgentTimeout(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	observed := <-observedCh
+	var observed time.Duration
+	deadline := time.NewTimer(time.Second)
+	defer deadline.Stop()
+	select {
+	case observed = <-observedCh:
+	case <-deadline.C:
+		t.Fatal("timed out waiting for resumed runner to observe timeout")
+	}
 	if resumed.Timeout != wantTimeout || observed != wantTimeout {
 		t.Fatalf("resumed timeout = %s, runner observed %s; want %s", resumed.Timeout, observed, wantTimeout)
 	}

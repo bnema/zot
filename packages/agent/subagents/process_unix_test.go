@@ -71,14 +71,14 @@ func TestWorkerCancellationClosesOutputPipes(t *testing.T) {
 	defer stdout.Close()
 	defer stderr.Close()
 
-	configureWorkerProcess(cmd)
+	configureWorkerProcess(cmd, stdout, stderr)
 	if err := cmd.Cancel(); err != nil {
 		t.Fatal(err)
 	}
 	for name, pipe := range map[string]io.Reader{"stdout": stdout, "stderr": stderr} {
 		data := make([]byte, 1)
-		if _, err := pipe.Read(data); err != io.EOF {
-			t.Errorf("%s read error = %v, want EOF", name, err)
+		if _, err := pipe.Read(data); !errors.Is(err, os.ErrClosed) {
+			t.Errorf("%s read error = %v, want os.ErrClosed", name, err)
 		}
 	}
 }

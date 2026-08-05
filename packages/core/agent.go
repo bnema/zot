@@ -16,9 +16,13 @@ import (
 // Agent is a stateful conversation bound to a provider client, a model,
 // and a set of tools.
 type Agent struct {
-	Client      provider.Client
-	Model       string
-	System      string
+	Client provider.Client
+	Model  string
+	// System is mutex-protected; use SetSystemPrompt to write it and
+	// PromptConfig to read it.
+	System string
+	// Tools is mutex-protected; use SetTools to write it and PromptConfig
+	// or ToolsSnapshot to read it.
 	Tools       Registry
 	MaxSteps    int
 	Reasoning   string
@@ -760,7 +764,7 @@ func (a *Agent) executeTools(ctx context.Context, msg provider.Message, sink fun
 		if !ok {
 			continue
 		}
-		res := a.runOneTool(ctx, tc, sink)
+		res := a.runOneTool(ctx, tc, tools, sink)
 		if res.IsError {
 			hadError = true
 		}
@@ -788,8 +792,7 @@ func (a *Agent) executeTools(ctx context.Context, msg provider.Message, sink fun
 	}, hadError
 }
 
-func (a *Agent) runOneTool(ctx context.Context, tc provider.ToolCallBlock, sink func(AgentEvent)) ToolResult {
-	tools := a.ToolsSnapshot()
+func (a *Agent) runOneTool(ctx context.Context, tc provider.ToolCallBlock, tools Registry, sink func(AgentEvent)) ToolResult {
 	tool, err := tools.Get(tc.Name)
 	if err != nil {
 		return ToolResult{

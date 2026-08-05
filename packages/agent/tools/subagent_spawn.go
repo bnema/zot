@@ -273,7 +273,7 @@ func (t *SubagentSpawnTool) Execute(ctx context.Context, raw json.RawMessage, pr
 			"reasoning":     reasoning,
 			"fast_mode":     agent.FastMode,
 			"isolation":     string(workspaceMode),
-			"timeout":       timeout.String(),
+			"timeout":       agent.Timeout.String(),
 			"max_turns":     agent.MaxTurns,
 			"state":         agent.Status(),
 			"process_state": string(agent.ProcessState()),
