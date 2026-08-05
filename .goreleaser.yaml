@@ -49,8 +49,8 @@ snapshot:
   version_template: "{{ incpatch .Version }}-next"
 
 git:
-  # Generate prerelease changelogs from the previous stable tag.
-  tag_sort: smartsemver
+  # Git's version-aware sort selects semantic versions correctly.
+  tag_sort: -version:refname
 
 changelog:
   sort: asc
