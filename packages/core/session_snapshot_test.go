@@ -508,8 +508,11 @@ func TestSnapshotRemovesOrphanedToolResultsAndMapsCheckpointCount(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, branchMessages, err := OpenSession(branchPath)
+	branchSession, branchMessages, err := OpenSession(branchPath)
 	if err != nil {
+		t.Fatal(err)
+	}
+	if err := branchSession.Close(); err != nil {
 		t.Fatal(err)
 	}
 	if len(branchMessages) != 3 {

@@ -51,7 +51,11 @@ func Discover(cwd, userHome string) ([]*Profile, []error) {
 	for _, loc := range searchDirs(cwd, userHome) {
 		entries, err := os.ReadDir(loc.dir)
 		if err != nil {
-			if !os.IsNotExist(err) {
+			if os.IsNotExist(err) {
+				if info, statErr := os.Stat(loc.dir); statErr == nil && !info.IsDir() {
+					errs = append(errs, fmt.Errorf("read subagent directory %s: not a directory", loc.dir))
+				}
+			} else {
 				errs = append(errs, fmt.Errorf("read subagent directory %s: %w", loc.dir, err))
 			}
 			continue
