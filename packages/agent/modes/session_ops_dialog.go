@@ -84,7 +84,7 @@ func (d *sessionOpsDialog) Render(th tui.Theme, width int) []string {
 	}
 	var lines []string
 	lines = append(lines, frameHeader(th, "session", width))
-	lines = append(lines, th.FG256(th.Muted, "pick an action (\u2191/\u2193, enter, esc to cancel):"))
+	lines = append(lines, th.FGColor(th.Muted, "pick an action (\u2191/\u2193, enter, esc to cancel):"))
 	for i, it := range d.items {
 		text := "  " + it.label
 		if it.hint != "" {
@@ -93,7 +93,7 @@ func (d *sessionOpsDialog) Render(th tui.Theme, width int) []string {
 		if i == d.cursor {
 			lines = append(lines, th.PadHighlight(text, width))
 		} else {
-			lines = append(lines, th.FG256(th.Muted, text))
+			lines = append(lines, th.FGColor(th.Muted, text))
 		}
 	}
 	lines = append(lines, frameRule(th, width))

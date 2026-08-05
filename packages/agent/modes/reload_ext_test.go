@@ -67,7 +67,7 @@ func TestStartupExtensionFailureAppearsInChatWithoutEnteringContext(t *testing.T
 	agent := core.NewAgent(nil, "", "", nil)
 	i := NewInteractive(InteractiveConfig{
 		Agent:                  agent,
-		Theme:                  tui.Theme{Error: 1},
+		Theme:                  tui.Theme{Error: tui.Color256(1)},
 		StartupExtensionErrors: []string{"startup failed: stderr log: /tmp/startup.log"},
 	})
 
@@ -84,7 +84,7 @@ func TestReloadFailureRemainsInChatWithoutEnteringContext(t *testing.T) {
 	agent := core.NewAgent(nil, "", "", nil)
 	i := NewInteractive(InteractiveConfig{
 		Agent: agent,
-		Theme: tui.Theme{Error: 1},
+		Theme: tui.Theme{Error: tui.Color256(1)},
 	})
 	seq := i.setReloadStatus("broken extension: stderr log: /tmp/ext.log", true)
 	if !i.clearReloadStatus(seq, i.statusErr, true) {

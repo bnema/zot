@@ -19,8 +19,10 @@ inherit from the built-in detected light/dark default.
 
 The `/settings` picker also provides an **inherited (from terminal)**
 built-in theme. It uses the terminal's reported colors and emits truecolor
-when advertised, with a best-effort xterm-256 fallback otherwise. JSON theme
-files remain explicit zut palettes and use the color forms documented below.
+when advertised, with a best-effort xterm-256 fallback otherwise. JSON themes
+use the same first-class terminal-color model: every semantic role accepts
+xterm-256, ANSI, or RGB values, with RGB quantized when truecolor is
+unavailable.
 
 User themes are discovered from:
 
@@ -191,6 +193,8 @@ under `colors`, when they should apply to both modes:
 - `fg` — default foreground text.
 - `muted` — secondary text, dividers, gutters, inactive hints.
 - `accent` — prompt bar, bullets, links, headings, active markers.
+- `background` — optional full-row TUI background; missing values leave the
+  terminal background unchanged.
 - `user` — user role label color; mostly compatibility.
 - `user_bubble_bg` — background behind user message rows.
 - `user_bubble_fg` — foreground inside user message rows.
@@ -203,9 +207,7 @@ under `colors`, when they should apply to both modes:
 - `selection_bg` — highlighted row background.
 - `selection_fg` — highlighted row foreground.
 
-Most color fields are xterm-256 indexes (`0`–`255`).
-
-`user_bubble_bg` supports richer terminal color forms:
+Every color field accepts the following JSON forms:
 
 ```json
 254
@@ -214,6 +216,12 @@ Most color fields are xterm-256 indexes (`0`–`255`).
 { "mode": "ansi", "index": 100 }
 { "mode": "rgb", "r": 66, "g": 69, "b": 75 }
 ```
+
+Numeric values are xterm-256 indexes. ANSI values use SGR codes, with
+standard foreground/background ranges normalized to the role where necessary.
+RGB values are emitted directly when truecolor is advertised and quantized to
+the nearest xterm-256 color otherwise. The forms apply to `background`,
+`user_bubble_bg`, and all other semantic theme colors.
 
 ## Spinner fields
 

@@ -16,13 +16,13 @@ import (
 func frameHeader(th tui.Theme, title string, width int) string {
 	label := "── " + title + " "
 	if width <= 0 {
-		return th.FG256(th.Muted, label)
+		return th.FGColor(th.Muted, label)
 	}
 	padLen := width - runewidth.StringWidth(label)
 	if padLen < 0 {
 		padLen = 0
 	}
-	return th.FG256(th.Muted, label+strings.Repeat("─", padLen))
+	return th.FGColor(th.Muted, label+strings.Repeat("─", padLen))
 }
 
 // frameRule returns a full-width horizontal rule in the muted color.
@@ -30,7 +30,7 @@ func frameRule(th tui.Theme, width int) string {
 	if width <= 0 {
 		width = 1
 	}
-	return th.FG256(th.Muted, strings.Repeat("─", width))
+	return th.FGColor(th.Muted, strings.Repeat("─", width))
 }
 
 // padDialogFrame inserts breathing room between the shared dialog frame
@@ -71,24 +71,24 @@ func isFrameRuleLine(line string) bool {
 }
 
 // frameHeaderColor is like frameHeader but renders in a caller-supplied
-// 256-color code. Used by the update-available banner which wants a
-// yellow accent on the rules and title.
-func frameHeaderColor(th tui.Theme, title string, width, color int) string {
+// theme color. Used by the update-available banner which wants a yellow
+// accent on the rules and title.
+func frameHeaderColor(th tui.Theme, title string, width int, color tui.TerminalColor) string {
 	label := "── " + title + " "
 	if width <= 0 {
-		return th.FG256(color, label)
+		return th.FGColor(color, label)
 	}
 	padLen := width - runewidth.StringWidth(label)
 	if padLen < 0 {
 		padLen = 0
 	}
-	return th.FG256(color, label+strings.Repeat("─", padLen))
+	return th.FGColor(color, label+strings.Repeat("─", padLen))
 }
 
 // frameRuleColor is like frameRule in an explicit color.
-func frameRuleColor(th tui.Theme, width, color int) string {
+func frameRuleColor(th tui.Theme, width int, color tui.TerminalColor) string {
 	if width <= 0 {
 		width = 1
 	}
-	return th.FG256(color, strings.Repeat("─", width))
+	return th.FGColor(color, strings.Repeat("─", width))
 }

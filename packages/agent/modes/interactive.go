@@ -1274,7 +1274,7 @@ func (i *Interactive) extensionChromeLinesForLayoutLocked(cols int, rightBarActi
 	}
 	limit := maxNarrowExtensionChromeRows
 	trimmed := append([]string(nil), lines[:limit-1]...)
-	trimmed = append(trimmed, i.cfg.Theme.FG256(i.cfg.Theme.Muted, truncateLine("  ... extension chrome truncated ...", cols)))
+	trimmed = append(trimmed, i.cfg.Theme.FGColor(i.cfg.Theme.Muted, truncateLine("  ... extension chrome truncated ...", cols)))
 	return trimmed
 }
 
@@ -1310,7 +1310,7 @@ func (i *Interactive) extensionChromeLinesAtLocked(cols int, rightBarActive bool
 			if widget.Title != "" {
 				label += " " + widget.Title
 			}
-			if !appendWidgetRow(i.cfg.Theme.FG256(i.cfg.Theme.Accent, truncateLine(label, cols))) {
+			if !appendWidgetRow(i.cfg.Theme.FGColor(i.cfg.Theme.Accent, truncateLine(label, cols))) {
 				stopWidgets = true
 				break
 			}
@@ -1326,7 +1326,7 @@ func (i *Interactive) extensionChromeLinesAtLocked(cols int, rightBarActive bool
 		}
 	}
 	if widgetTruncated {
-		out = append(out, i.cfg.Theme.FG256(i.cfg.Theme.Muted, truncateLine("  ... extension widgets truncated ...", cols)))
+		out = append(out, i.cfg.Theme.FGColor(i.cfg.Theme.Muted, truncateLine("  ... extension widgets truncated ...", cols)))
 	}
 
 	statusRows := 0
@@ -1348,7 +1348,7 @@ func (i *Interactive) extensionChromeLinesAtLocked(cols int, rightBarActive bool
 				color = i.cfg.Theme.Tool
 			}
 			label := "  [" + extName + "] " + status.Text
-			out = append(out, i.cfg.Theme.FG256(color, truncateLine(label, cols)))
+			out = append(out, i.cfg.Theme.FGColor(color, truncateLine(label, cols)))
 			statusRows++
 		}
 		if statusTruncated {
@@ -1356,7 +1356,7 @@ func (i *Interactive) extensionChromeLinesAtLocked(cols int, rightBarActive bool
 		}
 	}
 	if statusTruncated {
-		out = append(out, i.cfg.Theme.FG256(i.cfg.Theme.Muted, truncateLine("  ... extension statuses truncated ...", cols)))
+		out = append(out, i.cfg.Theme.FGColor(i.cfg.Theme.Muted, truncateLine("  ... extension statuses truncated ...", cols)))
 	}
 	return out
 }
@@ -1467,7 +1467,7 @@ func (i *Interactive) buildChatLocked(cols int) []string {
 		if cols > 4 && len(line) > cols {
 			line = line[:cols-3] + "..."
 		}
-		chat = append(chat, i.cfg.Theme.FG256(i.cfg.Theme.Tool, line), "")
+		chat = append(chat, i.cfg.Theme.FGColor(i.cfg.Theme.Tool, line), "")
 	}
 
 	// Live shell-escape output (!command / entry.pre) streams into the
@@ -1772,10 +1772,10 @@ func (i *Interactive) redraw() {
 	var busyPrefix string
 	if i.busy {
 		busyPrefix = fmt.Sprintf("%s %s %s %s",
-			i.cfg.Theme.FG256(i.cfg.Theme.Assistant, i.spin.Frame()),
-			i.cfg.Theme.FG256(i.cfg.Theme.Assistant, i.spin.Message()),
-			i.cfg.Theme.FG256(i.cfg.Theme.Muted, "-"),
-			i.cfg.Theme.FG256(i.cfg.Theme.Muted, i.spin.Elapsed().String()),
+			i.cfg.Theme.FGColor(i.cfg.Theme.Assistant, i.spin.Frame()),
+			i.cfg.Theme.FGColor(i.cfg.Theme.Assistant, i.spin.Message()),
+			i.cfg.Theme.FGColor(i.cfg.Theme.Muted, "-"),
+			i.cfg.Theme.FGColor(i.cfg.Theme.Muted, i.spin.Elapsed().String()),
 		)
 	}
 
@@ -1843,16 +1843,16 @@ func (i *Interactive) redraw() {
 	if len(queued) > 0 {
 		queue = append(queue, "")
 		for _, q := range queued {
-			label := i.cfg.Theme.FG256(i.cfg.Theme.Accent, "  sliding in: ")
+			label := i.cfg.Theme.FGColor(i.cfg.Theme.Accent, "  sliding in: ")
 			text := truncateLine(q, mainCols-17)
-			queue = append(queue, label+i.cfg.Theme.FG256(i.cfg.Theme.Muted, text))
+			queue = append(queue, label+i.cfg.Theme.FGColor(i.cfg.Theme.Muted, text))
 		}
 		// Hint row, rendered in the same muted tone as the model
 		// info on the status bar so it reads as ambient metadata
 		// rather than a chip. Tells the user how to recover the
 		// most recent queued message back into the editor.
 		hint := "  Press " + slideBackChordHint() + " to slide back into input"
-		queue = append(queue, i.cfg.Theme.FG256(i.cfg.Theme.Muted, hint))
+		queue = append(queue, i.cfg.Theme.FGColor(i.cfg.Theme.Muted, hint))
 	}
 
 	extensionLines := i.extensionChromeLinesForLayoutLocked(mainCols, rightBarActive, rightBarFallback)
@@ -2060,7 +2060,7 @@ func (i *Interactive) redraw() {
 		} else {
 			text = fmt.Sprintf("  ↑ %d lines more below (end to jump)", i.scrollOffset)
 		}
-		note := i.cfg.Theme.FG256(i.cfg.Theme.Muted, text)
+		note := i.cfg.Theme.FGColor(i.cfg.Theme.Muted, text)
 		visibleChat = append([]string{note}, visibleChat...)
 		if len(visibleChat) > chatRows {
 			visibleChat = visibleChat[:chatRows]
@@ -3442,11 +3442,11 @@ func (i *Interactive) appendExtensionNote(extName, msg, level string) {
 	case "success":
 		color = i.cfg.Theme.Tool
 	}
-	prefix := i.cfg.Theme.FG256(i.cfg.Theme.Accent, "["+extName+"] ")
+	prefix := i.cfg.Theme.FGColor(i.cfg.Theme.Accent, "["+extName+"] ")
 	for _, line := range strings.Split(msg, "\n") {
 		i.statusOK = "" // clear any stale ok
 		i.statusErr = ""
-		i.extNotes = append(i.extNotes, prefix+i.cfg.Theme.FG256(color, line))
+		i.extNotes = append(i.extNotes, prefix+i.cfg.Theme.FGColor(color, line))
 	}
 	// Extension slash commands complete asynchronously. If their result is
 	// displayed while confirmation is waiting, keep Esc assigned to the note
@@ -6988,7 +6988,7 @@ func stripAutoCompactNotes(notes []string) []string {
 // inline auto-compact heads-up. Lives in extNotes so it survives
 // the busy-spinner overwrite of the status row.
 func autoCompactNoteLine(th tui.Theme, msg string) string {
-	return "  " + th.FG256(th.Warning, "⚠ "+msg)
+	return "  " + th.FGColor(th.Warning, "⚠ "+msg)
 }
 
 // isContextOverflowError matches provider responses that reject the

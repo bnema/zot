@@ -370,11 +370,14 @@ func PrintHelp(version string) {
 	th := tui.Dark
 	fd := int(os.Stderr.Fd())
 	useColor := term.IsTerminal(fd)
-	style := func(c int, s string) string {
+	if useColor && tui.DetectTrueColor(os.Getenv("TERM"), os.Getenv("COLORTERM")) {
+		th.Terminal.TrueColor = true
+	}
+	style := func(c tui.TerminalColor, s string) string {
 		if !useColor {
 			return s
 		}
-		return th.FG256(c, s)
+		return th.FGColor(c, s)
 	}
 	assistant := func(s string) string { return style(th.Assistant, s) }
 	muted := func(s string) string { return style(th.Muted, s) }

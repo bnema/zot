@@ -43,8 +43,8 @@ func TestApplyingInheritedThemeUsesCapturedTerminalProfile(t *testing.T) {
 	if !interactive.cfg.Theme.Inherited {
 		t.Fatal("applying inherited theme did not switch the live theme")
 	}
-	if interactive.cfg.Theme.ColorMode != tui.ColorModeTrueColor {
-		t.Fatalf("live inherited color mode = %v, want truecolor", interactive.cfg.Theme.ColorMode)
+	if !interactive.cfg.Theme.Terminal.TrueColor {
+		t.Fatal("live inherited color mode = 256, want truecolor")
 	}
 	if !interactive.cfg.Theme.Terminal.HasForeground || !interactive.cfg.Theme.Terminal.HasBackground {
 		t.Fatal("live inherited theme lost the captured terminal profile")

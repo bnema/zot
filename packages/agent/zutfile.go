@@ -846,11 +846,11 @@ func acceptZutfileConsent(zf zutfileLoaded, perms tools.PermissionSet) (bool, er
 var errZutfileConsentInterrupted = errors.New("interrupted")
 
 func formatZutfileConsent(zf zutfileLoaded, perms tools.PermissionSet, th tui.Theme, color bool) string {
-	style := func(c int, text string) string {
+	style := func(c tui.TerminalColor, text string) string {
 		if !color {
 			return text
 		}
-		return th.FG256(c, text)
+		return th.FGColor(c, text)
 	}
 
 	var sb strings.Builder
@@ -886,7 +886,7 @@ func readZutfileConsent(in *os.File, out io.Writer, th tui.Theme) (bool, error) 
 			fmt.Fprint(out, "\b \b")
 			return
 		}
-		fmt.Fprint(out, th.FG256(th.FG, string(answer)))
+		fmt.Fprint(out, th.FGColor(th.FG, string(answer)))
 	})
 	switch {
 	case errors.Is(err, errZutfileConsentInterrupted):
@@ -938,11 +938,11 @@ func permissionSummary(p tools.PermissionSet) string {
 }
 
 func permissionSummaryStyled(p tools.PermissionSet, th tui.Theme, color bool) string {
-	style := func(c int, text string) string {
+	style := func(c tui.TerminalColor, text string) string {
 		if !color {
 			return text
 		}
-		return th.FG256(c, text)
+		return th.FGColor(c, text)
 	}
 	permissionValue := func(value string) string { return style(th.FG, value) }
 

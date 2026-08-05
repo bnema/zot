@@ -14,10 +14,10 @@ func welcomeBanner(th tui.Theme, version string, showVersion bool) []string {
 	if showVersion && version != "" {
 		text = "zut (" + version + "). yet another coding agent harness."
 	}
-	headline := th.AccentBar(th.Assistant) + th.FG256(th.Assistant, tui.Bold(text))
+	headline := th.AccentBar(th.Assistant) + th.FGColor(th.Assistant, tui.Bold(text))
 	return []string{
 		headline,
-		th.FG256(th.Muted, "  ask anything, or type /help to see commands."),
+		th.FGColor(th.Muted, "  ask anything, or type /help to see commands."),
 		"",
 	}
 }

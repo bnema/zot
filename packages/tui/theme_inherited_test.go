@@ -70,6 +70,34 @@ func TestParseOSCColorResponse(t *testing.T) {
 	}
 }
 
+func TestANSIThemeColorsAdaptToTargetSGR(t *testing.T) {
+	if got := Dark.FGColor(ColorANSI(100), "x"); got != "\x1b[90mx\x1b[0m" {
+		t.Fatalf("ANSI foreground = %q, want bright-black foreground", got)
+	}
+	if got := Dark.BG(ColorANSI(31), "x"); got != "\x1b[41mx\x1b[0m" {
+		t.Fatalf("ANSI background = %q, want red background", got)
+	}
+}
+
+func TestNearestXtermColorCacheIsStable(t *testing.T) {
+	colors := [][3]int{
+		{0, 0, 0},
+		{66, 69, 75},
+		{200, 100, 50},
+		{-20, 300, 128},
+	}
+	for _, color := range colors {
+		first := nearestXtermColor(color[0], color[1], color[2])
+		second := nearestXtermColor(color[0], color[1], color[2])
+		if first != second {
+			t.Fatalf("nearest color changed for %#v: first=%d second=%d", color, first, second)
+		}
+		if first < 0 || first > 255 {
+			t.Fatalf("nearest color out of range for %#v: %d", color, first)
+		}
+	}
+}
+
 func inheritedTestTheme(trueColor bool) Theme {
 	detected := Dark
 	detected.Terminal = TerminalProfile{
@@ -88,13 +116,13 @@ func inheritedTestTheme(trueColor bool) Theme {
 
 func TestInheritedThemeUsesTrueColorAndTerminalPalette(t *testing.T) {
 	th := inheritedTestTheme(true)
-	if !th.Inherited || th.ColorMode != ColorModeTrueColor {
-		t.Fatalf("inherited theme mode = (inherited=%v, colorMode=%v), want truecolor", th.Inherited, th.ColorMode)
+	if !th.Inherited || !th.Terminal.TrueColor {
+		t.Fatalf("inherited theme mode = (inherited=%v, trueColor=%v), want truecolor", th.Inherited, th.Terminal.TrueColor)
 	}
-	if got := th.FG256(th.Accent, "x"); !strings.Contains(got, "\x1b[38;2;40;100;240m") {
+	if got := th.FGColor(th.Accent, "x"); !strings.Contains(got, "\x1b[38;2;40;100;240m") {
 		t.Fatalf("accent did not use the reported terminal palette: %q", got)
 	}
-	if got := th.FG256(th.FG, "x"); !strings.Contains(got, "\x1b[38;2;220;210;200m") {
+	if got := th.FGColor(th.FG, "x"); !strings.Contains(got, "\x1b[38;2;220;210;200m") {
 		t.Fatalf("foreground did not inherit the terminal default: %q", got)
 	}
 	if got := th.UserBubble("x", 3); !strings.Contains(got, "\x1b[48;2;") {
@@ -110,10 +138,10 @@ func TestInheritedThemeUsesTrueColorAndTerminalPalette(t *testing.T) {
 
 func TestInheritedThemeFallsBackTo256Colors(t *testing.T) {
 	th := inheritedTestTheme(false)
-	if !th.Inherited || th.ColorMode != ColorMode256 {
-		t.Fatalf("inherited theme mode = (inherited=%v, colorMode=%v), want 256", th.Inherited, th.ColorMode)
+	if !th.Inherited || th.Terminal.TrueColor {
+		t.Fatalf("inherited theme mode = (inherited=%v, trueColor=%v), want 256", th.Inherited, th.Terminal.TrueColor)
 	}
-	if got := th.FG256(th.Accent, "x"); !strings.Contains(got, "\x1b[38;5;12m") || strings.Contains(got, "\x1b[38;2;") {
+	if got := th.FGColor(th.Accent, "x"); !strings.Contains(got, "\x1b[38;5;12m") || strings.Contains(got, "\x1b[38;2;") {
 		t.Fatalf("accent did not use 256-color fallback: %q", got)
 	}
 	if got := th.UserBubble("x", 3); strings.Contains(got, "\x1b[48;2;") || !strings.Contains(got, "\x1b[48;5;") {
@@ -127,12 +155,20 @@ func TestInheritedThemeFallsBackTo256Colors(t *testing.T) {
 	}
 }
 
-func TestExplicitThemesRemainIndexed(t *testing.T) {
-	if got, want := Dark.FG256(Dark.Accent, "x"), "\x1b[38;5;111mx\x1b[0m"; got != want {
+func TestExplicitThemesFollowTerminalCapability(t *testing.T) {
+	if got, want := Dark.FGColor(Dark.Accent, "x"), "\x1b[38;5;111mx\x1b[0m"; got != want {
 		t.Fatalf("explicit theme output = %q, want %q", got, want)
 	}
-	if got := Dark.UserBubble("x", 1); !strings.Contains(got, "\x1b[48;2;66;69;75m") {
-		t.Fatalf("explicit RGB bubble changed output mode: %q", got)
+	if got := Dark.UserBubble("x", 1); !strings.Contains(got, "\x1b[48;5;") || strings.Contains(got, "\x1b[48;2;") {
+		t.Fatalf("non-truecolor RGB bubble did not quantize: %q", got)
+	}
+
+	trueColor := withTerminalProfile(Dark, Theme{Terminal: TerminalProfile{TrueColor: true}})
+	if got := trueColor.FGColor(trueColor.Accent, "x"); !strings.Contains(got, "\x1b[38;2;") {
+		t.Fatalf("truecolor explicit theme did not emit RGB: %q", got)
+	}
+	if got := trueColor.UserBubble("x", 1); !strings.Contains(got, "\x1b[48;2;66;69;75m") {
+		t.Fatalf("truecolor explicit RGB bubble did not emit RGB: %q", got)
 	}
 }
 

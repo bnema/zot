@@ -480,7 +480,7 @@ func (s *fileSuggester) Render(input string, th tui.Theme, width int) []string {
 
 	// Show breadcrumb when browsing a subdirectory.
 	if s.browseRel != "" {
-		crumb := th.FG256(th.Accent, "  "+s.browseRel+"/")
+		crumb := th.FGColor(th.Accent, "  "+s.browseRel+"/")
 		out = append(out, crumb)
 	}
 
@@ -494,7 +494,7 @@ func (s *fileSuggester) Render(input string, th tui.Theme, width int) []string {
 		if idx == s.cursor {
 			out = append(out, th.PadHighlight(plain, width))
 		} else {
-			out = append(out, th.FG256(th.Muted, plain))
+			out = append(out, th.FGColor(th.Muted, plain))
 		}
 	}
 
@@ -508,7 +508,7 @@ func (s *fileSuggester) Render(input string, th tui.Theme, width int) []string {
 	default:
 		hint = "  \u2191/\u2193 navigate - \u2192 open dir - enter select - esc cancel"
 	}
-	out = append(out, th.FG256(th.Muted, hint))
+	out = append(out, th.FGColor(th.Muted, hint))
 	out = append(out, "")
 	return out
 }

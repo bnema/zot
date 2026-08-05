@@ -47,7 +47,7 @@ func InputLines(th Theme, lines []string, width int) []string {
 	if width < 1 {
 		width = 1
 	}
-	rule := th.FG256(th.Muted, strings.Repeat("─", width))
+	rule := th.FGColor(th.Muted, strings.Repeat("─", width))
 	out := make([]string, 0, len(lines)+2)
 	out = append(out, rule)
 	out = append(out, lines...)
@@ -63,13 +63,13 @@ func InputBlock(th Theme, lines []string, width int) []string {
 	if bubbleW < 1 {
 		bubbleW = 1
 	}
+	bg := th.sgrBGColor(th.UserBubbleBG)
+	bar := bg + th.FGColor(th.Accent, "▌ ")
 	row := func(content string) string {
 		visible := visibleWidth(content)
 		if visible < bubbleW {
 			content += strings.Repeat(" ", bubbleW-visible)
 		}
-		bg := th.sgrBGColor(th.UserBubbleBG)
-		bar := bg + th.FG256(th.Accent, "▌ ")
 		body := bg + strings.ReplaceAll(content, reset, reset+bg) + reset
 		return bar + body
 	}

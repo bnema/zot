@@ -329,7 +329,10 @@ func TestLoadRemoteZutfileDownloadsTemporaryGitHubArchive(t *testing.T) {
 }
 
 func TestFormatZutfileConsentUsesThemeColors(t *testing.T) {
-	th := tui.Theme{FG: 1, Muted: 2, Accent: 3, Assistant: 4, Warning: 5}
+	th := tui.Theme{
+		FG: tui.Color256(1), Muted: tui.Color256(2), Accent: tui.Color256(3),
+		Assistant: tui.Color256(4), Warning: tui.Color256(5),
+	}
 	zf := zutfileLoaded{}
 	zf.Manifest.Name = "reviewer"
 	zf.Manifest.Version = "1.2.3"
@@ -339,13 +342,13 @@ func TestFormatZutfileConsentUsesThemeColors(t *testing.T) {
 
 	got := formatZutfileConsent(zf, perms, th, true)
 	for _, want := range []string{
-		th.FG256(th.Assistant, "Agent"),
-		th.FG256(th.Accent, "reviewer@1.2.3"),
-		th.FG256(th.Muted, "  fs read: "),
-		th.FG256(th.FG, "/workspace"),
-		th.FG256(th.Warning, "ask"),
-		th.FG256(th.Assistant, "Allow?"),
-		th.FG256(th.Muted, "[y/n]"),
+		th.FGColor(th.Assistant, "Agent"),
+		th.FGColor(th.Accent, "reviewer@1.2.3"),
+		th.FGColor(th.Muted, "  fs read: "),
+		th.FGColor(th.FG, "/workspace"),
+		th.FGColor(th.Warning, "ask"),
+		th.FGColor(th.Assistant, "Allow?"),
+		th.FGColor(th.Muted, "[y/n]"),
 	} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("themed consent missing %q:\n%s", want, got)

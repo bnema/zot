@@ -1018,7 +1018,7 @@ func (d *subagentsDialog) Render(th tui.Theme, width int) []string {
 			d.openModelPicker()
 		}
 		out = d.modelPicker.Render(th, width)
-		out = append(out, "  "+th.FG256(th.Muted, "select model for next spawn, esc to cancel"))
+		out = append(out, "  "+th.FGColor(th.Muted, "select model for next spawn, esc to cancel"))
 		return out
 	}
 	if d.spawning {
@@ -1036,7 +1036,7 @@ func (d *subagentsDialog) Render(th tui.Theme, width int) []string {
 			if d.pendingProvider != "" {
 				label += " (" + d.pendingProvider + ")"
 			}
-			out = append(out, "  "+th.FG256(th.Accent, label))
+			out = append(out, "  "+th.FGColor(th.Accent, label))
 		}
 		if d.fileSuggest != nil {
 			d.fileSuggest.SetCWD(d.cwd)
@@ -1056,26 +1056,26 @@ func (d *subagentsDialog) Render(th tui.Theme, width int) []string {
 		// Matching blank row below before the hint, mirroring the
 		// main input's editor breathing room.
 		out = append(out, "")
-		out = append(out, "  "+th.FG256(th.Muted, "enter spawn, /model pick model, @ file/dir picker, paste/drop paths become [file:] / [dir:] chips, esc cancel"))
+		out = append(out, "  "+th.FGColor(th.Muted, "enter spawn, /model pick model, @ file/dir picker, paste/drop paths become [file:] / [dir:] chips, esc cancel"))
 		out = append(out, frameRule(th, width))
 		return out
 	}
 	if len(d.rows) == 0 {
-		out = append(out, "  "+th.FG256(th.Muted, "no agents — press n to spawn one (or /subagents new <task>)"))
+		out = append(out, "  "+th.FGColor(th.Muted, "no agents — press n to spawn one (or /subagents new <task>)"))
 		out = append(out, frameRule(th, width))
 		return out
 	}
 
 	// Column header for readability.
 	header := fmt.Sprintf("  %-18s  %-26s  %-8s  %s", "PROC/TURN STATUS", "ID", "AGE", "ACTIVITY")
-	out = append(out, th.FG256(th.Muted, header))
+	out = append(out, th.FGColor(th.Muted, header))
 
 	for i, r := range d.rows {
 		row := formatSupervisorRow(r, width-2)
 		if i == d.cursor {
 			out = append(out, th.PadHighlight("  "+row, width))
 		} else {
-			out = append(out, "  "+th.FG256(th.FG, row))
+			out = append(out, "  "+th.FGColor(th.FG, row))
 		}
 	}
 	out = append(out, frameRule(th, width))
@@ -1090,29 +1090,29 @@ func (d *subagentsDialog) renderTranscript(th tui.Theme, width int) []string {
 	}
 	header := []string{
 		frameHeader(th, "subagent: "+a.ID+"  (type to send, esc back)", width),
-		"  " + th.FG256(th.Muted, "task:   "+a.Task),
-		"  " + th.FG256(th.Muted, "dir:    "+a.Dir),
-		"  " + th.FG256(th.Muted, fmt.Sprintf("status: %s, %s", a.Status, a.Activity)),
+		"  " + th.FGColor(th.Muted, "task:   "+a.Task),
+		"  " + th.FGColor(th.Muted, "dir:    "+a.Dir),
+		"  " + th.FGColor(th.Muted, fmt.Sprintf("status: %s, %s", a.Status, a.Activity)),
 	}
 	if a.Model != "" {
 		modelLine := "model:  " + a.Model
 		if a.Provider != "" {
 			modelLine += " (" + a.Provider + ")"
 		}
-		header = append(header, "  "+th.FG256(th.Muted, modelLine))
+		header = append(header, "  "+th.FGColor(th.Muted, modelLine))
 	}
 	if a.Subagent != "" {
-		header = append(header, "  "+th.FG256(th.Muted, "agent:  "+a.Subagent))
+		header = append(header, "  "+th.FGColor(th.Muted, "agent:  "+a.Subagent))
 	}
 	if a.Reasoning != "" {
-		header = append(header, "  "+th.FG256(th.Muted, "reasoning:  "+a.Reasoning))
+		header = append(header, "  "+th.FGColor(th.Muted, "reasoning:  "+a.Reasoning))
 	}
 	if a.Err != "" {
-		header = append(header, "  "+th.FG256(th.Muted, "error:  "+a.Err))
+		header = append(header, "  "+th.FGColor(th.Muted, "error:  "+a.Err))
 	}
 	header = append(header,
 		"",
-		"  "+th.FG256(th.Muted, "── transcript ──"),
+		"  "+th.FGColor(th.Muted, "── transcript ──"),
 		"",
 	)
 
@@ -1123,7 +1123,7 @@ func (d *subagentsDialog) renderTranscript(th tui.Theme, width int) []string {
 		raw = strings.Split(a.Tail, "\n")
 	}
 	if len(raw) == 0 {
-		header = append(header, "  "+th.FG256(th.Muted, "(no transcript yet)"))
+		header = append(header, "  "+th.FGColor(th.Muted, "(no transcript yet)"))
 		header = d.appendTranscriptEditor(header, th, width, a)
 		header = append(header, frameRule(th, width))
 		return header
@@ -1167,7 +1167,7 @@ func (d *subagentsDialog) appendTranscriptEditor(out []string, th tui.Theme, wid
 	}
 	if a.Status != subagents.StatusRunning || d.send == nil {
 		out = append(out, "")
-		out = append(out, "  "+th.FG256(th.Muted, promptDisabledHint(a.Status)))
+		out = append(out, "  "+th.FGColor(th.Muted, promptDisabledHint(a.Status)))
 		return out
 	}
 	// Lazy-init the editor here too so the very first render of the
@@ -1201,9 +1201,9 @@ func (d *subagentsDialog) appendTranscriptEditor(out []string, th tui.Theme, wid
 		}
 		out = append(out, "")
 		prefix := fmt.Sprintf("%s %s, %s",
-			th.FG256(th.Assistant, d.transcriptSpin.Frame()),
-			th.FG256(th.Assistant, a.Activity),
-			th.FG256(th.Muted, d.transcriptSpin.Elapsed().String()),
+			th.FGColor(th.Assistant, d.transcriptSpin.Frame()),
+			th.FGColor(th.Assistant, a.Activity),
+			th.FGColor(th.Muted, d.transcriptSpin.Elapsed().String()),
 		)
 		out = append(out, "  "+prefix)
 	} else {
@@ -1218,7 +1218,7 @@ func (d *subagentsDialog) appendTranscriptEditor(out []string, th tui.Theme, wid
 		out = append(out, "  "+l)
 	}
 	out = append(out, "")
-	out = append(out, "  "+th.FG256(th.Muted, "enter send, @ file/dir picker, esc back"))
+	out = append(out, "  "+th.FGColor(th.Muted, "enter send, @ file/dir picker, esc back"))
 	return out
 }
 
@@ -1325,11 +1325,11 @@ func renderSupervisorTranscriptBlocks(lines []string, th tui.Theme, width int, c
 			out = append(out, renderDialogMarkdownRows(strings.TrimLeft(text, "\n"), th, width)...)
 		case kindStderr:
 			for _, line := range b.body {
-				out = append(out, wrapDialogTextRows(th.FG256(th.Muted, "stderr  "+line), width)...)
+				out = append(out, wrapDialogTextRows(th.FGColor(th.Muted, "stderr  "+line), width)...)
 			}
 		case kindError:
 			for _, line := range b.body {
-				out = append(out, wrapDialogTextRows(th.FG256(th.Error, "✖ "+line), width)...)
+				out = append(out, wrapDialogTextRows(th.FGColor(th.Error, "✖ "+line), width)...)
 			}
 		}
 	}
@@ -1353,7 +1353,7 @@ func (d *subagentsDialog) renderPromptEditor(th tui.Theme, width int, out []stri
 	if target == "" {
 		target = "<unknown>"
 	}
-	out = append(out, "  "+th.FG256(th.Muted, "send to "+target+":"))
+	out = append(out, "  "+th.FGColor(th.Muted, "send to "+target+":"))
 	if d.promptSuggest != nil {
 		d.promptSuggest.SetCWD(d.cwd)
 		if popup := d.promptSuggest.Render(d.promptEd.Value(), th, width); len(popup) > 0 {
@@ -1370,7 +1370,7 @@ func (d *subagentsDialog) renderPromptEditor(th tui.Theme, width int, out []stri
 	}
 	// Matching blank row below before the hint.
 	out = append(out, "")
-	out = append(out, "  "+th.FG256(th.Muted, "enter send, @ file/dir picker, esc cancel"))
+	out = append(out, "  "+th.FGColor(th.Muted, "enter send, @ file/dir picker, esc cancel"))
 	out = append(out, frameRule(th, width))
 	return out
 }

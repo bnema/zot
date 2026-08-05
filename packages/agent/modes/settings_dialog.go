@@ -238,9 +238,9 @@ func (d *settingsDialog) Render(th tui.Theme, width int) []string {
 	var lines []string
 	lines = append(lines, frameHeader(th, d.title, width))
 	if len(d.parentItems) > 0 {
-		lines = append(lines, th.FG256(th.Muted, "change with enter/space, esc to go back:"))
+		lines = append(lines, th.FGColor(th.Muted, "change with enter/space, esc to go back:"))
 	} else {
-		lines = append(lines, th.FG256(th.Muted, "change with enter/space, esc to close:"))
+		lines = append(lines, th.FGColor(th.Muted, "change with enter/space, esc to close:"))
 	}
 	for i, it := range d.items {
 		box := "[ ]"
@@ -259,10 +259,10 @@ func (d *settingsDialog) Render(th tui.Theme, width int) []string {
 			plain = "  " + box + " " + it.label + ": " + it.options[it.choice].label
 		}
 		if it.hint != "" {
-			plain += "  " + th.FG256(th.Muted, "("+it.hint+")")
+			plain += "  " + th.FGColor(th.Muted, "("+it.hint+")")
 		}
 		if it.disabled {
-			lines = append(lines, th.FG256(th.Muted, plain))
+			lines = append(lines, th.FGColor(th.Muted, plain))
 		} else if i == d.cursor {
 			lines = append(lines, th.PadHighlight(plain, width))
 		} else {
@@ -270,7 +270,7 @@ func (d *settingsDialog) Render(th tui.Theme, width int) []string {
 		}
 		if it.desc != "" {
 			for _, desc := range wrapSettingDescription(it.desc, width, 6) {
-				lines = append(lines, th.FG256(th.Muted, desc))
+				lines = append(lines, th.FGColor(th.Muted, desc))
 			}
 		}
 	}
@@ -290,9 +290,9 @@ func (d *settingsDialog) renderOptions(th tui.Theme, width int) []string {
 	}
 	lines := []string{frameHeader(th, title, width)}
 	if it.desc != "" {
-		lines = append(lines, th.FG256(th.Muted, it.desc))
+		lines = append(lines, th.FGColor(th.Muted, it.desc))
 	}
-	lines = append(lines, th.FG256(th.Muted, "select with enter/space, esc to go back:"))
+	lines = append(lines, th.FGColor(th.Muted, "select with enter/space, esc to go back:"))
 	for idx, opt := range it.options {
 		marker := "  "
 		if idx == it.choice {
@@ -306,7 +306,7 @@ func (d *settingsDialog) renderOptions(th tui.Theme, width int) []string {
 		}
 		if opt.desc != "" {
 			for _, desc := range wrapSettingDescription(opt.desc, width, 6) {
-				lines = append(lines, th.FG256(th.Muted, desc))
+				lines = append(lines, th.FGColor(th.Muted, desc))
 			}
 		}
 	}

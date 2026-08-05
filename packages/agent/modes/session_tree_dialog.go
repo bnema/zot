@@ -292,13 +292,13 @@ func (d *sessionTreeDialog) Render(th tui.Theme, width int) []string {
 	lines := []string{line(frameHeader(th, "session tree", renderWidth))}
 	if len(d.items) == 0 {
 		lines = append(lines,
-			line(th.FG256(th.Muted, "no messages in this session yet")),
-			line(th.FG256(th.Muted, "press esc to close")),
+			line(th.FGColor(th.Muted, "no messages in this session yet")),
+			line(th.FGColor(th.Muted, "press esc to close")),
 			line(frameRule(th, renderWidth)),
 		)
 		return lines
 	}
-	lines = append(lines, line(th.FG256(th.Muted,
+	lines = append(lines, line(th.FGColor(th.Muted,
 		"session history and branches (↑/↓, pgup/pgdn, home/end, enter checkout, esc cancel):")))
 
 	d.followCursor()
@@ -311,7 +311,7 @@ func (d *sessionTreeDialog) Render(th tui.Theme, width int) []string {
 		start = end
 	}
 	if start > 0 {
-		lines = append(lines, line(th.FG256(th.Muted, fmt.Sprintf("  ↑ %d more above", start))))
+		lines = append(lines, line(th.FGColor(th.Muted, fmt.Sprintf("  ↑ %d more above", start))))
 	}
 	for i := start; i < end; i++ {
 		it := d.items[i]
@@ -323,9 +323,9 @@ func (d *sessionTreeDialog) Render(th tui.Theme, width int) []string {
 		}
 	}
 	if end < len(d.items) {
-		lines = append(lines, line(th.FG256(th.Muted, fmt.Sprintf("  ↓ %d more below", len(d.items)-end))))
+		lines = append(lines, line(th.FGColor(th.Muted, fmt.Sprintf("  ↓ %d more below", len(d.items)-end))))
 	}
-	lines = append(lines, line(th.FG256(th.Muted, fmt.Sprintf("%d/%d", d.cursor+1, len(d.items)))), line(frameRule(th, renderWidth)))
+	lines = append(lines, line(th.FGColor(th.Muted, fmt.Sprintf("%d/%d", d.cursor+1, len(d.items)))), line(frameRule(th, renderWidth)))
 	return lines
 }
 
@@ -821,13 +821,13 @@ func colorSessionTreeLine(th tui.Theme, line string) string {
 	plain := strings.TrimSpace(line)
 	switch {
 	case strings.HasPrefix(plain, "you:"):
-		return th.FG256(th.FG, line)
+		return th.FGColor(th.FG, line)
 	case strings.HasPrefix(plain, "zut:"):
-		return th.FG256(th.Muted, line)
+		return th.FGColor(th.Muted, line)
 	case strings.HasPrefix(plain, "tool:"):
-		return th.FG256(th.ToolOut, line)
+		return th.FGColor(th.ToolOut, line)
 	default:
-		return th.FG256(th.Muted, line)
+		return th.FGColor(th.Muted, line)
 	}
 }
 

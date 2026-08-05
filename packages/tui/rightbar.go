@@ -88,37 +88,37 @@ func RenderRightBar(th Theme, widgets []RightBarWidget, width, height int) []str
 		}
 		return text
 	}
-	paintLine := func(text string, color int, dim, phase bool) string {
+	paintLine := func(text string, color *TerminalColor, dim, phase bool) string {
 		text = padLine(text, phase)
-		if color < 0 {
+		if color == nil {
 			return text
 		}
-		paint := func(value string, valueColor int) string {
+		paint := func(value string, valueColor TerminalColor) string {
 			if dim {
 				value = Dim(value)
 			}
-			return th.FG256(valueColor, value)
+			return th.FGColor(valueColor, value)
 		}
 		if markerStart, markerEnd, _, ok := rightBarChecklistMarker(text); ok {
 			if phase {
 				if nameStart, nameEnd, ok := rightBarChecklistPhaseName(text); ok {
-					return paint(text[:markerStart], color) +
+					return paint(text[:markerStart], *color) +
 						paint(text[markerStart:markerEnd], th.Muted) +
-						paint(text[markerEnd:nameStart], color) +
-						paint(Bold(text[nameStart:nameEnd]), color) +
-						paint(text[nameEnd:], color)
+						paint(text[markerEnd:nameStart], *color) +
+						paint(Bold(text[nameStart:nameEnd]), *color) +
+						paint(text[nameEnd:], *color)
 				}
 			}
-			return paint(text[:markerStart], color) +
+			return paint(text[:markerStart], *color) +
 				paint(text[markerStart:markerEnd], th.Muted) +
-				paint(text[markerEnd:], color)
+				paint(text[markerEnd:], *color)
 		}
 		if phase {
-			return paint(Bold(text), color)
+			return paint(Bold(text), *color)
 		}
-		return paint(text, color)
+		return paint(text, *color)
 	}
-	appendContent := func(text string, color int, dim, phase bool) bool {
+	appendContent := func(text string, color *TerminalColor, dim, phase bool) bool {
 		text = strings.ReplaceAll(text, "\r", "")
 		for _, line := range strings.Split(text, "\n") {
 			if len(content) >= height {
@@ -131,17 +131,17 @@ func RenderRightBar(th Theme, widgets []RightBarWidget, width, height int) []str
 	}
 
 	for idx, widget := range ordered {
-		if idx > 0 && !appendContent("", -1, false, false) {
+		if idx > 0 && !appendContent("", nil, false, false) {
 			break
 		}
 		label := "[" + widget.Extension + "]"
 		if widget.Title != "" {
 			label += " " + widget.Title
 		}
-		if !appendContent(label, th.Accent, false, false) {
+		if !appendContent(label, &th.Accent, false, false) {
 			break
 		}
-		if !appendContent("", -1, false, false) {
+		if !appendContent("", nil, false, false) {
 			break
 		}
 		activePhaseIndent := rightBarActivePhaseIndent(widget.Lines)
@@ -157,7 +157,7 @@ func RenderRightBar(th Theme, widgets []RightBarWidget, width, height int) []str
 			line = " " + line
 			dim := rightBarChecklistLineDim(line, activePhaseIndent, &activePhase)
 			phase := rightBarChecklistPhaseLine(line, phaseIndent)
-			if !appendContent(line, th.FG, dim, phase) {
+			if !appendContent(line, &th.FG, dim, phase) {
 				break
 			}
 		}
@@ -166,7 +166,7 @@ func RenderRightBar(th Theme, widgets []RightBarWidget, width, height int) []str
 		}
 	}
 	if truncated {
-		marker := paintLine("... right bar ...", th.Muted, false, false)
+		marker := paintLine("... right bar ...", &th.Muted, false, false)
 		if len(content) == height {
 			content[len(content)-1] = marker
 		} else {
@@ -350,7 +350,7 @@ func JoinRightBar(th Theme, main, rightBar string, mainWidth, rightBarWidth int)
 	if visible := visibleWidth(rightBar); visible < rightBarWidth {
 		rightBar += strings.Repeat(" ", rightBarWidth-visible)
 	}
-	return main + th.FG256(th.Muted, "│") + rightBar
+	return main + th.FGColor(th.Muted, "│") + rightBar
 }
 
 // DrawRightBar renders an already-laid-out visible chat slice and sticky

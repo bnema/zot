@@ -83,16 +83,16 @@ func (d *telegramDialog) Render(th tui.Theme, width int) []string {
 	}
 	var lines []string
 	lines = append(lines, frameHeader(th, "telegram", width))
-	lines = append(lines, th.FG256(th.Muted, "pick an action (\u2191/\u2193, enter, esc to cancel):"))
+	lines = append(lines, th.FGColor(th.Muted, "pick an action (\u2191/\u2193, enter, esc to cancel):"))
 	for i, it := range d.items {
 		plain := "  " + it.label
 		if it.hint != "" {
-			plain += "  " + th.FG256(th.Muted, "("+it.hint+")")
+			plain += "  " + th.FGColor(th.Muted, "("+it.hint+")")
 		}
 		if i == d.cursor {
 			lines = append(lines, th.PadHighlight(plain, width))
 		} else {
-			lines = append(lines, th.FG256(th.Muted, plain))
+			lines = append(lines, th.FGColor(th.Muted, plain))
 		}
 	}
 	lines = append(lines, frameRule(th, width))

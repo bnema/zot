@@ -251,9 +251,9 @@ func (d *confirmDialog) Render(th tui.Theme, width int) []string {
 	}
 	lines = append(lines, frameHeader(th, title, width))
 
-	toolLine := "  " + th.FG256(th.Tool, req.toolName)
+	toolLine := "  " + th.FGColor(th.Tool, req.toolName)
 	if req.preview != "" {
-		toolLine += "  " + th.FG256(th.Muted, req.preview)
+		toolLine += "  " + th.FGColor(th.Muted, req.preview)
 	}
 	lines = append(lines, toolLine)
 	lines = append(lines, "")
@@ -261,7 +261,7 @@ func (d *confirmDialog) Render(th tui.Theme, width int) []string {
 	if !d.focused {
 		hint = "confirmation paused (finish or esc the command to return):"
 	}
-	lines = append(lines, th.FG256(th.Muted, hint))
+	lines = append(lines, th.FGColor(th.Muted, hint))
 
 	for i, opt := range confirmOptions {
 		label := opt.label
@@ -279,7 +279,7 @@ func (d *confirmDialog) Render(th tui.Theme, width int) []string {
 		if i == cursor {
 			lines = append(lines, th.PadHighlight(plain, width))
 		} else {
-			lines = append(lines, th.FG256(th.Muted, plain))
+			lines = append(lines, th.FGColor(th.Muted, plain))
 		}
 	}
 	lines = append(lines, frameRule(th, width))

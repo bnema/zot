@@ -12,7 +12,9 @@ func TestLogoutDialogSelectionBackgroundSpansFullWidth(t *testing.T) {
 	d := newLogoutDialog()
 	d.Open([]logoutItem{{label: "Google", target: "google", method: "api key"}})
 	const width = 60
-	lines := d.Render(tui.Theme{SelectionFG: 15, SelectionBG: 4, Muted: 8}, width)
+	lines := d.Render(tui.Theme{
+		SelectionFG: tui.Color256(15), SelectionBG: tui.Color256(4), Muted: tui.Color256(8),
+	}, width)
 	selected := lines[2]
 	if got := runewidth.StringWidth(stripANSIBytes(selected)); got != width {
 		t.Fatalf("selected row width = %d, want %d", got, width)

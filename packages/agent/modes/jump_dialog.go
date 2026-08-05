@@ -104,8 +104,8 @@ func (d *jumpDialog) Render(th tui.Theme, width int) []string {
 	var lines []string
 	lines = append(lines, frameHeader(th, "jump to turn", width))
 	if len(d.all) == 0 {
-		lines = append(lines, th.FG256(th.Muted, "no turns in this session yet"))
-		lines = append(lines, th.FG256(th.Muted, "press esc to close"))
+		lines = append(lines, th.FGColor(th.Muted, "no turns in this session yet"))
+		lines = append(lines, th.FGColor(th.Muted, "press esc to close"))
 		lines = append(lines, frameRule(th, width))
 		return lines
 	}
@@ -115,10 +115,10 @@ func (d *jumpDialog) Render(th tui.Theme, width int) []string {
 	if d.filter != "" {
 		hint = fmt.Sprintf("filter: %q - %d match - ", d.filter, len(d.visible)) + hint
 	}
-	lines = append(lines, th.FG256(th.Muted, hint))
+	lines = append(lines, th.FGColor(th.Muted, hint))
 
 	if len(d.visible) == 0 {
-		lines = append(lines, th.FG256(th.Muted, "  (nothing matches; backspace to widen)"))
+		lines = append(lines, th.FGColor(th.Muted, "  (nothing matches; backspace to widen)"))
 		lines = append(lines, frameRule(th, width))
 		return lines
 	}
@@ -140,7 +140,7 @@ func (d *jumpDialog) Render(th tui.Theme, width int) []string {
 		}
 	}
 	if start > 0 {
-		lines = append(lines, th.FG256(th.Muted, fmt.Sprintf("  \u2191 %d more above", start)))
+		lines = append(lines, th.FGColor(th.Muted, fmt.Sprintf("  \u2191 %d more above", start)))
 	}
 	for i := start; i < end; i++ {
 		t := d.visible[i]
@@ -148,11 +148,11 @@ func (d *jumpDialog) Render(th tui.Theme, width int) []string {
 		if i == d.cursor {
 			lines = append(lines, th.PadHighlight(plain, width))
 		} else {
-			lines = append(lines, th.FG256(th.Muted, plain))
+			lines = append(lines, th.FGColor(th.Muted, plain))
 		}
 	}
 	if end < len(d.visible) {
-		lines = append(lines, th.FG256(th.Muted, fmt.Sprintf("  \u2193 %d more below", len(d.visible)-end)))
+		lines = append(lines, th.FGColor(th.Muted, fmt.Sprintf("  \u2193 %d more below", len(d.visible)-end)))
 	}
 
 	lines = append(lines, frameRule(th, width))

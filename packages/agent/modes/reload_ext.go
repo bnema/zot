@@ -64,7 +64,7 @@ func renderReloadErrors(theme tui.Theme, errors []string, width int) []string {
 			if idx > 0 {
 				prefix = indent
 			}
-			out = append(out, theme.FG256(theme.Error, prefix+line))
+			out = append(out, theme.FGColor(theme.Error, prefix+line))
 		}
 	}
 	return out

@@ -357,27 +357,27 @@ func (d *sessionDialog) Render(th tui.Theme, width int) []string {
 	var lines []string
 	lines = append(lines, frameHeader(th, "sessions", width))
 	if d.loading {
-		lines = append(lines, th.FG256(th.Muted, d.loadingMessage(th)))
+		lines = append(lines, th.FGColor(th.Muted, d.loadingMessage(th)))
 		if len(d.sessions) == 0 {
-			lines = append(lines, th.FG256(th.Muted, "session entries appear as they load"))
+			lines = append(lines, th.FGColor(th.Muted, "session entries appear as they load"))
 			lines = append(lines, frameRule(th, width))
 			return lines
 		}
 	} else if len(d.sessions) == 0 {
-		lines = append(lines, th.FG256(th.Muted, "no previous sessions for this directory"))
-		lines = append(lines, th.FG256(th.Muted, "press esc to close"))
+		lines = append(lines, th.FGColor(th.Muted, "no previous sessions for this directory"))
+		lines = append(lines, th.FGColor(th.Muted, "press esc to close"))
 		lines = append(lines, frameRule(th, width))
 		return lines
 	}
 	if d.renaming {
-		lines = append(lines, th.FG256(th.Muted, "rename session (enter save, esc cancel):"))
+		lines = append(lines, th.FGColor(th.Muted, "rename session (enter save, esc cancel):"))
 		text := d.rename
 		if text == "" {
-			text = th.FG256(th.Muted, "session name")
+			text = th.FGColor(th.Muted, "session name")
 		} else {
-			text = th.FG256(th.FG, text)
+			text = th.FGColor(th.FG, text)
 		}
-		lines = append(lines, "  "+th.FG256(th.Accent, "▌ ")+text)
+		lines = append(lines, "  "+th.FGColor(th.Accent, "▌ ")+text)
 		lines = append(lines, frameRule(th, width))
 		return lines
 	}
@@ -385,7 +385,7 @@ func (d *sessionDialog) Render(th tui.Theme, width int) []string {
 	if d.loading {
 		hint = "pick a session (↑/↓, pgup/pgdn, enter resume, esc cancel; more loading)"
 	}
-	lines = append(lines, th.FG256(th.Muted, hint))
+	lines = append(lines, th.FGColor(th.Muted, hint))
 
 	// Viewport: windowed slice of d.sessions around d.cursor so a
 	// list taller than the terminal still scrolls. Caller sets
@@ -406,7 +406,7 @@ func (d *sessionDialog) Render(th tui.Theme, width int) []string {
 	// Top indicator: how many rows are above the viewport.
 	if d.viewTop > 0 {
 		hidden := d.viewTop
-		lines = append(lines, th.FG256(th.Muted, fmt.Sprintf("  ↑ %d more above", hidden)))
+		lines = append(lines, th.FGColor(th.Muted, fmt.Sprintf("  ↑ %d more above", hidden)))
 	}
 	for i := d.viewTop; i < viewBot; i++ {
 		s := d.sessions[i]
@@ -414,13 +414,13 @@ func (d *sessionDialog) Render(th tui.Theme, width int) []string {
 		if i == d.cursor {
 			lines = append(lines, th.PadHighlight(plain, width))
 		} else {
-			lines = append(lines, th.FG256(th.Muted, plain))
+			lines = append(lines, th.FGColor(th.Muted, plain))
 		}
 	}
 	// Bottom indicator: how many rows are below the viewport.
 	if viewBot < total {
 		hidden := total - viewBot
-		lines = append(lines, th.FG256(th.Muted, fmt.Sprintf("  ↓ %d more below", hidden)))
+		lines = append(lines, th.FGColor(th.Muted, fmt.Sprintf("  ↓ %d more below", hidden)))
 	}
 	lines = append(lines, frameRule(th, width))
 	return lines
@@ -518,7 +518,7 @@ func (d *sessionDialog) loadingMessage(th tui.Theme) string {
 	if d.loadingTotal > 0 {
 		progress = fmt.Sprintf("loading sessions (%d/%d)", d.loadingDone, d.loadingTotal)
 	}
-	return th.FG256(th.Spinner, frames[idx]) + " " + th.FG256(th.Muted, progress+" (esc cancel)")
+	return th.FGColor(th.Spinner, frames[idx]) + " " + th.FGColor(th.Muted, progress+" (esc cancel)")
 }
 
 func formatRelative(t time.Time) string {

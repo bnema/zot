@@ -3,14 +3,14 @@
 // framework; just ANSI escape codes.
 package tui
 
-import "strings"
+import (
+	"strings"
+	"sync/atomic"
+)
 
-// TerminalColor describes a terminal colour in one of the colour
-// spaces terminals commonly support. Most of zut's theme still uses
-// xterm-256 indexes, but user-bubble backgrounds can also use ANSI
-// theme slots (for example SGR 100 / bright-black background) so they
-// match the user's terminal theme rather than the fixed 256-colour
-// cube.
+// TerminalColor describes a theme colour in one of the colour spaces
+// terminals commonly support. Every semantic theme colour uses this type;
+// xterm-256, ANSI, and RGB values are rendered according to terminal capability.
 type TerminalColor struct {
 	Mode  terminalColorMode
 	Index int
@@ -32,14 +32,6 @@ func ColorANSI(sgr int) TerminalColor  { return TerminalColor{Mode: terminalColo
 func ColorRGB(r, g, b int) TerminalColor {
 	return TerminalColor{Mode: terminalColorRGB, R: r, G: g, B: b}
 }
-
-// ColorMode is the output color depth used by an inherited theme.
-type ColorMode uint8
-
-const (
-	ColorMode256 ColorMode = iota
-	ColorModeTrueColor
-)
 
 // TerminalProfile is the best-effort color snapshot reported by the
 // controlling terminal. The ANSI palette is optional; unknown slots are
@@ -66,31 +58,31 @@ func (p TerminalProfile) PaletteColor(index int) (TerminalColor, bool) {
 	return p.Palette[index], true
 }
 
-// ANSI 256-color palette used by zut. Defined as numeric codes so we
-// can swap themes without changing any render code.
+// Semantic palette used by zut. Each role is a TerminalColor so themes can
+// use indexed, ANSI, or RGB values without changing render code.
 type Theme struct {
-	FG           int
-	Muted        int
-	Accent       int
+	FG           TerminalColor
+	Muted        TerminalColor
+	Accent       TerminalColor
 	Background   *TerminalColor // optional full-row TUI background; nil keeps terminal default
-	User         int            // label color for the user role
+	User         TerminalColor  // label color for the user role
 	UserBubbleBG TerminalColor  // background tint behind user message rows
-	UserBubbleFG int            // foreground colour for user message rows
-	Assistant    int            // label color for the zut role
-	Tool         int
-	ToolOut      int
-	Error        int
-	Warning      int
-	Spinner      int // spinner + funny working line
-	ThinkingMax  int // status color for the opt-in max reasoning level
-	SelectionBG  int // background for highlighted rows
-	SelectionFG  int // foreground for highlighted rows
+	UserBubbleFG TerminalColor  // foreground colour for user message rows
+	Assistant    TerminalColor  // label color for the zut role
+	Tool         TerminalColor
+	ToolOut      TerminalColor
+	Error        TerminalColor
+	Warning      TerminalColor
+	Spinner      TerminalColor // spinner + funny working line
+	ThinkingMax  TerminalColor // status color for the opt-in max reasoning level
+	SelectionBG  TerminalColor // background for highlighted rows
+	SelectionFG  TerminalColor // foreground for highlighted rows
 
-	// Inherited selects terminal-owned colors and uses ColorMode to choose
-	// truecolor or a best-effort xterm-256 fallback. Explicit zut themes keep
-	// the historical indexed output because their values are already fixed.
+	// Inherited selects terminal-owned colors. Terminal.TrueColor controls
+	// whether fixed indexed values are emitted as xterm-256 or truecolor and
+	// whether RGB values are quantized for terminals without direct-color
+	// support.
 	Inherited bool
-	ColorMode ColorMode
 	Terminal  TerminalProfile
 
 	SpinnerFrames     []string
@@ -188,21 +180,21 @@ var defaultSpinnerMessages = []string{
 }
 
 var Dark = Theme{
-	FG:                253,
-	Muted:             244,
-	Accent:            111,                  // soft blue
-	User:              180,                  // warm tan (unused now that the speaker label is gone, kept for skin compat)
+	FG:                Color256(253),
+	Muted:             Color256(244),
+	Accent:            Color256(111),        // soft blue
+	User:              Color256(180),        // warm tan (unused now that the speaker label is gone, kept for skin compat)
 	UserBubbleBG:      ColorRGB(66, 69, 75), // #42454B
-	UserBubbleFG:      248,                  // slightly lighter grey for readability on #42454B
-	Assistant:         117,                  // bright cyan — the zut label color
-	Tool:              114,                  // green
-	ToolOut:           245,
-	Error:             203,
-	Warning:           214,
-	Spinner:           183, // soft purple
-	ThinkingMax:       207, // vivid magenta
-	SelectionBG:       24,  // deep blue background
-	SelectionFG:       231, // near-white foreground
+	UserBubbleFG:      Color256(248),        // slightly lighter grey for readability on #42454B
+	Assistant:         Color256(117),        // bright cyan — the zut label color
+	Tool:              Color256(114),        // green
+	ToolOut:           Color256(245),
+	Error:             Color256(203),
+	Warning:           Color256(214),
+	Spinner:           Color256(183), // soft purple
+	ThinkingMax:       Color256(207), // vivid magenta
+	SelectionBG:       Color256(24),  // deep blue background
+	SelectionFG:       Color256(231), // near-white foreground
 	SpinnerFrames:     defaultSpinnerFrames,
 	SpinnerMessages:   defaultSpinnerMessages,
 	SpinnerIntervalMS: 80,
@@ -211,21 +203,21 @@ var Dark = Theme{
 }
 
 var Light = Theme{
-	FG:                236,
-	Muted:             244,
-	Accent:            33,
-	User:              94,
+	FG:                Color256(236),
+	Muted:             Color256(244),
+	Accent:            Color256(33),
+	User:              Color256(94),
 	UserBubbleBG:      Color256(254), // very pale grey panel behind user rows on light theme
-	UserBubbleFG:      240,           // dark grey text, legible on the pale panel
-	Assistant:         31,            // deep cyan
-	Tool:              28,
-	ToolOut:           240,
-	Error:             160,
-	Warning:           166,
-	Spinner:           91,  // purple
-	ThinkingMax:       127, // deep magenta
-	SelectionBG:       153, // light blue
-	SelectionFG:       232, // near-black
+	UserBubbleFG:      Color256(240), // dark grey text, legible on the pale panel
+	Assistant:         Color256(31),  // deep cyan
+	Tool:              Color256(28),
+	ToolOut:           Color256(240),
+	Error:             Color256(160),
+	Warning:           Color256(166),
+	Spinner:           Color256(91),  // purple
+	ThinkingMax:       Color256(127), // deep magenta
+	SelectionBG:       Color256(153), // light blue
+	SelectionFG:       Color256(232), // near-black
 	SpinnerFrames:     defaultSpinnerFrames,
 	SpinnerMessages:   defaultSpinnerMessages,
 	SpinnerIntervalMS: 80,
@@ -233,43 +225,48 @@ var Light = Theme{
 	Syntax:            nordSyntax,
 }
 
-// FG256 wraps s in a foreground color. Explicit themes retain the
-// historical ANSI 256-color sequence; inherited themes resolve terminal
-// palette entries and emit truecolor when the terminal advertises it.
-func (t Theme) FG256(c int, s string) string {
+// FGColor wraps s in a foreground color. The name is intentionally explicit
+// because the color may be xterm-256, ANSI, or RGB.
+func (t Theme) FGColor(c TerminalColor, s string) string {
 	return t.fgPrefix(c) + s + reset
 }
 
-// BG256 wraps s in a background color using the theme's output capability.
-// Useful when the visible cell needs a coloured fill but the underlying
-// character should be a regular space (so mouse-copy yields whitespace).
-func (t Theme) BG256(c int, s string) string {
-	return t.bgPrefix(Color256(c)) + s + reset
+// FG256 retains the historical helper name while accepting the full
+// TerminalColor model.
+//
+// Deprecated: use FGColor.
+func (t Theme) FG256(c TerminalColor, s string) string {
+	return t.FGColor(c, s)
 }
 
-// BG wraps s in a terminal background color. Inherited themes quantize RGB
-// values on terminals without truecolor support.
+// BG256 retains the historical helper name while accepting the full
+// TerminalColor model.
+//
+// Deprecated: use BG.
+func (t Theme) BG256(c TerminalColor, s string) string {
+	return t.bgPrefix(c) + s + reset
+}
+
+// BG wraps s in a terminal background color. RGB values are quantized when
+// the active terminal does not advertise truecolor support.
 func (t Theme) BG(c TerminalColor, s string) string {
 	return t.bgPrefix(c) + s + reset
 }
 
-func (t Theme) fgPrefix(index int) string {
-	if t.Inherited && index == t.FG && t.Terminal.HasForeground {
-		return sgrFGColor(t.resolveColor(t.Terminal.Foreground))
-	}
-	return sgrFGColor(t.resolveColor(Color256(index)))
+func (t Theme) fgPrefix(color TerminalColor) string {
+	return sgrFGColor(t.resolveColor(color))
 }
 
 func (t Theme) bgPrefix(color TerminalColor) string {
 	return sgrBGColor(t.resolveColor(color))
 }
 
-// DimColor fades an indexed color toward the terminal background. It is used
-// by inherited theme construction for muted surfaces and is also available to
-// callers that need terminal-aware dimming for overlays.
-func (t Theme) DimColor(index, percent int) TerminalColor {
+// DimColor fades a theme color toward the terminal background. It is used
+// by inherited theme construction and is also available to callers that need
+// terminal-aware dimming for overlays.
+func (t Theme) DimColor(color TerminalColor, percent int) TerminalColor {
 	percent = clampPercent(percent)
-	foreground := t.resolveForeground(index)
+	foreground := t.resolveColor(color)
 	background := t.Terminal.Background
 	if !t.Terminal.HasBackground {
 		background = Color256(0)
@@ -283,36 +280,32 @@ func (t Theme) DimColor(index, percent int) TerminalColor {
 	))
 }
 
-func (t Theme) resolveForeground(index int) TerminalColor {
-	if t.Inherited && index == t.FG && t.Terminal.HasForeground {
-		return t.resolveColor(t.Terminal.Foreground)
-	}
-	return t.resolveColor(Color256(index))
-}
-
 func (t Theme) resolveColor(color TerminalColor) TerminalColor {
 	switch color.Mode {
 	case terminalColor256:
 		index := clampXtermIndex(color.Index)
-		if t.Inherited {
-			if palette, ok := t.Terminal.PaletteColor(index); ok {
-				if t.ColorMode == ColorModeTrueColor {
+		if t.Terminal.TrueColor {
+			if t.Inherited {
+				if palette, ok := t.Terminal.PaletteColor(index); ok {
 					return palette
 				}
-				return Color256(index)
 			}
-			if t.ColorMode == ColorModeTrueColor {
-				r, g, b := xterm256RGB(index)
-				return ColorRGB(r, g, b)
-			}
-		}
-		if t.ColorMode == ColorModeTrueColor {
 			r, g, b := xterm256RGB(index)
 			return ColorRGB(r, g, b)
 		}
 		return Color256(index)
+	case terminalColorANSI:
+		if t.Inherited && t.Terminal.TrueColor {
+			if index, ok := ansiSGRToXtermIndex(color.Index); ok {
+				if palette, ok := t.Terminal.PaletteColor(index); ok {
+					return palette
+				}
+				r, g, b := xterm256RGB(index)
+				return ColorRGB(r, g, b)
+			}
+		}
 	case terminalColorRGB:
-		if t.Inherited && t.ColorMode == ColorMode256 {
+		if !t.Terminal.TrueColor {
 			return Color256(nearestXtermColor(color.R, color.G, color.B))
 		}
 	}
@@ -322,7 +315,7 @@ func (t Theme) resolveColor(color TerminalColor) TerminalColor {
 func sgrFGColor(color TerminalColor) string {
 	switch color.Mode {
 	case terminalColorANSI:
-		return "\x1b[" + itoa(color.Index) + "m"
+		return "\x1b[" + itoa(ansiForegroundSGR(color.Index)) + "m"
 	case terminalColorRGB:
 		return "\x1b[38;2;" + itoa(clampByte(color.R)) + ";" + itoa(clampByte(color.G)) + ";" + itoa(clampByte(color.B)) + "m"
 	default:
@@ -338,8 +331,8 @@ func (t Theme) sgrBGColor(color TerminalColor) string {
 // glyph followed by a plain space gutter. Used as the speaker-label
 // prefix in the chat ("▌ you", "▌ zut") and as the editor prompt so
 // the bar reads consistently across the UI.
-func (t Theme) AccentBar(c int) string {
-	return t.FG256(c, "▌ ")
+func (t Theme) AccentBar(c TerminalColor) string {
+	return t.FGColor(c, "▌ ")
 }
 
 // Highlight paints s with the theme's selection colors (foreground +
@@ -351,7 +344,7 @@ func (t Theme) Highlight(s string) string {
 
 // SelectionStyle returns the SGR prefix for the theme's selected row.
 func (t Theme) SelectionStyle() string {
-	return t.fgPrefix(t.SelectionFG) + t.bgPrefix(Color256(t.SelectionBG))
+	return t.fgPrefix(t.SelectionFG) + t.bgPrefix(t.SelectionBG)
 }
 
 // BackgroundStyle returns the SGR prefix for the optional full-row
@@ -367,8 +360,8 @@ func (t Theme) BackgroundStyle() string {
 // SelectionStyleFG returns the SGR prefix for selected-row text with
 // a custom foreground. Useful for preserving semantic marks inside a
 // highlighted row without hardcoding escape sequences outside theme.go.
-func (t Theme) SelectionStyleFG(fg int) string {
-	return t.fgPrefix(fg) + t.bgPrefix(Color256(t.SelectionBG))
+func (t Theme) SelectionStyleFG(fg TerminalColor) string {
+	return t.fgPrefix(fg) + t.bgPrefix(t.SelectionBG)
 }
 
 // PadHighlight styles s and extends the selection background to the
@@ -404,7 +397,7 @@ func (t Theme) UserBubbleRow(content string, width int) string {
 	// Bar plus a single space gutter, in the assistant accent colour
 	// so it matches the tool-box / app accent and reads as zut's voice
 	// marker. Two cells wide.
-	bar := t.FG256(t.Assistant, "▌ ")
+	bar := t.FGColor(t.Assistant, "▌ ")
 	bubbleW := width - 2
 	if bubbleW < 1 {
 		bubbleW = 1
@@ -428,7 +421,7 @@ func sgrBG(c int) string { return "\x1b[48;5;" + itoa(clampXtermIndex(c)) + "m" 
 func sgrBGColor(c TerminalColor) string {
 	switch c.Mode {
 	case terminalColorANSI:
-		return "\x1b[" + itoa(c.Index) + "m"
+		return "\x1b[" + itoa(ansiBackgroundSGR(c.Index)) + "m"
 	case terminalColorRGB:
 		return "\x1b[48;2;" + itoa(clampByte(c.R)) + ";" + itoa(clampByte(c.G)) + ";" + itoa(clampByte(c.B)) + "m"
 	default:
@@ -497,14 +490,52 @@ func ansiSGRToXtermIndex(sgr int) (int, bool) {
 	}
 }
 
+func ansiForegroundSGR(sgr int) int {
+	switch {
+	case sgr >= 40 && sgr <= 47:
+		return sgr - 10
+	case sgr >= 100 && sgr <= 107:
+		return sgr - 10
+	default:
+		return sgr
+	}
+}
+
+func ansiBackgroundSGR(sgr int) int {
+	switch {
+	case sgr >= 30 && sgr <= 37:
+		return sgr + 10
+	case sgr >= 90 && sgr <= 97:
+		return sgr + 10
+	default:
+		return sgr
+	}
+}
+
 func blendChannel(from, to, percent int) int {
 	return clampByte((from*(100-percent) + to*percent + 50) / 100)
 }
+
+const xtermColorCacheSize = 256
+
+type xtermColorCacheEntry struct {
+	value atomic.Uint64
+}
+
+var xtermColorCache [xtermColorCacheSize]xtermColorCacheEntry
 
 func nearestXtermColor(r, g, b int) int {
 	r = clampByte(r)
 	g = clampByte(g)
 	b = clampByte(b)
+	key := uint64(r)<<16 | uint64(g)<<8 | uint64(b)
+	entry := &xtermColorCache[(key*2654435761)&(xtermColorCacheSize-1)]
+	cached := entry.value.Load()
+	keyPrefix := (key + 1) << 8
+	if cached&^uint64(0xff) == keyPrefix {
+		return int(cached & 0xff)
+	}
+
 	best := 0
 	bestDistance := int(^uint(0) >> 1)
 	for index := 0; index < 256; index++ {
@@ -518,6 +549,7 @@ func nearestXtermColor(r, g, b int) int {
 			bestDistance = distance
 		}
 	}
+	entry.value.Store(keyPrefix | uint64(best))
 	return best
 }
 

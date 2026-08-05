@@ -86,7 +86,7 @@ func (d *logoutDialog) Render(th tui.Theme, width int) []string {
 	}
 	var lines []string
 	lines = append(lines, frameHeader(th, "logout", width))
-	lines = append(lines, th.FG256(th.Muted, "choose what to log out of (\u2191/\u2193, enter, esc to cancel):"))
+	lines = append(lines, th.FGColor(th.Muted, "choose what to log out of (\u2191/\u2193, enter, esc to cancel):"))
 	for i, it := range d.items {
 		plain := "  " + it.label
 		if it.method != "" {
@@ -95,7 +95,7 @@ func (d *logoutDialog) Render(th tui.Theme, width int) []string {
 		if i == d.cursor {
 			lines = append(lines, th.PadHighlight(plain, width))
 		} else {
-			lines = append(lines, th.FG256(th.Muted, plain))
+			lines = append(lines, th.FGColor(th.Muted, plain))
 		}
 	}
 	lines = append(lines, frameRule(th, width))

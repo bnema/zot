@@ -34,6 +34,20 @@ The built-in choices are:
 The inherited terminal snapshot is captured at startup and reused when the
 setting is changed live; restart zut to pick up terminal palette changes.
 
+All theme color roles use the same terminal-color model. JSON themes may use
+xterm-256 indexes, ANSI SGR colors, or RGB values for any role. On terminals
+that advertise truecolor, zut emits RGB values directly and expands indexed
+values through the xterm palette; otherwise RGB values fall back to the
+nearest xterm-256 color while indexed values remain indexed. ANSI values keep
+their SGR semantics, with standard foreground/background ranges normalized to
+the role where necessary.
+
+## Theme proposals
+
+- **shades of gray (truecolor)** — a neutral grayscale palette for the UI and
+  syntax highlighting, with an xterm-256 fallback when direct color is
+  unavailable.
+
 Theme files bundled with extensions are discovered in-place from loaded
 extension directories:
 
@@ -191,11 +205,22 @@ You may also put overrides directly at the top level or directly under
 
 ## Color fields
 
-Most color fields are xterm-256 indexes (`0`–`255`) for JSON themes.
-The built-in inherited theme resolves semantic accents through the terminal's
-ANSI palette, fades muted/selected surfaces toward the terminal background,
-and emits truecolor or best-effort 256-color sequences according to terminal
-capability.
+Every color field accepts the following JSON forms:
+
+```json
+254
+"#42454b"
+{ "mode": "256", "index": 254 }
+{ "mode": "ansi", "index": 100 }
+{ "mode": "rgb", "r": 66, "g": 69, "b": 75 }
+```
+
+Numeric values are xterm-256 indexes. ANSI values use SGR codes, with
+standard foreground/background ranges normalized to the role where necessary.
+RGB values are emitted directly when truecolor is advertised and quantized to
+xterm-256 otherwise. The built-in inherited theme additionally resolves
+semantic accents through the terminal's ANSI palette and derives muted and
+selected surfaces from the terminal foreground/background.
 
 - `fg` — default foreground text.
 - `muted` — secondary text, dividers, gutters, inactive hints.
@@ -214,15 +239,8 @@ capability.
 - `selection_bg` — highlighted row background.
 - `selection_fg` — highlighted row foreground.
 
-`background` and `user_bubble_bg` support richer terminal color forms:
-
-```json
-254
-"#42454b"
-{ "mode": "256", "index": 254 }
-{ "mode": "ansi", "index": 100 }
-{ "mode": "rgb", "r": 66, "g": 69, "b": 75 }
-```
+The same forms apply to `background`, `user_bubble_bg`, and every other
+semantic color field listed above.
 
 ## Spinner fields
 

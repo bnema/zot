@@ -79,7 +79,7 @@ func (d *changelogDialog) Render(th tui.Theme, width int) []string {
 	title := fmt.Sprintf("zut %s \u2014 release notes (any key to dismiss)", d.version)
 	out := []string{frameHeaderColor(th, title, width, th.Accent)}
 	if d.url != "" {
-		out = append(out, "  "+th.FG256(th.Muted, d.url))
+		out = append(out, "  "+th.FGColor(th.Muted, d.url))
 		out = append(out, "")
 	}
 
@@ -88,7 +88,7 @@ func (d *changelogDialog) Render(th tui.Theme, width int) []string {
 		if strings.HasPrefix(l, "\x00H:") {
 			// Heading: render in accent color, bold.
 			heading := strings.TrimPrefix(l, "\x00H:")
-			styled := th.FG256(th.Accent, tui.Bold(heading))
+			styled := th.FGColor(th.Accent, tui.Bold(heading))
 			bodyLines = append(bodyLines, wrapDialogTextRows(styled, width)...)
 		} else {
 			// Regular line: render and wrap through the shared dialog
@@ -110,7 +110,7 @@ func (d *changelogDialog) Render(th tui.Theme, width int) []string {
 	}
 	out = append(out, bodyLines[d.scroll:end]...)
 	if end < len(bodyLines) {
-		out = append(out, "  "+th.FG256(th.Muted, fmt.Sprintf("\u2193 %d more lines (down/pgdn)", len(bodyLines)-end)))
+		out = append(out, "  "+th.FGColor(th.Muted, fmt.Sprintf("\u2193 %d more lines (down/pgdn)", len(bodyLines)-end)))
 	}
 	out = append(out, frameRuleColor(th, width, th.Accent))
 	return out
