@@ -142,6 +142,9 @@ func TestStopCancelsRunningAgent(t *testing.T) {
 }
 
 func TestStopContextCallerCancellationDoesNotEndGracePeriod(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("subagent inbox transport uses Unix-domain sockets")
+	}
 	const grace = 250 * time.Millisecond
 	started := make(chan struct{})
 	canceled := make(chan struct{})
@@ -209,7 +212,7 @@ func TestStopContextCancelsDetachedWaitWithoutHoldingOperationLock(t *testing.T)
 	if runtime.GOOS == "windows" {
 		t.Skip("subagent inbox transport uses Unix-domain sockets")
 	}
-	path := filepath.Join(t.TempDir(), "agent.sock")
+	path := filepath.Join(shortSocketDir(t), "agent.sock")
 	listener, err := Listen(path)
 	if err != nil {
 		t.Fatal(err)

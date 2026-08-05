@@ -645,6 +645,9 @@ func TestStopMustFinishBeforeResumeOrRemove(t *testing.T) {
 }
 
 func TestResumeFencesLiveReloadedWorker(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("subagent inbox transport uses Unix-domain sockets")
+	}
 	root := t.TempDir()
 	first := New(Config{
 		Root: root, RepoRoot: root,

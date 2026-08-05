@@ -94,22 +94,48 @@ func pathWithin(path, root string) bool {
 	}
 	pathAbs = filepath.Clean(pathAbs)
 	rootAbs = filepath.Clean(rootAbs)
-	if pathAbs == rootAbs {
-		return true
+	rel, err := filepath.Rel(rootAbs, pathAbs)
+	if err != nil {
+		return false
 	}
-	prefix := rootAbs + string(filepath.Separator)
-	return strings.HasPrefix(pathAbs, prefix)
+	return rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)))
 }
 
+// containmentPath returns a canonical path even when the final path does not
+// exist yet. EvalSymlinks cannot resolve a missing event or session file, so
+// resolve the nearest existing ancestor and append the missing components.
+// Without this, a symlinked temporary directory can make a valid child path
+// look outside its state directory on macOS and Windows.
 func containmentPath(path string) (string, error) {
 	absolute, err := filepath.Abs(path)
 	if err != nil {
 		return "", err
 	}
-	if evaluated, evalErr := filepath.EvalSymlinks(absolute); evalErr == nil {
-		return evaluated, nil
+	absolute = filepath.Clean(absolute)
+
+	current := absolute
+	var missing []string
+	for {
+		if _, statErr := os.Lstat(current); statErr == nil {
+			evaluated, evalErr := filepath.EvalSymlinks(current)
+			if evalErr != nil {
+				return "", evalErr
+			}
+			for i := len(missing) - 1; i >= 0; i-- {
+				evaluated = filepath.Join(evaluated, missing[i])
+			}
+			return filepath.Clean(evaluated), nil
+		} else if !os.IsNotExist(statErr) {
+			return "", statErr
+		}
+
+		parent := filepath.Dir(current)
+		if parent == current {
+			return absolute, nil
+		}
+		missing = append(missing, filepath.Base(current))
+		current = parent
 	}
-	return filepath.Clean(absolute), nil
 }
 
 func (f *Supervisor) schedule() {

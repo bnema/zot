@@ -10,6 +10,22 @@ import (
 	"time"
 )
 
+func TestPathWithinResolvesMissingDescendantThroughSymlink(t *testing.T) {
+	realRoot := t.TempDir()
+	aliasParent := filepath.Join(t.TempDir(), "alias")
+	if err := os.Symlink(realRoot, aliasParent); err != nil {
+		t.Skipf("directory symlinks unavailable: %v", err)
+	}
+	stateDir := filepath.Join(aliasParent, "state")
+	if err := os.MkdirAll(stateDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	missingFile := filepath.Join(stateDir, "events.jsonl")
+	if !pathWithin(missingFile, stateDir) {
+		t.Fatalf("pathWithin(%q, %q) = false; want true", missingFile, stateDir)
+	}
+}
+
 func TestSchedulerBoundsConcurrencyAndReleasesCapacity(t *testing.T) {
 	root := t.TempDir()
 	started := make(chan string, 3)
