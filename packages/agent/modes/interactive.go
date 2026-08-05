@@ -3595,19 +3595,17 @@ func (i *Interactive) SubmitOrQueue(text string, images []provider.ImageBlock) {
 	i.maybeStartSessionTitle(i.runCtx, text)
 	i.mu.Lock()
 	if i.busy {
-		// Queue text only; images are dropped for queued prompts. Compaction
-		// uses the host queue because it has no active agent loop to drain
-		// Agent.QueueMessage entries.
-		ag := i.agent
-		compacting := i.compacting
-		i.mu.Unlock()
-		if ag != nil && !compacting {
-			ag.QueueMessage(text)
+		// Queue text only; images are dropped for queued prompts. Keep the
+		// interactive mutex held through Agent.QueueMessage so turn teardown
+		// cannot inspect the agent queue between the busy check and enqueue.
+		// Compaction uses the host queue because it has no active agent loop
+		// to drain Agent.QueueMessage entries.
+		if i.agent != nil && !i.compacting {
+			i.agent.QueueMessage(text)
 		} else {
-			i.mu.Lock()
 			i.queued = append(i.queued, text)
-			i.mu.Unlock()
 		}
+		i.mu.Unlock()
 		i.invalidate()
 		return
 	}
@@ -5675,22 +5673,20 @@ func (i *Interactive) submitOrQueuePrompt(ctx context.Context, prompt string) {
 		i.invalidate()
 		return
 	}
-	busy := i.busy
-	compacting := i.compacting
-	ag := i.agent
-	i.mu.Unlock()
-
-	if busy {
-		if !compacting {
-			ag.QueueMessage(prompt)
-		} else {
-			i.mu.Lock()
+	if i.busy {
+		// Keep the mutex held while enqueueing so the turn-completion
+		// goroutine cannot publish idle and inspect an empty queue between
+		// this check and the append.
+		if i.compacting {
 			i.queued = append(i.queued, prompt)
-			i.mu.Unlock()
+		} else {
+			i.agent.QueueMessage(prompt)
 		}
+		i.mu.Unlock()
 		i.invalidate()
 		return
 	}
+	i.mu.Unlock()
 	i.startTurn(ctx, prompt)
 }
 
@@ -6121,11 +6117,11 @@ func (i *Interactive) runCompact(parent context.Context, auto bool) {
 		summary, err := i.agent.Compact(ctx, keepTail, sink)
 		_ = summary
 		i.mu.Lock()
-		i.busy = false
-		i.compacting = false
+		// Keep busy/compacting asserted while cleanup and queue selection run.
+		// Completion updates can arrive in this window; clearing busy before
+		// inspecting the queues lets them race a new turn or be stranded.
 		i.resetStreamingStateLocked()
 		i.cancelTurn = nil
-		i.autoCompacting = false
 
 		// Drain pending work after the transcript is clean. Overflow recovery
 		// continues the user message already in the transcript. Pre-turn
@@ -6203,12 +6199,13 @@ func (i *Interactive) runCompact(parent context.Context, auto bool) {
 				continueAutomatically = true
 			}
 		}
-		if hasNext || continueExisting || continueAutomatically {
-			// Keep the host busy while handing the next turn back to the
-			// agent. Prompts submitted in this hand-off window then enter
-			// the agent queue instead of racing a second startTurn call.
-			i.busy = true
-		}
+		// Keep the host busy until the hand-off decision is committed under
+		// the mutex. A completion update arriving after the compaction result
+		// but before this assignment is then queued for the selected follow-up
+		// instead of starting a competing turn.
+		i.busy = hasNext || continueExisting || continueAutomatically
+		i.compacting = false
+		i.autoCompacting = false
 		i.mu.Unlock()
 		i.invalidate()
 
@@ -6387,9 +6384,19 @@ func (i *Interactive) startTurnRequest(parent context.Context, prompt string, im
 	i.mu.Lock()
 	needsPreCompact := !overflowRecoveryAttempted && !i.autoCompacting && i.shouldAutoCompactLocked()
 	if needsPreCompact {
-		i.pendingCompactPrompt = prompt
-		i.pendingCompactImages = append([]provider.ImageBlock(nil), images...)
-		i.hasPendingCompactPrompt = true
+		// Reserve the compaction hand-off before releasing i.mu. A completion
+		// update arriving in the small gap before runCompact acquires the
+		// mutex must join the host queue rather than starting a competing turn.
+		i.busy = true
+		i.compacting = true
+		i.autoCompacting = true
+		if continueExisting {
+			i.continueAfterCompact = true
+		} else {
+			i.pendingCompactPrompt = prompt
+			i.pendingCompactImages = append([]provider.ImageBlock(nil), images...)
+			i.hasPendingCompactPrompt = true
+		}
 		i.statusErr = ""
 		i.extNotes = append(i.extNotes, autoCompactNoteLine(i.cfg.Theme, "context near limit — condensing history before sending..."))
 		i.pendingPostCompactNote = "context auto-compacted; sending your last message"
@@ -6463,7 +6470,11 @@ func (i *Interactive) startTurnRequest(parent context.Context, prompt string, im
 			err = i.agent.Prompt(ctx, prompt, images, sink)
 		}
 		i.mu.Lock()
-		i.busy = false
+		// Keep busy asserted through final cleanup and queue selection. A
+		// watcher may enqueue a completion summary concurrently with the
+		// provider's final event; publishing idle before inspecting queues can
+		// strand that summary in the core agent queue or start an overlapping
+		// turn.
 		// Don't touch streamPending / streamFlushPending here — the
 		// pacer may still be draining the final deltas and needs to
 		// paint them even though Prompt has returned. It will reset
@@ -6551,8 +6562,10 @@ func (i *Interactive) startTurnRequest(parent context.Context, prompt string, im
 		if i.agent != nil {
 			agentQueued = i.agent.QueuedMessageCount()
 		}
+		continueQueued := !awaitingPre && !hasNext && agentQueued > 0 && err == nil && ctx.Err() == nil
 		shouldAutoCompact := !awaitingPre && !hasNext && agentQueued == 0 && err == nil && ctx.Err() == nil && i.shouldAutoCompactLocked()
 		alertReason := mainAlertReason(ctx, err, lastTurnErr, lastStop, awaitingPre, hasNext || agentQueued > 0, offer, recoverContextOverflow, shouldAutoCompact)
+		i.busy = hasNext || continueQueued || recoverContextOverflow || shouldAutoCompact
 		i.mu.Unlock()
 		if alertReason != "" {
 			i.scheduleMainAlert(alertReason)
@@ -6569,6 +6582,8 @@ func (i *Interactive) startTurnRequest(parent context.Context, prompt string, im
 		switch {
 		case hasNext:
 			i.startTurn(parent, next)
+		case continueQueued:
+			i.startTurnRequest(parent, "", nil, true, false)
 		case offer:
 			i.openRescueDialog(rescueProv, rescueFprov, rescueModel, rescueWhy, prompt, rescueImgs)
 		case recoverContextOverflow:
