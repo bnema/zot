@@ -21,7 +21,6 @@ import (
 	"github.com/patriceckhart/zot/packages/agent/modes"
 	"github.com/patriceckhart/zot/packages/agent/skills"
 	"github.com/patriceckhart/zot/packages/agent/subagents"
-	"github.com/patriceckhart/zot/packages/agent/swarm"
 	"github.com/patriceckhart/zot/packages/agent/tools"
 	"github.com/patriceckhart/zot/packages/core"
 	"github.com/patriceckhart/zot/packages/provider"
@@ -737,8 +736,8 @@ func runWithArgs(args Args, version string) error {
 		return runJSONMode(ctx, args, version)
 	case ModeRPC:
 		return runRPCMode(ctx, args, version)
-	case ModeSwarmAgent:
-		return runSwarmAgentMode(ctx, args, version)
+	case ModeSubagentWorker:
+		return runSubagentWorkerMode(ctx, args, version)
 	default:
 		return runInteractive(ctx, args, version)
 	}
@@ -1142,7 +1141,7 @@ func runZotfileStartupPre(ctx context.Context, pre, cwd string, sandbox *tools.S
 // skills and currently loaded extension tools) and updates the live
 // agent's registry and system prompt. Used after /reload-ext and after
 // zotfile entry.pre installs new skills or extensions.
-// mutateRegistry, if non-nil, can inject session-specific tools (e.g. swarm_spawn).
+// mutateRegistry, if non-nil, can inject session-specific tools (e.g. subagent_spawn).
 func refreshAgentToolsAndPrompt(args Args, sharedSandbox *tools.Sandbox, extToolAdapter ExtensionToolSource, ag *core.Agent, mutateRegistry func(core.Registry) core.Registry) {
 	if ag == nil {
 		return
@@ -1183,7 +1182,7 @@ func reloadResourcesAfterStartupPre(ctx context.Context, args Args, extMgr *exte
 
 // ---- interactive mode: opens the TUI even without credentials ----
 
-func subagentPolicyFromConfig(cfg SubagentsConfig) swarm.SubagentPolicy {
+func subagentPolicyFromConfig(cfg SubagentsConfig) subagents.SubagentPolicy {
 	parseDuration := func(value string) time.Duration {
 		if strings.TrimSpace(value) == "" {
 			return 0
@@ -1194,7 +1193,7 @@ func subagentPolicyFromConfig(cfg SubagentsConfig) swarm.SubagentPolicy {
 		}
 		return parsed
 	}
-	return swarm.SubagentPolicy{
+	return subagents.SubagentPolicy{
 		MaxConcurrent:          cfg.MaxConcurrent,
 		MaxConcurrentPerParent: cfg.MaxConcurrentPerParent,
 		MaxTotalSpawned:        cfg.MaxTotalSpawned,
@@ -1231,7 +1230,7 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 
 	// persistMu guards the active session and selection across the agent
 	// loop, TUI callbacks, and session swaps. Declare it before tool
-	// construction because swarm defaults must read the live selection too.
+	// construction because subagent defaults must read the live selection too.
 	var persistMu sync.Mutex
 	// Serialize session transitions with persistence callbacks so a candidate
 	// is read only after the old agent is flushed and cannot be overwritten by
@@ -1275,29 +1274,29 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 	extToolAdapter := &extToolAdapter{mgr: extMgr}
 	r.MergeExtensionTools(extToolAdapter)
 
-	// Build the swarm supervisor BEFORE the agent so the auto-swarm
+	// Build the subagent supervisor BEFORE the agent so the auto-subagents
 	// tool can reference it during tool-registry construction. State
-	// lives under ZotHome/swarm so per-agent meta/events survive
+	// lives under ZotHome/subagents so per-agent meta/events survive
 	// restarts; the user can hunt orphaned agents down with
 	// `git worktree list` if anything misbehaves.
 	//
-	// swarmMgr is also captured by loadSession / changeCWD closures
+	// subagentsMgr is also captured by loadSession / changeCWD closures
 	// further down the function, which is why we keep the variable
 	// in this outer scope rather than scoping it tighter.
-	var swarmMgr *swarm.Swarm
-	swarmMgr = swarm.New(swarm.Config{
+	var subagentsMgr *subagents.Supervisor
+	subagentsMgr = subagents.New(subagents.Config{
 		Context:     ctx,
-		Root:        filepath.Join(ZotHome(), "swarm"),
+		Root:        filepath.Join(ZotHome(), "subagents"),
 		RepoRoot:    r.CWD,
 		Provider:    r.Provider,
 		FastMode:    r.FastMode,
 		BaseURL:     r.BaseURL,
 		InsecureTLS: r.InsecureTLS,
 		Policy:      subagentPolicyFromConfig(initialCfg.Subagents),
-		// Keep an explicit launch key in this callback only. Swarm persists
+		// Keep an explicit launch key in this callback only. Supervisor persists
 		// connection settings, but never stores credentials in Agent metadata
 		// or puts them in the worker's argv/environment.
-		ResolveCredential: func(ctx context.Context, providerID string) (swarm.Credential, error) {
+		ResolveCredential: func(ctx context.Context, providerID string) (subagents.Credential, error) {
 			childProvider := canonicalProvider(providerID)
 			persistMu.Lock()
 			hostProvider := canonicalProvider(activeProvider)
@@ -1313,62 +1312,61 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 				explicit = args.APIKey
 			}
 			if childProvider == "ollama" && explicit == "" {
-				return swarm.Credential{Value: "ollama", Method: "apikey"}, nil
+				return subagents.Credential{Value: "ollama", Method: "apikey"}, nil
 			}
 			credential, method, accountID, err := ResolveCredentialFullContext(ctx, childProvider, explicit)
 			if err != nil {
 				// Providers backed only by a local endpoint do not need a key.
 				// Leave stdin untouched and let the child resolve that endpoint.
 				if !CredentialAvailable(childProvider) {
-					return swarm.Credential{}, nil
+					return subagents.Credential{}, nil
 				}
-				return swarm.Credential{}, err
+				return subagents.Credential{}, err
 			}
-			return swarm.Credential{Value: credential, Method: method, AccountID: accountID}, nil
+			return subagents.Credential{Value: credential, Method: method, AccountID: accountID}, nil
 		},
 	})
 	// Pull any previously-spawned agents off disk so the dashboard
 	// shows them as detached and the user can resume / remove them.
-	_, _ = swarmMgr.Reload()
+	_, _ = subagentsMgr.Reload()
 	if args.PermissionSet != nil {
 		// Packaged zotfile agents have an explicit capability ceiling. A
 		// child process would otherwise rebuild a fresh unrestricted sandbox,
 		// so do not expose either slash or tool-based delegation from this
 		// restricted host until worker capability propagation exists.
-		swarmMgr = nil
+		subagentsMgr = nil
 	}
 
-	// onSpawnedSwarm is the OnSpawned callback the swarm_spawn tool
+	// onSpawnedSupervisor is the OnSpawned callback the subagent_spawn tool
 	// fires after every successful spawn. It hands the agent off to
 	// the running Interactive so the watcher can flush a summary back
 	// into chat when all sub-agents finish. Reads `iv` lazily because
 	// the Interactive is constructed after the agent.
-	onSpawnedSwarm := func(a *swarm.Agent, task string) {
+	onSpawnedSupervisor := func(a *subagents.Agent, task string) {
 		if iv != nil {
-			iv.TrackSwarmAgent(a, task)
+			iv.TrackSubagentWorker(a, task)
 		}
 	}
 	resolveSubagent := func(name string) (*subagents.Profile, error) {
 		return findSubagentProfile(r.CWD, name)
 	}
 
-	// Inject the swarm_spawn auto-swarm tool only when /settings ->
-	// auto-swarm is currently enabled. Registering it unconditionally
+	// Inject the subagent_spawn auto-subagents tool only when /settings ->
+	// auto-subagents is currently enabled. Registering it unconditionally
 	// leaves the model trying to call it (and getting a polite error)
 	// even when the user has switched the feature off. The /settings
 	// toggle live-mutates the running agent's registry separately so
 	// flipping the flag mid-session takes effect on the next turn.
-	injectSwarmSpawn := func(reg core.Registry) core.Registry {
-		if reg == nil || swarmMgr == nil || !autoSwarmToolAllowed(args) {
+	injectSubagentSpawn := func(reg core.Registry) core.Registry {
+		if reg == nil || subagentsMgr == nil || !autoSubagentsToolAllowed(args) {
 			return reg
 		}
-		if !AutoSwarmEnabled() {
+		if !AutoSubagentsEnabled() {
 			return reg
 		}
-		canonical := &tools.SwarmSpawnTool{
-			ToolName: "subagent_spawn",
-			Swarm:    swarmMgr,
-			Enabled:  AutoSwarmEnabled,
+		canonical := &tools.SubagentSpawnTool{
+			Supervisor: subagentsMgr,
+			Enabled:    AutoSubagentsEnabled,
 			DefaultModel: func() string {
 				persistMu.Lock()
 				defer persistMu.Unlock()
@@ -1381,15 +1379,12 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 			},
 			DefaultReasoning: func() string { return r.Reasoning },
 			ResolveSubagent:  resolveSubagent,
-			OnSpawned:        onSpawnedSwarm,
+			OnSpawned:        onSpawnedSupervisor,
 		}
 		reg[canonical.Name()] = canonical
-		legacy := *canonical
-		legacy.ToolName = "swarm_spawn"
-		reg[legacy.Name()] = &legacy
 		return reg
 	}
-	injectSwarmSpawn(r.ToolRegistry)
+	injectSubagentSpawn(r.ToolRegistry)
 
 	// Confirmation gate: when --no-yolo is on, the agent must ask
 	// the user before every tool call. In interactive mode the TUI
@@ -1471,12 +1466,12 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 			return nil, "", "", err
 		}
 		resolved.UseSandbox(sharedSandbox)
-		if swarmMgr != nil {
-			swarmMgr.SetProvider(resolved.Provider)
-			swarmMgr.SetProviderSettings(resolved.BaseURL, resolved.InsecureTLS)
+		if subagentsMgr != nil {
+			subagentsMgr.SetProvider(resolved.Provider)
+			subagentsMgr.SetProviderSettings(resolved.BaseURL, resolved.InsecureTLS)
 		}
 		resolved.MergeExtensionTools(extToolAdapter)
-		injectSwarmSpawn(resolved.ToolRegistry)
+		injectSubagentSpawn(resolved.ToolRegistry)
 		return wireAgentExt(resolved.NewAgent()), resolved.Provider, resolved.Model, nil
 	}
 
@@ -1494,12 +1489,12 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 			return nil, "", "", err
 		}
 		resolved.UseSandbox(sharedSandbox)
-		if swarmMgr != nil {
-			swarmMgr.SetProvider(resolved.Provider)
-			swarmMgr.SetProviderSettings(resolved.BaseURL, resolved.InsecureTLS)
+		if subagentsMgr != nil {
+			subagentsMgr.SetProvider(resolved.Provider)
+			subagentsMgr.SetProviderSettings(resolved.BaseURL, resolved.InsecureTLS)
 		}
 		resolved.MergeExtensionTools(extToolAdapter)
-		injectSwarmSpawn(resolved.ToolRegistry)
+		injectSubagentSpawn(resolved.ToolRegistry)
 		return wireAgentExt(resolved.NewAgent()), resolved.Provider, resolved.Model, nil
 	}
 
@@ -1525,12 +1520,12 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 			return nil, "", "", err
 		}
 		resolved.UseSandbox(sharedSandbox)
-		if swarmMgr != nil {
-			swarmMgr.SetProvider(resolved.Provider)
-			swarmMgr.SetProviderSettings(resolved.BaseURL, resolved.InsecureTLS)
+		if subagentsMgr != nil {
+			subagentsMgr.SetProvider(resolved.Provider)
+			subagentsMgr.SetProviderSettings(resolved.BaseURL, resolved.InsecureTLS)
 		}
 		resolved.MergeExtensionTools(extToolAdapter)
-		injectSwarmSpawn(resolved.ToolRegistry)
+		injectSubagentSpawn(resolved.ToolRegistry)
 		return wireAgentExt(resolved.NewAgent()), resolved.Provider, resolved.Model, nil
 	}
 
@@ -1549,7 +1544,7 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 		if current == nil {
 			return
 		}
-		refreshAgentToolsAndPrompt(args, sharedSandbox, extToolAdapter, current, injectSwarmSpawn)
+		refreshAgentToolsAndPrompt(args, sharedSandbox, extToolAdapter, current, injectSubagentSpawn)
 	})
 
 	var sess *core.Session
@@ -1772,10 +1767,10 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 		}
 		activeProvider = candidate.provider
 		activeModel = candidate.model
-		if swarmMgr != nil && candidate.session != nil {
+		if subagentsMgr != nil && candidate.session != nil {
 			// Keep the dashboard scope in the same commit as the session,
 			// agent, usage, and persistence baseline.
-			swarmMgr.SetActiveSession(candidate.session.ID)
+			subagentsMgr.SetActiveSession(candidate.session.ID)
 		}
 		committed = true
 		persistMu.Unlock()
@@ -1794,7 +1789,7 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 	//
 	// Steps, in order:
 	//   1. resolve + validate the new path (~ expansion, abs/rel)
-	//   2. stage the candidate cwd, sandbox, and swarm state
+	//   2. stage the candidate cwd, sandbox, and subagent state
 	//   3. rebuild the agent and allocate its new session
 	//   4. commit all new state together, closing the old session last
 	//   5. push the committed state into the running Interactive
@@ -1841,7 +1836,7 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 
 		// Stage the candidate state while retaining a complete rollback
 		// snapshot. A failed rebuild or session allocation must leave the
-		// current agent, session, sandbox, and swarm root usable.
+		// current agent, session, sandbox, and subagent root usable.
 		oldCWD := args.CWD
 		oldResolvedCWD := r.CWD
 		oldPermissionSet := args.PermissionSet
@@ -1849,9 +1844,9 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 		oldActiveProvider := activeProvider
 		oldActiveModel := activeModel
 		persistMu.Unlock()
-		oldSwarmRoot := ""
-		if swarmMgr != nil {
-			oldSwarmRoot = swarmMgr.RepoRoot()
+		oldSupervisorRoot := ""
+		if subagentsMgr != nil {
+			oldSupervisorRoot = subagentsMgr.RepoRoot()
 		}
 		oldSandboxRoot := ""
 		oldSandboxLocked := false
@@ -1867,8 +1862,8 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 			activeProvider = oldActiveProvider
 			activeModel = oldActiveModel
 			persistMu.Unlock()
-			if swarmMgr != nil {
-				swarmMgr.SetRepoRoot(oldSwarmRoot)
+			if subagentsMgr != nil {
+				subagentsMgr.SetRepoRoot(oldSupervisorRoot)
 			}
 			if sharedSandbox != nil {
 				sharedSandbox.Root = oldSandboxRoot
@@ -1882,8 +1877,8 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 
 		args.CWD = absPath
 		r.CWD = absPath
-		if swarmMgr != nil {
-			swarmMgr.SetRepoRoot(absPath)
+		if subagentsMgr != nil {
+			subagentsMgr.SetRepoRoot(absPath)
 		}
 		if args.PermissionSet != nil {
 			expanded := args.PermissionSet.Expand(absPath, args.AgentDataDir)
@@ -1956,9 +1951,9 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 			iv.ApplyChangedCWDWithStartupContext(newAg, newProvider, newModel, absPath, startupPaths)
 		}
 
-		// Re-scope the swarm dashboard to the new session.
-		if swarmMgr != nil && newSess != nil {
-			swarmMgr.SetActiveSession(newSess.ID)
+		// Re-scope the subagent dashboard to the new session.
+		if subagentsMgr != nil && newSess != nil {
+			subagentsMgr.SetActiveSession(newSess.ID)
 		}
 		if newSess != nil {
 			extMgr.EmitSessionEvent("session_opened", sessionContext(newSess), newStates)
@@ -2033,19 +2028,19 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 		}
 	}
 
-	// swarmMgr was constructed and reloaded earlier (before the agent
-	// build, so the auto-swarm tool could capture it). Here we just
-	// scope the dashboard to the active host session so /swarm only
+	// subagentsMgr was constructed and reloaded earlier (before the agent
+	// build, so the auto-subagents tool could capture it). Here we just
+	// scope the dashboard to the active host session so /subagents only
 	// shows agents this session spawned (and any pre-upgrade unscoped
 	// agents — see SnapshotAll docs). Updated again whenever the
 	// user swaps sessions via loadSession below.
-	if sess != nil && swarmMgr != nil {
-		swarmMgr.SetActiveSession(sess.ID)
+	if sess != nil && subagentsMgr != nil {
+		subagentsMgr.SetActiveSession(sess.ID)
 	}
 	// Best-effort shutdown on interactive exit: stop all running
 	// agents so they don't outlive their parent zot.
-	if swarmMgr != nil {
-		defer swarmMgr.StopAll()
+	if subagentsMgr != nil {
+		defer subagentsMgr.StopAll()
 	}
 
 	var startupSkills []*skills.Skill
@@ -2055,56 +2050,56 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 	homeDir, _ := os.UserHomeDir()
 	discoveredSubagents, _ := subagents.Discover(r.CWD, homeDir)
 	subagentsAddendum := subagents.SystemPromptAddendum(discoveredSubagents)
-	autoSwarmToolAllowedForSession := autoSwarmToolAllowed(args)
+	autoSubagentsToolAllowedForSession := autoSubagentsToolAllowed(args)
 
 	iv = modes.NewInteractive(modes.InteractiveConfig{
-		Terminal:                  term,
-		Theme:                     theme,
-		InlineImagesEnabled:       initialCfg.InlineImagesEnabled,
-		TerminalAlertsEnabled:     initialCfg.TerminalAlertsEnabled,
-		TerminalTitleEnabled:      initialCfg.TerminalTitleEnabled,
-		AutoSwarmEnabled:          initialCfg.AutoSwarmEnabled,
-		AutoSwarmToolAllowed:      &autoSwarmToolAllowedForSession,
-		FastMode:                  &fastMode,
-		LSPEnabled:                initialCfg.LSPEnabled,
-		SubagentLSPEnabled:        initialCfg.SubagentLSPEnabled,
-		AutoCompactThreshold:      initialCfg.AutoCompactThreshold,
-		JailByDefault:             initialCfg.JailByDefault,
-		QuickModelShortcuts:       quickModelShortcuts,
-		RecursiveFileSuggest:      initialCfg.RecursiveFileSuggest,
-		RespectGitignore:          initialCfg.RespectGitignore,
-		CompactMode:               initialCfg.CompactMode,
-		TUIInputStyle:             initialCfg.TUIInputStyle,
-		TUIStatusPosition:         initialCfg.TUIStatusPosition,
-		TUIWorkingPosition:        initialCfg.TUIWorkingPosition,
-		ThemeName:                 initialCfg.Theme,
-		FlatTools:                 initialCfg.FlatToolRender(),
-		CompactUser:               initialCfg.CompactUserInput(),
-		ExtensionThemes:           extMgr.ThemeOptions,
-		AutoSwarmSystemAddendum:   AutoSwarmSystemAddendum,
-		SubagentsSystemAddendum:   subagentsAddendum,
-		SettingsStore:             configSettingsStore{},
-		Model:                     r.Model,
-		Provider:                  r.Provider,
-		AuthMethod:                r.AuthMethod,
-		BaseURL:                   r.BaseURL,
-		Reasoning:                 r.Reasoning,
-		SystemPrompt:              r.SystemPrompt,
-		Tools:                     r.ToolRegistry,
-		MaxSteps:                  r.MaxSteps,
-		CWD:                       r.CWD,
-		StartupAgentName:          args.AgentName,
-		StartupContextPaths:       instructionContextPaths(r.ContextFiles),
-		StartupExtensionNames:     startupExtensionNames(extMgr.All()),
-		StartupExtensionErrors:    startupExtensionErrors,
-		StartupSkillNames:         startupSkillNames(startupSkills),
-		ShowInstructionsAtStartup: initialCfg.ShowInstructionsAtStartup,
-		ZotHome:                   ZotHome(),
-		SessionsRoot:              agentSessionsRoot(ZotHome(), args),
-		Version:                   version,
-		UpdateInfoChan:            updateCh,
-		Sandbox:                   sharedSandbox,
-		Agent:                     ag,
+		Terminal:                    term,
+		Theme:                       theme,
+		InlineImagesEnabled:         initialCfg.InlineImagesEnabled,
+		TerminalAlertsEnabled:       initialCfg.TerminalAlertsEnabled,
+		TerminalTitleEnabled:        initialCfg.TerminalTitleEnabled,
+		AutoSubagentsEnabled:        initialCfg.AutoSubagentsEnabled,
+		AutoSubagentsToolAllowed:    &autoSubagentsToolAllowedForSession,
+		FastMode:                    &fastMode,
+		LSPEnabled:                  initialCfg.LSPEnabled,
+		SubagentLSPEnabled:          initialCfg.SubagentLSPEnabled,
+		AutoCompactThreshold:        initialCfg.AutoCompactThreshold,
+		JailByDefault:               initialCfg.JailByDefault,
+		QuickModelShortcuts:         quickModelShortcuts,
+		RecursiveFileSuggest:        initialCfg.RecursiveFileSuggest,
+		RespectGitignore:            initialCfg.RespectGitignore,
+		CompactMode:                 initialCfg.CompactMode,
+		TUIInputStyle:               initialCfg.TUIInputStyle,
+		TUIStatusPosition:           initialCfg.TUIStatusPosition,
+		TUIWorkingPosition:          initialCfg.TUIWorkingPosition,
+		ThemeName:                   initialCfg.Theme,
+		FlatTools:                   initialCfg.FlatToolRender(),
+		CompactUser:                 initialCfg.CompactUserInput(),
+		ExtensionThemes:             extMgr.ThemeOptions,
+		AutoSubagentsSystemAddendum: AutoSubagentsSystemAddendum,
+		SubagentsSystemAddendum:     subagentsAddendum,
+		SettingsStore:               configSettingsStore{},
+		Model:                       r.Model,
+		Provider:                    r.Provider,
+		AuthMethod:                  r.AuthMethod,
+		BaseURL:                     r.BaseURL,
+		Reasoning:                   r.Reasoning,
+		SystemPrompt:                r.SystemPrompt,
+		Tools:                       r.ToolRegistry,
+		MaxSteps:                    r.MaxSteps,
+		CWD:                         r.CWD,
+		StartupAgentName:            args.AgentName,
+		StartupContextPaths:         instructionContextPaths(r.ContextFiles),
+		StartupExtensionNames:       startupExtensionNames(extMgr.All()),
+		StartupExtensionErrors:      startupExtensionErrors,
+		StartupSkillNames:           startupSkillNames(startupSkills),
+		ShowInstructionsAtStartup:   initialCfg.ShowInstructionsAtStartup,
+		ZotHome:                     ZotHome(),
+		SessionsRoot:                agentSessionsRoot(ZotHome(), args),
+		Version:                     version,
+		UpdateInfoChan:              updateCh,
+		Sandbox:                     sharedSandbox,
+		Agent:                       ag,
 		InitialSessionTitle: func() string {
 			if sess == nil || sessionTitlePending {
 				return ""
@@ -2122,12 +2117,12 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 				_ = extMgr.Reload(context.Background(), 2*time.Second)
 			}
 			if current != nil {
-				refreshAgentToolsAndPrompt(args, sharedSandbox, extToolAdapter, current, injectSwarmSpawn)
+				refreshAgentToolsAndPrompt(args, sharedSandbox, extToolAdapter, current, injectSubagentSpawn)
 			}
 		},
 		RefreshTools: func() {
 			current := liveInteractiveAgent(iv, ag)
-			refreshAgentToolsAndPrompt(args, sharedSandbox, extToolAdapter, current, injectSwarmSpawn)
+			refreshAgentToolsAndPrompt(args, sharedSandbox, extToolAdapter, current, injectSubagentSpawn)
 		},
 		AuthManager:                mgr,
 		LlamaCPPConfig:             ResolveLlamaCPPConfig,
@@ -2193,7 +2188,7 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 		},
 		SessionTransition: newSessionTransition(&sessionTransitionMu),
 		Extensions:        extMgr,
-		Swarm:             swarmMgr,
+		Supervisor:        subagentsMgr,
 		ResolveSubagent:   resolveSubagent,
 		ChangelogChan:     changelogCh,
 		OnChangelogDismiss: func() {
@@ -2321,8 +2316,8 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 		// cleanup, so relying only on the normal runInteractive defer would
 		// leave child daemons (and their descendants) alive after a TERM or
 		// HUP delivered to the host.
-		if swarmMgr != nil {
-			swarmMgr.StopAll()
+		if subagentsMgr != nil {
+			subagentsMgr.StopAll()
 		}
 		// Exit cleanly. Re-raising the signal would skip os.Exit's
 		// at-exit hooks; explicit exit is fine because we've already
@@ -2371,10 +2366,10 @@ func openOrCreateSession(args Args, r Resolved, ag *core.Agent, version string) 
 	switch {
 	case args.Session != "":
 		s, msgs, err = core.OpenSession(args.Session)
-		// The swarm-agent child passes a fixed --session path that
+		// The subagent-worker child passes a fixed --session path that
 		// may not exist yet on first Spawn. Treat ENOENT as "create
 		// a fresh session AT THIS PATH" so the conversation actually
-		// gets persisted; without this fallback the swarm child runs
+		// gets persisted; without this fallback the subagent child runs
 		// with sess==nil and every Resume re-starts with no memory
 		// of the prior turns. Other openers (--continue / --resume /
 		// the picker) never see ENOENT here because they only choose

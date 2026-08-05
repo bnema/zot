@@ -20,14 +20,13 @@ const (
 	ModeStream      Mode = "stream"
 	ModeJSON        Mode = "json"
 	ModeRPC         Mode = "rpc"
-	// ModeSwarmAgent is the long-lived, headless daemon mode used by
-	// swarm-spawned agents. The binary opens a unix-socket inbox at
-	// the path provided by --subagent-worker, reads supervisor messages
-	// off it (versioned JSONL, with a legacy text reader), runs each user
-	// turn against a persistent session, and streams JSONL events on
-	// stdout. --swarm-agent remains an input compatibility alias.
+	// ModeSubagentWorker is the long-lived, headless daemon mode used by
+	// subagent-spawned agents. The binary opens a unix-socket inbox at
+	// the path provided by --subagent-worker, reads versioned JSONL
+	// supervisor messages, runs each user turn against a persistent session,
+	// and streams JSONL events on
+	// stdout.
 	ModeSubagentWorker Mode = "subagent-worker"
-	ModeSwarmAgent     Mode = ModeSubagentWorker
 )
 
 // Args holds parsed command-line options.
@@ -37,7 +36,7 @@ type Args struct {
 	Model    string
 	APIKey   string
 
-	// inheritedCredential is populated only by swarm-agent mode from
+	// inheritedCredential is populated only by subagent-worker mode from
 	// the supervisor's stdin. It is never accepted as a CLI argument.
 	inheritedCredential string
 	inheritedAuthMethod string
@@ -49,11 +48,11 @@ type Args struct {
 	Reasoning          string
 	Temperature        *float32
 
-	// FastMode is an internal swarm-child propagation flag. Normal users
+	// FastMode is an internal subagent-child propagation flag. Normal users
 	// enable fast mode through the persisted config /settings toggle.
 	FastMode bool
 	// FastModeSet distinguishes an explicit child override (including
-	// --no-fast-mode) from an omitted flag so persisted swarm settings
+	// --no-fast-mode) from an omitted flag so persisted subagent settings
 	// survive a parent config change.
 	FastModeSet bool
 
@@ -124,16 +123,16 @@ type Args struct {
 	// mode auto-submits it once at startup before InitialInput handling.
 	StartupPre string
 
-	// SwarmAgent is the inbox-socket path when this process is a
+	// SubagentWorker is the inbox-socket path when this process is a
 	// subagent worker. Empty in every other mode. Set by either
-	// --subagent-worker or the --swarm-agent compatibility alias.
-	SwarmAgent string
+	// --subagent-worker.
+	SubagentWorker string
 
 	// SubagentMaxTurns limits prompt-level turns in worker mode.
 	SubagentMaxTurns int
 
-	// Subagent selects a named markdown profile for a swarm child.
-	// It is intentionally an internal child flag; the parent swarm tool
+	// Subagent selects a named markdown profile for a subagent child.
+	// It is intentionally an internal child flag; the parent subagent tool
 	// passes only the profile name and the child discovers the definition
 	// locally.
 	Subagent string
@@ -299,12 +298,12 @@ func ParseArgs(in []string) (Args, error) {
 				return a, err
 			}
 			a.CWD = v
-		case "--subagent-worker", "--swarm-agent":
+		case "--subagent-worker":
 			v, err := want(&i, arg)
 			if err != nil {
 				return a, err
 			}
-			a.SwarmAgent = v
+			a.SubagentWorker = v
 			a.Mode = ModeSubagentWorker
 		case "--subagent":
 			v, err := want(&i, arg)

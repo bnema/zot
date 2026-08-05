@@ -6,7 +6,7 @@ import (
 
 	"github.com/mattn/go-runewidth"
 
-	"github.com/patriceckhart/zot/packages/agent/swarm"
+	"github.com/patriceckhart/zot/packages/agent/subagents"
 	"github.com/patriceckhart/zot/packages/tui"
 )
 
@@ -47,10 +47,10 @@ func TestBtwDialogWrapsAssistantAndKeepsCursorAligned(t *testing.T) {
 	}
 }
 
-func TestSwarmTranscriptWrapsAssistantAndDiagnosticRows(t *testing.T) {
+func TestSupervisorTranscriptWrapsAssistantAndDiagnosticRows(t *testing.T) {
 	const width = 80
 	long := strings.Repeat("long response text ", 8)
-	rows := renderSwarmTranscriptBlocks([]string{
+	rows := renderSupervisorTranscriptBlocks([]string{
 		long,
 		"stderr: " + long,
 		"error: " + long,
@@ -65,15 +65,15 @@ func TestSwarmTranscriptWrapsAssistantAndDiagnosticRows(t *testing.T) {
 	}
 }
 
-func TestSwarmDialogViewingWrapsSpawnedAgentResponse(t *testing.T) {
+func TestSubagentsDialogViewingWrapsSpawnedAgentResponse(t *testing.T) {
 	const width = 80
 	response := strings.Repeat("spawned agent response ", 6)
-	rows := []swarm.AgentSnapshot{{
+	rows := []subagents.AgentSnapshot{{
 		ID:     "agent-1",
-		Status: swarm.StatusDone,
+		Status: subagents.StatusDone,
 		Lines:  []string{response},
 	}}
-	d := newSwarmDialog()
+	d := newSubagentsDialog()
 	d.Open(staticSnapshots(rows...), nil, nil, nil, nil, nil, "")
 	_ = d.Render(tui.Theme{}, width)
 	d.HandleKey(tui.Key{Kind: tui.KeyEnter})

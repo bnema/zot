@@ -1,5 +1,5 @@
 // Package subagents discovers named agent profiles that can be selected by
-// zot's swarm supervisor. Profiles use the common markdown/frontmatter layout:
+// zot's subagent supervisor. Profiles use the common markdown/frontmatter layout:
 // a YAML-like metadata block followed by the agent's system prompt.
 //
 // Discovery prefers explicitly configured directories, then the shared
@@ -132,7 +132,7 @@ func SystemPromptAddendum(profiles []*Profile) string {
 	}
 	var sb strings.Builder
 	sb.WriteString("[subagents_list]\n")
-	sb.WriteString("Named subagents available to swarm_spawn. Choose the profile whose description best matches the independent task and pass its name as the tool's agent field. The selected profile's instructions, model, thinking level, tool limits, and fast-mode preference are applied to the child.\n")
+	sb.WriteString("Named subagents available to subagent_spawn. Choose the profile whose description best matches the independent task and pass its name as the tool's agent field. The selected profile's instructions, model, thinking level, tool limits, and fast-mode preference are applied to the child.\n")
 	for _, profile := range profiles {
 		if profile == nil {
 			continue

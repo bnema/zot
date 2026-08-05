@@ -153,7 +153,7 @@ func NewSession(root, cwd, providerName, model, version string) (*Session, error
 }
 
 // NewSessionAtPath creates a session at an explicit file path. Used
-// by callers (notably the swarm-agent child) that need the session
+// by callers (notably the subagent worker) that need the session
 // file to live at a path chosen by their parent rather than under
 // SessionsDir. Returns an error if the file already exists — use
 // OpenSession for that case.

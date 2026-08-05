@@ -37,10 +37,10 @@ func TestSlashSuggesterShowsLlamaOnlyWhenConfigured(t *testing.T) {
 	}
 }
 
-func TestSlashSuggesterHasSwarm(t *testing.T) {
+func TestSlashSuggesterHasSupervisor(t *testing.T) {
 	s := newSlashSuggester()
-	if got := commandNames(s.matches("/sw")); !contains(got, "/swarm") {
-		t.Fatalf("/swarm missing from suggestions, got %v", got)
+	if got := commandNames(s.matches("/su")); !contains(got, "/subagents") {
+		t.Fatalf("/subagents missing from suggestions, got %v", got)
 	}
 }
 

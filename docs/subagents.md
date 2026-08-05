@@ -39,7 +39,7 @@ Supported metadata:
 
 | Field | Meaning |
 |---|---|
-| `name` | Name passed to `subagent_spawn`'s `agent` field (`swarm_spawn` is a compatibility alias). Falls back to the filename. |
+| `name` | Name passed to `subagent_spawn`'s `agent` field. Falls back to the filename. |
 | `description` | Short description shown to the main agent. |
 | `tools` | Comma-separated or list-form tool names. zot enforces its built-in `read`, `write`, `edit`, `bash`, and `lsp` registry; the conditional `skill` tool is available when skills are enabled. Unknown names do not grant capabilities. |
 | `model` | Optional model ID. A qualified value such as `openai-codex/gpt-5.6-luna` selects both provider and model. |
@@ -54,7 +54,7 @@ Other frontmatter from another agent host is ignored when zot does not have an e
 
 ## Selecting a profile
 
-When **auto-swarm** is enabled in `/settings`, the main agent receives a compact `[subagents_list]` section in its system prompt and can select a profile for `subagent_spawn`:
+When **auto-subagents** is enabled in `/settings`, the main agent receives a compact `[subagents_list]` section in its system prompt and can select a profile for `subagent_spawn`:
 
 ```json
 {
@@ -90,7 +90,7 @@ Shared mode preserves the historical host working directory. For parallel coding
 
 Every child has independent process and turn state. A process may be `alive` while its turn is `idle`; a supervisor restart marks the process `detached` without claiming that its last turn failed. Durable manifests include the task, parent/root session identity, workspace mode, attempt, process/turn state, heartbeat timestamps, and logical result references.
 
-The worker and supervisor communicate over newline-delimited JSON. Current messages use version `1` envelopes with `version`, `message_id`, `agent_id`, `turn_id`, `timestamp`, and `payload`. Unknown event names and payload fields are retained. Older flat JSON events and text commands (`user ...`, `cancel`, `shutdown`) remain readable during the compatibility window.
+The worker and supervisor communicate over newline-delimited JSON. Current messages use version `1` envelopes with `version`, `message_id`, `agent_id`, `turn_id`, `timestamp`, and `payload`. Unknown event names and payload fields are retained. Only versioned JSONL envelopes are accepted on the worker protocol.
 
 A completed worker emits a `turn.result` event and writes `result.json`. The inline output is bounded; inspect the full session through the stable references:
 

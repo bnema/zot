@@ -18,7 +18,6 @@ import (
 	"github.com/patriceckhart/zot/packages/agent/modes/telegram"
 	"github.com/patriceckhart/zot/packages/agent/skills"
 	"github.com/patriceckhart/zot/packages/agent/subagents"
-	"github.com/patriceckhart/zot/packages/agent/swarm"
 	"github.com/patriceckhart/zot/packages/agent/tools"
 	"github.com/patriceckhart/zot/packages/core"
 	"github.com/patriceckhart/zot/packages/provider"
@@ -68,14 +67,14 @@ type InteractiveConfig struct {
 	// title updates. nil means enabled; false disables both.
 	TerminalTitleEnabled *bool
 
-	// AutoSwarmEnabled mirrors the persisted config flag at startup so
+	// AutoSubagentsEnabled mirrors the persisted config flag at startup so
 	// the /settings dialog can render the current state without
 	// re-reading config.json on every open.
-	AutoSwarmEnabled *bool
+	AutoSubagentsEnabled *bool
 
-	// AutoSwarmToolAllowed is nil for normal sessions and false when the
+	// AutoSubagentsToolAllowed is nil for normal sessions and false when the
 	// launch-time --no-tools/--tools policy excludes delegation.
-	AutoSwarmToolAllowed *bool
+	AutoSubagentsToolAllowed *bool
 
 	// FastMode mirrors the persisted OpenAI fast-mode flag at startup.
 	// nil/missing means disabled. Unsupported providers reject attempts
@@ -86,7 +85,7 @@ type InteractiveConfig struct {
 	// enabled by default.
 	LSPEnabled *bool
 
-	// SubagentLSPEnabled controls whether newly spawned swarm children
+	// SubagentLSPEnabled controls whether newly spawned subagent children
 	// receive the lsp tool. nil means enabled by default.
 	SubagentLSPEnabled *bool
 
@@ -145,14 +144,14 @@ type InteractiveConfig struct {
 	// ExtensionThemes returns themes bundled with loaded extensions.
 	ExtensionThemes func() []tui.ThemeOption
 
-	// AutoSwarmSystemAddendum is the system-prompt block that gets
-	// appended/stripped when the user toggles auto-swarm at runtime.
+	// AutoSubagentsSystemAddendum is the system-prompt block that gets
+	// appended/stripped when the user toggles auto-subagents at runtime.
 	// Plumbed in from the cli so this package doesn't have to import
 	// agent (cycle).
-	AutoSwarmSystemAddendum string
+	AutoSubagentsSystemAddendum string
 
 	// SubagentsSystemAddendum is the metadata-only [subagents_list]
-	// block that is added or removed together with auto-swarm.
+	// block that is added or removed together with auto-subagents.
 	SubagentsSystemAddendum string
 	SettingsStore           SettingsStore
 
@@ -319,15 +318,15 @@ type InteractiveConfig struct {
 	// AFTER the built-in catalog so a built-in name always wins.
 	Extensions *extensions.Manager
 
-	// Swarm, if non-nil, enables the /swarm slash command and the
-	// dashboard dialog. The cli constructs the Swarm once per
+	// Supervisor, if non-nil, enables the /subagents slash command and the
+	// dashboard dialog. The cli constructs the Supervisor once per
 	// interactive run and tears it down on exit. nil disables the
 	// feature entirely (used by embedders / tests that don't want
 	// subprocesses).
-	Swarm *swarm.Swarm
+	Supervisor *subagents.Supervisor
 
 	// ResolveSubagent validates a named markdown profile for direct
-	// /swarm commands. Auto-swarm uses the equivalent callback on its
+	// /subagents commands. Auto-subagents uses the equivalent callback on its
 	// tool; keeping this optional preserves lightweight embedders.
 	ResolveSubagent func(name string) (*subagents.Profile, error)
 
@@ -414,7 +413,7 @@ type extensionWidget struct {
 type SettingsStore interface {
 	SetQuickModelShortcut(slot int, providerName, model string) error
 	SetInlineImages(enabled bool) error
-	SetAutoSwarm(enabled bool) error
+	SetAutoSubagents(enabled bool) error
 	SetJailByDefault(enabled bool) error
 	SetRecursiveFileSuggest(enabled bool) error
 	SetRespectGitignore(enabled bool) error
@@ -459,13 +458,13 @@ type Interactive struct {
 
 	mu    sync.Mutex
 	agent *core.Agent
-	// managedAutoSwarmAddenda records exact prompt blocks appended by
-	// auto-swarm. Disable only removes these owned occurrences, leaving
+	// managedAutoSubagentsAddenda records exact prompt blocks appended by
+	// auto-subagents. Disable only removes these owned occurrences, leaving
 	// identical text that came from the user's base prompt untouched.
-	managedAutoSwarmAddenda []string
-	streaming               strings.Builder // what's currently painted on screen
-	streamOn                bool
-	pendingAlert            *extproto.AlertRequest
+	managedAutoSubagentsAddenda []string
+	streaming                   strings.Builder // what's currently painted on screen
+	streamOn                    bool
+	pendingAlert                *extproto.AlertRequest
 
 	// streamPending is the runes buffered after each EvTextDelta that
 	// haven't yet been promoted into `streaming` for rendering. It
@@ -576,7 +575,7 @@ type Interactive struct {
 	llamaDialog       *llamaDialog
 	rescueDialog      *rescueDialog
 	sessionDialog     *sessionDialog
-	swarmDialog       *swarmDialog
+	subagentsDialog   *subagentsDialog
 	jumpDialog        *jumpDialog
 	btwDialog         *btwDialog
 	skillsDialog      *skillsDialog
@@ -592,14 +591,14 @@ type Interactive struct {
 	extPanel          *extPanelDialog
 	llamaConfigured   bool
 
-	// swarmWatch tracks auto-swarm sub-agents the main agent spawned
-	// via swarm_spawn. Each entry holds the agent + the task text;
+	// subagentWatch tracks auto-subagents sub-agents the main agent spawned
+	// via subagent_spawn. Each entry holds the agent + the task text;
 	// a per-entry goroutine waits on the agent's terminal state. When
 	// every tracked entry has finished, the watcher flushes a single
 	// summary turn into the main chat (queued if the main agent is
 	// busy, run immediately if idle).
-	swarmWatchMu sync.Mutex
-	swarmWatch   []*swarmWatchEntry
+	subagentWatchMu sync.Mutex
+	subagentWatch   []*subagentWatchEntry
 
 	// pendingFork is true when the user ran /session fork: the next
 	// jump-picker selection should branch off that message instead
@@ -756,7 +755,7 @@ func NewInteractive(cfg InteractiveConfig) *Interactive {
 		llamaDialog:       newLlamaDialog(),
 		rescueDialog:      newRescueDialog(),
 		sessionDialog:     newSessionDialog(),
-		swarmDialog:       newSwarmDialog(),
+		subagentsDialog:   newSubagentsDialog(),
 		jumpDialog:        newJumpDialog(),
 		btwDialog:         newBtwDialog(),
 		skillsDialog:      newSkillsDialog(),
@@ -783,8 +782,8 @@ func NewInteractive(cfg InteractiveConfig) *Interactive {
 		baseURL, _, err := cfg.LlamaCPPConfig()
 		i.llamaConfigured = err == nil && baseURL != ""
 	}
-	if cfg.AutoSwarmEnabled != nil && *cfg.AutoSwarmEnabled {
-		i.managedAutoSwarmAddenda = autoSwarmAddenda(cfg)
+	if cfg.AutoSubagentsEnabled != nil && *cfg.AutoSubagentsEnabled {
+		i.managedAutoSubagentsAddenda = autoSubagentsAddenda(cfg)
 	}
 	if cfg.Agent != nil {
 		i.agent = cfg.Agent
@@ -812,8 +811,8 @@ func NewInteractive(cfg InteractiveConfig) *Interactive {
 		i.titleRealPromptSeen = i.sessionTitle != "" || hasRealUserPrompt(i.view.Messages)
 		i.titleGenerationStarted = i.titleRealPromptSeen
 	}
-	if cfg.AutoSwarmEnabled != nil && *cfg.AutoSwarmEnabled {
-		i.applyAutoSwarmTool(true)
+	if cfg.AutoSubagentsEnabled != nil && *cfg.AutoSubagentsEnabled {
+		i.applyAutoSubagentsTool(true)
 	}
 	return i
 }
@@ -1070,7 +1069,7 @@ func (i *Interactive) Run(ctx context.Context) error {
 			// blink inside dialogs that host their own editor (btw),
 			// because each frame re-emits hide-cursor + show-cursor.
 			//
-			// The swarm dashboard is also animated: its rows reflect
+			// The subagent dashboard is also animated: its rows reflect
 			// background subprocesses whose activity / age change
 			// without any user input. Without the tick redraw the
 			// dashboard freezes on the snapshot taken when the user
@@ -1078,7 +1077,7 @@ func (i *Interactive) Run(ctx context.Context) error {
 			// of its inline editors (spawn task or prompt composer)
 			// is active so the cursor blink in those editors works
 			// the same way it does inside btw.
-			if i.busy || i.btwDialog.Loading() || i.swarmDialog.NeedsTickRefresh() {
+			if i.busy || i.btwDialog.Loading() || i.subagentsDialog.NeedsTickRefresh() {
 				requestRedraw()
 			}
 		}
@@ -1545,8 +1544,8 @@ func (i *Interactive) redraw() {
 		}
 		i.sessionDialog.MaxRows = avail
 		dialog = i.sessionDialog.Render(i.cfg.Theme, cols)
-	case i.swarmDialog.Active():
-		dialog = i.swarmDialog.Render(i.cfg.Theme, cols)
+	case i.subagentsDialog.Active():
+		dialog = i.subagentsDialog.Render(i.cfg.Theme, cols)
 	case i.jumpDialog.Active():
 		dialog = i.jumpDialog.Render(i.cfg.Theme, cols)
 	case i.extPanel.Active() && (!i.confirmDialog.Active() || !i.confirmDialog.Focused()):
@@ -1770,15 +1769,15 @@ func (i *Interactive) redraw() {
 		bottom = append(bottom, "")
 	}
 	bottom = append(bottom, dialog...)
-	// The swarm dashboard owns the bottom of the screen while it's
+	// The subagent dashboard owns the bottom of the screen while it's
 	// active: it has its own inline editors for spawn (`n`) and
 	// prompt (`p`), so the main input would be a confusing second
 	// caret. The suggest popup, sliding-in queue, status block, and
 	// main editor are all hidden underneath it. Keystrokes still
-	// reach handleKey — it routes them to swarmDialog.HandleKey
+	// reach handleKey — it routes them to subagentsDialog.HandleKey
 	// before the editor ever sees them — so the only effect of this
 	// branch is visual.
-	if !i.swarmDialog.Active() {
+	if !i.subagentsDialog.Active() {
 		bottom = append(bottom, suggest...)
 		bottom = append(bottom, queue...)
 		lineInput := inputStyle == tui.InputStyleLines
@@ -2009,8 +2008,8 @@ func (i *Interactive) redraw() {
 			cursorCol = c
 		}
 	}
-	if i.swarmDialog.Active() {
-		if r, c := i.swarmDialog.CursorPos(cols); r >= 0 {
+	if i.subagentsDialog.Active() {
+		if r, c := i.subagentsDialog.CursorPos(cols); r >= 0 {
 			cursorRow = dialogLead + r
 			cursorCol = c
 		} else {
@@ -2312,7 +2311,7 @@ func (i *Interactive) confirmChildActive() bool {
 		i.llamaDialog.Active() ||
 		i.rescueDialog.Active() ||
 		i.sessionDialog.Active() ||
-		i.swarmDialog.Active() ||
+		i.subagentsDialog.Active() ||
 		i.jumpDialog.Active() ||
 		i.btwDialog.Active() ||
 		i.skillsDialog.Active() ||
@@ -2520,13 +2519,13 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 		i.invalidate()
 		return false
 	}
-	if i.swarmDialog.Active() {
+	if i.subagentsDialog.Active() {
 		if k.Kind == tui.KeyCtrlC {
-			i.swarmDialog.Close()
+			i.subagentsDialog.Close()
 			i.invalidate()
 			return false
 		}
-		_, msg, errMsg := i.swarmDialog.HandleKey(k)
+		_, msg, errMsg := i.subagentsDialog.HandleKey(k)
 		if msg != "" || errMsg != "" {
 			i.mu.Lock()
 			i.statusOK = msg
@@ -3505,10 +3504,10 @@ func (i *Interactive) applyChangedCWD(ag *core.Agent, provider, model, cwd strin
 	i.agent = ag
 	i.cfg.CWD = cwd
 	i.cfg.SubagentsSystemAddendum = subagentsAddendum
-	if i.autoSwarmEnabled() {
-		i.managedAutoSwarmAddenda = autoSwarmAddenda(i.cfg)
+	if i.autoSubagentsEnabled() {
+		i.managedAutoSubagentsAddenda = autoSubagentsAddenda(i.cfg)
 	} else {
-		i.managedAutoSwarmAddenda = nil
+		i.managedAutoSubagentsAddenda = nil
 	}
 	i.cfg.StartupContextPaths = append([]string(nil), startupContextPaths...)
 	i.view.StartupContextPaths = nil
@@ -3852,15 +3851,15 @@ func (i *Interactive) openSettingsDialog() {
 
 	terminalAlerts := terminalAlertsEnabled(i.cfg.TerminalAlertsEnabled)
 	terminalTitles := terminalTitleEnabled(i.cfg.TerminalTitleEnabled)
-	autoSwarm := false
-	if i.cfg.AutoSwarmEnabled != nil {
-		autoSwarm = *i.cfg.AutoSwarmEnabled
+	autoSubagents := false
+	if i.cfg.AutoSubagentsEnabled != nil {
+		autoSubagents = *i.cfg.AutoSubagentsEnabled
 	}
-	autoSwarmDisabled := i.cfg.Swarm == nil
-	autoSwarmHint := ""
-	if autoSwarmDisabled {
-		autoSwarm = false
-		autoSwarmHint = "swarm supervisor not available in this mode"
+	autoSubagentsDisabled := i.cfg.Supervisor == nil
+	autoSubagentsHint := ""
+	if autoSubagentsDisabled {
+		autoSubagents = false
+		autoSubagentsHint = "subagent supervisor not available in this mode"
 	}
 
 	fastMode := i.cfg.FastMode != nil && *i.cfg.FastMode
@@ -3982,12 +3981,12 @@ func (i *Interactive) openSettingsDialog() {
 			value: terminalTitles,
 		},
 		{
-			key:      "auto_swarm_enabled",
-			label:    "auto-swarm",
+			key:      "auto_subagents_enabled",
+			label:    "auto-subagents",
 			desc:     "let the agent spawn background sub-agents in parallel via the subagent_spawn tool",
-			value:    autoSwarm,
-			disabled: autoSwarmDisabled,
-			hint:     autoSwarmHint,
+			value:    autoSubagents,
+			disabled: autoSubagentsDisabled,
+			hint:     autoSubagentsHint,
 		},
 		{
 			key:   "fast_mode",
@@ -4393,28 +4392,28 @@ func (i *Interactive) applySettingToggle(key string, value bool) {
 		i.statusOK = "AI terminal titles " + onOff(value)
 		i.statusErr = ""
 		i.mu.Unlock()
-	case "auto_swarm_enabled":
+	case "auto_subagents_enabled":
 		val := value
-		i.cfg.AutoSwarmEnabled = &val
+		i.cfg.AutoSubagentsEnabled = &val
 		if i.cfg.SettingsStore != nil {
-			if err := i.cfg.SettingsStore.SetAutoSwarm(value); err != nil {
+			if err := i.cfg.SettingsStore.SetAutoSubagents(value); err != nil {
 				i.mu.Lock()
 				i.statusErr = "settings: " + err.Error()
 				i.mu.Unlock()
 				return
 			}
 		}
-		// Add/remove the swarm_spawn tool on the live agent so the
+		// Add/remove the subagent_spawn tool on the live agent so the
 		// model's tools[] list reflects the toggle on the next turn.
 		// Without this the tool stays advertised after a disable and
 		// the model keeps trying to call it.
-		i.applyAutoSwarmTool(value)
+		i.applyAutoSubagentsTool(value)
 		// Also swap the system-prompt addendum in/out so the model
 		// knows to use the tool proactively (or stops referencing it
 		// after a disable).
-		i.applyAutoSwarmSystemPrompt(value)
+		i.applyAutoSubagentsSystemPrompt(value)
 		i.mu.Lock()
-		i.statusOK = "auto-swarm " + onOff(value)
+		i.statusOK = "auto-subagents " + onOff(value)
 		i.statusErr = ""
 		i.mu.Unlock()
 	case "fast_mode":
@@ -4440,8 +4439,8 @@ func (i *Interactive) applySettingToggle(key string, value bool) {
 		if i.agent != nil {
 			i.agent.SetFastMode(value)
 		}
-		if i.cfg.Swarm != nil {
-			i.cfg.Swarm.SetFastMode(value)
+		if i.cfg.Supervisor != nil {
+			i.cfg.Supervisor.SetFastMode(value)
 		}
 		i.mu.Lock()
 		i.statusOK = "fast mode " + onOff(value)
@@ -4804,7 +4803,7 @@ func buildStudyPrompt(arg, cwd string) string {
 // keeps Tab as a literal no-op.
 //
 // Free function (not a method) so the same logic runs against the
-// editor instances owned by btwDialog and swarmDialog without each
+// editor instances owned by btwDialog and subagentsDialog without each
 // dialog needing its own copy.
 func tryPathTabCompleteEditor(ed *tui.Editor, cwd string) bool {
 	if ed == nil {
@@ -5215,8 +5214,8 @@ func (i *Interactive) runSlash(ctx context.Context, cmd string) (done bool) {
 			break
 		}
 		i.openSessionOpsDialog()
-	case "/subagents", "/swarm":
-		i.runSwarm(ctx, parts[1:])
+	case "/subagents":
+		i.runSubagents(ctx, parts[1:])
 	default:
 		// Last-resort fallback: try the extension manager. Built-in
 		// cases above always win; this branch only fires for slash
@@ -6030,7 +6029,7 @@ func (i *Interactive) swapModelUnserialized(prov, model string, builder func(str
 	// dynamically-registered tools need to be reattached. The apply
 	// helpers are no-ops when their feature is inactive, so the
 	// cross-provider path still works on a vanilla setup.
-	i.applyAutoSwarmTool(i.autoSwarmEnabled())
+	i.applyAutoSubagentsTool(i.autoSubagentsEnabled())
 	i.applyTelegramTools(i.telegramBridge != nil && i.telegramBridge.Active())
 	if i.cfg.PersistModel != nil {
 		i.cfg.PersistModel(p, md)
@@ -6064,7 +6063,7 @@ func (i *Interactive) handleAuthEvent(ev auth.Event) {
 			if oldAgent != nil {
 				_ = tools.CloseLSPManagers(oldAgent.Tools)
 			}
-			i.applyAutoSwarmTool(i.autoSwarmEnabled())
+			i.applyAutoSubagentsTool(i.autoSubagentsEnabled())
 			i.applyTelegramTools(i.telegramBridge != nil && i.telegramBridge.Active())
 			// Authentication can change the provider used by the live
 			// agent. Persist it on the active session just like /model.
@@ -7210,95 +7209,95 @@ func (a telegramSenderAdapter) Active() bool {
 	return a.bridge != nil && a.bridge.Active()
 }
 
-// swarmWatchEntry is one tracked auto-swarm sub-agent. It records the
+// subagentWatchEntry is one tracked auto-subagents sub-agent. It records the
 // delegated turn's outcome separately from the long-lived daemon status.
-type swarmWatchEntry struct {
-	agent   *swarm.Agent
+type subagentWatchEntry struct {
+	agent   *subagents.Agent
 	task    string
 	done    bool
 	outcome string
 	err     string
 }
 
-// TrackSwarmAgent is the exported entry point used by the cli to
-// hand a freshly-spawned auto-swarm agent off to the watcher.
-func (i *Interactive) TrackSwarmAgent(a *swarm.Agent, task string) {
-	i.trackSwarmAgent(a, task)
+// TrackSubagentWorker is the exported entry point used by the cli to
+// hand a freshly-spawned auto-subagents agent off to the watcher.
+func (i *Interactive) TrackSubagentWorker(a *subagents.Agent, task string) {
+	i.trackSubagentWorker(a, task)
 }
 
-// trackSwarmAgent records a freshly-spawned auto-swarm agent and
+// trackSubagentWorker records a freshly-spawned auto-subagents agent and
 // subscribes to both ways its delegated task can finish. Successful
 // long-lived agents report a prompt-level turn_end and keep listening;
 // startup failures and unexpected daemon exits only unblock Agent.Wait.
 // Whichever signal arrives first completes the entry exactly once.
 //
-// Wired in from cli.go via SwarmSpawnTool.OnSpawned only when auto-
-// swarm is enabled, so this is a no-op when the feature is off.
-func (i *Interactive) trackSwarmAgent(a *swarm.Agent, task string) {
+// Wired in from cli.go via SubagentSpawnTool.OnSpawned only when auto-
+// subagent is enabled, so this is a no-op when the feature is off.
+func (i *Interactive) trackSubagentWorker(a *subagents.Agent, task string) {
 	if i == nil || a == nil {
 		return
 	}
-	entry := &swarmWatchEntry{agent: a, task: task}
-	i.swarmWatchMu.Lock()
-	i.swarmWatch = append(i.swarmWatch, entry)
-	i.swarmWatchMu.Unlock()
+	entry := &subagentWatchEntry{agent: a, task: task}
+	i.subagentWatchMu.Lock()
+	i.subagentWatch = append(i.subagentWatch, entry)
+	i.subagentWatchMu.Unlock()
 
 	a.SetOnTurnEnd(func(step int, errMsg string) {
 		outcome := "completed"
 		if errMsg != "" {
 			outcome = "failed"
 		}
-		i.completeSwarmWatchEntry(entry, outcome, errMsg)
+		i.completeSupervisorWatchEntry(entry, outcome, errMsg)
 	})
 	go func() {
 		a.Wait()
 		snap := a.Snapshot()
 		outcome := string(snap.Status)
-		if snap.Status == swarm.StatusDone {
+		if snap.Status == subagents.StatusDone {
 			outcome = "completed"
 		}
-		i.completeSwarmWatchEntry(entry, outcome, snap.Err)
+		i.completeSupervisorWatchEntry(entry, outcome, snap.Err)
 	}()
 }
 
-func (i *Interactive) completeSwarmWatchEntry(entry *swarmWatchEntry, outcome, errMsg string) {
-	i.swarmWatchMu.Lock()
+func (i *Interactive) completeSupervisorWatchEntry(entry *subagentWatchEntry, outcome, errMsg string) {
+	i.subagentWatchMu.Lock()
 	if entry.done {
-		i.swarmWatchMu.Unlock()
+		i.subagentWatchMu.Unlock()
 		return
 	}
 	entry.done = true
 	entry.outcome = outcome
 	entry.err = errMsg
 	allDone := true
-	for _, e := range i.swarmWatch {
+	for _, e := range i.subagentWatch {
 		if !e.done {
 			allDone = false
 			break
 		}
 	}
-	var batch []*swarmWatchEntry
+	var batch []*subagentWatchEntry
 	if allDone {
-		batch = i.swarmWatch
-		i.swarmWatch = nil
+		batch = i.subagentWatch
+		i.subagentWatch = nil
 	}
-	i.swarmWatchMu.Unlock()
+	i.subagentWatchMu.Unlock()
 	if len(batch) != 0 {
-		i.flushSwarmSummary(batch)
+		i.flushSupervisorSummary(batch)
 	}
 }
 
-// flushSwarmSummary composes a synthetic user turn describing every
+// flushSupervisorSummary composes a synthetic user turn describing every
 // sub-agent's outcome and injects it via SubmitOrQueue so the main
 // agent picks it up at the next safe boundary. The summary is
-// phrased as a system update ("Auto-swarm finished: ...") so the
+// phrased as a system update ("Auto-subagents finished: ...") so the
 // model treats it as observed state, not as a fresh user request.
-func (i *Interactive) flushSwarmSummary(batch []*swarmWatchEntry) {
+func (i *Interactive) flushSupervisorSummary(batch []*subagentWatchEntry) {
 	if len(batch) == 0 {
 		return
 	}
 	var sb strings.Builder
-	fmt.Fprintf(&sb, "[auto-swarm update] %d sub-agent(s) finished:\n\n", len(batch))
+	fmt.Fprintf(&sb, "[auto-subagents update] %d sub-agent(s) finished:\n\n", len(batch))
 	for idx, e := range batch {
 		snap := e.agent.Snapshot()
 		status := e.outcome
@@ -7337,20 +7336,20 @@ func truncateForSummary(s string, n int) string {
 	return s[:n-3] + "..."
 }
 
-// autoSwarmAddenda returns the prompt blocks owned by the auto-swarm
+// autoSubagentsAddenda returns the prompt blocks owned by the auto-subagents
 // toggle, in the same order Resolve appends them to a new agent.
-func autoSwarmAddenda(cfg InteractiveConfig) []string {
+func autoSubagentsAddenda(cfg InteractiveConfig) []string {
 	addenda := make([]string, 0, 2)
 	if addendum := strings.TrimSpace(cfg.SubagentsSystemAddendum); addendum != "" {
 		addenda = append(addenda, addendum)
 	}
-	if addendum := strings.TrimSpace(cfg.AutoSwarmSystemAddendum); addendum != "" {
+	if addendum := strings.TrimSpace(cfg.AutoSubagentsSystemAddendum); addendum != "" {
 		addenda = append(addenda, addendum)
 	}
 	return addenda
 }
 
-func containsAutoSwarmAddendum(addenda []string, want string) bool {
+func containsAutoSubagentsAddendum(addenda []string, want string) bool {
 	for _, addendum := range addenda {
 		if addendum == want {
 			return true
@@ -7359,10 +7358,10 @@ func containsAutoSwarmAddendum(addenda []string, want string) bool {
 	return false
 }
 
-// removeLastAutoSwarmAddendum removes one occurrence of a block known to
-// have been appended by auto-swarm. Resolve appends owned blocks at the
+// removeLastAutoSubagentsAddendum removes one occurrence of a block known to
+// have been appended by auto-subagents. Resolve appends owned blocks at the
 // end, so removing the last occurrence preserves an identical base block.
-func removeLastAutoSwarmAddendum(system, addendum string) (string, bool) {
+func removeLastAutoSubagentsAddendum(system, addendum string) (string, bool) {
 	idx := strings.LastIndex(system, addendum)
 	if idx < 0 {
 		return system, false
@@ -7370,26 +7369,26 @@ func removeLastAutoSwarmAddendum(system, addendum string) (string, bool) {
 	return system[:idx] + system[idx+len(addendum):], true
 }
 
-// applyAutoSwarmSystemPrompt appends (active=true) or strips
-// (active=false) the auto-swarm prompt blocks on the running agent.
+// applyAutoSubagentsSystemPrompt appends (active=true) or strips
+// (active=false) the auto-subagents prompt blocks on the running agent.
 // The profile manifest and delegation guidance are managed together so
-// toggling auto-swarm never leaves the model with names but no tool.
-func (i *Interactive) applyAutoSwarmSystemPrompt(active bool) {
+// toggling auto-subagents never leaves the model with names but no tool.
+func (i *Interactive) applyAutoSubagentsSystemPrompt(active bool) {
 	if i.agent == nil {
 		return
 	}
-	addenda := autoSwarmAddenda(i.cfg)
+	addenda := autoSubagentsAddenda(i.cfg)
 	if active {
 		sys := i.agent.System
 		for _, addendum := range addenda {
-			if containsAutoSwarmAddendum(i.managedAutoSwarmAddenda, addendum) {
+			if containsAutoSubagentsAddendum(i.managedAutoSubagentsAddenda, addendum) {
 				continue
 			}
 			if sys != "" && !strings.HasSuffix(sys, "\n\n") {
 				sys += "\n\n"
 			}
 			sys += addendum
-			i.managedAutoSwarmAddenda = append(i.managedAutoSwarmAddenda, addendum)
+			i.managedAutoSubagentsAddenda = append(i.managedAutoSubagentsAddenda, addendum)
 		}
 		i.agent.System = sys
 		return
@@ -7397,54 +7396,50 @@ func (i *Interactive) applyAutoSwarmSystemPrompt(active bool) {
 
 	sys := i.agent.System
 	changed := false
-	for idx := len(i.managedAutoSwarmAddenda) - 1; idx >= 0; idx-- {
+	for idx := len(i.managedAutoSubagentsAddenda) - 1; idx >= 0; idx-- {
 		var removed bool
-		sys, removed = removeLastAutoSwarmAddendum(sys, i.managedAutoSwarmAddenda[idx])
+		sys, removed = removeLastAutoSubagentsAddendum(sys, i.managedAutoSubagentsAddenda[idx])
 		changed = changed || removed
 	}
-	i.managedAutoSwarmAddenda = nil
+	i.managedAutoSubagentsAddenda = nil
 	if changed {
 		i.agent.System = strings.TrimRight(sys, "\n") + "\n"
 	}
 }
 
-// applyAutoSwarmTool registers (active=true) or removes (active=false)
-// the swarm_spawn tool on the running agent so the model only sees it
-// when /settings -> auto-swarm is enabled. Mirrors applyTelegramTools'
+// applyAutoSubagentsTool registers (active=true) or removes (active=false)
+// the subagent_spawn tool on the running agent so the model only sees it
+// when /settings -> auto-subagents is enabled. Mirrors applyTelegramTools'
 // snapshot+mutate pattern so extension tools and /reload-ext additions
 // survive a toggle.
-func (i *Interactive) autoSwarmEnabled() bool {
-	return i.cfg.AutoSwarmEnabled != nil && *i.cfg.AutoSwarmEnabled
+func (i *Interactive) autoSubagentsEnabled() bool {
+	return i.cfg.AutoSubagentsEnabled != nil && *i.cfg.AutoSubagentsEnabled
 }
 
-func (i *Interactive) applyAutoSwarmTool(active bool) {
+func (i *Interactive) applyAutoSubagentsTool(active bool) {
 	if i.agent == nil {
 		return
 	}
 	current := i.agent.Tools
 	next := core.Registry{}
 	for name, t := range current {
-		if name == "swarm_spawn" || name == "subagent_spawn" {
+		if name == "subagent_spawn" {
 			continue
 		}
 		next[name] = t
 	}
-	toolAllowed := i.cfg.AutoSwarmToolAllowed == nil || *i.cfg.AutoSwarmToolAllowed
-	if active && toolAllowed && i.cfg.Swarm != nil {
-		canonical := &tools.SwarmSpawnTool{
-			ToolName:         "subagent_spawn",
-			Swarm:            i.cfg.Swarm,
+	toolAllowed := i.cfg.AutoSubagentsToolAllowed == nil || *i.cfg.AutoSubagentsToolAllowed
+	if active && toolAllowed && i.cfg.Supervisor != nil {
+		canonical := &tools.SubagentSpawnTool{
+			Supervisor:       i.cfg.Supervisor,
 			Enabled:          func() bool { return true },
 			DefaultModel:     func() string { return i.cfg.Model },
 			DefaultProvider:  func() string { return i.cfg.Provider },
 			DefaultReasoning: func() string { return i.cfg.Reasoning },
 			ResolveSubagent:  i.cfg.ResolveSubagent,
-			OnSpawned:        i.trackSwarmAgent,
+			OnSpawned:        i.trackSubagentWorker,
 		}
 		next[canonical.Name()] = canonical
-		legacy := *canonical
-		legacy.ToolName = "swarm_spawn"
-		next[legacy.Name()] = &legacy
 	}
 	i.agent.SetTools(next)
 }

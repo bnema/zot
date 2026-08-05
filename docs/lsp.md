@@ -120,7 +120,7 @@ diagnostics allows a later recurrence to be surfaced again.
 
 - **lsp in main session** (`lsp_enabled`) controls the main agent and applies
   immediately to the live tool registry.
-- **lsp in sub-agents** (`subagent_lsp_enabled`) controls newly spawned swarm
+- **lsp in sub-agents** (`subagent_lsp_enabled`) controls newly spawned subagent
   child processes.
 
 The sub-agent setting does not grant access to a child whose profile or

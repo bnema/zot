@@ -46,7 +46,7 @@ The major ownership boundaries are:
 - `packages/agent/modes`: interactive and non-interactive user modes
 - `packages/agent/extensions`, `extproto`, and `ext`: extension hosting, protocol, and SDK
 - `packages/agent/skills`: reusable instruction discovery
-- `packages/agent/swarm`: background-agent supervision and state
+- `packages/agent/subagents`: background-agent supervision and state
 - `packages/agent/tools`: built-in tools, permissions, and jail checks
 - `packages/tui`: terminal mechanics and rendering
 - `packages/ignore`: ignore matching

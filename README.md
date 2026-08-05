@@ -290,7 +290,7 @@ Slash command names are case-insensitive in the TUI and messaging backends; argu
 | `/session` | Four ops on the current session: `export` to a portable `.zotsession` file, `import` one back in, `fork` from a past user message into a new branch, `tree` to switch between branches. Opens a picker without an argument; direct forms: `/session export [path]`, `/session import <path>`, `/session fork`, `/session tree`. Default export destination is `~/Downloads`. `Esc` `Esc` from an idle, empty editor is a shortcut for `/session tree` when the terminal supplies two parsed bare Escape events. |
 | `/jump` | Scroll the chat to a previous turn (or `/jump <text>` to filter). |
 | `/btw` | Side chat with full context that doesn't add to the main thread. |
-| `/subagents` | Spawn, monitor, and chat with background subagents. Each is a separate long-lived process with bounded lifecycle state, structured results, and optional Git worktree isolation. `/swarm` remains a compatibility alias. Named profiles can be selected with `agent`; see [docs/subagents.md](docs/subagents.md). |
+| `/subagents` | Spawn, monitor, and chat with background subagents. Each is a separate long-lived process with bounded lifecycle state, structured results, and optional Git worktree isolation. Named profiles can be selected with `agent`; see [docs/subagents.md](docs/subagents.md). |
 | `/skills` | List discovered skills (SKILL.md files) and preview their bodies. |
 | `/compact` | Summarize the transcript into one message to free up context. |
 | `/study` | Run the canned prompt "Read and understand everything in the current directory." so the agent has full project context before you start asking targeted questions. Pass a path — typed, drag-dropped, or selected via `@` — to target a specific file or directory instead: `/study [dir:packages/]`, `/study cmd/zot/main.go`. |
@@ -298,7 +298,7 @@ Slash command names are case-insensitive in the TUI and messaging backends; argu
 | `/unjail` | Allow tools to touch paths outside again. |
 | `/reload-ext` | Hot-reload all extensions (re-read manifests, respawn subprocesses, rebuild tool registry). |
 | `/telegram` | Connect, disconnect, or show status of the Telegram bridge (takes `connect` / `disconnect` / `status` as an optional argument; opens a picker without one). When connected, DMs from the paired user become prompts in the running session and the assistant's replies are mirrored back to Telegram. Alias: `/tg`. |
-| `/settings` | Change persistent settings, including inline images, terminal alerts, AI terminal titles, auto-swarm, fast mode, main/sub-agent LSP access, and the auto-compact threshold. Saved to `$ZOT_HOME/config.json`; setting changes apply without a restart, while AI title generation waits for the first real prompt. |
+| `/settings` | Change persistent settings, including inline images, terminal alerts, AI terminal titles, auto-subagents, fast mode, main/sub-agent LSP access, and the auto-compact threshold. Saved to `$ZOT_HOME/config.json`; setting changes apply without a restart, while AI title generation waits for the first real prompt. |
 | `/clear` | Clear the chat transcript. |
 | `/exit` | Exit zot. |
 
@@ -318,7 +318,7 @@ Four ops on the current session. `/session` alone opens a picker; each is also r
 
 - **`/session export [path]`**. Writes the running transcript to a portable `.zotsession` file. Default destination is `~/Downloads/<timestamp>-<session-id>-<prompt-slug>.zotsession`. Pass a path to override; a directory is fine (a dated name is built inside), a bare name gets `.zotsession` appended. The meta's cwd is stripped on the way out so the recipient doesn't see your filesystem layout.
 
-  **What's included.** Only the main chat thread of the running session — messages, tool calls, tool results, compactions, and usage. **`/swarm` subagents are NOT included.** Their transcripts, unix-socket inboxes, and per-agent session files are all machine-local; a `.zotsession` is just a chat transcript and has no way to revive a unix socket on another box. If you want the conversation, copy it out of the dashboard manually.
+  **What's included.** Only the main chat thread of the running session — messages, tool calls, tool results, compactions, and usage. **`/subagents` subagents are NOT included.** Their transcripts, unix-socket inboxes, and per-agent session files are all machine-local; a `.zotsession` is just a chat transcript and has no way to revive a unix socket on another box. If you want the conversation, copy it out of the dashboard manually.
 - **`/session import <path>`**. Copies a `.zotsession` file into `$ZOT_HOME/sessions/<cwd-hash>/` with a fresh id and the current cwd, then switches the running agent onto it. Imported sessions are first-class: they show up in `/sessions` and `/jump`, and in the current-family tree when they are part of that family. Drag-drop paths in the editor are accepted (zot strips the surrounding quotes automatically).
 - **`/fork`** (also available as **`/session fork`**). Opens a turn picker (same shape as `/jump`). Pick any past user message; zot copies the transcript through that turn into a new branch and switches to it without starting a provider request. The parent session stays on disk. Use it to try a different question without polluting the original transcript, or to rewind after the agent went down the wrong path. Use a user-message row in `/session tree` when you want the prompt restored for editing, including image attachments.
 - **`/session tree`**. Shows the current session's family: its root ancestor and descendants, not unrelated root sessions in the same cwd. Use `up`/`down` and `enter` to choose a row; `esc` closes the tree. The picker keeps pre-compaction history available as forkable user and assistant messages, while hiding tool calls, tool results, compaction checkpoints, shell/image helper rows, and other internal context. Message rows are indented at their branch points and the current endpoint is tagged `[current]`. Empty and detached branch points are represented by visible boundary rows. A child whose historical fork point no longer matches after compaction stays discoverable as a detached branch under the parent's current tail rather than disappearing. Parentless sessions are roots; orphaned children (whose parent file was deleted) remain roots.
@@ -364,7 +364,6 @@ Background subagents that run alongside your main session. Each one is a separat
 /subagents restart-task <id>                   # intentionally run the stored task again
 /subagents kill <id>                            # cancel gracefully, then force-stop
 /subagents remove <id>                          # delete durable state
-# /swarm remains an alias for /subagents
 ```
 
 **Dashboard (`/subagents` with no arg)** — a list of every agent for the current session, with process/turn state, queue position, age, workspace mode, and current activity. Keys:
@@ -386,17 +385,17 @@ Background subagents that run alongside your main session. Each one is a separat
 
 **Session scoping** — each agent is stamped with the host session that spawned it and only shows up in that session's dashboard. Swap sessions with `/sessions` and the dashboard re-narrows accordingly. Agents from other sessions keep running in the background and reappear when you switch back.
 
-**Persistence across zot restarts** — every spawn writes a durable manifest, append-only event log, session file, and structured `result.json` under `$ZOT_HOME/swarm/agents/<id>/`. On the next `zot` launch they show up as **detached**; use `R` or `/subagents resume-session <id>` to continue the existing session. `/subagents restart-task <id>` is the explicit operation that intentionally replays the stored task. Existing `$ZOT_HOME/swarm` state remains readable.
+**Persistence across zot restarts** — every spawn writes a durable manifest, append-only event log, session file, and structured `result.json` under `$ZOT_HOME/subagents/agents/<id>/`. On the next `zot` launch they show up as **detached**; use `R` or `/subagents resume-session <id>` to continue the existing session. `/subagents restart-task <id>` is the explicit operation that intentionally replays the stored task.
 
-**Where state lives** — per-agent manifests, session files, events, results, and patches live under `$ZOT_HOME/swarm/agents/<id>/`; inbox sockets are runtime-only and permission-restricted. Shared-mode edits land directly in the repo. Worktree-mode edits are captured as durable patches and changed-file summaries before cleanup.
+**Where state lives** — per-agent manifests, session files, events, results, and patches live under `$ZOT_HOME/subagents/agents/<id>/`; inbox sockets are runtime-only and permission-restricted. Shared-mode edits land directly in the repo. Worktree-mode edits are captured as durable patches and changed-file summaries before cleanup.
 
 **`/session export` does NOT bundle subagents.** A `.zotsession` is just the main chat transcript; per-agent state (session file, unix-socket inbox) is machine-local and doesn't round-trip through a JSONL file. To share what an agent said, copy it out of the transcript view manually.
 
-**Auto-swarm.** With `/settings` -> auto-swarm on, the main agent gets the canonical `subagent_spawn` tool (`swarm_spawn` remains an alias) and a system-prompt nudge to delegate independent work. The tool returns the child id and lifecycle state immediately; completion is a durable `turn.result` with a `subagent://<id>/result` reference. It accepts named profiles, timeout, `max_turns`, and `isolation:"shared"` or `isolation:"worktree"`. Global concurrency and total-spawn budgets apply equally to slash commands, tool calls, and batches. Off by default; toggle from `/settings`.
+**Auto-subagents.** With `/settings` -> auto-subagents on, the main agent gets the canonical `subagent_spawn` tool and a system-prompt nudge to delegate independent work. The tool returns the child id and lifecycle state immediately; completion is a durable `turn.result` with a `subagent://<id>/result` reference. It accepts named profiles, timeout, `max_turns`, and `isolation:"shared"` or `isolation:"worktree"`. Global concurrency and total-spawn budgets apply equally to slash commands, tool calls, and batches. Off by default; toggle from `/settings`.
 
 ### Named subagent profiles
 
-zot discovers the common markdown/frontmatter profile layout from `~/.agents/agents/*.md` by default. With auto-swarm enabled, the main agent receives `[subagents_list]` metadata and can select a named profile through `subagent_spawn` (`swarm_spawn` remains an alias). Profile bodies are applied only to the selected child. See [docs/subagents.md](docs/subagents.md) for discovery, supported fields, reasoning levels, and examples.
+zot discovers the common markdown/frontmatter profile layout from `~/.agents/agents/*.md` by default. With auto-subagents enabled, the main agent receives `[subagents_list]` metadata and can select a named profile through `subagent_spawn`. Profile bodies are applied only to the selected child. See [docs/subagents.md](docs/subagents.md) for discovery, supported fields, reasoning levels, and examples.
 
 ### `/settings`
 
@@ -405,7 +404,7 @@ Opens a dialog with every persistent setting. `up`/`down` to navigate, `enter` o
 - **render images when supported** — draw screenshots / `read`-returned images inline using the terminal's image protocol, or fall back to a text placeholder. Auto-detected from `TERM_PROGRAM`; the toggle overrides the detection. The row is greyed out and forced off on terminals that don't speak any image protocol.
 - **terminal alerts** — emit a terminal bell when the main session stops with work that may need attention, or when an extension raises a structured alert. Enabled by default; changes apply immediately and persist as `terminal_alerts_enabled`. Terminal emulators may render the bell audibly, visually, or not at all.
 - **AI terminal titles** — after the first real prompt of a fresh interactive session, make one small hidden request to the active model and set the terminal title to `zot: <title>`. The title is limited to 40 Unicode characters, persisted with the session, restored on resume, and never added to the conversation. Enabled by default; disable it to avoid the extra model request. The toggle applies immediately, but title generation still waits for the first real prompt and never starts from startup context, resumed history, or slash commands. Persists as `terminal_title_enabled`.
-- **auto-swarm** — let the main agent spawn background sub-agents in parallel via the canonical `subagent_spawn` tool (`swarm_spawn` remains an alias). Off by default. The tool accepts named profiles, reasoning, timeout, turn limits, and shared/worktree isolation; lifecycle and result references are persisted. Completion updates still arrive through the auto-swarm watcher. See `/subagents` and [docs/subagents.md](docs/subagents.md) for details.
+- **auto-subagents** — let the main agent spawn background sub-agents in parallel via the canonical `subagent_spawn` tool. Off by default. The tool accepts named profiles, reasoning, timeout, turn limits, and shared/worktree isolation; lifecycle and result references are persisted. Completion updates still arrive through the auto-subagents watcher. See `/subagents` and [docs/subagents.md](docs/subagents.md) for details.
 - **fast mode** — request OpenAI's Fast service tier for OpenAI, OpenAI Responses, and OpenAI Codex models. Off by default; changes apply on the next model call and persist as `fast_mode`. Other providers return an unsupported-provider error. Fast mode may cost more and depends on the selected OpenAI model/account.
 - **lsp in main session** — enable the built-in `lsp` tool and code diagnostics for the main agent. Enabled by default; changes persist as `lsp_enabled`.
 - **lsp in sub-agents** — allow newly spawned background sub-agents to use the built-in `lsp` tool. Enabled by default; changes persist as `subagent_lsp_enabled` and apply when a child starts.
@@ -1068,8 +1067,7 @@ packages/agent/modes/bot/             protocol-agnostic bot runner (BotAdapter i
 packages/agent/modes/telegram/        telegram adapter, api client, daemon
 packages/agent/tools/                 read, write, edit, bash, lsp, sandbox
 packages/agent/skills/                skill discovery, frontmatter parser, skill tool
-packages/agent/subagents/             named markdown profile discovery and dispatch
-packages/agent/swarm/                 background subagent runtime
+packages/agent/subagents/             named profiles, supervisor, and background runtime
 packages/agent/sdk/                   public Go SDK for embedding zot in-process (package sdk)
 packages/agent/ext/                   public Go SDK for writing extensions (package ext)
 ```

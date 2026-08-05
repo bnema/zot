@@ -691,7 +691,7 @@ func Resolve(args Args, requireCred bool) (Resolved, error) {
 	if args.PermissionSet != nil {
 		sandbox.SetPermissions(args.PermissionSet)
 	}
-	subagentSession := args.Mode == ModeSwarmAgent || strings.TrimSpace(args.Subagent) != ""
+	subagentSession := args.Mode == ModeSubagentWorker || strings.TrimSpace(args.Subagent) != ""
 	lspEnabled := !args.NoLSP && cfg.LSPEnabledFor(subagentSession)
 	reg := buildToolRegistry(args, args.CWD, sandbox, lspEnabled, cfg.LSPDiagnosticsOnWriteEnabled(subagentSession), cfg.LSPDiagnosticsOnEditEnabled(subagentSession))
 
@@ -737,13 +737,13 @@ func Resolve(args Args, requireCred bool) (Resolved, error) {
 		append_ = append(append_, skillAddendum)
 	}
 	interactiveMode := args.Mode == "" || args.Mode == ModeInteractive
-	if selectedProfile == nil && interactiveMode && autoSwarmToolAllowed(args) && cfg.AutoSwarmEnabled != nil && *cfg.AutoSwarmEnabled {
+	if selectedProfile == nil && interactiveMode && autoSubagentsToolAllowed(args) && cfg.AutoSubagentsEnabled != nil && *cfg.AutoSubagentsEnabled {
 		homeDir, _ := os.UserHomeDir()
 		profiles, _ := subagents.Discover(args.CWD, homeDir)
 		if subagentsAddendum := subagents.SystemPromptAddendum(profiles); subagentsAddendum != "" {
 			append_ = append(append_, subagentsAddendum)
 		}
-		append_ = append(append_, AutoSwarmSystemAddendum)
+		append_ = append(append_, AutoSubagentsSystemAddendum)
 	}
 	if selectedProfile != nil && selectedProfile.SystemPromptMode != "replace" && selectedProfile.SystemPrompt != "" {
 		append_ = append(append_, selectedProfile.SystemPrompt)
@@ -1188,7 +1188,7 @@ func lspManagerNeeded(args Args, diagnosticsOnWrite, diagnosticsOnEdit bool) boo
 	return false
 }
 
-func autoSwarmToolAllowed(args Args) bool {
+func autoSubagentsToolAllowed(args Args) bool {
 	if args.NoTools || args.PermissionSet != nil {
 		return false
 	}
@@ -1196,7 +1196,7 @@ func autoSwarmToolAllowed(args Args) bool {
 		return true
 	}
 	for _, name := range args.Tools {
-		if name == "subagent_spawn" || name == "swarm_spawn" {
+		if name == "subagent_spawn" {
 			return true
 		}
 	}

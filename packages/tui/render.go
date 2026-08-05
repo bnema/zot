@@ -476,7 +476,7 @@ func (r *Renderer) DrawLog(chat, bottom []string, cursorBottomRow, cursorCol int
 	// alternative — always writing SeqHideCursor + cursor-position +
 	// SeqShowCursor — resets the terminal's cursor blink timer on
 	// every tick. At our 120ms animation cadence that means the
-	// caret in an idle dialog editor (e.g. an open swarm transcript
+	// caret in an idle dialog editor (e.g. an open subagent transcript
 	// for an agent that's currently idle) appears as a solid block
 	// that never blinks, because we keep "showing" it before the
 	// terminal can blink it off. Bailing out here lets the OS run
