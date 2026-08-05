@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/patriceckhart/zot/packages/core"
-	"github.com/patriceckhart/zot/packages/provider"
+	"github.com/bnema/zut/packages/core"
+	"github.com/bnema/zut/packages/provider"
 )
 
 // extensionTool wraps a single extension-registered tool as a

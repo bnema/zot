@@ -45,7 +45,7 @@ func FetchChangelog(ctx context.Context, version string) (ChangelogInfo, error) 
 	if !strings.HasPrefix(tag, "v") {
 		tag = "v" + tag
 	}
-	url := fmt.Sprintf("https://api.github.com/repos/patriceckhart/zot/releases/tags/%s", tag)
+	url := fmt.Sprintf("https://api.github.com/repos/bnema/zut/releases/tags/%s", tag)
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
 		return ChangelogInfo{}, err

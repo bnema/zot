@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/patriceckhart/zot/packages/agent/skills"
+	"github.com/bnema/zut/packages/agent/skills"
 )
 
 const skillCommandPrefix = "/skill:"

@@ -6,8 +6,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/patriceckhart/zot/packages/agent/extensions"
-	"github.com/patriceckhart/zot/packages/tui"
+	"github.com/bnema/zut/packages/agent/extensions"
+	"github.com/bnema/zut/packages/tui"
 )
 
 const reloadStatusDuration = 5 * time.Second

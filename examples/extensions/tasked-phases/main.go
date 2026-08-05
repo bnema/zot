@@ -6,7 +6,7 @@ import (
 	"os"
 	"sync"
 
-	"github.com/patriceckhart/zot/packages/agent/ext"
+	"github.com/bnema/zut/packages/agent/ext"
 )
 
 const (

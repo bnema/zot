@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -174,6 +175,12 @@ func TestOpenAIGPT56DoesNotUseCodexCLIRouting(t *testing.T) {
 	}
 	if gotBody.PromptCacheKey != "" {
 		t.Fatalf("prompt_cache_key = %q", gotBody.PromptCacheKey)
+	}
+	if gotReq.Header.Get("originator") != "zot" {
+		t.Fatalf("originator = %q", gotReq.Header.Get("originator"))
+	}
+	if gotReq.Header.Get("user-agent") != "zot ("+runtime.GOOS+" "+runtime.GOARCH+")" {
+		t.Fatalf("user-agent = %q", gotReq.Header.Get("user-agent"))
 	}
 }
 

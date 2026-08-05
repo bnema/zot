@@ -6,8 +6,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/patriceckhart/zot/packages/agent/tools"
-	"github.com/patriceckhart/zot/packages/tui"
+	"github.com/bnema/zut/packages/agent/tools"
+	"github.com/bnema/zut/packages/tui"
 	"golang.org/x/term"
 )
 
@@ -81,12 +81,12 @@ type Args struct {
 	// NoSkill disables ALL skill discovery for this run, including
 	// the built-in skills compiled into the binary. The system
 	// prompt loses its "Available skills" manifest and the `skill`
-	// tool isn't registered. Useful for running zot without any
+	// tool isn't registered. Useful for running zut without any
 	// extra context biasing the model.
 	NoSkill bool
 
 	// WithSkills controls loading user-installed skills from
-	// $ZOT_HOME/skills/, .zot/skills/, .claude/skills/, and
+	// $ZUT_HOME/skills/, .zut/skills/, .claude/skills/, and
 	// .agents/skills/. It defaults to true; --no-skill disables all
 	// skill discovery, including built-ins.
 	WithSkills bool
@@ -107,8 +107,8 @@ type Args struct {
 	// freely so automated workflows keep working.
 	NoYolo bool
 
-	// Yes accepts zotfile launch consent without an interactive
-	// Allow? prompt (zot run -y / --yes). Durable consent receipts
+	// Yes accepts zutfile launch consent without an interactive
+	// Allow? prompt (zut run -y / --yes). Durable consent receipts
 	// are still written for modes other than bash ask.
 	Yes bool
 
@@ -119,7 +119,7 @@ type Args struct {
 
 	Prompt string // concatenated positional args
 
-	// StartupPre is an optional zotfile entry.pre value. Interactive
+	// StartupPre is an optional zutfile entry.pre value. Interactive
 	// mode auto-submits it once at startup before InitialInput handling.
 	StartupPre string
 
@@ -137,8 +137,8 @@ type Args struct {
 	// locally.
 	Subagent string
 
-	// AgentName/AgentDataDir/PermissionSet are populated by `zot run`
-	// for local zotfile agents. They scope sessions and enforce the
+	// AgentName/AgentDataDir/PermissionSet are populated by `zut run`
+	// for local zutfile agents. They scope sessions and enforce the
 	// manifest's declared file/bash permissions.
 	AgentName     string
 	AgentDataDir  string
@@ -364,7 +364,7 @@ func ParseArgs(in []string) (Args, error) {
 }
 
 // PrintHelp writes the help text to stderr. When stderr is a TTY it
-// uses the same palette as zot's TUI; when redirected it falls back to
+// uses the same palette as zut's TUI; when redirected it falls back to
 // plain text with no ANSI escapes.
 func PrintHelp(version string) {
 	th := tui.Dark
@@ -427,42 +427,42 @@ func PrintHelp(version string) {
 	fmt.Fprintln(os.Stderr)
 	var headline string
 	if useColor {
-		headline = th.AccentBar(th.Assistant) + assistant(tui.Bold("zot. yet another coding agent harness."))
+		headline = th.AccentBar(th.Assistant) + assistant(tui.Bold("zut. yet another coding agent harness."))
 	} else {
-		headline = "zot. yet another coding agent harness."
+		headline = "zut. yet another coding agent harness."
 	}
 	fmt.Fprintln(os.Stderr, headline)
 	fmt.Fprintln(os.Stderr, muted("ask anything, or type /help inside the tui to see commands."))
 	fmt.Fprintf(os.Stderr, "%s %s\n", muted("version:"), fg(version))
 
 	section("modes",
-		row{"zot", "interactive tui"},
-		row{"zot \"prompt\"", "interactive, pre-filled prompt"},
-		row{"zot -p \"prompt\"", "print final text, exit"},
-		row{"zot --stream \"prompt\"", "stream assistant text live, exit"},
-		row{"zot --json \"prompt\"", "newline-delimited json events, exit"},
-		row{"zot rpc", "json-rpc loop on stdin/stdout (see docs/rpc.md)"},
+		row{"zut", "interactive tui"},
+		row{"zut \"prompt\"", "interactive, pre-filled prompt"},
+		row{"zut -p \"prompt\"", "print final text, exit"},
+		row{"zut --stream \"prompt\"", "stream assistant text live, exit"},
+		row{"zut --json \"prompt\"", "newline-delimited json events, exit"},
+		row{"zut rpc", "json-rpc loop on stdin/stdout (see docs/rpc.md)"},
 	)
 	section("extensions",
-		row{"zot ext list", "list installed extensions"},
-		row{"zot ext install <path|git-url>", "install from a local path or Git URL"},
-		row{"zot ext install --build=go <path>", "build local Go source, then install"},
-		row{"zot --ext ./path/to/ext", "load an extension for this run only"},
-		row{"zot ext help", "show all extension subcommands"},
+		row{"zut ext list", "list installed extensions"},
+		row{"zut ext install <path|git-url>", "install from a local path or Git URL"},
+		row{"zut ext install --build=go <path>", "build local Go source, then install"},
+		row{"zut --ext ./path/to/ext", "load an extension for this run only"},
+		row{"zut ext help", "show all extension subcommands"},
 	)
 	section("self-update",
-		row{"zot update", "download and install the latest release"},
-		row{"zot update --check", "show whether a new release is available"},
+		row{"zut update", "download and install the latest release"},
+		row{"zut update --check", "show whether a new release is available"},
 	)
 	section("telegram",
-		row{"zot telegram-bot setup", "configure a telegram bot (from BotFather)"},
-		row{"zot telegram-bot run", "foreground bridge (ctrl+c to stop)"},
-		row{"zot telegram-bot start", "background bridge (detached)"},
-		row{"zot telegram-bot stop", "stop the background bridge"},
-		row{"zot telegram-bot logs [-f]", "tail the background bridge log"},
-		row{"zot telegram-bot status", "config + running state"},
-		row{"zot telegram-bot reset", "forget saved token"},
-		row{"zot tg ...", "short alias for telegram-bot"},
+		row{"zut telegram-bot setup", "configure a telegram bot (from BotFather)"},
+		row{"zut telegram-bot run", "foreground bridge (ctrl+c to stop)"},
+		row{"zut telegram-bot start", "background bridge (detached)"},
+		row{"zut telegram-bot stop", "stop the background bridge"},
+		row{"zut telegram-bot logs [-f]", "tail the background bridge log"},
+		row{"zut telegram-bot status", "config + running state"},
+		row{"zut telegram-bot reset", "forget saved token"},
+		row{"zut tg ...", "short alias for telegram-bot"},
 	)
 	section("provider and model flags",
 		row{"--provider", "provider to use (anthropic|openai|openai-codex|kimi|deepseek|google|ollama|llama.cpp)"},
@@ -488,7 +488,7 @@ func PrintHelp(version string) {
 		row{"--no-lsp", "disable the built-in LSP/linter tool"},
 		row{"--tools csv", "only enable the listed tools (include lsp explicitly)"},
 		row{"--no-yolo", "ask before running every tool call"},
-		row{"-y, --yes", "accept zot run consent without prompting"},
+		row{"-y, --yes", "accept zut run consent without prompting"},
 		row{"--no-ext", "skip extension discovery for this run"},
 		row{"--no-skill", "skip all skill discovery for this run"},
 	)

@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/patriceckhart/zot/packages/provider"
+	"github.com/bnema/zut/packages/provider"
 )
 
 // Compact summarizes the agent's transcript via the LLM and replaces

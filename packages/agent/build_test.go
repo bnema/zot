@@ -10,10 +10,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/patriceckhart/zot/packages/agent/skills"
-	"github.com/patriceckhart/zot/packages/agent/tools"
-	"github.com/patriceckhart/zot/packages/core"
-	"github.com/patriceckhart/zot/packages/provider"
+	"github.com/bnema/zut/packages/agent/skills"
+	"github.com/bnema/zut/packages/agent/tools"
+	"github.com/bnema/zut/packages/core"
+	"github.com/bnema/zut/packages/provider"
 )
 
 type bundledSkillSource struct {
@@ -140,16 +140,16 @@ func TestAutoSubagentsToolPoliciesTrackEachTool(t *testing.T) {
 
 func TestReadAgentsContextLoadsGlobalAndAncestors(t *testing.T) {
 	root := t.TempDir()
-	zotHome := filepath.Join(root, "zot-home")
+	zutHome := filepath.Join(root, "zut-home")
 	project := filepath.Join(root, "repo")
 	nested := filepath.Join(project, "packages", "app")
-	if err := os.MkdirAll(zotHome, 0o755); err != nil {
+	if err := os.MkdirAll(zutHome, 0o755); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.MkdirAll(nested, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(zotHome, "AGENTS.md"), []byte("global rule"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(zutHome, "AGENTS.md"), []byte("global rule"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(project, "AGENTS.md"), []byte("repo rule"), 0o644); err != nil {
@@ -159,12 +159,12 @@ func TestReadAgentsContextLoadsGlobalAndAncestors(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	files := loadAgentsContext(nested, zotHome)
+	files := loadAgentsContext(nested, zutHome)
 	if len(files) != 3 {
 		t.Fatalf("loaded %d context files, want 3: %#v", len(files), files)
 	}
 	wantPaths := []string{
-		filepath.Join(zotHome, "AGENTS.md"),
+		filepath.Join(zutHome, "AGENTS.md"),
 		filepath.Join(project, "AGENTS.md"),
 		filepath.Join(nested, "AGENTS.md"),
 	}
@@ -190,7 +190,7 @@ func TestFindSubagentProfileReportsDiscoveryFailure(t *testing.T) {
 	if err := os.WriteFile(profileSource, []byte("not a directory"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("ZOT_AGENT_PROFILES", profileSource)
+	t.Setenv("ZUT_AGENT_PROFILES", profileSource)
 
 	profile, err := findSubagentProfile("", "reviewer")
 	if profile != nil {
@@ -207,7 +207,7 @@ func TestFindSubagentProfileReportsDiscoveryFailure(t *testing.T) {
 func TestResolveIncludesNamedSubagentsListWhenAutoSubagentsIsEnabled(t *testing.T) {
 	root := t.TempDir()
 	home := filepath.Join(root, "home")
-	zotHome := filepath.Join(root, "zot-home")
+	zutHome := filepath.Join(root, "zut-home")
 	project := filepath.Join(root, "repo")
 	if err := os.MkdirAll(filepath.Join(home, ".agents", "agents"), 0o755); err != nil {
 		t.Fatal(err)
@@ -216,8 +216,8 @@ func TestResolveIncludesNamedSubagentsListWhenAutoSubagentsIsEnabled(t *testing.
 		t.Fatal(err)
 	}
 	t.Setenv("HOME", home)
-	t.Setenv("ZOT_HOME", zotHome)
-	t.Setenv("ZOT_AGENT_PROFILES", filepath.Join(home, ".agents", "agents"))
+	t.Setenv("ZUT_HOME", zutHome)
+	t.Setenv("ZUT_AGENT_PROFILES", filepath.Join(home, ".agents", "agents"))
 	enabled := true
 	if err := SaveConfig(Config{Provider: "openai", Model: "gpt-5", AutoSubagentsEnabled: &enabled}); err != nil {
 		t.Fatal(err)
@@ -247,7 +247,7 @@ Review without editing.
 func TestResolveAppliesSelectedSubagentProfile(t *testing.T) {
 	root := t.TempDir()
 	home := filepath.Join(root, "home")
-	zotHome := filepath.Join(root, "zot-home")
+	zutHome := filepath.Join(root, "zut-home")
 	project := filepath.Join(root, "repo")
 	if err := os.MkdirAll(filepath.Join(home, ".agents", "agents"), 0o755); err != nil {
 		t.Fatal(err)
@@ -256,12 +256,12 @@ func TestResolveAppliesSelectedSubagentProfile(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("HOME", home)
-	t.Setenv("ZOT_HOME", zotHome)
-	t.Setenv("ZOT_AGENT_PROFILES", filepath.Join(home, ".agents", "agents"))
+	t.Setenv("ZUT_HOME", zutHome)
+	t.Setenv("ZUT_AGENT_PROFILES", filepath.Join(home, ".agents", "agents"))
 	if err := SaveConfig(Config{Provider: "openai", Model: "gpt-5", Reasoning: "high"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(zotHome, "AGENTS.md"), []byte("global context"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(zutHome, "AGENTS.md"), []byte("global context"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	profile := `---
@@ -320,7 +320,7 @@ func TestResolveSubagentFastModeUsesHostSettingAsAnUpperBound(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			root := t.TempDir()
 			home := filepath.Join(root, "home")
-			zotHome := filepath.Join(root, "zot-home")
+			zutHome := filepath.Join(root, "zut-home")
 			project := filepath.Join(root, "repo")
 			profilesDir := filepath.Join(home, ".agents", "agents")
 			if err := os.MkdirAll(profilesDir, 0o755); err != nil {
@@ -330,8 +330,8 @@ func TestResolveSubagentFastModeUsesHostSettingAsAnUpperBound(t *testing.T) {
 				t.Fatal(err)
 			}
 			t.Setenv("HOME", home)
-			t.Setenv("ZOT_HOME", zotHome)
-			t.Setenv("ZOT_AGENT_PROFILES", profilesDir)
+			t.Setenv("ZUT_HOME", zutHome)
+			t.Setenv("ZUT_AGENT_PROFILES", profilesDir)
 
 			cfg := Config{Provider: "openai", Model: "gpt-5"}
 			cfg.FastMode = &tc.hostFastMode
@@ -376,12 +376,12 @@ func TestReadAgentsContextMissingFilesIsEmpty(t *testing.T) {
 // TestResolveFallsBackWhenConfiguredModelIsGone reproduces the
 // startup failure caught by the user's screenshot: the persisted
 // config.json points at a model id that's no longer in the active
-// catalogue (because they edited models.json or zot's bundled
+// catalogue (because they edited models.json or zut's bundled
 // catalogue changed). Resolve must NOT error — strands the user
 // with no way to fix it from the TUI — and should repair the config
 // so the next launch is silent.
 func TestResolveFallsBackWhenConfiguredModelIsGone(t *testing.T) {
-	t.Setenv("ZOT_HOME", t.TempDir())
+	t.Setenv("ZUT_HOME", t.TempDir())
 	t.Setenv("OPENAI_API_KEY", "test-key")
 	// Persist a stale model id.
 	stale := "gpt-5.5-pro-not-real"
@@ -421,7 +421,7 @@ func TestResolveAppliesJailByDefault(t *testing.T) {
 		{name: "enabled starts locked", config: Config{Provider: "openai", Model: "gpt-5", JailByDefault: boolPtr(true)}, want: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			t.Setenv("ZOT_HOME", t.TempDir())
+			t.Setenv("ZUT_HOME", t.TempDir())
 			t.Setenv("OPENAI_API_KEY", "test-key")
 			if err := SaveConfig(tc.config); err != nil {
 				t.Fatal(err)
@@ -445,7 +445,7 @@ func boolPtr(v bool) *bool { return &v }
 // persisted config. If the user passed --model X explicitly and X is
 // unknown, we still fall back, but we don't touch their config.
 func TestResolveExplicitFlagStaleDoesNotRepairConfig(t *testing.T) {
-	t.Setenv("ZOT_HOME", t.TempDir())
+	t.Setenv("ZUT_HOME", t.TempDir())
 	t.Setenv("OPENAI_API_KEY", "test-key")
 	good := "gpt-5"
 	if err := SaveConfig(Config{Provider: "openai", Model: good}); err != nil {
@@ -466,7 +466,7 @@ func TestResolveExplicitFlagStaleDoesNotRepairConfig(t *testing.T) {
 }
 
 func TestResolveOpenRouterPreservesSavedRoutedModelID(t *testing.T) {
-	t.Setenv("ZOT_HOME", t.TempDir())
+	t.Setenv("ZUT_HOME", t.TempDir())
 	t.Setenv("OPENROUTER_API_KEY", "test-key")
 	want := "deepseek/deepseek-v4-flash"
 	if err := SaveConfig(Config{Provider: "openrouter", Model: want}); err != nil {
@@ -489,7 +489,7 @@ func TestResolveOpenRouterPreservesSavedRoutedModelID(t *testing.T) {
 }
 
 func TestResolveGatewayPlainUnknownModelFallsBack(t *testing.T) {
-	t.Setenv("ZOT_HOME", t.TempDir())
+	t.Setenv("ZUT_HOME", t.TempDir())
 	t.Setenv("OPENROUTER_API_KEY", "test-key")
 	stale := "not-a-routed-model"
 	if err := SaveConfig(Config{Provider: "openrouter", Model: stale}); err != nil {
@@ -509,12 +509,12 @@ func TestResolveGatewayPlainUnknownModelFallsBack(t *testing.T) {
 }
 
 // TestResolveEnvOnlyBedrockDiscoveredWithoutConfig reproduces issue
-// #15: pointing ZOT_HOME at a fresh dir drops the persisted
+// #15: pointing ZUT_HOME at a fresh dir drops the persisted
 // config.json (which pinned provider=amazon-bedrock). Resolve must
 // still discover bedrock from the AWS env vars instead of falling back
 // to anthropic and reporting "not logged in".
 func TestResolveEnvOnlyBedrockDiscoveredWithoutConfig(t *testing.T) {
-	t.Setenv("ZOT_HOME", t.TempDir()) // fresh home: no config.json
+	t.Setenv("ZUT_HOME", t.TempDir()) // fresh home: no config.json
 	// Disable the Kimi CLI token fallback so a developer machine with a
 	// real Kimi CLI login doesn't pre-empt bedrock in the scan.
 	if err := SetKimiCLIFallbackDisabled(true); err != nil {
@@ -540,7 +540,7 @@ func TestResolveEnvOnlyBedrockDiscoveredWithoutConfig(t *testing.T) {
 }
 
 func TestResolveOllamaUsesModelBaseURLBeforeDefault(t *testing.T) {
-	t.Setenv("ZOT_HOME", t.TempDir())
+	t.Setenv("ZUT_HOME", t.TempDir())
 	provider.SetLiveModels(nil)
 	defer provider.SetLiveModels(nil)
 	provider.SetUserModels([]provider.Model{{
@@ -562,7 +562,7 @@ func TestResolveOllamaUsesModelBaseURLBeforeDefault(t *testing.T) {
 }
 
 func TestResolveUsesInheritedSupervisorCredential(t *testing.T) {
-	t.Setenv("ZOT_HOME", t.TempDir())
+	t.Setenv("ZUT_HOME", t.TempDir())
 	t.Setenv("OPENAI_API_KEY", "")
 
 	r, err := Resolve(Args{
@@ -581,7 +581,7 @@ func TestResolveUsesInheritedSupervisorCredential(t *testing.T) {
 }
 
 func TestResolveLlamaCPPUsesRouterInferenceURL(t *testing.T) {
-	t.Setenv("ZOT_HOME", t.TempDir())
+	t.Setenv("ZUT_HOME", t.TempDir())
 	t.Setenv("LLAMA_BASE_URL", "http://127.0.0.1:8080/v1/")
 	t.Setenv("LLAMA_API_KEY", "")
 	provider.SetManagedModels(nil)
@@ -603,7 +603,7 @@ func TestResolveLlamaCPPUsesRouterInferenceURL(t *testing.T) {
 }
 
 func TestResolveLlamaCPPUsesStoredLogin(t *testing.T) {
-	t.Setenv("ZOT_HOME", t.TempDir())
+	t.Setenv("ZUT_HOME", t.TempDir())
 	t.Setenv("LLAMA_BASE_URL", "")
 	t.Setenv("LLAMA_API_KEY", "")
 	if err := AuthStoreFor().SetEndpointCredential("llama.cpp", "http://localhost:9090", "stored-key"); err != nil {
@@ -620,7 +620,7 @@ func TestResolveLlamaCPPUsesStoredLogin(t *testing.T) {
 }
 
 func TestResolveCustomProviderModelBaseURLBeatsProviderBaseURL(t *testing.T) {
-	t.Setenv("ZOT_HOME", t.TempDir())
+	t.Setenv("ZUT_HOME", t.TempDir())
 	t.Setenv("MY_COMPANY_API_KEY", "test-key")
 	path := filepath.Join(t.TempDir(), "models.json")
 	if err := os.WriteFile(path, []byte(`{
@@ -702,7 +702,7 @@ func TestCustomProviderUsesOpenAIResponsesAPI(t *testing.T) {
 }
 
 func TestResolveCustomProviderInsecureFromModelsJSONBaseURL(t *testing.T) {
-	t.Setenv("ZOT_HOME", t.TempDir())
+	t.Setenv("ZUT_HOME", t.TempDir())
 	t.Setenv("LOCAL_PROXY_API_KEY", "test-key")
 	path := filepath.Join(t.TempDir(), "models.json")
 	if err := os.WriteFile(path, []byte(`{
@@ -734,7 +734,7 @@ func TestResolveCustomProviderInsecureFromModelsJSONBaseURL(t *testing.T) {
 }
 
 func TestResolveOllamaFallsBackToDefaultBaseURL(t *testing.T) {
-	t.Setenv("ZOT_HOME", t.TempDir())
+	t.Setenv("ZUT_HOME", t.TempDir())
 	provider.SetLiveModels(nil)
 	defer provider.SetLiveModels(nil)
 
@@ -785,7 +785,7 @@ func TestResolveInsecureOnlyWithExplicitBaseURL(t *testing.T) {
 	orig := http.DefaultTransport
 	t.Cleanup(func() { http.DefaultTransport = orig })
 
-	t.Setenv("ZOT_HOME", t.TempDir())
+	t.Setenv("ZUT_HOME", t.TempDir())
 	t.Setenv("OPENAI_API_KEY", "test-key")
 
 	resolved, err := Resolve(Args{Provider: "moonshotai", InsecureTLS: true}, false)
@@ -811,7 +811,7 @@ func TestResolveInsecureFromConfigRequiresExplicitBaseURL(t *testing.T) {
 	orig := http.DefaultTransport
 	t.Cleanup(func() { http.DefaultTransport = orig })
 
-	t.Setenv("ZOT_HOME", t.TempDir())
+	t.Setenv("ZUT_HOME", t.TempDir())
 	t.Setenv("OPENAI_API_KEY", "test-key")
 	if err := SaveConfig(Config{Provider: "openai", Insecure: true}); err != nil {
 		t.Fatal(err)

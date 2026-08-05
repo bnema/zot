@@ -39,7 +39,7 @@ func closeWorkerPipes(pipes []io.Closer) {
 }
 
 // setProcessGroup puts a worker in a process group of its own. This keeps a
-// canceled worker from sharing a group with the supervising zot process.
+// canceled worker from sharing a group with the supervising zut process.
 func setProcessGroup(cmd *exec.Cmd) {
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 }

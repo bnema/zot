@@ -1,4 +1,4 @@
-// Package tools implements zot's built-in tools: read, write, edit, bash, and lsp.
+// Package tools implements zut's built-in tools: read, write, edit, bash, and lsp.
 package tools
 
 import (
@@ -11,8 +11,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/patriceckhart/zot/packages/core"
-	"github.com/patriceckhart/zot/packages/provider"
+	"github.com/bnema/zut/packages/core"
+	"github.com/bnema/zut/packages/provider"
 )
 
 const (
@@ -195,7 +195,7 @@ func imageMIME(path string) string {
 // returns the real media type, independent of the file's extension.
 // Providers validate the declared media type against the actual bytes
 // and 400 the whole request on a mismatch, so the extension can never
-// be trusted. Returns "" when the format is not one zot ships images
+// be trusted. Returns "" when the format is not one zut ships images
 // for, leaving the caller's extension-based guess in place.
 func sniffImageMIME(data []byte) string {
 	switch {

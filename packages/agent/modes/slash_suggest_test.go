@@ -4,7 +4,7 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/patriceckhart/zot/packages/agent/skills"
+	"github.com/bnema/zut/packages/agent/skills"
 )
 
 func TestSlashSuggesterHidesUnjailUntilJailed(t *testing.T) {

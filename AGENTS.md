@@ -1,10 +1,10 @@
-# Working Agreement for zot
+# Working Agreement for zut
 
 This file defines how automated coding assistants should work in this repository. Treat it as a practical operating manual, not a substitute for reading the code.
 
 ## Product intent
 
-zot is a compact Go coding-agent harness. Changes should preserve its defining properties:
+zut is a compact Go coding-agent harness. Changes should preserve its defining properties:
 
 - one portable binary
 - a provider-neutral agent engine
@@ -36,7 +36,7 @@ Put behavior in the package that owns the concern:
 | `packages/core` | Agent loop, messages, tool contracts, events, confirmation, sessions, compaction |
 | `packages/provider` | Provider clients, wire formats, streaming, retries, model metadata and discovery |
 | `packages/provider/auth` | Login flows, credential lookup, refresh, and storage |
-| `packages/agent` | CLI configuration, model selection, runtime assembly, RPC, and zotfiles |
+| `packages/agent` | CLI configuration, model selection, runtime assembly, RPC, and zutfiles |
 | `packages/agent/modes` | Interactive, print, JSON, dialog, bot, and Telegram interfaces |
 | `packages/agent/extensions` | Extension process lifecycle and host integration |
 | `packages/agent/extproto` | Extension wire protocol |
@@ -51,7 +51,7 @@ Provider quirks must not leak into `packages/core`. Terminal escape handling and
 
 ## Correctness contracts
 
-Some parts of zot require extra care because small mistakes corrupt state or weaken user protections.
+Some parts of zut require extra care because small mistakes corrupt state or weaken user protections.
 
 ### Agent events and sessions
 
@@ -148,13 +148,13 @@ Documentation-only changes do not require the Go test suite unless they alter ge
 
 ## Documentation duties
 
-Update documentation in the same change whenever users, integrators, or extension authors would observe different behavior. Relevant locations include `README.md`, `docs/rpc.md`, `docs/extensions.md`, `docs/skills.md`, `docs/themes.md`, and `docs/zotfiles.md`.
+Update documentation in the same change whenever users, integrators, or extension authors would observe different behavior. Relevant locations include `README.md`, `docs/rpc.md`, `docs/extensions.md`, `docs/skills.md`, `docs/themes.md`, and `docs/zutfiles.md`.
 
 Examples must match real flags and schemas. State limitations plainly, especially around sandboxing, provider support, compatibility, and platform differences.
 
 ## Dependency policy
 
-zot's single-binary design and small footprint are product requirements.
+zut's single-binary design and small footprint are product requirements.
 
 - Prefer the standard library or existing dependencies.
 - Explain why a new dependency is necessary before adding it.

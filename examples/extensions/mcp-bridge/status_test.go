@@ -198,8 +198,8 @@ func TestCompactErrClassifications(t *testing.T) {
 	}
 }
 
-func TestMCPResultToZot(t *testing.T) {
-	if got := mcpResultToZot(nil); len(got.Content) == 0 || got.IsError {
+func TestMCPResultToZut(t *testing.T) {
+	if got := mcpResultToZut(nil); len(got.Content) == 0 || got.IsError {
 		t.Fatalf("nil result: %+v", got)
 	}
 
@@ -207,7 +207,7 @@ func TestMCPResultToZot(t *testing.T) {
 		Content: []mcp.Content{mcp.TextContent{Type: "text", Text: "hello"}},
 		IsError: true,
 	}
-	got := mcpResultToZot(res)
+	got := mcpResultToZut(res)
 	if !got.IsError {
 		t.Fatal("IsError not propagated")
 	}
@@ -215,7 +215,7 @@ func TestMCPResultToZot(t *testing.T) {
 		t.Fatalf("content count = %d, want 1", len(got.Content))
 	}
 
-	empty := mcpResultToZot(&mcp.CallToolResult{})
+	empty := mcpResultToZut(&mcp.CallToolResult{})
 	if len(empty.Content) == 0 {
 		t.Fatal("empty MCP result must produce placeholder content")
 	}

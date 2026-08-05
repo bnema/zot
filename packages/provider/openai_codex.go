@@ -21,7 +21,7 @@ import (
 // Wire protocol notes:
 //   - Endpoint: POST https://chatgpt.com/backend-api/codex/responses
 //   - Headers: Authorization: Bearer <access_token>, chatgpt-account-id: <id>,
-//     OpenAI-Beta: responses=experimental, originator: zot
+//     OpenAI-Beta: responses=experimental, originator: zot (required legacy value)
 //   - Body: OpenAI Responses API shape (not chat/completions).
 //     input: [{role, content: [{type: "input_text" | "input_image" | ... }]}]
 //     instructions: <system prompt>
@@ -75,7 +75,7 @@ func NewOpenAICodex(token, accountID, baseURL string) Client {
 
 func (c *codexClient) Name() string { return "openai-codex" }
 
-// ---- Responses API wire types (subset needed for zot's surface) ----
+// ---- Responses API wire types (subset needed for zut's surface) ----
 
 type codexInputText struct {
 	Type string `json:"type"` // "input_text"
@@ -360,7 +360,7 @@ func usesCodexCLIRouting(model string) bool {
 func newCodexSessionID() string {
 	var b [16]byte
 	if _, err := rand.Read(b[:]); err != nil {
-		return fmt.Sprintf("zot-%d", time.Now().UnixNano())
+		return fmt.Sprintf("zut-%d", time.Now().UnixNano())
 	}
 	return strings.Join([]string{
 		hex.EncodeToString(b[0:4]),
@@ -410,6 +410,8 @@ func (c *codexClient) Stream(ctx context.Context, req Request) (<-chan Event, er
 			httpReq.Header.Set("session-id", codexCLISessionID)
 			httpReq.Header.Set("user-agent", "codex_cli_rs/0.0.0")
 		} else {
+			// ChatGPT's backend recognizes these established values. They are
+			// external provider metadata, not zut product identifiers.
 			httpReq.Header.Set("originator", "zot")
 			httpReq.Header.Set("user-agent", fmt.Sprintf("zot (%s %s)", runtime.GOOS, runtime.GOARCH))
 		}

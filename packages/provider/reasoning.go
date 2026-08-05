@@ -147,7 +147,7 @@ func usesReasoningBudget(model Model) bool {
 	return model.API == "anthropic"
 }
 
-// NormalizeReasoning canonicalizes zot's user-facing reasoning levels.
+// NormalizeReasoning canonicalizes zut's user-facing reasoning levels.
 // Empty string means reasoning is disabled. "maximum" remains
 // an alias for xhigh; "max" is the separate opt-in tier above it.
 func NormalizeReasoning(level string) string {
@@ -171,7 +171,7 @@ func NormalizeReasoning(level string) string {
 	}
 }
 
-// ReasoningBudget returns zot's approximate token budget for reasoning-capable
+// ReasoningBudget returns zut's approximate token budget for reasoning-capable
 // providers that accept explicit budgets.
 func ReasoningBudget(level string) int {
 	switch NormalizeReasoning(level) {
@@ -190,7 +190,7 @@ func ReasoningBudget(level string) int {
 	}
 }
 
-// AnthropicAdaptiveEffort maps zot's user-facing reasoning levels onto the
+// AnthropicAdaptiveEffort maps zut's user-facing reasoning levels onto the
 // effort enum used by adaptive-thinking models. These models reject explicit
 // thinking budgets; reasoning depth is controlled by output_config.effort.
 func AnthropicAdaptiveEffort(level string) string {
@@ -210,7 +210,7 @@ func AnthropicAdaptiveEffort(level string) string {
 	}
 }
 
-// OpenAIReasoningEffort maps zot's thinking setting onto the effort enum
+// OpenAIReasoningEffort maps zut's thinking setting onto the effort enum
 // accepted by generic OpenAI-compatible chat-completions endpoints.
 func OpenAIReasoningEffort(level string) string {
 	switch NormalizeReasoning(level) {
@@ -226,7 +226,7 @@ func OpenAIReasoningEffort(level string) string {
 	}
 }
 
-// OpenAICompatAnthropicEffort maps zot's thinking setting when an adaptive
+// OpenAICompatAnthropicEffort maps zut's thinking setting when an adaptive
 // Anthropic model is served over an OpenAI-compatible chat-completions wire.
 // Adaptive models accept native xhigh and max effort values.
 func OpenAICompatAnthropicEffort(level string) string {
@@ -246,7 +246,7 @@ func OpenAICompatAnthropicEffort(level string) string {
 	}
 }
 
-// OpenAICodexReasoningEffort maps zot levels onto the Responses API effort
+// OpenAICodexReasoningEffort maps zut levels onto the Responses API effort
 // enum. GPT-5.6 supports native max; other models clamp max to xhigh.
 func OpenAICodexReasoningEffort(level, model string) string {
 	switch NormalizeReasoning(level) {

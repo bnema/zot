@@ -14,12 +14,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/patriceckhart/zot/packages/agent/extensions"
-	"github.com/patriceckhart/zot/packages/agent/extproto"
-	"github.com/patriceckhart/zot/packages/ignore"
+	"github.com/bnema/zut/packages/agent/extensions"
+	"github.com/bnema/zut/packages/agent/extproto"
+	"github.com/bnema/zut/packages/ignore"
 )
 
-// runExtCommand dispatches `zot ext ...` subcommands. Returns
+// runExtCommand dispatches `zut ext ...` subcommands. Returns
 // (handled=true, err) if rawArgs starts with "ext"; otherwise
 // (handled=false, nil) so the main router falls through to the
 // regular flag parser.
@@ -56,22 +56,22 @@ func runExtCommand(ctx context.Context, rawArgs []string, version string) (handl
 }
 
 func printExtHelp() {
-	fmt.Fprintln(os.Stderr, `zot ext — manage extensions
+	fmt.Fprintln(os.Stderr, `zut ext — manage extensions
 
 usage:
-  zot ext list                    list installed extensions and their state
-  zot ext doctor                  diagnose installed extensions
-  zot ext logs <name> [-f]        cat / tail an extension's stderr log
-  zot ext enable <name>           re-enable a disabled extension
-  zot ext disable <name>          disable without removing
-  zot ext remove <name>                    delete an extension directory
-  zot ext install [--build=go] <path|git-url>
+  zut ext list                    list installed extensions and their state
+  zut ext doctor                  diagnose installed extensions
+  zut ext logs <name> [-f]        cat / tail an extension's stderr log
+  zut ext enable <name>           re-enable a disabled extension
+  zut ext disable <name>          disable without removing
+  zut ext remove <name>                    delete an extension directory
+  zut ext install [--build=go] <path|git-url>
                                          copy / clone and validate an extension
                                          --build=go explicitly builds a local Go extension
 
 extensions live under:
-  $ZOT_HOME/extensions/<name>/extension.json   (global)
-  ./.zot/extensions/<name>/extension.json      (project-local)`)
+  $ZUT_HOME/extensions/<name>/extension.json   (global)
+  ./.zut/extensions/<name>/extension.json      (project-local)`)
 }
 
 // extList walks both the global and project-local extension dirs and
@@ -122,7 +122,7 @@ func extList() error {
 	}
 	if len(rows) == 0 {
 		fmt.Fprintln(os.Stderr, "no extensions installed")
-		fmt.Fprintln(os.Stderr, "see docs/extensions.md to write your own, or `zot ext install <path|url>`")
+		fmt.Fprintln(os.Stderr, "see docs/extensions.md to write your own, or `zut ext install <path|url>`")
 		return nil
 	}
 	fmt.Printf("%-12s  %-20s  %-10s  %-8s  %-10s  %s\n", "scope", "name", "version", "enabled", "language", "dir")
@@ -169,14 +169,14 @@ func extDoctor(version string) error {
 	rows := scanExtDoctorStatic()
 	if len(rows) == 0 {
 		fmt.Fprintln(os.Stdout, "no extensions installed")
-		fmt.Fprintln(os.Stdout, "see docs/extensions.md to write your own, or `zot ext install <path|url>`")
+		fmt.Fprintln(os.Stdout, "see docs/extensions.md to write your own, or `zut ext install <path|url>`")
 		return nil
 	}
 
 	cwd, _ := os.Getwd()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	mgr := extensions.New(ZotHome(), cwd, version, "", "", extDoctorHooks{})
+	mgr := extensions.New(ZutHome(), cwd, version, "", "", extDoctorHooks{})
 	errs := mgr.Discover(ctx)
 	mgr.WaitForReady(3 * time.Second)
 	diags := mgr.Diagnostics()
@@ -187,7 +187,7 @@ func extDoctor(version string) error {
 		diagByDir[d.Dir] = d
 	}
 
-	fmt.Fprintln(os.Stdout, "zot extension doctor")
+	fmt.Fprintln(os.Stdout, "zut extension doctor")
 	fmt.Fprintln(os.Stdout)
 	for _, row := range rows {
 		printExtDoctorRow(os.Stdout, row, diagByDir[row.Dir])
@@ -208,9 +208,9 @@ func scanExtDoctorStatic() []extDoctorStaticRow {
 	}
 	var dirs []scanDir
 	if cwd, err := os.Getwd(); err == nil {
-		dirs = append(dirs, scanDir{scope: "project", dir: filepath.Join(cwd, ".zot", "extensions")})
+		dirs = append(dirs, scanDir{scope: "project", dir: filepath.Join(cwd, ".zut", "extensions")})
 	}
-	if h := ZotHome(); h != "" {
+	if h := ZutHome(); h != "" {
 		dirs = append(dirs, scanDir{scope: "global", dir: filepath.Join(h, "extensions")})
 	}
 
@@ -357,17 +357,17 @@ func printExtDoctorRow(w io.Writer, row extDoctorStaticRow, diag extensions.Exte
 }
 
 func extDoctorLogPath(name string) string {
-	if name == "" || ZotHome() == "" {
+	if name == "" || ZutHome() == "" {
 		return ""
 	}
-	return filepath.Join(ZotHome(), "logs", "ext-"+name+".log")
+	return filepath.Join(ZutHome(), "logs", "ext-"+name+".log")
 }
 
 // extLogs locates the named extension's log file and either cats or
 // tails it (-f).
 func extLogs(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: zot ext logs <name> [-f]")
+		return fmt.Errorf("usage: zut ext logs <name> [-f]")
 	}
 	name := args[0]
 	follow := false
@@ -376,7 +376,7 @@ func extLogs(args []string) error {
 			follow = true
 		}
 	}
-	logPath := filepath.Join(ZotHome(), "logs", "ext-"+name+".log")
+	logPath := filepath.Join(ZutHome(), "logs", "ext-"+name+".log")
 	if _, err := os.Stat(logPath); err != nil {
 		return fmt.Errorf("no log for %q at %s", name, logPath)
 	}
@@ -402,7 +402,7 @@ func extToggle(args []string, enabled bool) error {
 		if !enabled {
 			verb = "disable"
 		}
-		return fmt.Errorf("usage: zot ext %s <name>", verb)
+		return fmt.Errorf("usage: zut ext %s <name>", verb)
 	}
 	name := args[0]
 	dir, err := findExtensionDir(name)
@@ -438,7 +438,7 @@ func extToggle(args []string, enabled bool) error {
 // prompt (skip with --yes).
 func extRemove(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: zot ext remove <name> [--yes]")
+		return fmt.Errorf("usage: zut ext remove <name> [--yes]")
 	}
 	name := args[0]
 	yes := false
@@ -468,7 +468,7 @@ func extRemove(args []string) error {
 }
 
 // extInstall copies a local directory or shallow-clones a git URL
-// into $ZOT_HOME/extensions/. It stages the install and validates the
+// into $ZUT_HOME/extensions/. It stages the install and validates the
 // manifest plus any extension-local executable before reporting success.
 // Builds are never inferred or run implicitly; --build=go is an explicit
 // opt-in for local Go extensions.
@@ -482,7 +482,7 @@ func extInstallContext(ctx context.Context, args []string) error {
 		return err
 	}
 	src := opts.source
-	dest := filepath.Join(ZotHome(), "extensions")
+	dest := filepath.Join(ZutHome(), "extensions")
 	if err := os.MkdirAll(dest, 0o755); err != nil {
 		return err
 	}
@@ -517,7 +517,7 @@ func extInstallContext(ctx context.Context, args []string) error {
 		return fmt.Errorf("destination %s already exists; remove it first", out)
 	}
 
-	stageRoot, err := os.MkdirTemp(dest, ".zot-extension-install-")
+	stageRoot, err := os.MkdirTemp(dest, ".zut-extension-install-")
 	if err != nil {
 		return fmt.Errorf("create install staging directory: %w", err)
 	}
@@ -548,7 +548,7 @@ type extInstallOptions struct {
 
 func parseExtInstallArgs(args []string) (extInstallOptions, error) {
 	if len(args) == 0 {
-		return extInstallOptions{}, errors.New("usage: zot ext install [--build=go] <path|git-url>")
+		return extInstallOptions{}, errors.New("usage: zut ext install [--build=go] <path|git-url>")
 	}
 
 	var opts extInstallOptions
@@ -581,13 +581,13 @@ func parseExtInstallArgs(args []string) (extInstallOptions, error) {
 		case strings.HasPrefix(arg, "-"):
 			return extInstallOptions{}, fmt.Errorf("unknown ext install option %q", arg)
 		case opts.source != "":
-			return extInstallOptions{}, errors.New("usage: zot ext install [--build=go] <path|git-url>")
+			return extInstallOptions{}, errors.New("usage: zut ext install [--build=go] <path|git-url>")
 		default:
 			opts.source = arg
 		}
 	}
 	if opts.source == "" {
-		return extInstallOptions{}, errors.New("usage: zot ext install [--build=go] <path|git-url>")
+		return extInstallOptions{}, errors.New("usage: zut ext install [--build=go] <path|git-url>")
 	}
 	if opts.builder != "" && opts.builder != "go" {
 		return extInstallOptions{}, fmt.Errorf("unsupported extension builder %q (currently supported: go)", opts.builder)
@@ -639,7 +639,7 @@ func extensionRelativeExecPath(dir, execName string) (string, error) {
 }
 
 func installGitExtension(ctx context.Context, src, dest string) error {
-	stageRoot, err := os.MkdirTemp(dest, ".zot-extension-clone-")
+	stageRoot, err := os.MkdirTemp(dest, ".zut-extension-clone-")
 	if err != nil {
 		return fmt.Errorf("create install staging directory: %w", err)
 	}
@@ -733,14 +733,14 @@ func validateExtensionExecutable(dir string, manifest extensions.Manifest) error
 	path, local := extensions.ResolveExecPath(dir, manifest.Exec)
 	if !local {
 		// Bare commands such as "go", "node", and "npx" are resolved
-		// from PATH when zot starts. They may be intentionally installed
+		// from PATH when zut starts. They may be intentionally installed
 		// before the runtime is present on the current machine.
 		return nil
 	}
 	info, err := os.Stat(path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return fmt.Errorf("extension executable %q is missing; provide it before installing. Local Go extensions can opt in with `zot ext install --build=go <path>`", manifest.Exec)
+			return fmt.Errorf("extension executable %q is missing; provide it before installing. Local Go extensions can opt in with `zut ext install --build=go <path>`", manifest.Exec)
 		}
 		return fmt.Errorf("stat extension executable %q: %w", manifest.Exec, err)
 	}
@@ -755,11 +755,11 @@ func validateExtensionExecutable(dir string, manifest extensions.Manifest) error
 
 func extensionDirs() map[string]string {
 	out := map[string]string{}
-	if h := ZotHome(); h != "" {
+	if h := ZutHome(); h != "" {
 		out["global"] = filepath.Join(h, "extensions")
 	}
 	if cwd, err := os.Getwd(); err == nil {
-		out["project"] = filepath.Join(cwd, ".zot", "extensions")
+		out["project"] = filepath.Join(cwd, ".zut", "extensions")
 	}
 	return out
 }
@@ -782,7 +782,7 @@ func dashIfEmpty(s string) string {
 }
 
 // copyDir does a recursive copy of src to dst preserving file mode
-// bits. Used by `zot ext install <local-path>`.
+// bits. Used by `zut ext install <local-path>`.
 //
 // Entries matched by the source's root .gitignore are skipped, and
 // .git itself is always skipped. This keeps non-portable, regeneratable

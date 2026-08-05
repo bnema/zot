@@ -6,7 +6,7 @@ import (
 	"strings"
 	"unicode"
 
-	"github.com/patriceckhart/zot/packages/provider"
+	"github.com/bnema/zut/packages/provider"
 )
 
 // SessionTitleMaxChars is the maximum length of an automatically generated

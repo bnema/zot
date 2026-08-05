@@ -1,16 +1,16 @@
-# zot installer for Windows (PowerShell).
+# zut installer for Windows (PowerShell).
 #
 # Usage (in PowerShell):
-#   iwr -useb https://raw.githubusercontent.com/patriceckhart/zot/main/install.ps1 | iex
+#   iwr -useb https://raw.githubusercontent.com/bnema/zut/main/install.ps1 | iex
 #
 # Or with arguments:
-#   $env:ZOT_VERSION = "v0.0.1"
-#   $env:ZOT_PREFIX  = "$HOME\bin"
-#   iwr -useb https://raw.githubusercontent.com/patriceckhart/zot/main/install.ps1 | iex
+#   $env:ZUT_VERSION = "v0.1.0"
+#   $env:ZUT_PREFIX  = "$HOME\bin"
+#   iwr -useb https://raw.githubusercontent.com/bnema/zut/main/install.ps1 | iex
 #
 # Detects architecture, downloads the matching .zip from the GitHub
-# release, verifies the sha256 against checksums.txt, extracts zot.exe,
-# and moves it into $ZOT_PREFIX (defaults to $HOME\bin, added to PATH
+# release, verifies the sha256 against checksums.txt, extracts zut.exe,
+# and moves it into $ZUT_PREFIX (defaults to $HOME\bin, added to PATH
 # via the User environment if missing).
 #
 # $env:GITHUB_TOKEN is optional for the public repo. Set it to a PAT
@@ -21,15 +21,15 @@
 
 [CmdletBinding()]
 param(
-  [string]$Version = $env:ZOT_VERSION,
-  [string]$Prefix  = $env:ZOT_PREFIX
+  [string]$Version = $env:ZUT_VERSION,
+  [string]$Prefix  = $env:ZUT_PREFIX
 )
 
 $ErrorActionPreference = "Stop"
 
-$owner  = "patriceckhart"
-$repo   = "zot"
-$binary = "zot"
+$owner  = "bnema"
+$repo   = "zut"
+$binary = "zut"
 
 # Build Authorization header list once; used on every HTTP call so the
 # script works against private repos when $env:GITHUB_TOKEN is set.
@@ -73,7 +73,7 @@ if ($Version -eq "latest") {
   # GitHub's API wants a User-Agent; Invoke-RestMethod sets one, but be
   # explicit so corporate proxies that strip it don't trip a 403.
   $apiHeaders = @{} + $headers
-  if (-not $apiHeaders.ContainsKey("User-Agent")) { $apiHeaders["User-Agent"] = "zot-installer" }
+  if (-not $apiHeaders.ContainsKey("User-Agent")) { $apiHeaders["User-Agent"] = "zut-installer" }
   $apiHeaders["Accept"] = "application/vnd.github+json"
 
   try {
@@ -106,7 +106,7 @@ $baseUrl     = "https://github.com/$owner/$repo/releases/download/$Version"
 $archiveUrl  = "$baseUrl/$archive"
 $checksumUrl = "$baseUrl/checksums.txt"
 
-$tmp = New-Item -ItemType Directory -Path (Join-Path $env:TEMP ("zot-install-" + [System.Guid]::NewGuid().ToString("N").Substring(0,8)))
+$tmp = New-Item -ItemType Directory -Path (Join-Path $env:TEMP ("zut-install-" + [System.Guid]::NewGuid().ToString("N").Substring(0,8)))
 
 try {
   Msg "downloading $archive"
@@ -152,7 +152,7 @@ try {
     Warn "  `$env:Path = `"$Prefix;`$env:Path`""
   }
 
-  Msg "installed. run:  zot --help"
+  Msg "installed. run:  zut --help"
 }
 finally {
   Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue

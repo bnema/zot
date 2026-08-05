@@ -1,18 +1,18 @@
 # LSP and linter support
 
-zot exposes a built-in `lsp` tool for code intelligence and diagnostics. It
+zut exposes a built-in `lsp` tool for code intelligence and diagnostics. It
 communicates with stdio language servers through JSON-RPC and can also run
 configured command-line linters without a shell.
 
 ## Configuration
 
-zot loads JSON configuration from the following layers, in increasing
+zut loads JSON configuration from the following layers, in increasing
 precedence:
 
-- `$ZOT_HOME/lsp.json`
+- `$ZUT_HOME/lsp.json`
 - `<cwd>/.pi/lsp.json`
 - `<cwd>/.omp/lsp.json`
-- `<cwd>/lsp.json`, `<cwd>/.lsp.json`, and `<cwd>/.zot/lsp.json`
+- `<cwd>/lsp.json`, `<cwd>/.lsp.json`, and `<cwd>/.zut/lsp.json`
 
 A file may put providers below `servers`, `lspServers`, or `linters`, use a
 flat provider map, or use the `providers` array:
@@ -43,7 +43,7 @@ The `providers` array accepts built-in names and objects with `id`, `kind`,
 Unknown provider metadata is ignored. Set `autoDetect` to `false` to
 keep only providers named or defined by the configuration file.
 
-Server overrides merge onto zot's built-in definitions. Built-ins cover common
+Server overrides merge onto zut's built-in definitions. Built-ins cover common
 Go, Rust, TypeScript/JavaScript, Python, C/C++, YAML, JSON, and shell servers,
 plus ESLint, golangci-lint, and Ruff CLI providers. A provider is selected
 when it is enabled and its file type/root markers match the workspace. Command
@@ -125,14 +125,14 @@ diagnostics allows a later recurrence to be surfaced again.
 
 The sub-agent setting does not grant access to a child whose profile or
 explicit tool list omits `lsp`. Both settings can also be controlled through
-`$ZOT_HOME/config.json`.
+`$ZUT_HOME/config.json`.
 
 ## Safety and lifecycle
 
 Language servers and linters run as local child processes. Project and
 global LSP configuration is executable local configuration: review configured
 commands, arguments, environment variables, and workspace-local binaries before
-using it. zot does not add a separate trust prompt or sandbox around those child
+using it. zut does not add a separate trust prompt or sandbox around those child
 processes; it does avoid shell expansion and keeps returned workspace edits
 inside the session workspace. The `lsp` tool never executes configured commands
 through a shell. Workspace edits returned by
@@ -141,7 +141,7 @@ resource operations, validate UTF-16 LSP positions, and write through a
 temporary file before replacement. Server-initiated `workspace/applyEdit`
 requests use the same checks.
 
-LSP clients are cached per workspace and provider for the lifetime of the zot
+LSP clients are cached per workspace and provider for the lifetime of the zut
 process. `reload` and process shutdown terminate cached children. Server
 stderr is kept out of model-facing tool results; diagnostics and protocol
 errors are returned through the established tool result channel.

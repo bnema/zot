@@ -1,23 +1,23 @@
 ---
-name: write-zot-extension
-description: Help the user create a new zot extension (slash command, LLM tool, or guard) in any language.
+name: write-zut-extension
+description: Help the user create a new zut extension (slash command, LLM tool, or guard) in any language.
 ---
 
-# Writing a zot extension
+# Writing a zut extension
 
-Use this skill when the user asks for help building a zot extension —
+Use this skill when the user asks for help building a zut extension —
 a new slash command, a new tool the LLM can call, an audit hook, or
 a permission gate. Skim this whole skill first, then collaborate
 with the user on the specific extension they want.
 
 ## What an extension is
 
-A zot extension is **an external executable** that zot launches as a
+A zut extension is **an external executable** that zut launches as a
 subprocess and talks to over its stdin/stdout in newline-delimited
 JSON. It can be written in any language that can read/write JSON
 lines from stdio: Go, TypeScript (via tsx), Python, Rust, shell with
 jq, anything. Crash isolation is automatic; one bad extension never
-takes down zot.
+takes down zut.
 
 Three things an extension can do (any combination):
 
@@ -27,7 +27,7 @@ Three things an extension can do (any combination):
    (one-shot styled note in the chat), or a "noop".
 
 2. **Tools** — register tools the LLM itself calls. Schema is
-   JSON Schema; zot routes the model's `tool_call` to the
+   JSON Schema; zut routes the model's `tool_call` to the
    extension's `tool_result`. Same lifecycle as built-in tools
    (read/write/edit/bash/lsp/skill).
 
@@ -42,16 +42,16 @@ Three things an extension can do (any combination):
 Each extension lives in its own directory:
 
 ```
-~/Library/Application Support/zot/extensions/<name>/
+~/Library/Application Support/zut/extensions/<name>/
 ├── extension.json    # manifest (required)
 └── <executable>      # whatever exec points at
 ```
 
-Or project-local: `<project>/.zot/extensions/<name>/`. Project-local
+Or project-local: `<project>/.zut/extensions/<name>/`. Project-local
 wins on name conflict.
 
 For ad-hoc use during development, skip the install step entirely
-and run `zot --ext PATH` (repeatable: `-e PATH -e PATH`).
+and run `zut --ext PATH` (repeatable: `-e PATH -e PATH`).
 
 ### Manifest
 
@@ -68,7 +68,7 @@ and run `zot --ext PATH` (repeatable: `-e PATH -e PATH`).
 ```
 
 Field rules:
-- `name` (required, unique) — id zot uses internally; matches the
+- `name` (required, unique) — id zut uses internally; matches the
   hello frame. Slash commands & tools live in the same name space
   as built-ins; conflicts are silently shadowed by built-ins.
 - `exec` (required) — the executable path. Resolution:
@@ -92,17 +92,18 @@ their responses.
 The very first frame the extension sends is `hello`:
 
 ```json
-{"type":"hello","name":"weather","version":"1.0.0",
+{"type":"hello","protocol_version":2,"name":"weather","version":"1.0.0",
  "capabilities":["commands","tools"]}
 ```
 
 Capabilities are advisory; current values are `commands`, `tools`,
-`events`, `alerts`, and `panels`. Send all that apply.
+`events`, `alerts`, and `panels`. Send all that apply. `protocol_version`
+is the major wire version; it is currently `2` and must match the host.
 
-zot replies with `hello_ack`:
+zut replies with `hello_ack`:
 
 ```json
-{"type":"hello_ack","protocol_version":1,"zot_version":"0.0.x",
+{"type":"hello_ack","protocol_version":2,"zut_version":"0.0.x",
  "provider":"anthropic","model":"claude-opus-4-7","cwd":"/path/to/project"}
 ```
 
@@ -110,7 +111,7 @@ zot replies with `hello_ack`:
 
 The canonical startup order is `hello`, wait for `hello_ack`, send
 registration frames in any order, then send a single `ready` sentinel
-so zot can finalize the agent's tool registry:
+so zut can finalize the agent's tool registry:
 
 ```json
 {"type":"register_command","name":"weather","description":"current weather"}
@@ -120,7 +121,7 @@ so zot can finalize the agent's tool registry:
 {"type":"ready"}
 ```
 
-If you don't send `ready`, zot's idle watchdog auto-treats you as
+If you don't send `ready`, zut's idle watchdog auto-treats you as
 ready after 250ms of no frames, but always send it explicitly when
 you can. Newer extensions on faster hosts shave that 250ms off.
 
@@ -130,7 +131,7 @@ process itself runs from the extension directory, so do not use
 
 ### Runtime frames
 
-**zot → extension:**
+**zut → extension:**
 
 ```json
 {"type":"command_invoked","id":"abc","name":"weather","args":"berlin"}
@@ -141,7 +142,7 @@ process itself runs from the extension directory, so do not use
 {"type":"shutdown"}
 ```
 
-**extension → zot (replies + spontaneous notifications):**
+**extension → zut (replies + spontaneous notifications):**
 
 ```json
 {"type":"command_response","id":"abc","action":"prompt",
@@ -171,7 +172,7 @@ stdout.
 - `"insert"` — drop `insert` into the editor at the cursor
 - `"display"` — append `display` to chat as a one-shot note (no
   model call, not in transcript)
-- `"noop"` — handled internally; zot doesn't change the UI
+- `"noop"` — handled internally; zut doesn't change the UI
 
 `tool_result.content[]` blocks: `{"type":"text","text":"..."}` or
 `{"type":"image","mime_type":"image/png","data":"<base64>"}`.
@@ -186,7 +187,7 @@ never stalls the agent.
   stdout that isn't a JSON frame breaks the wire. The first stdout
   frame must be `hello`; do not send `notify`, `alert`, logs, or
   registration frames before that handshake starts. Use stderr for
-  logs / debug output (zot captures stderr to `$ZOT_HOME/logs/ext-<name>.log`).
+  logs / debug output (zut captures stderr to `$ZUT_HOME/logs/ext-<name>.log`).
 - **One JSON object per line.** No multi-line JSON. Always end
   every frame with `\n`.
 - **Flush after writing.** Most stdout writes are line-buffered when
@@ -204,7 +205,7 @@ package main
 
 import (
     "encoding/json"
-    "github.com/patriceckhart/zot/packages/agent/ext"
+    "github.com/bnema/zut/packages/agent/ext"
 )
 
 func main() {
@@ -243,7 +244,7 @@ func main() {
 Build: `go build -o weather .`
 
 `OnHello` is optional. Use it when configuration or registrations need
-host metadata such as `HostInfo.CWD`, `Provider`, `Model`, `ZotVersion`,
+host metadata such as `HostInfo.CWD`, `Provider`, `Model`, `ZutVersion`,
 `ExtensionDir`, or `DataDir`. The SDK sends `hello`, waits for
 `hello_ack`, runs `OnHello`, announces registrations, then sends `ready`.
 
@@ -253,7 +254,7 @@ host metadata such as `HostInfo.CWD`, `Provider`, `Model`, `ZotVersion`,
 ```
 
 After the hello handshake completes inside `Run`, call `e.Alert` from a
-command, tool, or panel handler when the user needs to be drawn back to zot:
+command, tool, or panel handler when the user needs to be drawn back to zut:
 
 ```go
 e.Alert(ext.AlertRequest{Kind: ext.AlertKindBell, Reason: "question_ready"})
@@ -275,13 +276,14 @@ import { stderr, stdin, stdout } from "node:process";
 function send(o: object) { stdout.write(JSON.stringify(o) + "\n"); }
 function log(s: string) { stderr.write(`[scratchpad] ${s}\n`); }
 
-send({ type: "hello", name: "scratchpad", version: "1.0.0",
+send({ type: "hello", protocol_version: 2, name: "scratchpad", version: "1.0.0",
        capabilities: ["commands", "tools"] });
 
 const rl = createInterface({ input: stdin, crlfDelay: Infinity });
 rl.on("line", (line) => {
   const f = JSON.parse(line);
   if (f.type === "hello_ack") {
+    if (f.protocol_version !== 2) throw new Error("unsupported extension protocol version");
     // f.cwd is the user's project directory.
     send({ type: "register_command", name: "note", description: "append a note" });
     send({ type: "register_tool", name: "read_notes",
@@ -317,11 +319,13 @@ import json, sys
 
 def emit(o): sys.stdout.write(json.dumps(o) + "\n"); sys.stdout.flush()
 
-emit({"type": "hello", "name": "hello-py", "version": "1.0.0", "capabilities": ["commands"]})
+emit({"type": "hello", "protocol_version": 2, "name": "hello-py", "version": "1.0.0", "capabilities": ["commands"]})
 
 for line in sys.stdin:
     msg = json.loads(line)
     if msg["type"] == "hello_ack":
+        if msg.get("protocol_version") != 2:
+            raise SystemExit("unsupported extension protocol version")
         # msg["cwd"] is the user's project directory.
         emit({"type": "register_command", "name": "hellopy", "description": "say hi (python)"})
         emit({"type": "ready"})
@@ -338,24 +342,24 @@ for line in sys.stdin:
 ## Install / dev workflow
 
 ```bash
-zot ext install ./weather       # copy into $ZOT_HOME/extensions/
-zot ext install --build=go ./weather # explicitly build local Go source
-zot --ext ./weather             # run from disk for one zot session (no install)
-zot --ext .                     # cwd is the extension dir
-zot ext list                    # show installed extensions
-zot ext logs weather            # cat the extension's stderr
-zot ext logs weather -f         # tail it
-zot ext disable weather         # keep installed but skip on launch
-zot ext enable weather
-zot ext remove weather
+zut ext install ./weather       # copy into $ZUT_HOME/extensions/
+zut ext install --build=go ./weather # explicitly build local Go source
+zut --ext ./weather             # run from disk for one zut session (no install)
+zut --ext .                     # cwd is the extension dir
+zut ext list                    # show installed extensions
+zut ext logs weather            # cat the extension's stderr
+zut ext logs weather -f         # tail it
+zut ext disable weather         # keep installed but skip on launch
+zut ext enable weather
+zut ext remove weather
 ```
 
 For TS / Python extensions, no build step is needed — edit the source
-in place and relaunch zot.
+in place and relaunch zut.
 
-For Go, either run `zot ext install --build=go <path>` to explicitly build
+For Go, either run `zut ext install --build=go <path>` to explicitly build
 the local source into the staged install, or run `go build -o <name> .`
-first and then use `zot ext install <path>`. The default install never runs a
+first and then use `zut ext install <path>`. The default install never runs a
 build step; a missing local executable is rejected with an explicit builder
 hint instead of leaving a broken installed extension. The `--build=go` option
 is intentionally limited to local source paths and does not apply to git URLs.
@@ -367,7 +371,7 @@ to see exactly what's happening on the wire:
 
 ```bash
 {
-  printf '%s\n' '{"type":"hello_ack","protocol_version":1,"zot_version":"x","provider":"a","model":"o","cwd":"/tmp"}'
+  printf '%s\n' '{"type":"hello_ack","protocol_version":2,"zut_version":"x","provider":"a","model":"o","cwd":"/tmp"}'
   sleep 0.2
   printf '%s\n' '{"type":"command_invoked","id":"1","name":"weather","args":"Berlin"}'
   sleep 0.5
@@ -376,7 +380,7 @@ to see exactly what's happening on the wire:
 ```
 
 Compare what comes out of stdout to the expected wire format. If a
-frame doesn't match what zot expects, it's discarded silently and
+frame doesn't match what zut expects, it's discarded silently and
 logged to `ext-<name>.log`.
 
 ## Process to follow with the user
@@ -391,10 +395,10 @@ logged to `ext-<name>.log`.
    if they prefer JS-flavored ergonomics; **Python** for one-off
    scripts.
 4. Write the extension dir (manifest + source).
-5. For Go, use `zot ext install --build=go <path>` or build it manually.
+5. For Go, use `zut ext install --build=go <path>` or build it manually.
    For TS / Python, mark the script executable.
-6. Suggest `zot --ext <path>` for testing without committing to an install.
-7. When happy, `zot ext install <path>` (or `--build=go` for local Go source).
+6. Suggest `zut --ext <path>` for testing without committing to an install.
+7. When happy, `zut ext install <path>` (or `--build=go` for local Go source).
 
 Don't try to write a full SDK or framework on top of the protocol
 unless the user asked for one — the wire format is small enough

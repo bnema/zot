@@ -10,7 +10,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/patriceckhart/zot/packages/provider/auth/assets"
+	"github.com/bnema/zut/packages/provider/auth/assets"
 )
 
 // CallbackResult is what an OAuth callback server returns once the
@@ -40,7 +40,7 @@ func NewCallbackServer(p OAuthProvider, expectedState string) (*CallbackServer, 
 	addr := fmt.Sprintf("%s:%d", p.RedirectHost, p.RedirectPort)
 	l, err := net.Listen("tcp", addr)
 	if err != nil {
-		return nil, fmt.Errorf("bind %s: %w (is another zot/claude-code/codex login already running?)", addr, err)
+		return nil, fmt.Errorf("bind %s: %w (is another zut/claude-code/codex login already running?)", addr, err)
 	}
 	cs := &CallbackServer{
 		l:        l,
@@ -123,9 +123,9 @@ func (cs *CallbackServer) deliver(r CallbackResult) {
 
 // ---- static HTML for the callback tab ----
 
-// All zot-served pages share a single dark style matching the TUI:
+// All zut-served pages share a single dark style matching the TUI:
 // near-black background (#0a0a0a), white text, Geist Mono type, cyan
-// accent on the word "zot". Serves every step of both the api-key
+// accent on the word "zut". Serves every step of both the api-key
 // flow and the oauth callback flow.
 const monoStyle = `<style>
   @import url('https://fonts.googleapis.com/css2?family=Geist+Mono:wght@400;600&display=swap');
@@ -155,7 +155,7 @@ const monoStyle = `<style>
     letter-spacing: 0.01em;
   }
   h1 .mark { display: inline-block; width: 1.25rem; }
-  .zot { color: #7ed3fc; }
+  .zut { color: #7ed3fc; }
   .rule { border: 0; border-top: 1px solid #ffffff; margin: 1.5rem 0; }
   .muted { color: #9ca3af; }
   .mono { font-family: inherit; word-break: break-all; }
@@ -179,9 +179,9 @@ const monoStyle = `<style>
   button:hover { background: #0a0a0a; color: #ffffff; }
 </style>`
 
-// logoTag is the <img> element used at the top of every zot-served
+// logoTag is the <img> element used at the top of every zut-served
 // page. The image bytes are served from /logo.png by the same server.
-const logoTag = `<img class="logo" src="/logo.png" alt="zot" />`
+const logoTag = `<img class="logo" src="/logo.png" alt="zut" />`
 
 // serveLogo writes the embedded PNG with appropriate caching headers.
 // Shared between the oauth callback server and the api-key login server.
@@ -193,21 +193,21 @@ func serveLogo(w http.ResponseWriter, r *http.Request) {
 
 func oauthSuccessHTML(provider string) string {
 	p := strings.ToLower(provider)
-	return `<!doctype html><html lang="en"><head><meta charset="utf-8"/><title>zot - logged in</title>` + monoStyle + `</head><body>
+	return `<!doctype html><html lang="en"><head><meta charset="utf-8"/><title>zut - logged in</title>` + monoStyle + `</head><body>
 ` + logoTag + `
 <h1><span class="mark">✓</span> logged in to ` + p + `</h1>
 <hr class="rule">
-<p class="msg"><span class="zot">zot</span> received the callback. you can close this tab.</p>
+<p class="msg"><span class="zut">zut</span> received the callback. you can close this tab.</p>
 </body></html>`
 }
 
 func oauthErrorHTML(msg string) string {
-	return `<!doctype html><html lang="en"><head><meta charset="utf-8"/><title>zot - error</title>` + monoStyle + `</head><body>
+	return `<!doctype html><html lang="en"><head><meta charset="utf-8"/><title>zut - error</title>` + monoStyle + `</head><body>
 ` + logoTag + `
 <h1><span class="mark">✗</span> login failed</h1>
 <hr class="rule">
 <p class="msg mono">` + htmlEscape(msg) + `</p>
-<p class="muted">go back to <span class="zot">zot</span> and try again.</p>
+<p class="muted">go back to <span class="zut">zut</span> and try again.</p>
 </body></html>`
 }
 

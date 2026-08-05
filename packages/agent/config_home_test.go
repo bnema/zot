@@ -5,20 +5,20 @@ import (
 	"testing"
 )
 
-func TestZotHomePrefersExplicitHomeOverXDGStateHome(t *testing.T) {
-	t.Setenv("ZOT_HOME", filepath.Join("explicit", "zot"))
+func TestZutHomePrefersExplicitHomeOverXDGStateHome(t *testing.T) {
+	t.Setenv("ZUT_HOME", filepath.Join("explicit", "zut"))
 	t.Setenv("XDG_STATE_HOME", filepath.Join("xdg", "state"))
 
-	if got, want := ZotHome(), filepath.Join("explicit", "zot"); got != want {
-		t.Fatalf("ZotHome() = %q, want %q", got, want)
+	if got, want := ZutHome(), filepath.Join("explicit", "zut"); got != want {
+		t.Fatalf("ZutHome() = %q, want %q", got, want)
 	}
 }
 
-func TestZotHomeUsesXDGStateHome(t *testing.T) {
-	t.Setenv("ZOT_HOME", "")
+func TestZutHomeUsesXDGStateHome(t *testing.T) {
+	t.Setenv("ZUT_HOME", "")
 	t.Setenv("XDG_STATE_HOME", filepath.Join("xdg", "state"))
 
-	if got, want := ZotHome(), filepath.Join("xdg", "state", "zot"); got != want {
-		t.Fatalf("ZotHome() = %q, want %q", got, want)
+	if got, want := ZutHome(), filepath.Join("xdg", "state", "zut"); got != want {
+		t.Fatalf("ZutHome() = %q, want %q", got, want)
 	}
 }

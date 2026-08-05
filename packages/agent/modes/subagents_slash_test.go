@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/patriceckhart/zot/packages/agent/subagents"
+	"github.com/bnema/zut/packages/agent/subagents"
 )
 
 // newInteractiveForSupervisorTest builds the minimal Interactive scaffolding

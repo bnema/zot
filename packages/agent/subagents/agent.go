@@ -47,7 +47,7 @@ type Agent struct {
 	// the effective provider connection settings from the supervisor.
 	// Empty values inherit whatever the child resolves on its own from
 	// config / env / flags. All four settings are persisted in meta.json
-	// so Resume keeps using the same provider configuration across zot
+	// so Resume keeps using the same provider configuration across zut
 	// restarts.
 	Model       string
 	Provider    string
@@ -58,7 +58,7 @@ type Agent struct {
 	Subagent    string
 
 	// SessionID, when non-empty, scopes the agent to a particular
-	// host zot session: the dashboard only surfaces agents whose
+	// host zut session: the dashboard only surfaces agents whose
 	// SessionID matches the active session. Empty means "unscoped" and
 	// applies to agents spawned without a session context such as in tests. Set at
 	// Spawn time from Supervisor.activeSession and persisted in
@@ -93,7 +93,7 @@ type Agent struct {
 	// EventLogPath is the durable JSONL event log for this agent.
 	// The runner appends every well-formed event from the child
 	// (plus lifecycle events of its own) here. /subagents open in any
-	// zot process reads from this file to replay the full history.
+	// zut process reads from this file to replay the full history.
 	EventLogPath string
 
 	// SessionPath is the child's persistent session file. Surfaced

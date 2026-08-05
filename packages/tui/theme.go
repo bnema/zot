@@ -58,7 +58,7 @@ func (p TerminalProfile) PaletteColor(index int) (TerminalColor, bool) {
 	return p.Palette[index], true
 }
 
-// Semantic palette used by zot. Each role is a TerminalColor so themes can
+// Semantic palette used by zut. Each role is a TerminalColor so themes can
 // use indexed, ANSI, or RGB values without changing render code.
 type Theme struct {
 	FG           TerminalColor
@@ -68,7 +68,7 @@ type Theme struct {
 	User         TerminalColor  // label color for the user role
 	UserBubbleBG TerminalColor  // background tint behind user message rows
 	UserBubbleFG TerminalColor  // foreground colour for user message rows
-	Assistant    TerminalColor  // label color for the zot role
+	Assistant    TerminalColor  // label color for the zut role
 	Tool         TerminalColor
 	ToolOut      TerminalColor
 	Error        TerminalColor
@@ -186,7 +186,7 @@ var Dark = Theme{
 	User:              Color256(180),        // warm tan (unused now that the speaker label is gone, kept for skin compat)
 	UserBubbleBG:      ColorRGB(66, 69, 75), // #42454B
 	UserBubbleFG:      Color256(248),        // slightly lighter grey for readability on #42454B
-	Assistant:         Color256(117),        // bright cyan — the zot label color
+	Assistant:         Color256(117),        // bright cyan — the zut label color
 	Tool:              Color256(114),        // green
 	ToolOut:           Color256(245),
 	Error:             Color256(203),
@@ -329,7 +329,7 @@ func (t Theme) sgrBGColor(color TerminalColor) string {
 
 // AccentBar returns a 2-cell-wide leader: a coloured half-block
 // glyph followed by a plain space gutter. Used as the speaker-label
-// prefix in the chat ("▌ you", "▌ zot") and as the editor prompt so
+// prefix in the chat ("▌ you", "▌ zut") and as the editor prompt so
 // the bar reads consistently across the UI.
 func (t Theme) AccentBar(c TerminalColor) string {
 	return t.FGColor(c, "▌ ")
@@ -348,7 +348,7 @@ func (t Theme) SelectionStyle() string {
 }
 
 // BackgroundStyle returns the SGR prefix for the optional full-row
-// TUI background. Empty means zot should leave the terminal's
+// TUI background. Empty means zut should leave the terminal's
 // configured background untouched.
 func (t Theme) BackgroundStyle() string {
 	if t.Background == nil {
@@ -389,13 +389,13 @@ func (t Theme) UserBubble(s string, width int) string {
 
 // UserBubbleRow renders one user-bubble row prefixed with a coloured
 // half-block accent bar ("▌ ") so every line of the bubble has the
-// zot-blue gutter at the very left. The bar lives outside the bubble
+// zut-blue gutter at the very left. The bar lives outside the bubble
 // tint (chat bg) so the bubble itself sits inside it. Width is the
 // outer width including the bar; the bubble content is padded to
 // width-2 (the bar + its trailing space).
 func (t Theme) UserBubbleRow(content string, width int) string {
 	// Bar plus a single space gutter, in the assistant accent colour
-	// so it matches the tool-box / app accent and reads as zot's voice
+	// so it matches the tool-box / app accent and reads as zut's voice
 	// marker. Two cells wide.
 	bar := t.FGColor(t.Assistant, "▌ ")
 	bubbleW := width - 2

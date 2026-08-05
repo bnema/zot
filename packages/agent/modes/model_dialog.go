@@ -5,9 +5,9 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/bnema/zut/packages/provider"
+	"github.com/bnema/zut/packages/tui"
 	"github.com/mattn/go-runewidth"
-	"github.com/patriceckhart/zot/packages/provider"
-	"github.com/patriceckhart/zot/packages/tui"
 )
 
 // modelDialog is an inline picker for choosing the active model.

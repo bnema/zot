@@ -15,8 +15,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/patriceckhart/zot/packages/core"
-	"github.com/patriceckhart/zot/packages/provider"
+	"github.com/bnema/zut/packages/core"
+	"github.com/bnema/zut/packages/provider"
 )
 
 const (
@@ -224,7 +224,7 @@ func humanDuration(d time.Duration) string {
 func writeFullOutput(s string) string {
 	b := make([]byte, 6)
 	_, _ = rand.Read(b)
-	name := filepath.Join(os.TempDir(), "zot-bash-"+hex.EncodeToString(b)+".log")
+	name := filepath.Join(os.TempDir(), "zut-bash-"+hex.EncodeToString(b)+".log")
 	if err := os.WriteFile(name, []byte(s), 0o600); err != nil {
 		return ""
 	}

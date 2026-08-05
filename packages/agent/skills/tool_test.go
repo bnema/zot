@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/patriceckhart/zot/packages/provider"
+	"github.com/bnema/zut/packages/provider"
 )
 
 func TestToolLoadsSkillByPathAlias(t *testing.T) {

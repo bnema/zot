@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/patriceckhart/zot/packages/core"
-	"github.com/patriceckhart/zot/packages/provider"
+	"github.com/bnema/zut/packages/core"
+	"github.com/bnema/zut/packages/provider"
 )
 
 // RunJSON runs the agent to completion, writing one JSON object per
@@ -35,7 +35,7 @@ func RunJSON(ctx context.Context, ag *core.Agent, prompt string, images []provid
 
 // EventToJSON converts an AgentEvent to a JSON-friendly map. The on-wire
 // schema is deliberately simple and flat. Exported so the RPC mode can
-// reuse the same serialisation as `zot --json`.
+// reuse the same serialisation as `zut --json`.
 func EventToJSON(ev core.AgentEvent) map[string]any {
 	m := map[string]any{"type": ev.Type()}
 	switch e := ev.(type) {

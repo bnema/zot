@@ -11,7 +11,7 @@ import (
 	"time"
 )
 
-// ThemeOption is one selectable theme discovered under $ZOT_HOME/themes.
+// ThemeOption is one selectable theme discovered under $ZUT_HOME/themes.
 // Value is stored in config.json.
 type ThemeOption struct {
 	Value       string
@@ -22,7 +22,7 @@ type ThemeOption struct {
 }
 
 // ThemeFile is the user-editable JSON shape loaded from
-// $ZOT_HOME/themes/*.json. It carries metadata plus separate overrides
+// $ZUT_HOME/themes/*.json. It carries metadata plus separate overrides
 // for dark and light terminals.
 type ThemeFile struct {
 	Name        string              `json:"name"`
@@ -270,17 +270,17 @@ func blendTerminalColors(from, to TerminalColor, percent int) TerminalColor {
 	)
 }
 
-// LoadThemeFromHome applies a custom theme from $ZOT_HOME/themes/*.json
+// LoadThemeFromHome applies a custom theme from $ZUT_HOME/themes/*.json
 // to detected. Empty/auto/default keeps the built-in detected theme.
 // If preferred is set, it may be a theme name, a basename without
 // .json, or an absolute/relative path.
-func DetectThemeWithCustom(zotHome, preferred string, timeout time.Duration) (Theme, string, error) {
+func DetectThemeWithCustom(zutHome, preferred string, timeout time.Duration) (Theme, string, error) {
 	detected := DetectThemeFromBackground(timeout)
-	return LoadThemeFromHome(zotHome, preferred, detected)
+	return LoadThemeFromHome(zutHome, preferred, detected)
 }
 
-func LoadThemeFromHome(zotHome, preferred string, detected Theme) (Theme, string, error) {
-	path, err := resolveThemePath(zotHome, preferred)
+func LoadThemeFromHome(zutHome, preferred string, detected Theme) (Theme, string, error) {
+	path, err := resolveThemePath(zutHome, preferred)
 	if err != nil || path == "" {
 		return detected, "", err
 	}
@@ -323,15 +323,15 @@ func LoadThemeFromHome(zotHome, preferred string, detected Theme) (Theme, string
 
 // AvailableThemes returns built-in and user-installed themes suitable
 // for a settings picker. Invalid JSON files are skipped.
-func AvailableThemes(zotHome string) []ThemeOption {
+func AvailableThemes(zutHome string) []ThemeOption {
 	out := []ThemeOption{
-		{Value: "auto", Label: "auto", Description: "detect terminal background and use zot defaults", Builtin: true},
+		{Value: "auto", Label: "auto", Description: "detect terminal background and use zut defaults", Builtin: true},
 		{Value: "inherited", Label: "inherited (from terminal)", Description: "use terminal colors with truecolor or best-effort 256-color output", Builtin: true},
 		{Value: "dark", Label: "dark", Description: "built-in dark theme", Builtin: true},
 		{Value: "light", Label: "light", Description: "built-in light theme", Builtin: true},
 	}
 	seen := map[string]bool{"auto": true, "inherited": true, "dark": true, "light": true}
-	paths, _ := themeFilesIn(filepath.Join(zotHome, "themes"))
+	paths, _ := themeFilesIn(filepath.Join(zutHome, "themes"))
 	sort.Strings(paths)
 	for _, path := range paths {
 		b, err := os.ReadFile(path)
@@ -359,7 +359,7 @@ func AvailableThemes(zotHome string) []ThemeOption {
 // ThemeOptionFromFile parses one theme JSON file for picker display.
 // value is what will be stored in config; pass an absolute path for
 // extension-owned themes so they can be loaded without copying into
-// $ZOT_HOME/themes.
+// $ZUT_HOME/themes.
 func ThemeOptionFromFile(path, value, source string) (ThemeOption, bool) {
 	b, err := os.ReadFile(path)
 	if err != nil {
@@ -390,12 +390,12 @@ func ThemeOptionFromFile(path, value, source string) (ThemeOption, bool) {
 	return ThemeOption{Value: value, Label: label, Description: desc, Path: path}, true
 }
 
-func ThemeExists(zotHome, preferred string) bool {
-	path, err := resolveThemePath(zotHome, preferred)
+func ThemeExists(zutHome, preferred string) bool {
+	path, err := resolveThemePath(zutHome, preferred)
 	return err == nil && path != ""
 }
 
-func resolveThemePath(zotHome, preferred string) (string, error) {
+func resolveThemePath(zutHome, preferred string) (string, error) {
 	preferred = strings.TrimSpace(preferred)
 	switch strings.ToLower(preferred) {
 	case "", "auto", "default", "system":
@@ -411,11 +411,11 @@ func resolveThemePath(zotHome, preferred string) (string, error) {
 		candidates := []string{preferred}
 		if filepath.Ext(preferred) == "" {
 			candidates = append(candidates,
-				filepath.Join(zotHome, "themes", preferred+".json"),
+				filepath.Join(zutHome, "themes", preferred+".json"),
 			)
 		} else if !filepath.IsAbs(preferred) {
 			candidates = append(candidates,
-				filepath.Join(zotHome, "themes", preferred),
+				filepath.Join(zutHome, "themes", preferred),
 			)
 		}
 		for _, c := range candidates {

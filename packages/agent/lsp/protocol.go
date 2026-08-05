@@ -26,7 +26,7 @@ type TextEdit struct {
 	NewText string `json:"newText"`
 }
 
-// WorkspaceEdit is the safe subset of a workspace edit understood by zot.
+// WorkspaceEdit is the safe subset of a workspace edit understood by zut.
 // Resource operations in DocumentChanges are deliberately rejected.
 type WorkspaceEdit struct {
 	Changes           map[string][]TextEdit `json:"changes,omitempty"`

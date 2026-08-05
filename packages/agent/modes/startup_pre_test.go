@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/patriceckhart/zot/packages/core"
+	"github.com/bnema/zut/packages/core"
 )
 
 func applyStartupPreResultForTest(t *testing.T, i *Interactive) {
@@ -66,9 +66,9 @@ func TestStartupPreShellWithoutAgentThenPrefill(t *testing.T) {
 	i.deferredInitialInput = "after-pre"
 	i.autoSubmitDeferred = false
 
-	cmd := "printf zot-pre"
+	cmd := "printf zut-pre"
 	if runtime.GOOS == "windows" {
-		cmd = "echo zot-pre"
+		cmd = "echo zut-pre"
 	}
 	i.startShellEscape(context.Background(), cmd)
 
@@ -99,15 +99,15 @@ func TestStartupPreShellThenAutoSubmitShell(t *testing.T) {
 	i := NewInteractive(InteractiveConfig{Agent: agent, CWD: t.TempDir()})
 	i.runCtx = context.Background()
 	i.awaitingStartupPre = true
-	i.deferredInitialInput = "!printf zot-default"
+	i.deferredInitialInput = "!printf zut-default"
 	if runtime.GOOS == "windows" {
-		i.deferredInitialInput = "!echo zot-default"
+		i.deferredInitialInput = "!echo zut-default"
 	}
 	i.autoSubmitDeferred = true
 
-	cmd := "printf zot-pre"
+	cmd := "printf zut-pre"
 	if runtime.GOOS == "windows" {
-		cmd = "echo zot-pre"
+		cmd = "echo zut-pre"
 	}
 	i.startShellEscape(context.Background(), cmd)
 
@@ -125,7 +125,7 @@ func TestStartupPreShellThenAutoSubmitShell(t *testing.T) {
 		i.mu.Unlock()
 		if len(messages) >= 2 && !running && !awaiting {
 			joined := userMessageText(messages[0]) + "\n" + userMessageText(messages[1])
-			if !strings.Contains(joined, "zot-pre") || !strings.Contains(joined, "zot-default") {
+			if !strings.Contains(joined, "zut-pre") || !strings.Contains(joined, "zut-default") {
 				t.Fatalf("context = %q, want both pre and default shell output", joined)
 			}
 			return

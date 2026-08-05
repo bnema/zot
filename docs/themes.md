@@ -1,9 +1,9 @@
-# zot themes
+# zut themes
 
-zot themes are JSON files that override any subset of the built-in
+zut themes are JSON files that override any subset of the built-in
 light/dark TUI theme. Nothing is required: a theme can change one
 color, only the spinner, only syntax highlighting, or all of them.
-Missing values inherit from zot's built-in default for the detected
+Missing values inherit from zut's built-in default for the detected
 terminal background.
 
 ## Where themes live
@@ -11,32 +11,32 @@ terminal background.
 User themes are discovered from:
 
 ```text
-$ZOT_HOME/themes/*.json
+$ZUT_HOME/themes/*.json
 ```
 
 Open `/settings` and choose **color theme** to switch. Changes are
-saved in `$ZOT_HOME/config.json` and apply immediately. If the selected
-file is deleted later, zot resets the setting to the built-in auto
+saved in `$ZUT_HOME/config.json` and apply immediately. If the selected
+file is deleted later, zut resets the setting to the built-in auto
 (default) theme.
 
 The built-in choices are:
 
-- **auto** — detect the terminal background and use zot's built-in dark or
+- **auto** — detect the terminal background and use zut's built-in dark or
   light palette. This remains the default.
 - **inherited (from terminal)** — use the terminal's reported foreground,
   background, and ANSI palette. When `COLORTERM=truecolor`/`24bit` or
-  `TERM` ends in `-direct`, zot emits truecolor; otherwise it quantizes
+  `TERM` ends in `-direct`, zut emits truecolor; otherwise it quantizes
   derived colors to the xterm-256 palette as a best effort. Terminals that
-  do not answer OSC color queries fall back to zot's built-in palette while
+  do not answer OSC color queries fall back to zut's built-in palette while
   still using the advertised color depth.
-- **dark** / **light** — use zot's fixed built-in palettes.
+- **dark** / **light** — use zut's fixed built-in palettes.
 
 The inherited terminal snapshot is captured at startup and reused when the
-setting is changed live; restart zot to pick up terminal palette changes.
+setting is changed live; restart zut to pick up terminal palette changes.
 
 All theme color roles use the same terminal-color model. JSON themes may use
 xterm-256 indexes, ANSI SGR colors, or RGB values for any role. On terminals
-that advertise truecolor, zot emits RGB values directly and expands indexed
+that advertise truecolor, zut emits RGB values directly and expands indexed
 values through the xterm palette; otherwise RGB values fall back to the
 nearest xterm-256 color while indexed values remain indexed. ANSI values keep
 their SGR semantics, with standard foreground/background ranges normalized to
@@ -52,13 +52,13 @@ Theme files bundled with extensions are discovered in-place from loaded
 extension directories:
 
 ```text
-$ZOT_HOME/extensions/<extension>/theme.json
-$ZOT_HOME/extensions/<extension>/themes/theme.json
-<project>/.zot/extensions/<extension>/theme.json
-<project>/.zot/extensions/<extension>/themes/theme.json
+$ZUT_HOME/extensions/<extension>/theme.json
+$ZUT_HOME/extensions/<extension>/themes/theme.json
+<project>/.zut/extensions/<extension>/theme.json
+<project>/.zut/extensions/<extension>/themes/theme.json
 ```
 
-zot does **not** copy extension themes into `$ZOT_HOME/themes`; extension
+zut does **not** copy extension themes into `$ZUT_HOME/themes`; extension
 owned themes stay in the extension directory. The settings picker shows
 source info such as `from extension my-theme-extension`.
 
@@ -71,7 +71,7 @@ Metadata only:
 ```json
 {
   "name": "my-theme",
-  "description": "Metadata only; all visuals inherit zot defaults."
+  "description": "Metadata only; all visuals inherit zut defaults."
 }
 ```
 
@@ -111,13 +111,13 @@ Spinner-only:
 ```
 
 Dark-only themes still work on light terminals. If `colors.light` is
-missing, zot applies `colors.dark` overrides on top of the built-in
+missing, zut applies `colors.dark` overrides on top of the built-in
 light default. The inverse also works.
 
 ```json
 {
   "name": "custom-spinner",
-  "description": "An alternative spinner for zot that only displays a single spinner text.",
+  "description": "An alternative spinner for zut that only displays a single spinner text.",
   "colors": {
     "dark": {
       "spinner_frames": ["◢", "◣", "◤", "◥"],
@@ -137,7 +137,7 @@ All fields are optional.
   "name": "my-theme",
   "description": "Shown in /settings → color theme.",
   "color_descriptions": {
-    "accent": "Optional documentation for humans. zot ignores this object."
+    "accent": "Optional documentation for humans. zut ignores this object."
   },
   "colors": {
     "dark": {
@@ -225,11 +225,11 @@ selected surfaces from the terminal foreground/background.
 - `fg` — default foreground text.
 - `muted` — secondary text, dividers, gutters, inactive hints.
 - `accent` — prompt bar, bullets, links, headings, active markers.
-- `background` — optional full-row TUI background. If missing, zot uses the terminal's existing background. Experimental: terminal background colors can vary by emulator and scrollback behavior; for the most reliable result, change your terminal background color in your terminal settings instead.
+- `background` — optional full-row TUI background. If missing, zut uses the terminal's existing background. Experimental: terminal background colors can vary by emulator and scrollback behavior; for the most reliable result, change your terminal background color in your terminal settings instead.
 - `user` — user role label color; mostly compatibility.
 - `user_bubble_bg` — background behind user message rows.
 - `user_bubble_fg` — foreground inside user message rows.
-- `assistant` — assistant/zot accent and spinner text.
+- `assistant` — assistant/zut accent and spinner text.
 - `tool` — tool names, success marks, diff additions.
 - `tool_out` — plain tool-output text.
 - `error` — errors, refused calls, diff deletions.
@@ -249,7 +249,7 @@ Spinner settings can appear at top level, under `colors`, or under
 
 - `spinner_frames` — list of frame strings. Single-cell glyphs keep
   status-bar alignment clean.
-- `spinner_messages` — list of messages; zot picks one per turn.
+- `spinner_messages` — list of messages; zut picks one per turn.
 - `spinner_interval_ms` — frame interval in milliseconds. Missing or
   invalid falls back to 80ms.
 
@@ -292,7 +292,7 @@ subprocess, or executable is required when the extension contains a
 valid theme file.
 
 ```text
-$ZOT_HOME/extensions/my-theme-extension/
+$ZUT_HOME/extensions/my-theme-extension/
 ├── extension.json
 └── theme.json
 ```
@@ -303,17 +303,17 @@ $ZOT_HOME/extensions/my-theme-extension/
 {
   "name": "my-theme-extension",
   "version": "1.0.0",
-  "description": "Ships a zot color theme",
+  "description": "Ships a zut color theme",
   "enabled": true
 }
 ```
 
 No `exec` is needed when `theme.json` or `themes/theme.json` exists.
-If `exec` is present, zot treats it as a normal extension too.
+If `exec` is present, zut treats it as a normal extension too.
 
 ## Validate
 
-zot theme files are plain JSON, not JSONC. Validate before installing:
+zut theme files are plain JSON, not JSONC. Validate before installing:
 
 ```bash
 python3 -m json.tool theme.json >/dev/null

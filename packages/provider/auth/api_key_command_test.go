@@ -10,7 +10,7 @@ import (
 )
 
 func TestAPIKeyCommandHelperProcess(t *testing.T) {
-	if os.Getenv("ZOT_API_KEY_COMMAND_HELPER") != "1" {
+	if os.Getenv("ZUT_API_KEY_COMMAND_HELPER") != "1" {
 		return
 	}
 	args := os.Args
@@ -22,9 +22,9 @@ func TestAPIKeyCommandHelperProcess(t *testing.T) {
 	}
 	switch args[1] {
 	case "print":
-		fmt.Print(os.Getenv("ZOT_API_KEY_COMMAND_VALUE"))
+		fmt.Print(os.Getenv("ZUT_API_KEY_COMMAND_VALUE"))
 	case "fail":
-		fmt.Fprint(os.Stderr, os.Getenv("ZOT_API_KEY_COMMAND_VALUE"))
+		fmt.Fprint(os.Stderr, os.Getenv("ZUT_API_KEY_COMMAND_VALUE"))
 		os.Exit(1)
 	case "sleep":
 		time.Sleep(5 * time.Second)
@@ -71,8 +71,8 @@ func resetAPIKeyCommandCache(t *testing.T) {
 
 func TestResolveAPIKeyCommand(t *testing.T) {
 	resetAPIKeyCommandCache(t)
-	t.Setenv("ZOT_API_KEY_COMMAND_HELPER", "1")
-	t.Setenv("ZOT_API_KEY_COMMAND_VALUE", "secret-value\r\n")
+	t.Setenv("ZUT_API_KEY_COMMAND_HELPER", "1")
+	t.Setenv("ZUT_API_KEY_COMMAND_VALUE", "secret-value\r\n")
 
 	got, err := ResolveAPIKeyCommand(context.Background(), apiKeyHelperCommand("print"))
 	if err != nil {
@@ -85,7 +85,7 @@ func TestResolveAPIKeyCommand(t *testing.T) {
 
 func TestResolveAPIKeyCommandCachesSuccess(t *testing.T) {
 	resetAPIKeyCommandCache(t)
-	t.Setenv("ZOT_API_KEY_COMMAND_HELPER", "1")
+	t.Setenv("ZUT_API_KEY_COMMAND_HELPER", "1")
 	countPath := t.TempDir() + string(os.PathSeparator) + "count"
 	command := apiKeyHelperCommand("count", countPath)
 
@@ -109,8 +109,8 @@ func TestResolveAPIKeyCommandCachesSuccess(t *testing.T) {
 
 func TestResolveAPIKeyCommandFailureDoesNotExposeOutput(t *testing.T) {
 	resetAPIKeyCommandCache(t)
-	t.Setenv("ZOT_API_KEY_COMMAND_HELPER", "1")
-	t.Setenv("ZOT_API_KEY_COMMAND_VALUE", "must-not-appear")
+	t.Setenv("ZUT_API_KEY_COMMAND_HELPER", "1")
+	t.Setenv("ZUT_API_KEY_COMMAND_VALUE", "must-not-appear")
 
 	_, err := ResolveAPIKeyCommand(context.Background(), apiKeyHelperCommand("fail"))
 	if err == nil {
@@ -123,7 +123,7 @@ func TestResolveAPIKeyCommandFailureDoesNotExposeOutput(t *testing.T) {
 
 func TestResolveAPIKeyCommandTimeoutAndOutputLimit(t *testing.T) {
 	resetAPIKeyCommandCache(t)
-	t.Setenv("ZOT_API_KEY_COMMAND_HELPER", "1")
+	t.Setenv("ZUT_API_KEY_COMMAND_HELPER", "1")
 
 	t.Run("timeout", func(t *testing.T) {
 		command := apiKeyHelperCommand("sleep")

@@ -326,7 +326,7 @@ func NewCloudflareAIGateway(apiKey, baseURL string) Client {
 
 // NewGithubCopilot returns a GitHub Copilot client. The provided
 // credential must be a GitHub Personal Access Token (PAT) with Copilot
-// access enabled; zot trades it for a short-lived Copilot token on
+// access enabled; zut trades it for a short-lived Copilot token on
 // every inference request (cached in memory until ~5min before expiry).
 //
 // Wire format: OpenAI Chat Completions. Copilot-specific headers

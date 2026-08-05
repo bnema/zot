@@ -5,7 +5,7 @@ import (
 
 	"github.com/mattn/go-runewidth"
 
-	"github.com/patriceckhart/zot/packages/tui"
+	"github.com/bnema/zut/packages/tui"
 )
 
 // frameHeader returns a full-width rule with a small title at the left.

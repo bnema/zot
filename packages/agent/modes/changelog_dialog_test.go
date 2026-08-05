@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/patriceckhart/zot/packages/tui"
+	"github.com/bnema/zut/packages/tui"
 )
 
 func TestChangelogDialogWrapsReleaseNotes(t *testing.T) {

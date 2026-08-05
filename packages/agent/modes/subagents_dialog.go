@@ -6,8 +6,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/patriceckhart/zot/packages/agent/subagents"
-	"github.com/patriceckhart/zot/packages/tui"
+	"github.com/bnema/zut/packages/agent/subagents"
+	"github.com/bnema/zut/packages/tui"
 )
 
 // subagentsDialog is the dashboard shown by /subagents (no argument) and
@@ -132,10 +132,10 @@ func (d *subagentsDialog) editorPrompt(th tui.Theme) string {
 
 // SetCurrentModel pins the model + provider every fresh spawn will
 // inherit. The host wires this to the same Model / Provider the rest
-// of zot is currently using, so agents started from the dashboard
+// of zut is currently using, so agents started from the dashboard
 // run on whatever the user last picked via /model. Pass empty
 // strings to clear the override (the child then resolves its own
-// default the same way a bare `zot` invocation does).
+// default the same way a bare `zut` invocation does).
 func (d *subagentsDialog) SetCurrentModel(model, providerID string) {
 	d.pendingModel = model
 	d.pendingProvider = providerID

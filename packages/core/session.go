@@ -16,8 +16,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/bnema/zut/packages/provider"
 	"github.com/google/uuid"
-	"github.com/patriceckhart/zot/packages/provider"
 )
 
 // Session is a JSONL-backed conversation transcript tied to a cwd.
@@ -782,7 +782,7 @@ func OpenSession(path string) (*Session, []provider.Message, error) {
 //
 // Corruption gets into the transcript two ways we know of:
 //
-//   - Older zot builds that persisted the assistant tool_use row
+//   - Older zut builds that persisted the assistant tool_use row
 //     before the tool_result row, then crashed between the two.
 //   - Abort paths in older builds that didn't drop the mid-turn
 //     assistant message cleanly.
@@ -1025,7 +1025,7 @@ func firstTextFromMessage(msg provider.Message) string {
 
 // PruneEmptySessions deletes session files in cwd's session directory
 // that contain only a meta line (no messages were ever appended).
-// Cleans up the backlog of empty stubs created by old zot versions
+// Cleans up the backlog of empty stubs created by old zut versions
 // that wrote a meta line at NewSession time and never followed up.
 // Errors are swallowed; the caller treats this as best-effort.
 func PruneEmptySessions(root, cwd string) {
@@ -1255,7 +1255,7 @@ func (s *Session) AppendExtensionState(extension string, state json.RawMessage) 
 
 // Close flushes and closes the session file. If the session was
 // freshly created in this process and never had any messages
-// appended (the user opened zot, looked around, and exited without
+// appended (the user opened zut, looked around, and exited without
 // prompting), the file is deleted on close so the sessions list
 // doesn't fill up with empty meta-only stubs.
 func (s *Session) Close() error {

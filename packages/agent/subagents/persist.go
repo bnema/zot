@@ -5,7 +5,7 @@ package subagents
 // Every Spawn writes a meta.json next to the agent's events.jsonl and
 // session.json. The file captures the immutable identity bits (id,
 // task, branch, dir) plus the paths the runner needs to resume the
-// agent later. On a fresh zot launch, Supervisor.Reload() walks
+// agent later. On a fresh zut launch, Supervisor.Reload() walks
 // <root>/agents/*/meta.json and re-registers every agent it finds in
 // StatusDetached so the user can see, view, resume, or remove them
 // from the dashboard.
@@ -76,7 +76,7 @@ type agentMeta struct {
 	SessionPath      string        `json:"session_path"`
 
 	// SessionID, when non-empty, scopes the agent to a particular
-	// host zot session: the dashboard only shows agents whose
+	// host zut session: the dashboard only shows agents whose
 	// SessionID matches the active session. Older meta.json files
 	// (and agents spawned outside of any session, e.g. by tests or
 	// scripted callers that didn't call SetActiveSession) have an
@@ -218,7 +218,7 @@ func validRuntimeInboxPath(path, id string) bool {
 		return false
 	}
 	dir := filepath.Dir(path)
-	if !strings.HasPrefix(filepath.Base(dir), "zot-subagents-") {
+	if !strings.HasPrefix(filepath.Base(dir), "zut-subagents-") {
 		return false
 	}
 	bases := []string{os.TempDir(), "/tmp"}
@@ -558,7 +558,7 @@ func replayEventsIntoAgent(a *Agent, evs []Event) {
 // Resume re-attaches a Runner to a previously-spawned agent. Durable
 // session and event files are kept, while the transient inbox path is
 // recalculated for the current runtime environment. Use this to
-// continue a subagent session across zot restarts:
+// continue a subagent session across zut restarts:
 //
 //	subagentMgr.Reload()
 //	a, err := subagentMgr.Resume(ctx, "alpha-12345")
@@ -627,7 +627,7 @@ func (f *Supervisor) resume(ctx context.Context, id string, resuming bool) (*Age
 	// Rebuild from the meta record so we don't carry stale runner
 	// state from a previous incarnation. The inbox is transient and
 	// may have been persisted under an incompatible filesystem by an
-	// older zot version, so always select it again on resume.
+	// older zut version, so always select it again on resume.
 	inboxPath, err := inboxSocketPath(f.cfg.Root, existing.ID)
 	if err != nil {
 		return nil, fmt.Errorf("subagent inbox path: %w", err)

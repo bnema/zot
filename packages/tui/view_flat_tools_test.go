@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/patriceckhart/zot/packages/provider"
+	"github.com/bnema/zut/packages/provider"
 )
 
 // boxGlyphs are the runes that only appear when a tool call is drawn

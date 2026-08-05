@@ -535,11 +535,11 @@ func (c *anthropicClient) Stream(ctx context.Context, req Request) (<-chan Event
 		return nil, err
 	}
 
-	// Optional debug dump: when $ZOT_DEBUG_ANTHROPIC is a file path
+	// Optional debug dump: when $ZUT_DEBUG_ANTHROPIC is a file path
 	// we append every outgoing request body to it, one JSON object
 	// per line. Useful for diffing turn N vs turn N+1 to understand
 	// why the cache prefix isn't matching.
-	if dump := os.Getenv("ZOT_DEBUG_ANTHROPIC"); dump != "" {
+	if dump := os.Getenv("ZUT_DEBUG_ANTHROPIC"); dump != "" {
 		if f, derr := os.OpenFile(dump, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600); derr == nil {
 			_, _ = f.Write(body)
 			_, _ = f.Write([]byte{'\n'})

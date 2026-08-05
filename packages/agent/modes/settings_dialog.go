@@ -5,7 +5,7 @@ import (
 
 	"github.com/mattn/go-runewidth"
 
-	"github.com/patriceckhart/zot/packages/tui"
+	"github.com/bnema/zut/packages/tui"
 )
 
 type settingsDialog struct {

@@ -1,6 +1,6 @@
 # tasked-phases
 
-A zot extension for keeping a spec, phased plan, and checklist in one place.
+A zut extension for keeping a spec, phased plan, and checklist in one place.
 It provides:
 
 - the `tasked_phases` tool for persistent spec/phase/task state;
@@ -24,7 +24,7 @@ Successful mutations return one progress line; use `get_status` or
 
 ## Build and run
 
-From the zot repository:
+From the zut repository:
 
 ```bash
 cd examples/extensions/tasked-phases
@@ -32,31 +32,31 @@ go build -o tasked-phases .
 
 # One-run development load, launched from the project you want to track:
 cd /path/to/project
-zot --no-ext --ext /path/to/zot/examples/extensions/tasked-phases
+zut --no-ext --ext /path/to/zut/examples/extensions/tasked-phases
 
 # Or install it globally (run this from the extension directory):
-cd /path/to/zot/examples/extensions/tasked-phases
-zot ext install --build=go .
+cd /path/to/zut/examples/extensions/tasked-phases
+zut ext install --build=go .
 ```
 
 `--build=go` explicitly builds the manifest-declared executable in the staged
 installation. If an incomplete copy was installed already, remove it with
-`zot ext remove tasked-phases --yes` before reinstalling. You can also build
-manually with `go build -o tasked-phases .` and then use `zot ext install .`.
+`zut ext remove tasked-phases --yes` before reinstalling. You can also build
+manually with `go build -o tasked-phases .` and then use `zut ext install .`.
 
 Then use `/phases` or ask the model to create a spec and phased checklist with
 `tasked_phases`. The extension keys its durable state by the host-reported
 project CWD.
 
 The extension bundles its workflow skill under `skills/tasked-phases/`, so
-`zot ext install` makes the guidance available automatically. The standalone
+`zut ext install` makes the guidance available automatically. The standalone
 copy at `examples/skills/tasked-phases/SKILL.md` remains useful when you want
 the same workflow without installing the extension.
 
 ## Persistence and turn focus
 
 The extension stores one restrictive state file per project CWD as a fallback
-for hosts that do not persist sessions. When zot session persistence is
+for hosts that do not persist sessions. When zut session persistence is
 available, the plan is also stored as extension-owned state on each session
 branch and restored when sessions are opened, switched, or forked.
 

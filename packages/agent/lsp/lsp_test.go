@@ -16,7 +16,7 @@ import (
 )
 
 func TestFakeLSPProcess(t *testing.T) {
-	if os.Getenv("ZOT_FAKE_LSP") != "1" {
+	if os.Getenv("ZUT_FAKE_LSP") != "1" {
 		return
 	}
 	reader := bufio.NewReader(os.Stdin)
@@ -56,7 +56,7 @@ func TestFakeLSPProcess(t *testing.T) {
 func TestClientFakeStdioRPC(t *testing.T) {
 	root := t.TempDir()
 	script := os.Args[0]
-	spec := ServerConfig{ID: "fake", Kind: "lsp", Command: script, Args: []string{"-test.run=TestFakeLSPProcess"}, Env: map[string]string{"ZOT_FAKE_LSP": "1"}}
+	spec := ServerConfig{ID: "fake", Kind: "lsp", Command: script, Args: []string{"-test.run=TestFakeLSPProcess"}, Env: map[string]string{"ZUT_FAKE_LSP": "1"}}
 	diagnostics := make(chan []Diagnostic, 1)
 	client, err := NewClientWithContext(context.Background(), spec, root, ClientOptions{OnDiagnostics: func(value []Diagnostic) { diagnostics <- value }})
 	if err != nil {
@@ -157,25 +157,25 @@ func TestFramingRoundTripWithAdditionalHeader(t *testing.T) {
 	}
 }
 
-func TestZotHomeEnvironmentPrecedence(t *testing.T) {
-	configuredHome := filepath.Join(t.TempDir(), "zot")
+func TestZutHomeEnvironmentPrecedence(t *testing.T) {
+	configuredHome := filepath.Join(t.TempDir(), "zut")
 	xdgHome := filepath.Join(t.TempDir(), "state")
-	t.Setenv("ZOT_HOME", configuredHome)
+	t.Setenv("ZUT_HOME", configuredHome)
 	t.Setenv("XDG_STATE_HOME", xdgHome)
-	if got := zotHome(); got != configuredHome {
-		t.Fatalf("ZOT_HOME path = %q, want %q", got, configuredHome)
+	if got := zutHome(); got != configuredHome {
+		t.Fatalf("ZUT_HOME path = %q, want %q", got, configuredHome)
 	}
-	t.Setenv("ZOT_HOME", "")
-	if got := zotHome(); got != filepath.Join(xdgHome, "zot") {
-		t.Fatalf("XDG_STATE_HOME path = %q, want %q", got, filepath.Join(xdgHome, "zot"))
+	t.Setenv("ZUT_HOME", "")
+	if got := zutHome(); got != filepath.Join(xdgHome, "zut") {
+		t.Fatalf("XDG_STATE_HOME path = %q, want %q", got, filepath.Join(xdgHome, "zut"))
 	}
 }
 
 func TestLoadConfigMergesGlobalProjectAndBuiltins(t *testing.T) {
 	root := t.TempDir()
-	zotHome := t.TempDir()
-	t.Setenv("ZOT_HOME", zotHome)
-	if err := os.WriteFile(filepath.Join(zotHome, "lsp.json"), []byte(`{"servers":{"gopls":{"settings":{"global":true},"args":["--global"]}}}`), 0o644); err != nil {
+	zutHome := t.TempDir()
+	t.Setenv("ZUT_HOME", zutHome)
+	if err := os.WriteFile(filepath.Join(zutHome, "lsp.json"), []byte(`{"servers":{"gopls":{"settings":{"global":true},"args":["--global"]}}}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(root, "go.mod"), []byte("module example\n"), 0o644); err != nil {
@@ -214,8 +214,8 @@ func TestLoadConfigMergesGlobalProjectAndBuiltins(t *testing.T) {
 
 func TestLoadConfigAcceptsProviderArrays(t *testing.T) {
 	root := t.TempDir()
-	zotHome := t.TempDir()
-	t.Setenv("ZOT_HOME", zotHome)
+	zutHome := t.TempDir()
+	t.Setenv("ZUT_HOME", zutHome)
 	if err := os.WriteFile(filepath.Join(root, "go.mod"), []byte("module example\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -245,7 +245,7 @@ func TestLoadConfigAcceptsProviderArrays(t *testing.T) {
 
 func TestLoadConfigAutoDetectFalseKeepsExplicitProviders(t *testing.T) {
 	root := t.TempDir()
-	t.Setenv("ZOT_HOME", t.TempDir())
+	t.Setenv("ZUT_HOME", t.TempDir())
 	if err := os.WriteFile(filepath.Join(root, "go.mod"), []byte("module example\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}

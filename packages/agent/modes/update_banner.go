@@ -3,7 +3,7 @@ package modes
 import (
 	"fmt"
 
-	"github.com/patriceckhart/zot/packages/tui"
+	"github.com/bnema/zut/packages/tui"
 )
 
 // UpdateInfo mirrors agent.UpdateInfo without the import cycle. The
@@ -32,10 +32,10 @@ func renderUpdateBanner(th tui.Theme, info UpdateInfo, width int) []string {
 	}
 	out = append(out, "")
 
-	title := fmt.Sprintf("zot %s is available (you're on %s).", info.Latest, info.Current)
+	title := fmt.Sprintf("zut %s is available (you're on %s).", info.Latest, info.Current)
 	out = append(out, "  "+th.FGColor(color, tui.Bold(title)))
 	out = append(out, "")
-	out = append(out, "  "+th.FGColor(th.Muted, "run: ")+th.FGColor(color, "zot update"))
+	out = append(out, "  "+th.FGColor(th.Muted, "run: ")+th.FGColor(color, "zut update"))
 
 	if info.URL != "" {
 		out = append(out, "  "+th.FGColor(th.Muted, "changelog: ")+th.FGColor(color, info.URL))

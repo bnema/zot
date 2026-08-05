@@ -1,5 +1,5 @@
-// In-process Go embedding of the zot agent runtime via the sdk package.
-// Compare to examples/rpc/go which spawns `zot rpc` as a subprocess.
+// In-process Go embedding of the zut agent runtime via the sdk package.
+// Compare to examples/rpc/go which spawns `zut rpc` as a subprocess.
 package main
 
 import (
@@ -8,7 +8,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/patriceckhart/zot/packages/agent/sdk"
+	"github.com/bnema/zut/packages/agent/sdk"
 )
 
 func main() {

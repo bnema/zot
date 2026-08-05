@@ -3,8 +3,8 @@ package agent
 import (
 	"testing"
 
-	"github.com/patriceckhart/zot/packages/agent/extproto"
-	"github.com/patriceckhart/zot/packages/agent/modes"
+	"github.com/bnema/zut/packages/agent/extproto"
+	"github.com/bnema/zut/packages/agent/modes"
 )
 
 func TestInteractiveExtHooksBufferStartupChrome(t *testing.T) {

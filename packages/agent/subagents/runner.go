@@ -14,11 +14,11 @@ import (
 	"time"
 )
 
-// execRunner spawns `zot --subagent-worker <inbox> --session <path>` in
+// execRunner spawns `zut --subagent-worker <inbox> --session <path>` in
 // Agent.Dir (the shared repository root or an isolated worktree) and consumes
 // its JSONL event stream on stdout.
 //
-// Why a long-lived daemon and not `zot --print`: the supervisor and
+// Why a long-lived daemon and not `zut --print`: the supervisor and
 // the user expect agents to keep accepting follow-up prompts. A
 // one-shot subprocess can't do that; this design gives each subagent
 // agent a persistent session file plus an inbox socket the parent
@@ -31,13 +31,13 @@ import (
 //
 // The on-disk log is the durable record. The Sink updates are an
 // in-memory mirror so the dashboard doesn't have to tail the file
-// for the parent's own agents. /subagents open in a separate zot would
+// for the parent's own agents. /subagents open in a separate zut would
 // read the log directly.
 type execRunner struct {
 	agent             *Agent
 	resolveCredential func(context.Context, string) (Credential, error)
 
-	// Command overrides the default `zot --subagent-worker ...`
+	// Command overrides the default `zut --subagent-worker ...`
 	// invocation. Tests set this to a fake binary (or `go run`
 	// against a tiny stub program) so the supervisor logic can be
 	// tested without a real child. Production code leaves it nil.
@@ -48,7 +48,7 @@ type execRunner struct {
 	// with <subagent-root>/agents/<id>/session.json. Tests that
 	// hand-build an Agent without going through Spawn must set
 	// one of the two; the runner refuses to invent a fallback
-	// because the only plausible one (<Dir>/.zot/session.json)
+	// because the only plausible one (<Dir>/.zut/session.json)
 	// would litter the user's repo — every agent's Dir points
 	// at it directly.
 	SessionPath string
@@ -57,7 +57,7 @@ type execRunner struct {
 // subagentWorkerArgsOpts captures every dynamic input to subagentWorkerArgs.
 // The fields map 1:1 onto child CLI flags; empty values omit the flag
 // entirely and let the child resolve a default the same way a normal
-// `zot` invocation does.
+// `zut` invocation does.
 type subagentWorkerArgsOpts struct {
 	Exe         string
 	Dir         string
@@ -164,7 +164,7 @@ func subagentWorkerArgs(opts subagentWorkerArgsOpts) []string {
 	return args
 }
 
-// resolveSubagentExecutable finds a runnable zot binary without assuming a
+// resolveSubagentExecutable finds a runnable zut binary without assuming a
 // particular installation directory. A parent process can outlive the file
 // it was started from (for example after a reinstall), so all known
 // candidates are checked concurrently and the first successful lookup wins.
@@ -207,10 +207,10 @@ func resolveSubagentExecutable(ctx context.Context, self, argv0 string, lookPath
 	if argv0 != "" {
 		addCandidate(filepath.Base(argv0))
 	}
-	addCandidate("zot")
+	addCandidate("zut")
 
 	if len(candidates) == 0 {
-		return "", fmt.Errorf("locate zot executable: no executable candidates")
+		return "", fmt.Errorf("locate zut executable: no executable candidates")
 	}
 
 	type lookupResult struct {
@@ -240,7 +240,7 @@ func resolveSubagentExecutable(ctx context.Context, self, argv0 string, lookPath
 		}
 		lookupErrors = append(lookupErrors, fmt.Sprintf("%q: %v", result.candidate, result.err))
 	}
-	return "", fmt.Errorf("locate zot executable: %s", strings.Join(lookupErrors, "; "))
+	return "", fmt.Errorf("locate zut executable: %s", strings.Join(lookupErrors, "; "))
 }
 
 func (r *execRunner) Run(ctx context.Context, sink Sink) error {
@@ -251,7 +251,7 @@ func (r *execRunner) Run(ctx context.Context, sink Sink) error {
 	//      <subagent-root>/agents/<id>/session.json so the per-
 	//      agent state is entirely outside the working tree.
 	//      Crucial because Agent.Dir points at the user's repo;
-	//      any .zot/ scratch directory under Dir would litter
+	//      any .zut/ scratch directory under Dir would litter
 	//      their source tree.
 	//
 	// There is no third fallback. If neither path is set we
@@ -291,7 +291,7 @@ func (r *execRunner) Run(ctx context.Context, sink Sink) error {
 		exe, err := resolveSubagentExecutable(ctx, self, argv0, nil)
 		if err != nil {
 			if selfErr != nil {
-				return fmt.Errorf("locate zot executable (os.Executable: %v): %w", selfErr, err)
+				return fmt.Errorf("locate zut executable (os.Executable: %v): %w", selfErr, err)
 			}
 			return err
 		}
@@ -301,17 +301,17 @@ func (r *execRunner) Run(ctx context.Context, sink Sink) error {
 	cmd := exec.CommandContext(ctx, args[0], args[1:]...)
 	cmd.Dir = r.agent.Dir
 	cmd.Env = append(workerEnvironment(r.agent.Provider),
-		"ZOT_SUBAGENT_AGENT_ID="+r.agent.ID,
-		"ZOT_SUBAGENT_EVENT_LOG="+logPath,
+		"ZUT_SUBAGENT_AGENT_ID="+r.agent.ID,
+		"ZUT_SUBAGENT_EVENT_LOG="+logPath,
 	)
 	if r.agent.HeartbeatInterval > 0 {
-		cmd.Env = append(cmd.Env, "ZOT_SUBAGENT_HEARTBEAT_INTERVAL="+r.agent.HeartbeatInterval.String())
+		cmd.Env = append(cmd.Env, "ZUT_SUBAGENT_HEARTBEAT_INTERVAL="+r.agent.HeartbeatInterval.String())
 	}
 	if r.agent.maxOutputBytes > 0 {
-		cmd.Env = append(cmd.Env, fmt.Sprintf("ZOT_SUBAGENT_MAX_OUTPUT_BYTES=%d", r.agent.maxOutputBytes))
+		cmd.Env = append(cmd.Env, fmt.Sprintf("ZUT_SUBAGENT_MAX_OUTPUT_BYTES=%d", r.agent.maxOutputBytes))
 	}
 	if r.agent.maxOutputLines > 0 {
-		cmd.Env = append(cmd.Env, fmt.Sprintf("ZOT_SUBAGENT_MAX_OUTPUT_LINES=%d", r.agent.maxOutputLines))
+		cmd.Env = append(cmd.Env, fmt.Sprintf("ZUT_SUBAGENT_MAX_OUTPUT_LINES=%d", r.agent.maxOutputLines))
 	}
 	if r.resolveCredential != nil {
 		credential, resolveErr := r.resolveCredential(ctx, r.agent.Provider)
@@ -324,7 +324,7 @@ func (r *execRunner) Run(ctx context.Context, sink Sink) error {
 				return fmt.Errorf("encode subagent credential: %w", encodeErr)
 			}
 			cmd.Stdin = bytes.NewReader(encoded)
-			cmd.Env = append(cmd.Env, "ZOT_SUBAGENT_CREDENTIAL_STDIN=1")
+			cmd.Env = append(cmd.Env, "ZUT_SUBAGENT_CREDENTIAL_STDIN=1")
 		}
 	}
 

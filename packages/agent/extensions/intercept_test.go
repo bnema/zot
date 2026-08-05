@@ -39,7 +39,7 @@ func TestInterceptAllThreeEvents(t *testing.T) {
 	extDir := t.TempDir()
 	script := `#!/bin/bash
 emit() { printf '%s\n' "$1"; }
-emit '{"type":"hello","name":"itest","version":"0.1.0","capabilities":["events"]}'
+emit '{"type":"hello","protocol_version":2,"name":"itest","version":"0.1.0","capabilities":["events"]}'
 emit '{"type":"subscribe","events":[],"intercept":["tool_call","turn_start","assistant_message"]}'
 emit '{"type":"ready"}'
 while IFS= read -r line; do
@@ -83,7 +83,7 @@ done
 		t.Fatal(err)
 	}
 
-	// ZotHome is unused here; we load the extension explicitly.
+	// ZutHome is unused here; we load the extension explicitly.
 	m := New(t.TempDir(), "", "0.0.0-test", "anthropic", "claude-test", nil)
 	t.Cleanup(func() { m.Stop(2 * time.Second) })
 
@@ -159,7 +159,7 @@ func TestReloadRespawnsExtensions(t *testing.T) {
 	extDir := t.TempDir()
 	script := `#!/bin/bash
 emit() { printf '%s\n' "$1"; }
-emit '{"type":"hello","name":"rtest","version":"0.1.0","capabilities":["commands"]}'
+emit '{"type":"hello","protocol_version":2,"name":"rtest","version":"0.1.0","capabilities":["commands"]}'
 emit '{"type":"register_command","name":"rtest","description":"test"}'
 emit '{"type":"ready"}'
 while IFS= read -r line; do

@@ -21,8 +21,8 @@ func TestRunSlashPreservesArgumentCase(t *testing.T) {
 			return errors.New("stop after capture")
 		},
 	}}
-	i.runSlash(context.Background(), "/CD /Users/Pat/Mixed Case")
-	if got != "/Users/Pat/Mixed Case" {
+	i.runSlash(context.Background(), "/CD /Users/Example/Mixed Case")
+	if got != "/Users/Example/Mixed Case" {
 		t.Fatalf("ChangeCWD path = %q, want original argument case", got)
 	}
 }

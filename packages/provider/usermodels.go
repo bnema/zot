@@ -9,7 +9,7 @@ import (
 )
 
 // UserModelsFile is the JSON format for user-defined models.
-// Place a models.json in $ZOT_HOME to add models that aren't in the
+// Place a models.json in $ZUT_HOME to add models that aren't in the
 // baked-in catalog or to override catalog entries. Custom providers
 // (not in the built-in set) may specify a baseUrl and api format at
 // the provider level:

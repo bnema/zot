@@ -16,9 +16,9 @@
 //
 // Install:
 //
-//	zot ext install .
+//	zut ext install .
 //
-// Try it — ask zot something like:
+// Try it — ask zut something like:
 //
 //	"Request approval to delete the temp directory."
 //
@@ -35,7 +35,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/patriceckhart/zot/packages/agent/ext"
+	"github.com/bnema/zut/packages/agent/ext"
 )
 
 const schema = `{

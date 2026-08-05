@@ -1,6 +1,6 @@
 # Named subagent profiles
 
-zot can discover reusable named subagent definitions from markdown files with a frontmatter block. This is a common agent-profile layout and is not tied to a particular host application.
+zut can discover reusable named subagent definitions from markdown files with a frontmatter block. This is a common agent-profile layout and is not tied to a particular host application.
 
 ## Discovery
 
@@ -10,12 +10,12 @@ The default directory is:
 ~/.agents/agents/*.md
 ```
 
-zot also reads these optional locations:
+zut also reads these optional locations:
 
-- directories listed in `ZOT_AGENT_PROFILES` (use the platform path-list separator)
+- directories listed in `ZUT_AGENT_PROFILES` (use the platform path-list separator)
 - `~/.pi/agent/agents/*.md` as a compatibility fallback
 
-Profiles are read-only inputs. zot does not execute files from these directories. Project-local profile directories are not scanned automatically; use `ZOT_AGENT_PROFILES` when a project intentionally opts into an additional profile directory.
+Profiles are read-only inputs. zut does not execute files from these directories. Project-local profile directories are not scanned automatically; use `ZUT_AGENT_PROFILES` when a project intentionally opts into an additional profile directory.
 
 ## File format
 
@@ -41,7 +41,7 @@ Supported metadata:
 |---|---|
 | `name` | Name passed to `subagent_spawn`'s `agent` field. Falls back to the filename. |
 | `description` | Short description shown to the main agent. |
-| `tools` | Comma-separated or list-form tool names. zot enforces its built-in `read`, `write`, `edit`, `bash`, and `lsp` registry; the conditional `skill` tool is available when skills are enabled. Unknown names do not grant capabilities. |
+| `tools` | Comma-separated or list-form tool names. zut enforces its built-in `read`, `write`, `edit`, `bash`, and `lsp` registry; the conditional `skill` tool is available when skills are enabled. Unknown names do not grant capabilities. |
 | `model` | Optional model ID. A qualified value such as `openai-codex/gpt-5.6-luna` selects both provider and model. |
 | `provider` | Optional separate provider ID for a model without a provider prefix. |
 | `thinking` / `reasoning` | Optional reasoning level: `off`, `minimum`, `low`, `medium`, `high`, `xhigh`, or `max`. |
@@ -50,7 +50,7 @@ Supported metadata:
 | `inheritSkills` | Set to `false` to omit skill discovery and the conditional `skill` loader from the child; `--no-skill` has the same effect for a run. |
 | `fastMode` | Optional fast-mode restriction. Omit it to inherit the host setting; `false` disables fast mode for this profile; `true` only permits fast mode when the host setting is enabled. |
 
-Other frontmatter from another agent host is ignored when zot does not have an equivalent setting. Recursive child spawning is disabled in v1; a worker cannot invoke `subagent_spawn` to create descendants.
+Other frontmatter from another agent host is ignored when zut does not have an equivalent setting. Recursive child spawning is disabled in v1; a worker cannot invoke `subagent_spawn` to create descendants.
 
 ## Selecting a profile
 
@@ -84,7 +84,7 @@ The interactive command also supports the same selection explicitly:
 /subagents new --agent implementer --reasoning high Implement the parser change
 ```
 
-Shared mode preserves the historical host working directory. For parallel coding, pass `isolation:"worktree"` to `subagent_spawn`; zot creates a detached Git worktree, captures changed files and a patch, and never merges automatically. Named profiles change the child's instructions and configuration; they are not a security sandbox. A profile's `systemPromptMode` controls its own body relative to the built-in identity; global append addenda, including enabled Ponytail coding guidance, remain present. Child credentials are transferred over stdin rather than argv or persisted metadata, and the active provider endpoint/TLS setting is inherited only when the child uses that provider. Fast mode is inherited by default. A profile with `fastMode: false` opts out, while `fastMode: true` cannot enable fast mode when the host setting is off. Non-OpenAI child providers return an unsupported-provider error instead of silently ignoring an enabled setting.
+Shared mode preserves the historical host working directory. For parallel coding, pass `isolation:"worktree"` to `subagent_spawn`; zut creates a detached Git worktree, captures changed files and a patch, and never merges automatically. Named profiles change the child's instructions and configuration; they are not a security sandbox. A profile's `systemPromptMode` controls its own body relative to the built-in identity; global append addenda, including enabled Ponytail coding guidance, remain present. Child credentials are transferred over stdin rather than argv or persisted metadata, and the active provider endpoint/TLS setting is inherited only when the child uses that provider. Fast mode is inherited by default. A profile with `fastMode: false` opts out, while `fastMode: true` cannot enable fast mode when the host setting is off. Non-OpenAI child providers return an unsupported-provider error instead of silently ignoring an enabled setting.
 
 ## Lifecycle, results, and recovery
 
@@ -107,4 +107,4 @@ When auto-subagents is enabled, the model also receives the read-only `subagent_
 
 ## Resource policy
 
-The persisted `subagents` config object supports `max_concurrent`, `max_concurrent_per_parent`, `max_total_spawned`, `queue_timeout`, `default_timeout`, `max_turns`, output caps, allowed tools/roots, heartbeat and idle timeouts. A missing or non-positive configured `max_turns` uses the default ceiling of 3. The `max_turns` field in `subagent_spawn` is optional: omit it to use the policy ceiling, or provide a value from 1 through the configured maximum. Limits apply to slash commands, `subagent_spawn`, and batch operations. A child cannot create descendants in v1. Per-agent timeouts are retained across reload/resume. Packaged `zot run` agents keep their declared capability ceiling by disabling subagent delegation; profiles are not a substitute for that permission boundary.
+The persisted `subagents` config object supports `max_concurrent`, `max_concurrent_per_parent`, `max_total_spawned`, `queue_timeout`, `default_timeout`, `max_turns`, output caps, allowed tools/roots, heartbeat and idle timeouts. A missing or non-positive configured `max_turns` uses the default ceiling of 3. The `max_turns` field in `subagent_spawn` is optional: omit it to use the policy ceiling, or provide a value from 1 through the configured maximum. Limits apply to slash commands, `subagent_spawn`, and batch operations. A child cannot create descendants in v1. Per-agent timeouts are retained across reload/resume. Packaged `zut run` agents keep their declared capability ceiling by disabling subagent delegation; profiles are not a substitute for that permission boundary.

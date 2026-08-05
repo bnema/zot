@@ -1,4 +1,4 @@
-// Package modes implements zot's three run modes: print, json, interactive.
+// Package modes implements zut's three run modes: print, json, interactive.
 package modes
 
 import (
@@ -7,8 +7,8 @@ import (
 	"io"
 	"strings"
 
-	"github.com/patriceckhart/zot/packages/core"
-	"github.com/patriceckhart/zot/packages/provider"
+	"github.com/bnema/zut/packages/core"
+	"github.com/bnema/zut/packages/provider"
 )
 
 // RunPrint runs the agent to completion and writes only the final

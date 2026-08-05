@@ -5,9 +5,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/patriceckhart/zot/packages/core"
-	"github.com/patriceckhart/zot/packages/provider"
-	"github.com/patriceckhart/zot/packages/tui"
+	"github.com/bnema/zut/packages/core"
+	"github.com/bnema/zut/packages/provider"
+	"github.com/bnema/zut/packages/tui"
 )
 
 const sessionTitleGenerationTimeout = 10 * time.Second
@@ -126,7 +126,7 @@ func (i *Interactive) writeTerminalTitleLocked(subject string) {
 	if subject != "" && !terminalTitleEnabled(i.cfg.TerminalTitleEnabled) {
 		return
 	}
-	display := "zot"
+	display := "zut"
 	if subject != "" {
 		display += ": " + subject
 	}

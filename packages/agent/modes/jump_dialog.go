@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/patriceckhart/zot/packages/provider"
-	"github.com/patriceckhart/zot/packages/tui"
+	"github.com/bnema/zut/packages/provider"
+	"github.com/bnema/zut/packages/tui"
 )
 
 // jumpTarget describes one "turn" in the current session — a user

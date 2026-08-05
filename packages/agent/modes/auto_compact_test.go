@@ -3,7 +3,7 @@ package modes
 import (
 	"testing"
 
-	"github.com/patriceckhart/zot/packages/provider"
+	"github.com/bnema/zut/packages/provider"
 )
 
 func TestNormalizeAutoCompactThreshold(t *testing.T) {

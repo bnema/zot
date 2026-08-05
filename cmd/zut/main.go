@@ -1,4 +1,4 @@
-// Command zot is a lightweight terminal coding agent.
+// Command zut is a lightweight terminal coding agent.
 package main
 
 import (
@@ -8,12 +8,12 @@ import (
 	"runtime/debug"
 	"strings"
 
-	"github.com/patriceckhart/zot/packages/agent"
+	"github.com/bnema/zut/packages/agent"
 )
 
 // Injected at build time via -ldflags "-X main.version=... -X main.commit=... -X main.date=...".
 // See .goreleaser.yaml for the release build and the Makefile for
-// local builds. Defaults make `zot --version` print something sensible
+// local builds. Defaults make `zut --version` print something sensible
 // when built without ldflags.
 var (
 	// 0.0.0-dev is the placeholder for local / untagged builds.
@@ -37,12 +37,12 @@ func main() {
 		v = v + ")"
 	}
 	if err := agent.Run(os.Args[1:], v); err != nil {
-		fmt.Fprintln(os.Stderr, "zot:", err)
+		fmt.Fprintln(os.Stderr, "zut:", err)
 		os.Exit(1)
 	}
 }
 
-// resolvedVersion falls back to the module version embedded by Go when zot is
+// resolvedVersion falls back to the module version embedded by Go when zut is
 // installed with "go install ...@version". Release archives still use the
 // version injected by GoReleaser, and local source builds remain 0.0.0-dev.
 func resolvedVersion(linkedVersion string) string {

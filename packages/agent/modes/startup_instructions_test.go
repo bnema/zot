@@ -4,7 +4,7 @@ import "testing"
 
 func TestStartupResourcesAreOptIn(t *testing.T) {
 	cfg := InteractiveConfig{
-		StartupAgentName:      "zot-maintenance",
+		StartupAgentName:      "zut-maintenance",
 		StartupContextPaths:   []string{"/repo/AGENTS.md"},
 		StartupExtensionNames: []string{"workspaces"},
 		StartupSkillNames:     []string{"review"},
@@ -30,7 +30,7 @@ func assertStartupResourceCounts(t *testing.T, i *Interactive, want int) {
 	t.Helper()
 	wantAgent := ""
 	if want > 0 {
-		wantAgent = "zot-maintenance"
+		wantAgent = "zut-maintenance"
 	}
 	if got := i.view.StartupAgentName; got != wantAgent {
 		t.Fatalf("startup agent = %q, want %q", got, wantAgent)

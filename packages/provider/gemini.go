@@ -25,7 +25,7 @@ import (
 // consumer Gemini Advanced / Google One AI subscriptions; programmatic
 // access requires either an AI Studio API key (this client) or Vertex
 // AI / GCP service-account credentials (separate provider, not yet
-// implemented in zot).
+// implemented in zut).
 
 const geminiDefaultBaseURL = "https://generativelanguage.googleapis.com"
 
@@ -54,7 +54,7 @@ func (c *geminiClient) Name() string { return "google" }
 // ---- wire types ----
 //
 // Subset of Gemini's Content / Part / GenerateContentRequest schema.
-// Only the fields zot actually emits or consumes are declared here.
+// Only the fields zut actually emits or consumes are declared here.
 
 type gemInlineData struct {
 	MimeType string `json:"mimeType"`
@@ -352,7 +352,7 @@ func saveGeminiImageToWorkingDir(mimeType string, data []byte) (string, error) {
 	case "image/gif":
 		ext = ".gif"
 	}
-	name := "zot-gemini-image-" + uuid.NewString() + ext
+	name := "zut-gemini-image-" + uuid.NewString() + ext
 	path := filepath.Join(".", name)
 	if err := os.WriteFile(path, data, 0o644); err != nil {
 		return "", err
@@ -406,7 +406,7 @@ func convertGemToolResultParts(blocks []Content) []gemPart {
 	return parts
 }
 
-// geminiThinkingConfig maps zot's reasoning level ("low"/"medium"/"high")
+// geminiThinkingConfig maps zut's reasoning level ("low"/"medium"/"high")
 // to Gemini's thinkingConfig. The right knob depends on the model
 // generation: 2.5 family uses thinkingBudget (tokens), 3.x uses
 // thinkingLevel (enum). Returns nil when the level is unrecognised.

@@ -419,7 +419,7 @@ func (c *LlamaCPPClient) DownloadAndWait(ctx context.Context, model string, upda
 	}
 }
 
-// LlamaCPPModels converts loaded router entries into zot model metadata.
+// LlamaCPPModels converts loaded router entries into zut model metadata.
 func LlamaCPPModels(models []LlamaCPPModel, serverURL string) []Model {
 	baseURL, err := LlamaCPPInferenceURL(serverURL)
 	if err != nil {

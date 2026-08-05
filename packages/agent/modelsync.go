@@ -8,17 +8,17 @@ import (
 	"strings"
 	"time"
 
-	"github.com/patriceckhart/zot/packages/provider"
+	"github.com/bnema/zut/packages/provider"
 )
 
 // ModelCachePath returns the on-disk location of the merged model cache.
 func ModelCachePath() string {
-	return filepath.Join(ZotHome(), "models-cache.json")
+	return filepath.Join(ZutHome(), "models-cache.json")
 }
 
 // UserModelsPath returns the path to the user's models.json override.
 func UserModelsPath() string {
-	return filepath.Join(ZotHome(), "models.json")
+	return filepath.Join(ZutHome(), "models.json")
 }
 
 // LoadCachedModels loads the cache file and applies it to the provider
@@ -34,7 +34,7 @@ func LoadCachedModels() {
 	}
 }
 
-// LoadUserModels reads $ZOT_HOME/models.json and merges any user-defined
+// LoadUserModels reads $ZUT_HOME/models.json and merges any user-defined
 // models into the active catalog. User models take highest precedence.
 // Any validation issues (bad provider id, empty model id, malformed
 // JSON, negative widths) are surfaced as one warning per line on stderr;
@@ -42,14 +42,14 @@ func LoadCachedModels() {
 func LoadUserModels() {
 	models, warnings := provider.LoadUserModelsWithWarnings(UserModelsPath())
 	for _, w := range warnings {
-		fmt.Fprintln(os.Stderr, "zot:", w)
+		fmt.Fprintln(os.Stderr, "zut:", w)
 	}
 	provider.SetUserModels(models)
 }
 
 // isGatewayProvider returns true for providers whose OpenAI-compatible
-// endpoint can accept routed model IDs that are not present in zot's local
-// catalog. Vercel AI Gateway is intentionally not listed here: zot currently
+// endpoint can accept routed model IDs that are not present in zut's local
+// catalog. Vercel AI Gateway is intentionally not listed here: zut currently
 // talks to it through the Anthropic-compatible client, which still requires
 // catalog metadata for request shaping.
 func isGatewayProvider(prov string) bool {
@@ -81,20 +81,20 @@ func isGatewayRoutedModelID(model string) bool {
 //     half-applied switch) -> reset model to the provider's default.
 //
 // Gateway providers are exempt from the cross-provider model check for routed
-// model IDs because those IDs can be valid even when absent from zot's catalog.
+// model IDs because those IDs can be valid even when absent from zut's catalog.
 //
 // Silent on success; one stderr line per repair. Errors loading or
 // saving the file are non-fatal — the caller continues with defaults.
 func ValidateAndRepairConfig() {
 	cfg, err := LoadConfig()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "zot: config.json: %v (using defaults)\n", err)
+		fmt.Fprintf(os.Stderr, "zut: config.json: %v (using defaults)\n", err)
 		return
 	}
 	changed := false
 
 	if cfg.Provider != "" && !isKnownProvider(cfg.Provider) {
-		fmt.Fprintf(os.Stderr, "zot: config.json: unknown provider %q reset to \"anthropic\"\n", cfg.Provider)
+		fmt.Fprintf(os.Stderr, "zut: config.json: unknown provider %q reset to \"anthropic\"\n", cfg.Provider)
 		cfg.Provider = "anthropic"
 		cfg.Model = ""
 		changed = true
@@ -110,7 +110,7 @@ func ValidateAndRepairConfig() {
 			} else if m, err := provider.FindModel("", cfg.Model); err == nil {
 				fix := defaultModelForProvider(cfg.Provider)
 				fmt.Fprintf(os.Stderr,
-					"zot: config.json: model %q belongs to provider %q (config has provider=%q); switched model to %q\n",
+					"zut: config.json: model %q belongs to provider %q (config has provider=%q); switched model to %q\n",
 					cfg.Model, m.Provider, cfg.Provider, fix)
 				cfg.Model = fix
 				changed = true
@@ -118,7 +118,7 @@ func ValidateAndRepairConfig() {
 				// Model id not in any catalog. Reset to provider's default.
 				fix := defaultModelForProvider(cfg.Provider)
 				fmt.Fprintf(os.Stderr,
-					"zot: config.json: model %q not found in the active catalog; switched to %q\n",
+					"zut: config.json: model %q not found in the active catalog; switched to %q\n",
 					cfg.Model, fix)
 				cfg.Model = fix
 				changed = true
@@ -128,7 +128,7 @@ func ValidateAndRepairConfig() {
 
 	if changed {
 		if err := SaveConfig(cfg); err != nil {
-			fmt.Fprintf(os.Stderr, "zot: config.json: failed to persist repair: %v\n", err)
+			fmt.Fprintf(os.Stderr, "zut: config.json: failed to persist repair: %v\n", err)
 		}
 	}
 }

@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/patriceckhart/zot/packages/tui"
+	"github.com/bnema/zut/packages/tui"
 )
 
 func TestHelpShowsLlamaOnlyWhenConfigured(t *testing.T) {

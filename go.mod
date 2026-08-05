@@ -1,4 +1,4 @@
-module github.com/patriceckhart/zot
+module github.com/bnema/zut
 
 go 1.26
 

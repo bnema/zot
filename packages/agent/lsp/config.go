@@ -64,14 +64,14 @@ func BuiltinServers() []ServerConfig {
 
 // LoadConfig reads the global and project lsp.json files. Project files are
 // applied after the global file; within a project, lsp.json, .lsp.json, and
-// .zot/lsp.json are applied in that order. Missing files are harmless.
+// .zut/lsp.json are applied in that order. Missing files are harmless.
 func LoadConfig(cwd string) (Config, error) {
 	cwd, err := absDir(cwd)
 	if err != nil {
 		return Config{}, err
 	}
 	var files []string
-	if home := zotHome(); home != "" {
+	if home := zutHome(); home != "" {
 		files = append(files, filepath.Join(home, "lsp.json"))
 	}
 	files = append(files,
@@ -79,7 +79,7 @@ func LoadConfig(cwd string) (Config, error) {
 		filepath.Join(cwd, ".omp", "lsp.json"),
 		filepath.Join(cwd, "lsp.json"),
 		filepath.Join(cwd, ".lsp.json"),
-		filepath.Join(cwd, ".zot", "lsp.json"),
+		filepath.Join(cwd, ".zut", "lsp.json"),
 	)
 
 	objects := make(map[string]map[string]json.RawMessage)
@@ -341,12 +341,12 @@ func absDir(cwd string) (string, error) {
 	return filepath.Clean(abs), nil
 }
 
-func zotHome() string {
-	if value := strings.TrimSpace(os.Getenv("ZOT_HOME")); value != "" {
+func zutHome() string {
+	if value := strings.TrimSpace(os.Getenv("ZUT_HOME")); value != "" {
 		return value
 	}
 	if value := strings.TrimSpace(os.Getenv("XDG_STATE_HOME")); value != "" {
-		return filepath.Join(value, "zot")
+		return filepath.Join(value, "zut")
 	}
 	switch runtime.GOOS {
 	case "darwin":
@@ -354,17 +354,17 @@ func zotHome() string {
 		if home == "" {
 			return ""
 		}
-		return filepath.Join(home, "Library", "Application Support", "zot")
+		return filepath.Join(home, "Library", "Application Support", "zut")
 	case "windows":
 		if value := strings.TrimSpace(os.Getenv("LOCALAPPDATA")); value != "" {
-			return filepath.Join(value, "zot")
+			return filepath.Join(value, "zut")
 		}
 	}
 	home, _ := os.UserHomeDir()
 	if home == "" {
 		return ""
 	}
-	return filepath.Join(home, ".local", "state", "zot")
+	return filepath.Join(home, ".local", "state", "zut")
 }
 
 func providerIDs(data []byte) map[string]struct{} {
@@ -480,7 +480,7 @@ func strconvQuote(s string) string {
 }
 
 // flattenProviderObject adapts nested provider shapes to the flat
-// ServerConfig fields used by zot. Unknown provider metadata remains
+// ServerConfig fields used by zut. Unknown provider metadata remains
 // harmless JSON and is ignored by decodeServer.
 func flattenProviderObject(object map[string]json.RawMessage) {
 	if _, exists := object["command"]; !exists {

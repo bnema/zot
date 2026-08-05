@@ -8,9 +8,9 @@ import (
 	"os"
 	"strings"
 
-	"github.com/patriceckhart/zot/packages/agent/lsp"
-	"github.com/patriceckhart/zot/packages/core"
-	"github.com/patriceckhart/zot/packages/provider"
+	"github.com/bnema/zut/packages/agent/lsp"
+	"github.com/bnema/zut/packages/core"
+	"github.com/bnema/zut/packages/provider"
 )
 
 // EditTool applies one or more exact-match replacements to a file.

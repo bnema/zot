@@ -5,8 +5,8 @@ import (
 	"context"
 	"testing"
 
-	"github.com/patriceckhart/zot/packages/core"
-	"github.com/patriceckhart/zot/packages/provider"
+	"github.com/bnema/zut/packages/core"
+	"github.com/bnema/zut/packages/provider"
 )
 
 type streamTestClient struct {

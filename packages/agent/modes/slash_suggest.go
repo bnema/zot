@@ -6,8 +6,8 @@ import (
 
 	"github.com/mattn/go-runewidth"
 
-	"github.com/patriceckhart/zot/packages/agent/skills"
-	"github.com/patriceckhart/zot/packages/tui"
+	"github.com/bnema/zut/packages/agent/skills"
+	"github.com/bnema/zut/packages/tui"
 )
 
 // slashCommand is one entry in the autocomplete popup. Header rows
@@ -67,7 +67,7 @@ var slashCatalog = []slashCommand{
 	{Name: "/telegram", Desc: "connect, disconnect, or show status of the telegram bridge"},
 	{Name: "/settings", Desc: "open settings"},
 	{Name: "/clear", Desc: "clear the chat transcript"},
-	{Name: "/exit", Desc: "exit zot"},
+	{Name: "/exit", Desc: "exit zut"},
 }
 
 // slashSuggester renders the popup that appears when the editor starts
@@ -205,7 +205,7 @@ func (s *slashSuggester) baseCatalog() []slashCommand {
 
 // looksLikeSlashCommand reports whether text is an attempt at a slash
 // command (valid or not). Returns true for things like "/foo" or
-// "/bar baz" but false for paths ("/Users/pat/...") and regexes
+// "/bar baz" but false for paths ("/Users/example/...") and regexes
 // ("/foo.bar/") so those can be sent to the model as-is.
 //
 // The head after "/" must be a single simple word: only letters,

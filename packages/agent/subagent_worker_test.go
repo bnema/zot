@@ -9,21 +9,21 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/patriceckhart/zot/packages/agent/subagents"
+	"github.com/bnema/zut/packages/agent/subagents"
 )
 
 // TestWorkerOutputLimitsUseSupervisorPolicy verifies that the child reads
 // the effective output caps propagated by the supervisor and retains safe
 // defaults for standalone workers.
 func TestWorkerOutputLimitsUseSupervisorPolicy(t *testing.T) {
-	t.Setenv("ZOT_SUBAGENT_MAX_OUTPUT_BYTES", "123")
-	t.Setenv("ZOT_SUBAGENT_MAX_OUTPUT_LINES", "7")
+	t.Setenv("ZUT_SUBAGENT_MAX_OUTPUT_BYTES", "123")
+	t.Setenv("ZUT_SUBAGENT_MAX_OUTPUT_LINES", "7")
 	bytesLimit, linesLimit := workerOutputLimits()
 	if bytesLimit != 123 || linesLimit != 7 {
 		t.Fatalf("worker output limits = (%d, %d), want (123, 7)", bytesLimit, linesLimit)
 	}
-	t.Setenv("ZOT_SUBAGENT_MAX_OUTPUT_BYTES", "invalid")
-	t.Setenv("ZOT_SUBAGENT_MAX_OUTPUT_LINES", "0")
+	t.Setenv("ZUT_SUBAGENT_MAX_OUTPUT_BYTES", "invalid")
+	t.Setenv("ZUT_SUBAGENT_MAX_OUTPUT_LINES", "0")
 	bytesLimit, linesLimit = workerOutputLimits()
 	if bytesLimit != 500_000 || linesLimit != 5_000 {
 		t.Fatalf("invalid worker output limits = (%d, %d), want defaults", bytesLimit, linesLimit)
@@ -35,7 +35,7 @@ func TestWorkerOutputLimitsUseSupervisorPolicy(t *testing.T) {
 //
 // Symptom: events.jsonl held two copies of every event because the
 // child mirrored each event to disk AND the supervisor parsed the
-// child's stdout and appended each event to disk too. On next zot
+// child's stdout and appended each event to disk too. On next zut
 // launch the replay produced two transcript lines per real one.
 //
 // Fix invariant: while stdout writes succeed (i.e. the supervisor is

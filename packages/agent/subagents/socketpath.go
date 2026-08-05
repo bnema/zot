@@ -29,7 +29,7 @@ const maxUnixSocketPath = 100
 //  3. /tmp as a Unix fallback.
 //
 // Each candidate is probed with a real unix listener before it is selected.
-// The root hash keeps separate zot homes from colliding while preserving a
+// The root hash keeps separate zut homes from colliding while preserving a
 // stable path across parent and child processes and across Resume calls.
 func inboxSocketPath(root, agentID string) (string, error) {
 	if runtime.GOOS == "windows" {
@@ -65,7 +65,7 @@ func inboxSocketPath(root, agentID string) (string, error) {
 }
 
 func socketPathInBase(base, root, agentID string) (string, error) {
-	dir := filepath.Join(base, "zot-subagents-"+rootTag(root))
+	dir := filepath.Join(base, "zut-subagents-"+rootTag(root))
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return "", fmt.Errorf("socket dir %s: %w", dir, err)
 	}
@@ -110,7 +110,7 @@ func probeUnixSocket(dir string) error {
 }
 
 // rootTag returns a stable 8-hex-char tag for the subagent root. Used
-// in the runtime-directory name so two parallel zot instances with
+// in the runtime-directory name so two parallel zut instances with
 // different roots don't share sockets.
 func rootTag(root string) string { return shortHash(root) }
 

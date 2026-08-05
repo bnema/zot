@@ -7,8 +7,8 @@ import (
 	"os"
 	"strings"
 
-	"github.com/patriceckhart/zot/packages/core"
-	"github.com/patriceckhart/zot/packages/provider"
+	"github.com/bnema/zut/packages/core"
+	"github.com/bnema/zut/packages/provider"
 )
 
 // RunStream runs the agent and writes assistant text to out as it

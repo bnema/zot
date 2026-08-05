@@ -3,7 +3,7 @@ package sdk
 import (
 	"testing"
 
-	"github.com/patriceckhart/zot/packages/core"
+	"github.com/bnema/zut/packages/core"
 )
 
 func TestRuntimeSetReasoningMax(t *testing.T) {

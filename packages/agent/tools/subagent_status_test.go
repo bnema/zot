@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/patriceckhart/zot/packages/agent/subagents"
+	"github.com/bnema/zut/packages/agent/subagents"
 )
 
 type statusTestRunner struct {

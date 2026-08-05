@@ -80,7 +80,7 @@ func TestToolCacheVersionMismatchInvalidates(t *testing.T) {
 
 func TestConfigFileWrittenOwnerOnly(t *testing.T) {
 	tmp := t.TempDir()
-	t.Setenv("ZOT_HOME", tmp)
+	t.Setenv("ZUT_HOME", tmp)
 
 	if _, err := handleSetup([]string{"add", "grep"}, tmp); err != nil {
 		t.Fatalf("handleSetup: %v", err)

@@ -7,8 +7,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/patriceckhart/zot/packages/agent/modes/bot"
-	"github.com/patriceckhart/zot/packages/provider"
+	"github.com/bnema/zut/packages/agent/modes/bot"
+	"github.com/bnema/zut/packages/provider"
 )
 
 // Adapter implements bot.BotAdapter for Telegram.
@@ -31,7 +31,7 @@ func (a *Adapter) Run(ctx context.Context,
 	commandHandler func(bot.Command, bot.InboundMessage),
 ) error {
 	if a.Cfg.BotToken == "" {
-		return fmt.Errorf("no bot token configured; run `zot bot setup` first")
+		return fmt.Errorf("no bot token configured; run `zut bot setup` first")
 	}
 	me, err := a.Client.GetMe(ctx)
 	if err != nil {
@@ -121,7 +121,7 @@ func (a *Adapter) handleUpdate(ctx context.Context, u Update,
 			a.Cfg.AllowedUserID = msg.From.ID
 			_ = a.Save(*a.Cfg)
 			_ = a.Client.SendMessage(ctx, msg.Chat.ID,
-				fmt.Sprintf("paired with @%s. send any message and i'll forward it to zot.", msg.From.Username),
+				fmt.Sprintf("paired with @%s. send any message and i'll forward it to zut.", msg.From.Username),
 				msg.MessageID)
 			return
 		}

@@ -4,8 +4,8 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/patriceckhart/zot/packages/agent/extproto"
-	"github.com/patriceckhart/zot/packages/core"
+	"github.com/bnema/zut/packages/agent/extproto"
+	"github.com/bnema/zut/packages/core"
 )
 
 type rememberingDetailedConfirmer struct {

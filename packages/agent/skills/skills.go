@@ -1,8 +1,8 @@
-// Package skills implements zot's reusable-instruction system.
+// Package skills implements zut's reusable-instruction system.
 //
 // A skill is a per-folder SKILL.md file with a YAML frontmatter
 // header. Skills live in well-known directories under the project or
-// the user home; zot discovers them at startup, lists their names +
+// the user home; zut discovers them at startup, lists their names +
 // one-line descriptions in the system prompt, and exposes a built-in
 // "skill" tool the model uses to pull the full body on demand.
 //
@@ -12,15 +12,15 @@
 //
 // Discovery layout (priority order — first match wins per name):
 //
-//	./.zot/skills/<name>/SKILL.md            — project (native)
-//	$ZOT_HOME/skills/<name>/SKILL.md         — global (native)
+//	./.zut/skills/<name>/SKILL.md            — project (native)
+//	$ZUT_HOME/skills/<name>/SKILL.md         — global (native)
 //	./.claude/skills/<name>/SKILL.md         — project (claude-compat)
 //	~/.claude/skills/<name>/SKILL.md         — global (claude-compat)
 //	./.agents/skills/<name>/SKILL.md         — project (agent-compat)
 //	~/.agents/skills/<name>/SKILL.md         — global (agent-compat)
 //
 // The compat paths are deliberate: a SKILL.md written for any of
-// the related ecosystems works in zot unchanged. User skill roots are
+// the related ecosystems works in zut unchanged. User skill roots are
 // walked recursively, and nested files can also be addressed by their
 // slash-separated path relative to the root (for example,
 // systems-backend/subskills/golang-patterns).
@@ -63,7 +63,7 @@ type Skill struct {
 	// Shown in the /skills picker.
 	Source string
 
-	// Builtin marks skills that ship inside the zot binary. They are
+	// Builtin marks skills that ship inside the zut binary. They are
 	// fully active for the model (system-prompt manifest + skill
 	// tool) but hidden from user-facing surfaces like the /skills
 	// picker so users only see skills they actually installed or
@@ -121,18 +121,18 @@ func VisibleSkills(in []*Skill) []*Skill {
 //
 // Errors per skill are returned alongside the partial result so a
 // single broken file doesn't suppress the rest.
-func Discover(zotHome, cwd, userHome string, includeUser bool) ([]*Skill, []error) {
-	return DiscoverWithBundled(zotHome, cwd, userHome, includeUser, nil)
+func Discover(zutHome, cwd, userHome string, includeUser bool) ([]*Skill, []error) {
+	return DiscoverWithBundled(zutHome, cwd, userHome, includeUser, nil)
 }
 
 // DiscoverWithBundled merges normal user skills with extension-bundled skills
 // and built-ins. Precedence is user/project locations, then bundled skills in
 // declaration order, then built-ins. The first matching name wins.
-func DiscoverWithBundled(zotHome, cwd, userHome string, includeUser bool, bundled []BundledSkillDir) ([]*Skill, []error) {
+func DiscoverWithBundled(zutHome, cwd, userHome string, includeUser bool, bundled []BundledSkillDir) ([]*Skill, []error) {
 	var errs []error
 	seen := map[string]*Skill{}
 	if includeUser {
-		errs = append(errs, scanUserSkills(zotHome, cwd, userHome, seen)...)
+		errs = append(errs, scanUserSkills(zutHome, cwd, userHome, seen)...)
 	}
 	for _, dir := range bundled {
 		errs = append(errs, scanBundledSkills(dir, seen)...)
@@ -250,9 +250,9 @@ func scanBundledSkills(dir BundledSkillDir, seen map[string]*Skill) []error {
 // populates `seen` with first-match-wins per name or alias. Split out
 // so Discover's includeUser=false path doesn't have to skip over a
 // giant block.
-func scanUserSkills(zotHome, cwd, userHome string, seen map[string]*Skill) []error {
+func scanUserSkills(zutHome, cwd, userHome string, seen map[string]*Skill) []error {
 	var errs []error
-	for _, loc := range searchDirs(zotHome, cwd, userHome) {
+	for _, loc := range searchDirs(zutHome, cwd, userHome) {
 		_ = filepath.WalkDir(loc.dir, func(path string, entry fs.DirEntry, walkErr error) error {
 			if walkErr != nil {
 				if !os.IsNotExist(walkErr) {
@@ -362,7 +362,7 @@ func uniqueSkills(seen map[string]*Skill) []*Skill {
 // The format is deliberately compact: name, one-line description,
 // and a source pointer telling the model where the full body
 // lives. Built-in skills show "builtin" since their markdown is
-// embedded in the zot binary and not on the filesystem; user
+// embedded in the zut binary and not on the filesystem; user
 // skills show their SKILL.md path (shortened with ~ for HOME).
 //
 // Loading still goes through the `skill` tool with just the name.
@@ -391,7 +391,7 @@ func SystemPromptAddendum(skills []*Skill) string {
 
 // skillSourcePointer returns a short tag describing where a skill
 // originates. Built-ins are tagged "builtin" because their markdown
-// is embedded in the zot binary and not reachable through the
+// is embedded in the zut binary and not reachable through the
 // filesystem. User skills are tagged with their SKILL.md path,
 // collapsed to use ~ for the user home when possible.
 func skillSourcePointer(s *Skill, home string) string {
@@ -438,7 +438,7 @@ type location struct {
 	label string
 }
 
-func searchDirs(zotHome, cwd, userHome string) []location {
+func searchDirs(zutHome, cwd, userHome string) []location {
 	var out []location
 	add := func(dir, label string) {
 		if dir == "" {
@@ -446,16 +446,16 @@ func searchDirs(zotHome, cwd, userHome string) []location {
 		}
 		out = append(out, location{dir: dir, label: label})
 	}
-	if extra := os.Getenv("ZOT_AGENT_SKILLS"); extra != "" {
+	if extra := os.Getenv("ZUT_AGENT_SKILLS"); extra != "" {
 		for _, dir := range filepath.SplitList(extra) {
 			add(dir, "agent")
 		}
 	}
 	if cwd != "" {
-		add(filepath.Join(cwd, ".zot", "skills"), "project")
+		add(filepath.Join(cwd, ".zut", "skills"), "project")
 	}
-	if zotHome != "" {
-		add(filepath.Join(zotHome, "skills"), "global")
+	if zutHome != "" {
+		add(filepath.Join(zutHome, "skills"), "global")
 	}
 	if cwd != "" {
 		add(filepath.Join(cwd, ".claude", "skills"), "project (claude)")
@@ -510,14 +510,14 @@ func splitFrontmatter(raw string) (string, string) {
 	return front, body
 }
 
-// parseFrontmatter handles the small subset of YAML zot recognizes:
+// parseFrontmatter handles the small subset of YAML zut recognizes:
 //   - simple `key: value` lines
 //   - `key: [a, b, c]` flow-style lists
 //   - `key:` followed by indented `- item` block lists
 //   - nested `key:` followed by indented `subkey: [...]` for permissions
 //
 // Anything more elaborate is ignored. We deliberately avoid a yaml
-// dependency to keep zot's binary lean.
+// dependency to keep zut's binary lean.
 func parseFrontmatter(front string, s *Skill) {
 	lines := strings.Split(front, "\n")
 	i := 0

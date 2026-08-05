@@ -3,8 +3,8 @@
 // Reads standard MCP config files (same format as Claude Desktop, Cursor, etc.)
 // from two locations:
 //
-//  1. Global:  $ZOT_HOME/mcp.json
-//  2. Project: .zot/mcp.json       (in the current working directory)
+//  1. Global:  $ZUT_HOME/mcp.json
+//  2. Project: .zut/mcp.json       (in the current working directory)
 //
 // Project config overrides global config per-server (shallow merge).
 package main
@@ -42,23 +42,23 @@ type Config struct {
 	MCPServers map[string]ServerConfig `json:"mcpServers"`
 }
 
-// zotHome returns the zot state directory.
-func zotHome() string {
-	if h := os.Getenv("ZOT_HOME"); h != "" {
+// zutHome returns the zut state directory.
+func zutHome() string {
+	if h := os.Getenv("ZUT_HOME"); h != "" {
 		return h
 	}
 	if xdg := os.Getenv("XDG_STATE_HOME"); xdg != "" {
-		return filepath.Join(xdg, "zot")
+		return filepath.Join(xdg, "zut")
 	}
 	switch runtime.GOOS {
 	case "darwin":
 		home, _ := os.UserHomeDir()
-		return filepath.Join(home, "Library", "Application Support", "zot")
+		return filepath.Join(home, "Library", "Application Support", "zut")
 	case "windows":
-		return filepath.Join(os.Getenv("APPDATA"), "zot")
+		return filepath.Join(os.Getenv("APPDATA"), "zut")
 	default: // linux, freebsd, etc.
 		home, _ := os.UserHomeDir()
-		return filepath.Join(home, ".local", "state", "zot")
+		return filepath.Join(home, ".local", "state", "zut")
 	}
 }
 
@@ -68,14 +68,14 @@ func loadConfig(cwd string) (Config, error) {
 	cfg := Config{MCPServers: make(map[string]ServerConfig)}
 
 	// 1. Global config
-	globalPath := filepath.Join(zotHome(), "mcp.json")
+	globalPath := filepath.Join(zutHome(), "mcp.json")
 	if err := mergeConfig(&cfg, globalPath); err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return cfg, fmt.Errorf("global config %s: %w", globalPath, err)
 	}
 
 	// 2. Project config (overrides global per-server)
 	if cwd != "" {
-		projectPath := filepath.Join(cwd, ".zot", "mcp.json")
+		projectPath := filepath.Join(cwd, ".zut", "mcp.json")
 		if err := mergeConfig(&cfg, projectPath); err != nil && !errors.Is(err, fs.ErrNotExist) {
 			return cfg, fmt.Errorf("project config %s: %w", projectPath, err)
 		}

@@ -37,7 +37,7 @@ func TestSupervisorFastModePropagatesToChild(t *testing.T) {
 	if !a.FastMode {
 		t.Fatal("spawned agent FastMode = false, want true")
 	}
-	args := defaultChildArgs("/zot", a, "/session", "/inbox")
+	args := defaultChildArgs("/zut", a, "/session", "/inbox")
 	if !containsArg(args, "--fast-mode") {
 		t.Fatalf("child args = %v, want --fast-mode", args)
 	}
@@ -91,7 +91,7 @@ func TestSpawnRequestFastModeIsBoundByHostSetting(t *testing.T) {
 			if a.FastMode != tc.want {
 				t.Fatalf("FastMode = %v, want %v", a.FastMode, tc.want)
 			}
-			args := defaultChildArgs("/zot", a, "/session", "/inbox")
+			args := defaultChildArgs("/zut", a, "/session", "/inbox")
 			wantFlag := "--no-fast-mode"
 			if tc.want {
 				wantFlag = "--fast-mode"
@@ -142,7 +142,7 @@ func TestSupervisorReloadPreservesExplicitFastModeOff(t *testing.T) {
 }
 
 func TestSubagentWorkerArgsOmitFastModeWhenUnset(t *testing.T) {
-	args := subagentWorkerArgs(subagentWorkerArgsOpts{Exe: "/zot", Dir: "/wt", SessionPath: "/s", InboxPath: "/i"})
+	args := subagentWorkerArgs(subagentWorkerArgsOpts{Exe: "/zut", Dir: "/wt", SessionPath: "/s", InboxPath: "/i"})
 	if strings.Contains(strings.Join(args, " "), "--fast-mode") || strings.Contains(strings.Join(args, " "), "--no-fast-mode") {
 		t.Fatalf("child args = %v, want fast mode omitted when unset", args)
 	}
@@ -150,7 +150,7 @@ func TestSubagentWorkerArgsOmitFastModeWhenUnset(t *testing.T) {
 
 func TestSubagentWorkerArgsExplicitlyDisablesFastMode(t *testing.T) {
 	args := subagentWorkerArgs(subagentWorkerArgsOpts{
-		Exe:         "/zot",
+		Exe:         "/zut",
 		Dir:         "/wt",
 		SessionPath: "/s",
 		InboxPath:   "/i",
@@ -165,7 +165,7 @@ func TestSubagentWorkerArgsExplicitlyDisablesFastMode(t *testing.T) {
 }
 
 func TestDefaultChildArgsExplicitlyDisablesFastMode(t *testing.T) {
-	args := defaultChildArgs("/zot", &Agent{Dir: "/wt"}, "/s", "/i")
+	args := defaultChildArgs("/zut", &Agent{Dir: "/wt"}, "/s", "/i")
 	if !containsArg(args, "--no-fast-mode") {
 		t.Fatalf("child args = %v, want --no-fast-mode", args)
 	}

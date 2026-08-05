@@ -6,7 +6,7 @@ import (
 	"io"
 	"os"
 
-	"github.com/patriceckhart/zot/packages/agent/extproto"
+	"github.com/bnema/zut/packages/agent/extproto"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -123,7 +123,7 @@ func writeMockExtension(t *testing.T, root string) {
 	// stdin closes; tail's -F keeps the pipe alive long enough for
 	// the manager to send command_invoked.
 	script := `#!/bin/sh
-printf '%s\n' '{"type":"hello","name":"mock","version":"0.0.1","capabilities":["commands"]}'
+printf '%s\n' '{"type":"hello","protocol_version":2,"name":"mock","version":"0.0.1","capabilities":["commands"]}'
 printf '%s\n' '{"type":"register_command","name":"Ping","description":"ping/pong"}'
 while IFS= read -r line; do
   case "$line" in
@@ -257,6 +257,35 @@ func TestSpawnCleansUpProcessAfterInvalidHello(t *testing.T) {
 	}
 	if _, err := ext.logFile.WriteString("after cleanup"); err == nil {
 		t.Fatal("failed handshake log file was not closed")
+	}
+}
+
+func TestSpawnRejectsUnsupportedExtensionProtocolVersion(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("mock extension uses /bin/sh; skip on windows")
+	}
+
+	tmp := t.TempDir()
+	extDir := filepath.Join(tmp, "broken")
+	if err := os.MkdirAll(extDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	script := `#!/bin/sh
+printf '%s\n' '{"type":"hello","protocol_version":1,"name":"broken"}'
+while IFS= read -r line; do :; done
+`
+	if err := os.WriteFile(filepath.Join(extDir, "run.sh"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	ext := &Extension{Manifest: Manifest{Name: "broken", Exec: "./run.sh"}, Dir: extDir}
+	mgr := New(tmp, "", "0.0.0-test", "", "", nil)
+	err := mgr.spawn(context.Background(), ext)
+	if err == nil || !strings.Contains(err.Error(), "unsupported extension protocol version 1") {
+		t.Fatalf("spawn error = %v", err)
+	}
+	if ext.cmd == nil || ext.cmd.ProcessState == nil {
+		t.Fatal("failed protocol handshake process was not reaped")
 	}
 }
 
@@ -423,7 +452,7 @@ func TestDiagnosticsReportMalformedFramesAndConflicts(t *testing.T) {
 	}
 
 	writeDiagExtension("a-first", `#!/bin/sh
-printf '%s\n' '{"type":"hello","name":"a-first","version":"0.1","capabilities":["commands","tools"]}'
+printf '%s\n' '{"type":"hello","protocol_version":2,"name":"a-first","version":"0.1","capabilities":["commands","tools"]}'
 printf '%s\n' '{"type":"register_command","name":"CaseTest","description":"first"}'
 printf '%s\n' '{"type":"register_tool","name":"shared","description":"first","schema":{"type":"object"}}'
 printf '%s\n' '{"type":"register_tool","name":"broken","description":"bad","schema":'
@@ -435,7 +464,7 @@ while IFS= read -r line; do
 done
 `)
 	writeDiagExtension("b-second", `#!/bin/sh
-printf '%s\n' '{"type":"hello","name":"b-second","version":"0.1","capabilities":["commands","tools"]}'
+printf '%s\n' '{"type":"hello","protocol_version":2,"name":"b-second","version":"0.1","capabilities":["commands","tools"]}'
 printf '%s\n' '{"type":"register_command","name":"casetest","description":"second"}'
 printf '%s\n' '{"type":"register_tool","name":"shared","description":"second","schema":{"type":"object"}}'
 printf '%s\n' '{"type":"ready"}'
@@ -512,7 +541,7 @@ func TestSpontaneousSubmit(t *testing.T) {
 	}
 
 	script := `#!/bin/sh
-printf '%s\n' '{"type":"hello","name":"submit-mock","version":"0.1","capabilities":["submit"]}'
+printf '%s\n' '{"type":"hello","protocol_version":2,"name":"submit-mock","version":"0.1","capabilities":["submit"]}'
 printf '%s\n' '{"type":"ready"}'
 printf '%s\n' '{"type":"submit","text":"  explain this repository briefly  "}'
 printf '%s\n' '{"type":"submit","text":"   "}'
@@ -575,7 +604,7 @@ func TestSpontaneousAlert(t *testing.T) {
 	}
 
 	script := `#!/bin/sh
-printf '%s\n' '{"type":"hello","name":"alert-mock","version":"0.1","capabilities":["alerts"]}'
+printf '%s\n' '{"type":"hello","protocol_version":2,"name":"alert-mock","version":"0.1","capabilities":["alerts"]}'
 printf '%s\n' '{"type":"ready"}'
 printf '%s\n' '{"type":"alert","kind":"bell","reason":"question_ready"}'
 while IFS= read -r line; do
@@ -643,7 +672,7 @@ func TestSpontaneousOpenPanel(t *testing.T) {
 	// Extension emits hello + ready, then immediately fires a
 	// spontaneous open_panel, then waits for shutdown.
 	script := `#!/bin/sh
-printf '%s\n' '{"type":"hello","name":"panel-mock","version":"0.1","capabilities":["panels"]}'
+printf '%s\n' '{"type":"hello","protocol_version":2,"name":"panel-mock","version":"0.1","capabilities":["panels"]}'
 printf '%s\n' '{"type":"ready"}'
 printf '%s\n' '{"type":"open_panel","panel":{"id":"test-panel","title":"Hello Panel","lines":["line one","line two"],"footer":"esc close"}}'
 while IFS= read -r line; do

@@ -3,7 +3,7 @@ package modes
 import (
 	"testing"
 
-	"github.com/patriceckhart/zot/packages/tui"
+	"github.com/bnema/zut/packages/tui"
 )
 
 func TestRenderUpdateBannerOmitsUnavailableUpdate(t *testing.T) {

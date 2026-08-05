@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/patriceckhart/zot/packages/agent/subagents"
-	"github.com/patriceckhart/zot/packages/provider"
-	"github.com/patriceckhart/zot/packages/tui"
+	"github.com/bnema/zut/packages/agent/subagents"
+	"github.com/bnema/zut/packages/provider"
+	"github.com/bnema/zut/packages/tui"
 )
 
 // runSubagents dispatches /subagents subcommands. Layout:

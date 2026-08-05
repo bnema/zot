@@ -1,4 +1,4 @@
-// Package provider defines the LLM client abstraction used by zot.
+// Package provider defines the LLM client abstraction used by zut.
 //
 // It supports exactly two providers: Anthropic (Messages API) and
 // OpenAI (Chat Completions API). Everything above this package operates
@@ -69,7 +69,7 @@ func (ToolResultBlock) isContent() {}
 // providers that require it on follow-up requests (OpenAI Codex with
 // thinking enabled) can replay the same payload they emitted earlier.
 // Summary is the human-readable reasoning summary (may be empty); the
-// encrypted blob is opaque to zot. ID is the provider-issued reasoning
+// encrypted blob is opaque to zut. ID is the provider-issued reasoning
 // item id.
 type ReasoningBlock struct {
 	ID        string `json:"reasoning_id,omitempty"`

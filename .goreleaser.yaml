@@ -1,23 +1,18 @@
 # GoReleaser config — builds cross-platform binaries and GitHub Release
-# artifacts for zot.
-#
-# Triggered by pushing a tag like `v0.1.0`. The release workflow runs
-# `goreleaser release --clean`, which compiles every target, packs
-# them into `.tar.gz` (Unix) / `.zip` (Windows) archives, generates a
-# checksum file, and uploads everything to a GitHub Release.
-
+# artifacts for zut. The release workflow creates conventional-commit-based
+# v0.x tags, then invokes GoReleaser for that immutable tag.
 version: 2
 
-project_name: zot
+project_name: zut
 
 before:
   hooks:
     - go mod tidy
 
 builds:
-  - id: zot
-    main: ./cmd/zot
-    binary: zot
+  - id: zut
+    main: ./cmd/zut
+    binary: zut
     env:
       - CGO_ENABLED=0
     goos: [linux, darwin, windows]
@@ -36,59 +31,69 @@ builds:
       - -X main.date={{.Date}}
 
 archives:
-  - id: zot
-    # Human-friendly name: zot_0.1.0_darwin_arm64.tar.gz
+  - id: zut
+    # Human-friendly name: zut_0.1.0_darwin_arm64.tar.gz
     name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
     files:
       - LICENSE
       - README.md
     format_overrides:
       - goos: windows
-        format: zip
+        formats: [zip]
 
 checksum:
   name_template: "checksums.txt"
   algorithm: sha256
 
 snapshot:
-  # Used by `goreleaser release --snapshot`; lets contributors build
-  # a local release without pushing a tag.
   version_template: "{{ incpatch .Version }}-next"
+
+git:
+  # Generate prerelease changelogs from the previous stable tag.
+  tag_sort: smartsemver
 
 changelog:
   sort: asc
   use: github
   filters:
+    # Styling-only commits are neither releasable nor useful release notes.
     exclude:
-      - "^docs:"
-      - "^chore:"
-      - "^ci:"
-      - "^test:"
+      - "^style:"
   groups:
-    - title: features
-      regexp: "^.*feat[(\\w)]*:+.*$"
+    - title: Added
+      regexp: "^feat(\\([^)]+\\))?!?:"
       order: 0
-    - title: fixes
-      regexp: "^.*fix[(\\w)]*:+.*$"
+    - title: Fixed
+      regexp: "^fix(\\([^)]+\\))?!?:"
       order: 1
-    - title: other
+    - title: Changed
+      regexp: "^(perf|refactor|build)(\\([^)]+\\))?!?:"
+      order: 2
+    - title: Maintenance
+      regexp: "^(chore|ci)(\\([^)]+\\))?!?:"
+      order: 3
+    - title: Documentation
+      regexp: "^docs(\\([^)]+\\))?!?:"
+      order: 4
+    - title: Tests
+      regexp: "^test(\\([^)]+\\))?!?:"
+      order: 5
+    - title: Other changes
       order: 999
 
 release:
   github:
-    owner: patriceckhart
-    name: zot
+    owner: bnema
+    name: zut
   draft: false
   prerelease: auto
-  # Auto-generated release notes include the changelog groups above plus
-  # an install snippet so the release page itself is a landing page.
   header: |
-    ## zot {{ .Tag }}
+    ## zut {{ .Tag }}
 
-    one-liner install:
+    Install with:
 
     ```bash
-    curl -fsSL https://raw.githubusercontent.com/patriceckhart/zot/main/install.sh | bash
+    curl -fsSL https://raw.githubusercontent.com/bnema/zut/main/install.sh | bash
     ```
 
-    or download a binary below, `chmod +x`, and drop it on your `$PATH`.
+    Or download a binary below, verify it with `checksums.txt`, and add it to your `$PATH`.

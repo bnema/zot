@@ -14,7 +14,7 @@ import (
 
 // updateCheckTTL is how often we hit the GitHub API to look for a new
 // release. Half a day is frequent enough to notice the same day a
-// release ships without spamming the API on every zot launch.
+// release ships without spamming the API on every zut launch.
 const updateCheckTTL = 12 * time.Hour
 
 // updateCheckFile is the on-disk cache, keyed to the current binary
@@ -24,7 +24,7 @@ const updateCheckFile = "update-check.json"
 
 // githubReleasesAPI is the REST endpoint we query. Using the API (not
 // the HTML redirect) because the JSON response is stable and small.
-const githubReleasesAPI = "https://api.github.com/repos/patriceckhart/zot/releases/latest"
+const githubReleasesAPI = "https://api.github.com/repos/bnema/zut/releases/latest"
 
 const devVersionNotice = "dev version detected; skipping update check"
 
@@ -46,7 +46,7 @@ func isDevVersion(version string) bool {
 		version == "0.0.0-dev" || strings.HasPrefix(version, "0.0.0-dev+")
 }
 
-// updateCache is the on-disk structure written to $ZOT_HOME.
+// updateCache is the on-disk structure written to $ZUT_HOME.
 type updateCache struct {
 	CheckedAt time.Time `json:"checked_at"`
 	// The version that was current when we last checked. Invalidates
@@ -63,14 +63,14 @@ type updateCache struct {
 // Always returns a usable UpdateInfo (zero-value on error). The
 // banner renderer skips the display when Available is false, so a
 // network failure silently no-ops; we never block startup on this.
-func CheckForUpdate(ctx context.Context, zotHome, currentVersion string) UpdateInfo {
+func CheckForUpdate(ctx context.Context, zutHome, currentVersion string) UpdateInfo {
 	// Development builds never have an update to offer. Skip without
 	// reading the cache or touching the network.
 	if isDevVersion(currentVersion) {
 		return UpdateInfo{}
 	}
 
-	cachePath := filepath.Join(zotHome, updateCheckFile)
+	cachePath := filepath.Join(zutHome, updateCheckFile)
 	if c, ok := readUpdateCache(cachePath); ok {
 		// Cache is fresh and tracks the same binary version.
 		// Additional guard: only trust the cache when it already
@@ -111,13 +111,13 @@ func CheckForUpdate(ctx context.Context, zotHome, currentVersion string) UpdateI
 // CheckForUpdateAsync runs CheckForUpdate in a goroutine, delivers the
 // result to the returned channel, and never blocks startup. The
 // channel is always closed; receivers should `ok`-check.
-func CheckForUpdateAsync(zotHome, currentVersion string) <-chan UpdateInfo {
+func CheckForUpdateAsync(zutHome, currentVersion string) <-chan UpdateInfo {
 	ch := make(chan UpdateInfo, 1)
 	go func() {
 		defer close(ch)
 		ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
 		defer cancel()
-		ch <- CheckForUpdate(ctx, zotHome, currentVersion)
+		ch <- CheckForUpdate(ctx, zutHome, currentVersion)
 	}()
 	return ch
 }
@@ -133,7 +133,7 @@ func buildInfo(current, latest, url string) UpdateInfo {
 }
 
 // versionLess returns a < b for dotted semver-ish tags like "0.0.4".
-// Non-numeric components compare as zero, which is fine for zot's
+// Non-numeric components compare as zero, which is fine for zut's
 // x.y.z-only scheme.
 func versionLess(a, b string) bool {
 	as := splitVersion(a)

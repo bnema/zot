@@ -19,7 +19,7 @@ func writeJSON(t *testing.T, path, content string) {
 func TestLoadConfigProjectOverridesGlobal(t *testing.T) {
 	home := t.TempDir()
 	proj := t.TempDir()
-	t.Setenv("ZOT_HOME", home)
+	t.Setenv("ZUT_HOME", home)
 
 	writeJSON(t, filepath.Join(home, "mcp.json"), `{
 		"mcpServers": {
@@ -27,7 +27,7 @@ func TestLoadConfigProjectOverridesGlobal(t *testing.T) {
 			"global-only": {"command": "g"}
 		}
 	}`)
-	writeJSON(t, filepath.Join(proj, ".zot", "mcp.json"), `{
+	writeJSON(t, filepath.Join(proj, ".zut", "mcp.json"), `{
 		"mcpServers": {
 			"shared": {"command": "project-cmd"}
 		}
@@ -50,7 +50,7 @@ func TestLoadConfigProjectOverridesGlobal(t *testing.T) {
 }
 
 func TestLoadConfigMissingFilesIsNotAnError(t *testing.T) {
-	t.Setenv("ZOT_HOME", t.TempDir())
+	t.Setenv("ZUT_HOME", t.TempDir())
 	cfg, err := loadConfig(t.TempDir())
 	if err != nil {
 		t.Fatalf("loadConfig with no files: %v", err)
@@ -61,7 +61,7 @@ func TestLoadConfigMissingFilesIsNotAnError(t *testing.T) {
 }
 
 func TestHandleSetupProjectRequiresCwd(t *testing.T) {
-	t.Setenv("ZOT_HOME", t.TempDir())
+	t.Setenv("ZUT_HOME", t.TempDir())
 	if _, err := handleSetup([]string{"add", "grep", "--project"}, ""); err == nil {
 		t.Fatal("expected error for --project with unknown working directory")
 	}

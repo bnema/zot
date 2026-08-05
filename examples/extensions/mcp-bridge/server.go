@@ -157,7 +157,7 @@ func (s *managedServer) doStart(ctx context.Context) (*client.Client, []mcp.Tool
 		Params: mcp.InitializeParams{
 			ProtocolVersion: mcp.LATEST_PROTOCOL_VERSION,
 			ClientInfo: mcp.Implementation{
-				Name:    "zot-mcp-bridge",
+				Name:    "zut-mcp-bridge",
 				Version: "1.0.0",
 			},
 			Capabilities: mcp.ClientCapabilities{},
@@ -191,7 +191,7 @@ func (s *managedServer) startStdio() (*client.Client, error) {
 	}
 
 	// Create stdio client (this spawns the subprocess). Run stdio MCP
-	// servers from the zot session's project directory, not the installed
+	// servers from the zut session's project directory, not the installed
 	// extension directory. Many MCP servers use their process cwd as their
 	// project root when answering relative-path or directory-listing
 	// requests, so inheriting mcp-bridge's cwd makes them operate on the

@@ -53,6 +53,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: release-version policy
+        run: bash .github/scripts/next-release-tag_test.sh
+
       - name: set up go
         uses: actions/setup-go@v7
         with:

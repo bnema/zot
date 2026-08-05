@@ -16,16 +16,16 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/patriceckhart/zot/packages/agent/extensions"
-	"github.com/patriceckhart/zot/packages/agent/extproto"
-	"github.com/patriceckhart/zot/packages/agent/modes"
-	"github.com/patriceckhart/zot/packages/agent/skills"
-	"github.com/patriceckhart/zot/packages/agent/subagents"
-	"github.com/patriceckhart/zot/packages/agent/tools"
-	"github.com/patriceckhart/zot/packages/core"
-	"github.com/patriceckhart/zot/packages/provider"
-	"github.com/patriceckhart/zot/packages/provider/auth"
-	"github.com/patriceckhart/zot/packages/tui"
+	"github.com/bnema/zut/packages/agent/extensions"
+	"github.com/bnema/zut/packages/agent/extproto"
+	"github.com/bnema/zut/packages/agent/modes"
+	"github.com/bnema/zut/packages/agent/skills"
+	"github.com/bnema/zut/packages/agent/subagents"
+	"github.com/bnema/zut/packages/agent/tools"
+	"github.com/bnema/zut/packages/core"
+	"github.com/bnema/zut/packages/provider"
+	"github.com/bnema/zut/packages/provider/auth"
+	"github.com/bnema/zut/packages/tui"
 )
 
 // interactiveExtHooks is a tiny adapter that lets the extension
@@ -471,7 +471,7 @@ func prepareSessionResumeWithOptions(path string, current *core.Agent, currentPr
 	}
 
 	// Old sessions may have either field absent. Only a complete stored
-	// selection is actionable; otherwise resume exactly as older zot did.
+	// selection is actionable; otherwise resume exactly as older zut did.
 	if storedProvider == "" || storedModel == "" {
 		keepSession = true
 		return candidate, nil
@@ -688,7 +688,7 @@ func fanoutAgentEvent(mgr *extensions.Manager, ev core.AgentEvent) {
 	}
 }
 
-// Run is the top-level entrypoint for the zot binary.
+// Run is the top-level entrypoint for the zut binary.
 func Run(rawArgs []string, version string) error {
 	// Extension installs can invoke external build and clone processes.
 	// Give those processes a cancellation context without changing signal
@@ -700,7 +700,7 @@ func Run(rawArgs []string, version string) error {
 	}
 	defer stopExtContext()
 
-	// Subcommand router: `zot bot ...` is handled separately so the
+	// Subcommand router: `zut bot ...` is handled separately so the
 	// generic flag parser doesn't reject "bot" as a positional arg.
 	if handled, err := runBotCommand(rawArgs, version); handled {
 		return err
@@ -711,14 +711,14 @@ func Run(rawArgs []string, version string) error {
 	if handled, err := runUpdateCommand(rawArgs, version); handled {
 		return err
 	}
-	if handled, err := runZotfileCommand(rawArgs, version); handled {
+	if handled, err := runZutfileCommand(rawArgs, version); handled {
 		return err
 	}
 	return runWithArgsRaw(rawArgs, version)
 }
 
 func runWithArgsRaw(rawArgs []string, version string) error {
-	// `zot rpc` is shorthand for `zot --rpc` so third-party apps can
+	// `zut rpc` is shorthand for `zut --rpc` so third-party apps can
 	// spawn the binary with a clean argv. Strip the leading 'rpc'
 	// token and let the rest flow through the normal arg parser.
 	if len(rawArgs) > 0 && rawArgs[0] == "rpc" {
@@ -735,7 +735,7 @@ func runWithArgsRaw(rawArgs []string, version string) error {
 		return nil
 	}
 	if args.Version {
-		fmt.Println("zot", version)
+		fmt.Println("zut", version)
 		return nil
 	}
 	// Model catalog: load any cached discovery data before we inspect
@@ -797,7 +797,7 @@ func (nonInteractiveExtHooks) ClearWidget(string, string)                       
 // wire tools into the resolved registry, and a cleanup closure to
 // defer. Mirrors the interactive-mode setup minus the TUI hooks.
 func setupNonInteractiveExtensions(ctx context.Context, args Args, r *Resolved, version string) (*extensions.Manager, func()) {
-	extMgr := extensions.New(ZotHome(), r.CWD, version, r.Provider, r.Model, nonInteractiveExtHooks{})
+	extMgr := extensions.New(ZutHome(), r.CWD, version, r.Provider, r.Model, nonInteractiveExtHooks{})
 	for _, e := range extMgr.LoadExplicit(ctx, args.Exts) {
 		fmt.Fprintln(os.Stderr, "extension load:", e)
 	}
@@ -925,7 +925,7 @@ func runPrintMode(ctx context.Context, args Args, version string) error {
 	}
 
 	start := len(ag.Messages())
-	if err := runZotfileStartupPre(ctx, args.StartupPre, r.CWD, r.Sandbox, ag, nil, os.Stderr); err != nil {
+	if err := runZutfileStartupPre(ctx, args.StartupPre, r.CWD, r.Sandbox, ag, nil, os.Stderr); err != nil {
 		return err
 	}
 	if err := reloadResourcesAfterStartupPre(ctx, args, extMgr, r.Sandbox, ag); err != nil {
@@ -991,7 +991,7 @@ func runStreamMode(ctx context.Context, args Args, version string) error {
 
 	start := len(ag.Messages())
 	preSink, finishPre := newStreamTextSink(os.Stdout)
-	if err := runZotfileStartupPre(ctx, args.StartupPre, r.CWD, r.Sandbox, ag, preSink, os.Stderr); err != nil {
+	if err := runZutfileStartupPre(ctx, args.StartupPre, r.CWD, r.Sandbox, ag, preSink, os.Stderr); err != nil {
 		finishPre()
 		return err
 	}
@@ -1098,7 +1098,7 @@ func runJSONMode(ctx context.Context, args Args, version string) error {
 	preSink := func(ev core.AgentEvent) {
 		_ = enc.Encode(modes.EventToJSON(ev))
 	}
-	if err := runZotfileStartupPre(ctx, args.StartupPre, r.CWD, r.Sandbox, ag, preSink, os.Stderr); err != nil {
+	if err := runZutfileStartupPre(ctx, args.StartupPre, r.CWD, r.Sandbox, ag, preSink, os.Stderr); err != nil {
 		_ = enc.Encode(map[string]any{"type": "error", "message": err.Error()})
 		return err
 	}
@@ -1111,11 +1111,11 @@ func runJSONMode(ctx context.Context, args Args, version string) error {
 	return err
 }
 
-// runZotfileStartupPre runs entry.pre before the main non-interactive prompt.
+// runZutfileStartupPre runs entry.pre before the main non-interactive prompt.
 // "!command" values execute via BashTool; other values are sent as an agent turn.
 // shellOut receives live shell chunks (typically os.Stderr); sink receives
 // agent events for plain-text pre (stream mode wires a live text sink).
-func runZotfileStartupPre(ctx context.Context, pre, cwd string, sandbox *tools.Sandbox, ag *core.Agent, sink func(core.AgentEvent), shellOut io.Writer) error {
+func runZutfileStartupPre(ctx context.Context, pre, cwd string, sandbox *tools.Sandbox, ag *core.Agent, sink func(core.AgentEvent), shellOut io.Writer) error {
 	pre = strings.TrimSpace(pre)
 	if pre == "" {
 		return nil
@@ -1143,7 +1143,7 @@ func runZotfileStartupPre(ctx context.Context, pre, cwd string, sandbox *tools.S
 		bash := &tools.BashTool{CWD: cwd, Sandbox: sandbox}
 		res, err := bash.Execute(ctx, raw, progress)
 		if err != nil {
-			return fmt.Errorf("zotfile entry.pre: %w", err)
+			return fmt.Errorf("zutfile entry.pre: %w", err)
 		}
 		if res.IsError {
 			var sb strings.Builder
@@ -1156,12 +1156,12 @@ func runZotfileStartupPre(ctx context.Context, pre, cwd string, sandbox *tools.S
 			if msg == "" {
 				msg = "command failed"
 			}
-			return fmt.Errorf("zotfile entry.pre: %s", msg)
+			return fmt.Errorf("zutfile entry.pre: %s", msg)
 		}
 		return nil
 	}
 	if ag == nil {
-		return fmt.Errorf("zotfile entry.pre requires an agent for non-shell prompts")
+		return fmt.Errorf("zutfile entry.pre requires an agent for non-shell prompts")
 	}
 	if sink == nil {
 		sink = func(core.AgentEvent) {}
@@ -1174,7 +1174,7 @@ var errInteractiveAgentChanged = errors.New("interactive agent changed during pr
 // refreshAgentToolsAndPrompt re-resolves tools (including rediscovered
 // skills and currently loaded extension tools) and updates the live
 // agent's registry and system prompt. Used after /reload-ext and after
-// zotfile entry.pre installs new skills or extensions.
+// zutfile entry.pre installs new skills or extensions.
 // mutateRegistry, if non-nil, can inject session-specific tools (e.g. subagent_spawn).
 // interactive, when non-nil, serializes the final commit with agent replacement.
 func refreshAgentToolsAndPrompt(args Args, sharedSandbox *tools.Sandbox, extToolAdapter ExtensionToolSource, ag *core.Agent, mutateRegistry func(core.Registry) core.Registry, interactive *modes.Interactive) error {
@@ -1289,7 +1289,7 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 	// host after constructing it below so startup alerts can be buffered.
 	var iv *modes.Interactive
 	extHooks := &interactiveExtHooks{}
-	extMgr := extensions.New(ZotHome(), r.CWD, version, r.Provider, r.Model, extHooks)
+	extMgr := extensions.New(ZutHome(), r.CWD, version, r.Provider, r.Model, extHooks)
 	var startupExtensionErrors []string
 	// --ext paths first so they win against installed extensions of
 	// the same name (loadOne's first-write-wins semantics).
@@ -1321,7 +1321,7 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 
 	// Build the subagent supervisor BEFORE the agent so the auto-subagents
 	// tool can reference it during tool-registry construction. State
-	// lives under ZotHome/subagents so per-agent meta/events survive
+	// lives under ZutHome/subagents so per-agent meta/events survive
 	// restarts; the user can hunt orphaned agents down with
 	// `git worktree list` if anything misbehaves.
 	//
@@ -1331,7 +1331,7 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 	var subagentsMgr *subagents.Supervisor
 	subagentsMgr = subagents.New(subagents.Config{
 		Context:     ctx,
-		Root:        filepath.Join(ZotHome(), "subagents"),
+		Root:        filepath.Join(ZutHome(), "subagents"),
 		RepoRoot:    r.CWD,
 		Provider:    r.Provider,
 		FastMode:    r.FastMode,
@@ -1375,7 +1375,7 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 	// shows them as detached and the user can resume / remove them.
 	_, _ = subagentsMgr.Reload()
 	if args.PermissionSet != nil {
-		// Packaged zotfile agents have an explicit capability ceiling. A
+		// Packaged zutfile agents have an explicit capability ceiling. A
 		// child process would otherwise rebuild a fresh unrestricted sandbox,
 		// so do not expose either slash or tool-based delegation from this
 		// restricted host until worker capability propagation exists.
@@ -1559,7 +1559,7 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 	// rescue (a bad key, a typo'd base URL, or a corporate gateway that
 	// only the originally-picked provider needed). Re-resolving without
 	// them lets the rescue retry use env vars / auth.json / provider
-	// defaults the way zot would have without the overrides.
+	// defaults the way zut would have without the overrides.
 	buildAgentForRescue := func(providerOverride, modelOverride string) (*core.Agent, string, string, error) {
 		next := args
 		next.APIKey = ""
@@ -1961,10 +1961,10 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 		// Fresh session in the new cwd's bucket. We bypass
 		// openOrCreateSession's --continue / --resume branches
 		// because /cd's semantics are "start fresh here", matching
-		// what relaunching `zot --cwd <path>` would do today.
+		// what relaunching `zut --cwd <path>` would do today.
 		var newSess *core.Session
 		if !args.NoSess {
-			newRoot := agentSessionsRoot(ZotHome(), args)
+			newRoot := agentSessionsRoot(ZutHome(), args)
 			core.PruneEmptySessions(newRoot, absPath)
 			var serr error
 			newSess, serr = core.NewSession(newRoot, absPath, newProvider, newModel, version)
@@ -2004,7 +2004,7 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 
 		// Push the new state into the running Interactive.
 		if iv != nil {
-			startupPaths := instructionContextPaths(loadAgentsContext(absPath, ZotHome()))
+			startupPaths := instructionContextPaths(loadAgentsContext(absPath, ZutHome()))
 			iv.ApplyChangedCWDWithStartupContext(newAg, newProvider, newModel, absPath, startupPaths)
 		}
 
@@ -2020,7 +2020,7 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 
 	devBuild := isDevVersion(version)
 	if devBuild {
-		fmt.Fprintln(os.Stderr, "zot:", devVersionNotice)
+		fmt.Fprintln(os.Stderr, "zut:", devVersionNotice)
 	}
 	term := tui.NewProcTerm()
 
@@ -2033,7 +2033,7 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 		updateCh = make(chan modes.UpdateInfo, 1)
 		go func() {
 			defer close(updateCh)
-			src := <-CheckForUpdateAsync(ZotHome(), version)
+			src := <-CheckForUpdateAsync(ZutHome(), version)
 			updateCh <- modes.UpdateInfo{
 				Current:   src.Current,
 				Latest:    src.Latest,
@@ -2076,10 +2076,10 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 	for idx, s := range initialCfg.QuickModelShortcuts {
 		quickModelShortcuts[idx] = modes.QuickModelShortcut{Provider: s.Provider, Model: s.Model}
 	}
-	theme, _, themeErr := tui.DetectThemeWithCustom(ZotHome(), initialCfg.Theme, 80*time.Millisecond)
+	theme, _, themeErr := tui.DetectThemeWithCustom(ZutHome(), initialCfg.Theme, 80*time.Millisecond)
 	if themeErr != nil {
 		fmt.Fprintln(os.Stderr, "theme load:", themeErr)
-		if initialCfg.Theme != "" && !tui.ThemeExists(ZotHome(), initialCfg.Theme) {
+		if initialCfg.Theme != "" && !tui.ThemeExists(ZutHome(), initialCfg.Theme) {
 			initialCfg.Theme = ""
 			_ = SaveConfig(initialCfg)
 		}
@@ -2095,7 +2095,7 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 		subagentsMgr.SetActiveSession(sess.ID)
 	}
 	// Best-effort shutdown on interactive exit: stop all running
-	// agents so they don't outlive their parent zot.
+	// agents so they don't outlive their parent zut.
 	if subagentsMgr != nil {
 		defer subagentsMgr.StopAll()
 	}
@@ -2154,8 +2154,8 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 		StartupExtensionErrors:         startupExtensionErrors,
 		StartupSkillNames:              startupSkillNames(startupSkills),
 		ShowInstructionsAtStartup:      initialCfg.ShowInstructionsAtStartup,
-		ZotHome:                        ZotHome(),
-		SessionsRoot:                   agentSessionsRoot(ZotHome(), args),
+		ZutHome:                        ZutHome(),
+		SessionsRoot:                   agentSessionsRoot(ZutHome(), args),
 		Version:                        version,
 		UpdateInfoChan:                 updateCh,
 		Sandbox:                        sharedSandbox,
@@ -2281,7 +2281,7 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 			// model still sees them through the system-prompt
 			// manifest and the skill tool.
 			userHome, _ := os.UserHomeDir()
-			list, _ := skills.Discover(ZotHome(), r.CWD, userHome, args.WithSkills)
+			list, _ := skills.Discover(ZutHome(), r.CWD, userHome, args.WithSkills)
 			list = mergeExtensionSkills(skills.NewTool(list), extMgr.Skills())
 			return skills.VisibleSkills(list)
 		},
@@ -2345,7 +2345,7 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 		})
 	}
 
-	// Signal-driven flush: a SIGTERM / SIGHUP to the zot process
+	// Signal-driven flush: a SIGTERM / SIGHUP to the zut process
 	// (closed terminal window, system shutdown, kill) used to lose
 	// the entire in-memory transcript because the deferred post-Run
 	// flush below never ran. Per-message persistence above covers
@@ -2419,10 +2419,10 @@ func openOrCreateSession(args Args, r Resolved, ag *core.Agent, version string) 
 	if args.NoSess {
 		return nil, nil
 	}
-	// Sweep meta-only files left over from older zot versions (and from
+	// Sweep meta-only files left over from older zut versions (and from
 	// any session that crashed before its first AppendMessage). Cheap;
 	// reads the first few bytes of each file in the cwd's session dir.
-	sessionsRoot := agentSessionsRoot(ZotHome(), args)
+	sessionsRoot := agentSessionsRoot(ZutHome(), args)
 	core.PruneEmptySessions(sessionsRoot, args.CWD)
 	var (
 		s    *core.Session
