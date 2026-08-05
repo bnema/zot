@@ -1,7 +1,7 @@
 # zut
 
 > [!NOTE]
-> **Fork notice:** `zut` is an independently maintained fork of [zot](https://github.com/patriceckhart/zot). It retains the upstream MIT license and copyright notice; see [LICENSE](LICENSE).
+> **Fork notice:** `zut` is an independent fork of [zot](https://github.com/patriceckhart/zot) adapted for my own workflow but feel free to use it too.
 
 ## What is it?
 
