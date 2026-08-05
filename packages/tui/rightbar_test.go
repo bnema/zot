@@ -184,6 +184,31 @@ func TestJoinRightBarPreservesCellBudgetForUnicode(t *testing.T) {
 	}
 }
 
+func TestRendererDrawRightBarToDrawLogKeepsScrollback(t *testing.T) {
+	t.Setenv("TERM_PROGRAM", "")
+
+	var out bytes.Buffer
+	r := NewRenderer(&out)
+	r.SetTheme(Dark)
+	r.Resize(80, 5)
+	r.DrawRightBar(
+		[]string{"chat"},
+		[]string{"input"},
+		RenderRightBar(Dark, []RightBarWidget{{Extension: "plan", Title: "Plan", Lines: []string{"task"}}}, 26, 5),
+		0,
+		0,
+	)
+
+	out.Reset()
+	r.DrawLog([]string{"chat"}, []string{"input"}, 0, 0)
+	if !strings.Contains(stripANSI(out.String()), "input") {
+		t.Fatalf("right-bar fallback did not repaint flow content: %q", out.String())
+	}
+	if strings.Contains(out.String(), SeqClearScrollback) {
+		t.Fatalf("right-bar fallback cleared terminal scrollback: %q", out.String())
+	}
+}
+
 func TestRendererDrawRightBarUpdatesClearsAndResizes(t *testing.T) {
 	var out bytes.Buffer
 	r := NewRenderer(&out)

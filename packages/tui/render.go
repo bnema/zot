@@ -37,12 +37,13 @@ type Renderer struct {
 	// in the terminal's visible viewport so we can diff safely, and bail
 	// out to clear+replay when the diff would touch rows that are no
 	// longer addressable.
-	logChat        []string
-	logBottom      []string
-	logLines       []string
-	logViewportTop int
-	logHardwareRow int
-	logInit        bool
+	logChat             []string
+	logBottom           []string
+	logLines            []string
+	logViewportTop      int
+	logHardwareRow      int
+	logInit             bool
+	logNeedsFullRepaint bool
 
 	// keepScrollback is true when we must NOT emit \x1b[3J
 	// (erase-in-display 3, "clear scrollback").
@@ -588,8 +589,12 @@ func (r *Renderer) DrawLog(chat, bottom []string, cursorBottomRow, cursorCol int
 	wasInitialized := r.logInit
 	full := !wasInitialized || len(r.logLines) == 0
 	if full {
-		writeFull(true, !wasInitialized)
+		// Returning from the fixed right-bar frame needs a full viewport
+		// repaint, but it must not discard terminal scrollback merely because
+		// the renderer's flow cache is intentionally empty.
+		writeFull(true, !wasInitialized && !r.logNeedsFullRepaint)
 		r.logInit = true
+		r.logNeedsFullRepaint = false
 	} else {
 		firstChanged := -1
 		lastChanged := -1

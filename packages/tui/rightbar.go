@@ -401,12 +401,14 @@ func (r *Renderer) DrawRightBar(chat, bottom, rightBar []string, cursorBottomRow
 
 	// Draw() owns the fixed-frame cache. Reset the flow-mode cache so a
 	// later fallback to DrawLog starts with a full repaint instead of trying
-	// to diff against logical rows from before the rail was enabled.
+	// to diff against logical rows from before the rail was enabled. Mark the
+	// transition separately so that repaint does not clear scrollback.
 	r.logChat = nil
 	r.logBottom = nil
 	r.logLines = nil
 	r.logViewportTop = 0
 	r.logHardwareRow = 0
 	r.logInit = false
+	r.logNeedsFullRepaint = true
 	r.Draw(frame, cursorRow, cursorCol)
 }
