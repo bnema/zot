@@ -4573,15 +4573,25 @@ func (i *Interactive) applySettingToggle(key string, value bool) {
 		i.cfg.LSPEnabled = &val
 		if i.cfg.RefreshTools != nil {
 			if err := i.cfg.RefreshTools(); err != nil {
+				errMsg := "settings: refresh tools: " + err.Error()
 				rollbackErr := error(nil)
 				if hasStore {
 					rollbackErr = store.SetLSPEnabled(previous)
 				}
-				previousVal := previous
-				i.cfg.LSPEnabled = &previousVal
-				errMsg := "settings: refresh tools: " + err.Error()
 				if rollbackErr != nil {
+					// The first write succeeded, so keep the in-memory setting at
+					// the value that remains durable instead of claiming that the
+					// rollback took effect.
 					errMsg += "; rollback persistence: " + rollbackErr.Error()
+					if reconcileErr := i.cfg.RefreshTools(); reconcileErr != nil {
+						errMsg += "; durable-state refresh: " + reconcileErr.Error()
+					}
+				} else {
+					previousVal := previous
+					i.cfg.LSPEnabled = &previousVal
+					if refreshErr := i.cfg.RefreshTools(); refreshErr != nil {
+						errMsg += "; rollback refresh: " + refreshErr.Error()
+					}
 				}
 				i.mu.Lock()
 				i.statusOK = ""
