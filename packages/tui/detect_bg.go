@@ -143,7 +143,8 @@ func readOSCColorResponses(deadline time.Time, expected int) []oscColorResponse 
 			buf = buf[:0]
 		}
 		buf = append(buf, b)
-		if b != '\x07' && !(len(buf) >= 2 && buf[len(buf)-2] == '\x1b' && buf[len(buf)-1] == '\\') {
+		terminated := b == '\x07' || (len(buf) >= 2 && buf[len(buf)-2] == '\x1b' && buf[len(buf)-1] == '\\')
+		if !terminated {
 			continue
 		}
 		if response, ok := parseOSCColorResponse(buf); ok {
