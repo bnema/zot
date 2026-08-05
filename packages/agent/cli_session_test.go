@@ -5,7 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/patriceckhart/zot/packages/agent/modes"
 	"github.com/patriceckhart/zot/packages/core"
@@ -91,6 +93,40 @@ func TestLiveInteractiveAgentFallsBackBeforeInteractiveConstruction(t *testing.T
 	startup := core.NewAgent(nil, "startup-model", "", nil)
 	if got := liveInteractiveAgent(nil, startup); got != startup {
 		t.Fatalf("fallback agent = %p, want %p", got, startup)
+	}
+}
+
+func TestPersistModelCallbackDoesNotReenterSessionTransition(t *testing.T) {
+	t.Setenv("ZOT_HOME", t.TempDir())
+	sess, err := core.NewSession(t.TempDir(), t.TempDir(), "old-provider", "old-model", "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sess.Close()
+
+	var persistMu sync.Mutex
+	activeProvider, activeModel := "old-provider", "old-model"
+	persistModel := newPersistModelCallback(&persistMu, &sess, &activeProvider, &activeModel, nil)
+
+	var transitionMu sync.RWMutex
+	sessionTransition := newSessionTransition(&transitionMu)
+	done := make(chan struct{})
+	go func() {
+		sessionTransition(func() {
+			persistModel("new-provider", "new-model")
+		})
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("model persistence deadlocked inside the session transition")
+	}
+	if sess.Meta.Provider != "new-provider" || sess.Meta.Model != "new-model" {
+		t.Fatalf("session model = %q/%q, want new-provider/new-model", sess.Meta.Provider, sess.Meta.Model)
+	}
+	if activeProvider != "new-provider" || activeModel != "new-model" {
+		t.Fatalf("active model = %q/%q, want new-provider/new-model", activeProvider, activeModel)
 	}
 }
 
