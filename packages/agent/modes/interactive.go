@@ -1211,7 +1211,30 @@ func (i *Interactive) extensionWidgetsKeyLocked() string {
 const maxExtensionWidgetRows = 12
 const maxExtensionStatusRows = 6
 
+func (i *Interactive) rightBarWidgetsLocked() []tui.RightBarWidget {
+	var out []tui.RightBarWidget
+	for _, extName := range sortedNestedOuterKeys(i.extWidgets) {
+		for _, id := range sortedNestedInnerKeys(i.extWidgets, extName) {
+			widget := i.extWidgets[extName][id]
+			if extproto.NormalizeWidgetPosition(widget.Position) != extproto.WidgetPositionRightBar {
+				continue
+			}
+			out = append(out, tui.RightBarWidget{
+				Extension: extName,
+				ID:        id,
+				Title:     widget.Title,
+				Lines:     append([]string(nil), widget.Lines...),
+			})
+		}
+	}
+	return out
+}
+
 func (i *Interactive) extensionChromeLinesLocked(cols int) []string {
+	return i.extensionChromeLinesAtLocked(cols, false)
+}
+
+func (i *Interactive) extensionChromeLinesAtLocked(cols int, rightBarActive bool) []string {
 	var out []string
 	bodyWidth := cols - 2
 	if bodyWidth < 1 {
@@ -1236,6 +1259,9 @@ func (i *Interactive) extensionChromeLinesLocked(cols int) []string {
 		}
 		for _, id := range sortedNestedInnerKeys(i.extWidgets, extName) {
 			widget := i.extWidgets[extName][id]
+			if rightBarActive && extproto.NormalizeWidgetPosition(widget.Position) == extproto.WidgetPositionRightBar {
+				continue
+			}
 			label := "  [" + extName + "]"
 			if widget.Title != "" {
 				label += " " + widget.Title
@@ -1536,20 +1562,31 @@ func (i *Interactive) redraw() {
 	i.mu.Lock()
 	defer i.mu.Unlock()
 
-	cols, _ := i.cfg.Terminal.Size()
-	chat := i.cachedChatLocked(cols)
+	cols, rows := i.cfg.Terminal.Size()
+	mainCols := cols
+	rightBarWidgets := i.rightBarWidgetsLocked()
+	rightBarActive := false
+	var rightBarWidth int
+	if len(rightBarWidgets) > 0 {
+		if width, rail, ok := tui.RightBarColumns(cols); ok {
+			mainCols = width
+			rightBarWidth = rail
+			rightBarActive = true
+		}
+	}
+	chat := i.cachedChatLocked(mainCols)
 
 	// Dialogs (login or model picker) render between chat and the editor.
 	var dialog []string
 	switch {
 	case i.dialog.Active():
-		dialog = i.dialog.Render(i.cfg.Theme, cols)
+		dialog = i.dialog.Render(i.cfg.Theme, mainCols)
 	case i.modelDialog.Active():
-		dialog = i.modelDialog.Render(i.cfg.Theme, cols)
+		dialog = i.modelDialog.Render(i.cfg.Theme, mainCols)
 	case i.llamaDialog.Active():
-		dialog = i.llamaDialog.Render(i.cfg.Theme, cols)
+		dialog = i.llamaDialog.Render(i.cfg.Theme, mainCols)
 	case i.rescueDialog.Active():
-		dialog = i.rescueDialog.Render(i.cfg.Theme, cols)
+		dialog = i.rescueDialog.Render(i.cfg.Theme, mainCols)
 	case i.sessionDialog.Active():
 		// Reserve rows for the editor (~3), status line (1-2),
 		// dialog chrome (header + hint + rule + indicators, ~5),
@@ -1561,36 +1598,36 @@ func (i *Interactive) redraw() {
 			avail = 3
 		}
 		i.sessionDialog.MaxRows = avail
-		dialog = i.sessionDialog.Render(i.cfg.Theme, cols)
+		dialog = i.sessionDialog.Render(i.cfg.Theme, mainCols)
 	case i.subagentsDialog.Active():
-		dialog = i.subagentsDialog.Render(i.cfg.Theme, cols)
+		dialog = i.subagentsDialog.Render(i.cfg.Theme, mainCols)
 	case i.jumpDialog.Active():
-		dialog = i.jumpDialog.Render(i.cfg.Theme, cols)
+		dialog = i.jumpDialog.Render(i.cfg.Theme, mainCols)
 	case i.extPanel.Active() && (!i.confirmDialog.Active() || !i.confirmDialog.Focused()):
-		dialog = i.extPanel.Render(i.cfg.Theme, cols)
+		dialog = i.extPanel.Render(i.cfg.Theme, mainCols)
 	case i.confirmDialog.Active():
 		if i.btwDialog.Active() {
 			// Keep the side-chat transcript and its live tool preview visible
 			// above confirmation, matching how the main transcript remains
 			// visible while --no-yolo waits for a decision.
-			dialog = renderBtwConfirmation(i.cfg.Theme, cols, i.btwDialog, i.confirmDialog)
+			dialog = renderBtwConfirmation(i.cfg.Theme, mainCols, i.btwDialog, i.confirmDialog)
 		} else {
-			dialog = i.confirmDialog.Render(i.cfg.Theme, cols)
+			dialog = i.confirmDialog.Render(i.cfg.Theme, mainCols)
 		}
 	case i.btwDialog.Active():
-		dialog = i.btwDialog.Render(i.cfg.Theme, cols)
+		dialog = i.btwDialog.Render(i.cfg.Theme, mainCols)
 	case i.skillsDialog.Active():
-		dialog = i.skillsDialog.Render(i.cfg.Theme, cols)
+		dialog = i.skillsDialog.Render(i.cfg.Theme, mainCols)
 	case i.changelogDialog.Active():
-		dialog = i.changelogDialog.Render(i.cfg.Theme, cols)
+		dialog = i.changelogDialog.Render(i.cfg.Theme, mainCols)
 	case i.logoutDialog.Active():
-		dialog = i.logoutDialog.Render(i.cfg.Theme, cols)
+		dialog = i.logoutDialog.Render(i.cfg.Theme, mainCols)
 	case i.telegramDialog.Active():
-		dialog = i.telegramDialog.Render(i.cfg.Theme, cols)
+		dialog = i.telegramDialog.Render(i.cfg.Theme, mainCols)
 	case i.settingsDialog.Active():
-		dialog = i.settingsDialog.Render(i.cfg.Theme, cols)
+		dialog = i.settingsDialog.Render(i.cfg.Theme, mainCols)
 	case i.sessionOpsDialog.Active():
-		dialog = i.sessionOpsDialog.Render(i.cfg.Theme, cols)
+		dialog = i.sessionOpsDialog.Render(i.cfg.Theme, mainCols)
 	case i.sessionTreeDialog.Active():
 		// Reserve rows for the editor, status, and tree chrome while using
 		// the same budget for rendering and PageUp/PageDown movement.
@@ -1600,7 +1637,7 @@ func (i *Interactive) redraw() {
 			avail = 3
 		}
 		i.sessionTreeDialog.MaxRows = avail
-		dialog = i.sessionTreeDialog.Render(i.cfg.Theme, cols)
+		dialog = i.sessionTreeDialog.Render(i.cfg.Theme, mainCols)
 	}
 	if len(dialog) > 0 {
 		dialog = padDialogFrame(dialog)
@@ -1649,9 +1686,9 @@ func (i *Interactive) redraw() {
 	i.fileSuggest.SetCWD(i.cfg.CWD)
 	mainInputFocused := len(dialog) == 0 || (i.confirmDialog.Active() && !i.confirmDialog.Focused() && !i.confirmChildActive())
 	if mainInputFocused && i.suggest.Active(currentInput) {
-		suggest = i.suggest.Render(currentInput, i.cfg.Theme, cols)
+		suggest = i.suggest.Render(currentInput, i.cfg.Theme, mainCols)
 	} else if mainInputFocused && i.fileSuggest.Active(currentInput) {
-		suggest = i.fileSuggest.Render(currentInput, i.cfg.Theme, cols)
+		suggest = i.fileSuggest.Render(currentInput, i.cfg.Theme, mainCols)
 	}
 
 	// Detect overlay close (any dialog or slash/file suggestion popup
@@ -1725,7 +1762,7 @@ func (i *Interactive) redraw() {
 		ContextMax:     ctxMax,
 		AutoCompacting: i.autoCompacting,
 		Telegram:       i.telegramBridge != nil && i.telegramBridge.Active(),
-		Cols:           cols,
+		Cols:           mainCols,
 	})
 	inputStyle := tui.NormalizeInputStyle(i.cfg.TUIInputStyle)
 	if inputStyle == tui.InputStyleLines || inputStyle == tui.InputStyleBlock {
@@ -1733,7 +1770,7 @@ func (i *Interactive) redraw() {
 	} else {
 		i.ed.Prompt = i.cfg.Theme.AccentBar(i.cfg.Theme.Accent)
 	}
-	edLines, curR, curC := i.ed.Render(cols)
+	edLines, curR, curC := i.ed.Render(mainCols)
 	var workingLines []string
 	if busyPrefix != "" && !workingWithStatus {
 		workingLines = []string{"  " + busyPrefix}
@@ -1742,10 +1779,10 @@ func (i *Interactive) redraw() {
 	inputCursorColOffset := 0
 	switch inputStyle {
 	case tui.InputStyleLines:
-		edLines = tui.InputLines(i.cfg.Theme, edLines, cols)
+		edLines = tui.InputLines(i.cfg.Theme, edLines, mainCols)
 		inputCursorOffset = 1
 	case tui.InputStyleBlock:
-		edLines = tui.InputBlock(i.cfg.Theme, edLines, cols)
+		edLines = tui.InputBlock(i.cfg.Theme, edLines, mainCols)
 		inputCursorOffset = 1
 		inputCursorColOffset = 2
 	}
@@ -1762,7 +1799,7 @@ func (i *Interactive) redraw() {
 		queue = append(queue, "")
 		for _, q := range queued {
 			label := i.cfg.Theme.FG256(i.cfg.Theme.Accent, "  sliding in: ")
-			text := truncateLine(q, cols-17)
+			text := truncateLine(q, mainCols-17)
 			queue = append(queue, label+i.cfg.Theme.FG256(i.cfg.Theme.Muted, text))
 		}
 		// Hint row, rendered in the same muted tone as the model
@@ -1773,7 +1810,7 @@ func (i *Interactive) redraw() {
 		queue = append(queue, i.cfg.Theme.FG256(i.cfg.Theme.Muted, hint))
 	}
 
-	extensionLines := i.extensionChromeLinesLocked(cols)
+	extensionLines := i.extensionChromeLinesAtLocked(mainCols, rightBarActive)
 
 	// Bottom-sticky sections (always visible, never scroll). Each
 	// non-empty subsection (dialog, suggest popup, sliding-in queue)
@@ -1837,8 +1874,12 @@ func (i *Interactive) redraw() {
 		}
 	}
 
-	_, rows := i.cfg.Terminal.Size()
 	chatRows := rows - len(bottom)
+	if rightBarActive {
+		// DrawRightBar keeps the renderer-owned bottom margin inside the
+		// fixed frame, so reserve that row before selecting visible chat.
+		chatRows--
+	}
 	if chatRows < 1 {
 		chatRows = 1
 	}
@@ -1866,12 +1907,12 @@ func (i *Interactive) redraw() {
 	// let a shrinking chatRows pull the window toward the tail, which
 	// read as the viewport jumping to the bottom whenever the agent
 	// streamed text or a tool call grew the bottom band.
-	if i.scrollOffset > 0 && i.prevChatCols == cols && i.prevChatLen > 0 {
+	if i.scrollOffset > 0 && i.prevChatCols == mainCols && i.prevChatLen > 0 {
 		i.scrollOffset = anchorScrollOffset(i.scrollOffset,
 			i.prevChatLen, len(chat), i.prevChatRows, chatRows)
 	}
 	i.prevChatLen = len(chat)
-	i.prevChatCols = cols
+	i.prevChatCols = mainCols
 	i.prevChatRows = chatRows
 
 	// Apply scroll offset to the chat slice.
@@ -1893,7 +1934,7 @@ func (i *Interactive) redraw() {
 			i.view.TailLimit = 0 // unbounded
 		}
 		i.chatCacheValid = false
-		chat = i.cachedChatLocked(cols)
+		chat = i.cachedChatLocked(mainCols)
 		for len(chat) > 0 && strings.TrimSpace(chat[len(chat)-1]) == "" {
 			chat = chat[:len(chat)-1]
 		}
@@ -1909,7 +1950,7 @@ func (i *Interactive) redraw() {
 			i.scrollOffset += grew
 		}
 		i.prevChatLen = len(chat)
-		i.prevChatCols = cols
+		i.prevChatCols = mainCols
 		maxOffset = len(chat) - chatRows
 		if maxOffset < 0 {
 			maxOffset = 0
@@ -1994,13 +2035,13 @@ func (i *Interactive) redraw() {
 	cursorRow := inputStartRow + inputCursorOffset + curR
 	cursorCol := curC + inputCursorColOffset
 	if i.btwDialog.Active() {
-		if r, c := i.btwDialog.CursorPos(cols); r >= 0 {
+		if r, c := i.btwDialog.CursorPos(mainCols); r >= 0 {
 			cursorRow = dialogLead + r
 			cursorCol = c
 		}
 	}
 	if i.dialog.Active() {
-		if r, c := i.dialog.CursorPos(cols); r >= 0 {
+		if r, c := i.dialog.CursorPos(mainCols); r >= 0 {
 			cursorRow = dialogLead + r
 			cursorCol = c
 		}
@@ -2027,7 +2068,7 @@ func (i *Interactive) redraw() {
 		}
 	}
 	if i.subagentsDialog.Active() {
-		if r, c := i.subagentsDialog.CursorPos(cols); r >= 0 {
+		if r, c := i.subagentsDialog.CursorPos(mainCols); r >= 0 {
 			cursorRow = dialogLead + r
 			cursorCol = c
 		} else {
@@ -2043,8 +2084,13 @@ func (i *Interactive) redraw() {
 		cursorRow = -1
 		cursorCol = 0
 	}
-	_ = visibleChat // maintained for legacy scroll state/indicators; DrawLog owns chat viewport.
-	i.rend.DrawLog(chat, bottom, cursorRow, cursorCol)
+	if rightBarActive {
+		rightBar := tui.RenderRightBar(i.cfg.Theme, rightBarWidgets, rightBarWidth, rows)
+		i.rend.DrawRightBar(visibleChat, bottom, rightBar, cursorRow, cursorCol)
+	} else {
+		_ = visibleChat // maintained for legacy scroll state/indicators; DrawLog owns chat viewport.
+		i.rend.DrawLog(chat, bottom, cursorRow, cursorCol)
+	}
 	if i.pendingAlert != nil && !i.busy && !i.streamOn && !i.streamFlushPending && len(i.streamPending) == 0 {
 		alert := *i.pendingAlert
 		i.pendingAlert = nil
@@ -3704,6 +3750,7 @@ func (i *Interactive) SetWidget(extName, id, position, title string, lines []str
 	if strings.TrimSpace(extName) == "" || strings.TrimSpace(id) == "" {
 		return
 	}
+	position = extproto.NormalizeWidgetPosition(position)
 	i.mu.Lock()
 	if i.extWidgets == nil {
 		i.extWidgets = map[string]map[string]extensionWidget{}
@@ -3731,6 +3778,45 @@ func (i *Interactive) ClearWidget(extName, id string) {
 	}
 	i.mu.Unlock()
 	i.invalidate()
+}
+
+// ClearExtensionChrome removes every persistent UI item owned by an
+// extension that has exited. This keeps crashes, disable/reload operations,
+// and startup failures from leaving stale widgets beside the transcript.
+func (i *Interactive) ClearExtensionChrome(extName string) {
+	if strings.TrimSpace(extName) == "" {
+		return
+	}
+	marker := "[" + extName + "] "
+	i.mu.Lock()
+	changed := false
+	if _, ok := i.extStatuses[extName]; ok {
+		delete(i.extStatuses, extName)
+		changed = true
+	}
+	if _, ok := i.extWidgets[extName]; ok {
+		delete(i.extWidgets, extName)
+		changed = true
+	}
+	if len(i.extNotes) > 0 {
+		kept := i.extNotes[:0:0]
+		for _, line := range i.extNotes {
+			if strings.Contains(line, marker) {
+				changed = true
+				continue
+			}
+			kept = append(kept, line)
+		}
+		i.extNotes = kept
+	}
+	if i.extPanel != nil && i.extPanel.Active() && i.extPanel.ext == extName {
+		i.extPanel.Close()
+		changed = true
+	}
+	i.mu.Unlock()
+	if changed {
+		i.invalidate()
+	}
 }
 
 func (i *Interactive) OpenPanel(extName string, spec extproto.PanelSpec) {

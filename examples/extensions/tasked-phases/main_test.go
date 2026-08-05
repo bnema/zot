@@ -3,6 +3,8 @@ package main
 import (
 	"strings"
 	"testing"
+
+	"github.com/patriceckhart/zot/packages/agent/ext"
 )
 
 func TestBuildChromeHidesEmptyPlan(t *testing.T) {
@@ -42,18 +44,37 @@ func TestBuildChromeShowsStoredPlan(t *testing.T) {
 }
 
 type chromeRecorder struct {
-	statusSet   int
-	statusClear int
-	widgetSet   int
-	widgetClear int
+	statusSet       int
+	statusClear     int
+	widgetSet       int
+	widgetClear     int
+	widgetPositions []string
 }
 
 func (r *chromeRecorder) SetStatus(string, string) { r.statusSet++ }
 func (r *chromeRecorder) ClearStatus(string)       { r.statusClear++ }
-func (r *chromeRecorder) SetWidget(string, string, string, []string) {
+func (r *chromeRecorder) SetWidget(_, position, _ string, _ []string) {
 	r.widgetSet++
+	r.widgetPositions = append(r.widgetPositions, position)
 }
 func (r *chromeRecorder) ClearWidget(string) { r.widgetClear++ }
+
+func TestApplyChromeUsesRightBar(t *testing.T) {
+	recorder := &chromeRecorder{}
+	applyChrome(recorder, PlanState{
+		Version: 1,
+		Spec:    "Keep the plan visible",
+		Phases: []Phase{{
+			ID:    "phase-1",
+			Title: "Implement",
+			Tasks: []PhaseTask{{ID: "task-1", Text: "Ship"}},
+		}},
+	})
+
+	if recorder.widgetSet != 1 || len(recorder.widgetPositions) != 1 || recorder.widgetPositions[0] != ext.WidgetPositionRightBar {
+		t.Fatalf("widget placement = %v, want %q", recorder.widgetPositions, ext.WidgetPositionRightBar)
+	}
+}
 
 func TestApplyChromeClearsEmptyPlan(t *testing.T) {
 	recorder := &chromeRecorder{}

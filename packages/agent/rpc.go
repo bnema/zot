@@ -200,6 +200,14 @@ func (h *rpcExtHooks) ClearWidget(extName, id string) {
 	}
 }
 
+func (h *rpcExtHooks) ClearExtensionChrome(extName string) {
+	if h.server != nil {
+		h.server.writeExtensionEvent(map[string]any{
+			"type": "ext_chrome_clear", "extension": extName,
+		})
+	}
+}
+
 const maxPendingRPCExtEvents = 64
 
 type rpcServer struct {

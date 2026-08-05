@@ -202,7 +202,7 @@ func (a *app) handleTool(args json.RawMessage) ext.ToolResult {
 
 func (a *app) publishUnavailableChrome() {
 	a.ext.SetStatus("progress", "plan unavailable")
-	a.ext.SetWidget("plan", "above_input", "Tasked phases", []string{"Plan state could not be restored for this session."})
+	a.ext.SetWidget("plan", ext.WidgetPositionRightBar, "Tasked phases", []string{"Plan state could not be restored for this session."})
 	a.panelMu.Lock()
 	open := a.panelOpen
 	a.panelMu.Unlock()
@@ -251,7 +251,7 @@ func applyChrome(host chromeHost, state PlanState) {
 		return
 	}
 	host.SetStatus("progress", chrome.status)
-	host.SetWidget("plan", "above_input", "Tasked phases", chrome.lines)
+	host.SetWidget("plan", ext.WidgetPositionRightBar, "Tasked phases", chrome.lines)
 }
 
 func (a *app) publishChrome(state PlanState) {

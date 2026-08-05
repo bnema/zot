@@ -109,3 +109,72 @@ func TestPersistentExtensionStatusAndWidget(t *testing.T) {
 		t.Fatalf("persistent extension chrome was not cleared: statuses=%v widgets=%v", i.extStatuses, i.extWidgets)
 	}
 }
+
+func TestRightBarWidgetsAreDeterministicAndFallbackAboveInput(t *testing.T) {
+	i := newNotesTestInteractive()
+	i.SetWidget("zeta", "plan", "right_bar", "Zeta", []string{"zeta line"})
+	i.SetWidget("alpha", "second", "right_bar", "Second", []string{"second line"})
+	i.SetWidget("alpha", "first", "right_bar", "First", []string{"first line"})
+	i.SetWidget("legacy", "plan", "above_input", "Legacy", []string{"legacy line"})
+
+	i.mu.Lock()
+	widgets := i.rightBarWidgetsLocked()
+	wideAbove := i.extensionChromeLinesAtLocked(80, true)
+	narrowFallback := i.extensionChromeLinesAtLocked(72, false)
+	i.mu.Unlock()
+
+	if len(widgets) != 3 || widgets[0].Extension != "alpha" || widgets[0].ID != "first" || widgets[1].ID != "second" || widgets[2].Extension != "zeta" {
+		t.Fatalf("right-bar ordering = %+v", widgets)
+	}
+	wideText := strings.Join(wideAbove, "\n")
+	if strings.Contains(wideText, "Zeta") || strings.Contains(wideText, "Second") || strings.Contains(wideText, "First") {
+		t.Fatalf("right-bar widgets leaked into wide above-input chrome: %q", wideText)
+	}
+	fallbackText := strings.Join(narrowFallback, "\n")
+	if !strings.Contains(fallbackText, "Zeta") || !strings.Contains(fallbackText, "First") || !strings.Contains(fallbackText, "Legacy") {
+		t.Fatalf("narrow fallback omitted widgets: %q", fallbackText)
+	}
+}
+
+func TestClearExtensionChromeRemovesOnlyTheExitedExtension(t *testing.T) {
+	i := newNotesTestInteractive()
+	i.SetStatus("gone", "progress", "success", "done")
+	i.SetWidget("gone", "plan", "right_bar", "Gone", []string{"old"})
+	i.SetStatus("keep", "progress", "info", "still here")
+	i.SetWidget("keep", "plan", "right_bar", "Keep", []string{"new"})
+	i.extNotes = []string{"[gone] old note", "[keep] keep note"}
+
+	i.ClearExtensionChrome("gone")
+
+	if _, ok := i.extStatuses["gone"]; ok {
+		t.Fatal("exited extension status survived")
+	}
+	if _, ok := i.extWidgets["gone"]; ok {
+		t.Fatal("exited extension widget survived")
+	}
+	if _, ok := i.extStatuses["keep"]; !ok {
+		t.Fatal("unrelated extension status was removed")
+	}
+	if _, ok := i.extWidgets["keep"]; !ok {
+		t.Fatal("unrelated extension widget was removed")
+	}
+	if got := strings.Join(i.extNotes, "\n"); got != "[keep] keep note" {
+		t.Fatalf("extension notes after cleanup = %q", got)
+	}
+}
+
+func TestInteractiveRedrawPlacesWideRightBarBesideMainPane(t *testing.T) {
+	term := &alertTestTerminal{}
+	i := NewInteractive(InteractiveConfig{Terminal: term, Theme: tui.Dark})
+	i.rend.Resize(80, 24)
+	i.SetWidget("tasked-phases", "plan", "right_bar", "Plan", []string{"[ ] read files"})
+	i.redraw()
+
+	out := term.String()
+	if !strings.Contains(out, "Plan") || !strings.Contains(out, "[ ] read files") {
+		t.Fatalf("wide redraw omitted right-bar content: %q", out)
+	}
+	if !strings.Contains(out, "│") {
+		t.Fatal("wide redraw omitted the main-pane divider")
+	}
+}

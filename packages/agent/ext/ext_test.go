@@ -255,13 +255,13 @@ func TestPersistentChromeFrames(t *testing.T) {
 		t.Fatalf("status = %+v", sf)
 	}
 
-	h.ext.SetWidget("plan", "above_input", "Plan", []string{"one"})
+	h.ext.SetWidget("plan", WidgetPositionRightBar, "Plan", []string{"one"})
 	widget := h.drainUntil(t, "widget")
 	var wf extproto.WidgetFromExt
 	if err := json.Unmarshal(widget.raw, &wf); err != nil {
 		t.Fatal(err)
 	}
-	if wf.ID != "plan" || wf.Position != "above_input" || wf.Title != "Plan" || len(wf.Lines) != 1 || wf.Lines[0] != "one" {
+	if wf.ID != "plan" || wf.Position != WidgetPositionRightBar || wf.Title != "Plan" || len(wf.Lines) != 1 || wf.Lines[0] != "one" {
 		t.Fatalf("widget = %+v", wf)
 	}
 
