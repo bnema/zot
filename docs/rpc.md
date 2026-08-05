@@ -1,41 +1,41 @@
-# zot RPC
+# zut RPC
 
-`zot rpc` runs the agent runtime as a subprocess that speaks newline-delimited JSON on stdin and stdout. Use it from any language that can spawn a process and read/write its pipes — Go, TypeScript, Python, Rust, shell, anything.
+`zut rpc` runs the agent runtime as a subprocess that speaks newline-delimited JSON on stdin and stdout. Use it from any language that can spawn a process and read/write its pipes — Go, TypeScript, Python, Rust, shell, anything.
 
 For a Go program embedding the runtime in-process, use the `packages/agent/sdk` SDK instead. The wire format below mirrors the SDK's types one-for-one so consumers can share parsing code.
 
 ## Quick start
 
 ```bash
-# spawn zot rpc; talk to it from a shell
+# spawn zut rpc; talk to it from a shell
 ( echo '{"id":"1","type":"prompt","message":"hello"}'; sleep 5 ) \
-  | zot rpc --provider anthropic
+  | zut rpc --provider anthropic
 ```
 
 You'll see one JSON object per line on stdout: a response acknowledging the prompt, a stream of events (`text_delta`, `tool_call`, `tool_result`, `usage`), then `done`.
 
 ## Process model
 
-- One `zot rpc` process serves **one cwd, one model, one session**.
+- One `zut rpc` process serves **one cwd, one model, one session**.
 - For multiple projects, spawn multiple processes.
 - Concurrency: at most one prompt or compact in flight at a time. A second one queues until the first finishes; aborting fires immediately.
 - The process exits when stdin closes.
 
 ## Flags
 
-`zot rpc` accepts the same flags as the other modes: `--provider`, `--model`, `--cwd`, `--api-key`, `--base-url`, `--system-prompt`, `--append-system-prompt`, `--reasoning`, `--max-steps`, `--no-tools`, `--tools`. Sessions are disabled by default in RPC mode — the embedding application owns persistence.
+`zut rpc` accepts the same flags as the other modes: `--provider`, `--model`, `--cwd`, `--api-key`, `--base-url`, `--system-prompt`, `--append-system-prompt`, `--reasoning`, `--max-steps`, `--no-tools`, `--tools`. Sessions are disabled by default in RPC mode — the embedding application owns persistence.
 
-RPC agents use the same resolved system-prompt policy as other modes. Ponytail coding mode is enabled when `ponytail_enabled` is missing or `true` in `$ZOT_HOME/config.json`, and disabled when it is `false`. A custom `--system-prompt` replaces the built-in identity, while enabled append addenda remain present.
+RPC agents use the same resolved system-prompt policy as other modes. Ponytail coding mode is enabled when `ponytail_enabled` is missing or `true` in `$ZUT_HOME/config.json`, and disabled when it is `false`. A custom `--system-prompt` replaces the built-in identity, while enabled append addenda remain present.
 
 ## Auth
 
-If the environment variable `ZOTCORE_RPC_TOKEN` is set on the spawned process, the first line on stdin **must** be a `hello` command containing the matching token:
+If the environment variable `ZUTCORE_RPC_TOKEN` is set on the spawned process, the first line on stdin **must** be a `hello` command containing the matching token:
 
 ```json
 {"id":"0","type":"hello","token":"shared-secret"}
 ```
 
-If absent or wrong, the response carries `success:false` and the process exits. Without `ZOTCORE_RPC_TOKEN` set, no auth is required (the spawning process is implicitly trusted; if it can spawn `zot` it can also read your `auth.json` directly).
+If absent or wrong, the response carries `success:false` and the process exits. Without `ZUTCORE_RPC_TOKEN` set, no auth is required (the spawning process is implicitly trusted; if it can spawn `zut` it can also read your `auth.json` directly).
 
 ## Wire format
 
@@ -66,7 +66,7 @@ Response:
  "data":{"protocol_version":1,"version":"0.0.4","provider":"anthropic","model":"claude-opus-4-5"}}
 ```
 
-Required as the first message when `ZOTCORE_RPC_TOKEN` is set; optional otherwise.
+Required as the first message when `ZUTCORE_RPC_TOKEN` is set; optional otherwise.
 
 ### `prompt`
 
@@ -120,7 +120,7 @@ Response data:
 {
   "provider": "anthropic",
   "model": "claude-opus-4-5",
-  "cwd": "/Users/pat/Developer/zot",
+  "cwd": "/path/to/zut",
   "message_count": 12,
   "busy": false,
   "usage": {"input": 1234, "output": 567, "reasoning": 123, "cache_read": 890, "cache_write": 0, "cost_usd": 0.0123}
@@ -153,7 +153,7 @@ Switch model within the same provider.
 {"id":"7","type":"set_model","model":"claude-sonnet-4-5"}
 ```
 
-Cross-provider swaps require relaunching `zot rpc` with the new `--provider`.
+Cross-provider swaps require relaunching `zut rpc` with the new `--provider`.
 
 ### `set_reasoning`
 

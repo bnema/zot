@@ -1,4 +1,4 @@
-# Contributing to zot
+# Contributing to zut
 
 Contributions are welcome, including bug reports, design feedback, documentation, tests, and code. This guide explains what makes a contribution easy to evaluate and safe to merge.
 
@@ -8,7 +8,7 @@ Contributions are welcome, including bug reports, design feedback, documentation
 
 Use the bug-report template and provide enough information for someone else to reproduce the problem:
 
-- the output of `zot --version`
+- the output of `zut --version`
 - operating system and terminal
 - provider and model, when relevant
 - the smallest sequence of actions that triggers the problem
@@ -35,14 +35,14 @@ Focused typo, documentation, and test improvements can usually go directly to a 
 
 ## Design boundaries
 
-zot is intended to remain a lightweight, single-binary application. A contribution should fit that direction rather than increasing scope by default.
+zut is intended to remain a lightweight, single-binary application. A contribution should fit that direction rather than increasing scope by default.
 
 The major ownership boundaries are:
 
 - `packages/core`: provider-independent agent behavior and session structures
 - `packages/provider`: provider requests, streaming responses, model discovery, retries, and wire-specific behavior
 - `packages/provider/auth`: credential and login handling
-- `packages/agent`: command-line orchestration, configuration, runtime assembly, RPC, and zotfiles
+- `packages/agent`: command-line orchestration, configuration, runtime assembly, RPC, and zutfiles
 - `packages/agent/modes`: interactive and non-interactive user modes
 - `packages/agent/extensions`, `extproto`, and `ext`: extension hosting, protocol, and SDK
 - `packages/agent/skills`: reusable instruction discovery
@@ -62,14 +62,14 @@ Use the Go version declared in `go.mod`, then build from the repository root:
 ```sh
 go mod download
 make build
-./bin/zot --version
+./bin/zut --version
 ```
 
 Useful commands:
 
 ```sh
 make help        # list the important developer commands
-make build       # compile ./bin/zot as 0.0.0-dev
+make build       # compile ./bin/zut as 0.0.0-dev
 make run         # build and start the interactive application
 make install     # install the current checkout with go install
 make go-install  # install a published module version
@@ -79,7 +79,7 @@ make lint        # run golangci-lint, go vet, and verify gofmt
 make lint-install # install the pinned golangci-lint version
 ```
 
-Tests must not depend on real provider credentials, paid model calls, a developer's global zot state, or a specific terminal. Use local HTTP test servers, fixtures, temporary directories, and synthetic credentials.
+Tests must not depend on real provider credentials, paid model calls, a developer's global zut state, or a specific terminal. Use local HTTP test servers, fixtures, temporary directories, and synthetic credentials.
 
 ## Making a change
 
@@ -150,7 +150,7 @@ If a validation command cannot pass because of an unrelated repository or enviro
 Open the pull request against `main` and include:
 
 - the problem being addressed
-- the chosen solution and why it belongs in zot
+- the chosen solution and why it belongs in zut
 - tests added or updated
 - commands used for verification
 - user-visible, compatibility, and platform effects
@@ -170,7 +170,7 @@ Choose the document that owns the public surface:
 - `docs/extensions.md` for extension authors
 - `docs/skills.md` for reusable skills
 - `docs/themes.md` for theme files
-- `docs/zotfiles.md` for portable agents
+- `docs/zutfiles.md` for portable agents
 
 Examples should be runnable and limitations should be stated directly.
 

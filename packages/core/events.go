@@ -3,7 +3,7 @@ package core
 import (
 	"encoding/json"
 
-	"github.com/patriceckhart/zot/packages/provider"
+	"github.com/bnema/zut/packages/provider"
 )
 
 // AgentEvent is the superset of events emitted by an Agent run.

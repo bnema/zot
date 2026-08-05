@@ -1,13 +1,13 @@
-// Package subagents implements zot's subagent supervisor.
+// Package subagents implements zut's subagent supervisor.
 //
-// A Supervisor manages headless, long-lived zot subprocesses and keeps their
+// A Supervisor manages headless, long-lived zut subprocesses and keeps their
 // process/turn state, event logs, sessions, results, and optional worktree
 // artifacts durable across supervisor restarts.
 //
 // Shared workspaces preserve the historical behavior, while an explicit
 // worktree request gives a child an isolated checkout whose patch is captured
 // before cleanup. The Runner abstraction lets tests inject a fake process;
-// production uses `zot --subagent-worker ...`.
+// production uses `zut --subagent-worker ...`.
 package subagents
 
 import (
@@ -43,7 +43,7 @@ type Config struct {
 	Context context.Context
 
 	// Root is the directory under which per-agent state files live.
-	// Typically <ZotHome>/subagents, but tests pass a tempdir.
+	// Typically <ZutHome>/subagents, but tests pass a tempdir.
 	Root string
 
 	// Policy owns concurrency, timeout, output, and path safety limits.
@@ -70,7 +70,7 @@ type Config struct {
 	InsecureTLS bool
 
 	// NewRunner produces the Runner for an Agent. If nil, the default
-	// `zot --subagent-worker ...` exec runner is used. Tests inject a fake
+	// `zut --subagent-worker ...` exec runner is used. Tests inject a fake
 	// here.
 	NewRunner func(a *Agent) Runner
 
@@ -254,7 +254,7 @@ func (f *Supervisor) ProviderSettings() (string, bool) {
 }
 
 // SetActiveSession scopes the dashboard view (and Spawn stamping)
-// to a particular host zot session id. Pass empty to clear the
+// to a particular host zut session id. Pass empty to clear the
 // scope and revert to "show every agent" (the original behaviour).
 //
 // Existing in-memory agents keep their SessionID; only the filter
@@ -422,7 +422,7 @@ func (f *Supervisor) SpawnReq(ctx context.Context, req SpawnRequest) (*Agent, er
 	logPath := filepath.Join(stateDir, "events.jsonl")
 	sessionPath := filepath.Join(stateDir, "session.json")
 	// Keep the transient unix socket outside the durable state root.
-	// ZOT_HOME may live on a shared or network filesystem that supports
+	// ZUT_HOME may live on a shared or network filesystem that supports
 	// regular state files but cannot host unix socket nodes.
 	inboxPath, err := inboxSocketPath(f.cfg.Root, id)
 	if err != nil {

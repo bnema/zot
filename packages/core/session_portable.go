@@ -13,19 +13,19 @@ import (
 	"strings"
 	"time"
 
+	"github.com/bnema/zut/packages/provider"
 	"github.com/google/uuid"
-	"github.com/patriceckhart/zot/packages/provider"
 )
 
 // PortableExt is the filesystem extension used for exported sessions.
-// A ".zotsession" is just a zot JSONL session file with the meta
+// A ".zutsession" is just a zut JSONL session file with the meta
 // header rewritten so the importing user gets fresh ownership.
-const PortableExt = ".zotsession"
+const PortableExt = ".zutsession"
 
 // ExportSession writes the session at srcPath to dstPath as a
-// portable .zotsession file. If dstPath is an existing directory the
+// portable .zutsession file. If dstPath is an existing directory the
 // file is created inside it with a name derived from the session's
-// meta ("YYYYMMDD-HHMMSS-<first-prompt-excerpt>.zotsession"). The
+// meta ("YYYYMMDD-HHMMSS-<first-prompt-excerpt>.zutsession"). The
 // destination's directory is created if needed. Returns the final
 // resolved path so the caller can tell the user where it landed.
 //
@@ -72,7 +72,7 @@ func ExportSession(srcPath, dstPath string) (string, error) {
 
 	// Scan the rest of the file for the first user message so we can
 	// build a humane filename. Only reads if dstPath doesn't already
-	// end in .zotsession.
+	// end in .zutsession.
 	firstPrompt := ""
 	if !strings.HasSuffix(strings.ToLower(dstPath), PortableExt) {
 		if fi, _ := os.Stat(dstPath); fi == nil || fi.IsDir() {
@@ -156,13 +156,13 @@ func ExportSession(srcPath, dstPath string) (string, error) {
 	return outPath, nil
 }
 
-// ImportSession copies the .zotsession file at srcPath into the
+// ImportSession copies the .zutsession file at srcPath into the
 // running user's session store under the given root+cwd, rewriting
 // the meta's id / cwd / started fields so the imported session is
 // owned by the current user / directory / clock. Returns the path
 // of the created session file, ready to pass to OpenSession.
 //
-// The imported session is a first-class zot session: it'll show up
+// The imported session is a first-class zut session: it'll show up
 // in /sessions, /jump, and on-disk summaries just like any other.
 // Messages and usage rows are preserved verbatim.
 func ImportSession(srcPath, root, cwd, version string) (string, error) {
@@ -434,7 +434,7 @@ func writeBranchSession(root, cwd, version string, parent SessionMeta, messages 
 	// Build in a same-directory temporary file. Rename is atomic only when
 	// the temporary and final paths share a directory; closing the file first
 	// also ensures no buffered writer or descriptor can expose a partial branch.
-	dst, err := os.CreateTemp(dir, ".zot-branch-*.tmp")
+	dst, err := os.CreateTemp(dir, ".zut-branch-*.tmp")
 	if err != nil {
 		return "", fmt.Errorf("branch: create temp: %w", err)
 	}
@@ -910,7 +910,7 @@ func firstUserPrompt(src io.Reader) (string, error) {
 	}
 }
 
-// filenameFor builds a descriptive .zotsession filename from the
+// filenameFor builds a descriptive .zutsession filename from the
 // session's start time and, when available, an excerpt of the
 // first user prompt.
 func filenameFor(started time.Time, id, firstPrompt string) string {

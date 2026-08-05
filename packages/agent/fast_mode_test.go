@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/patriceckhart/zot/packages/provider"
+	"github.com/bnema/zut/packages/provider"
 )
 
 func TestParseArgsFastModeChildFlag(t *testing.T) {
@@ -23,7 +23,7 @@ func TestParseArgsFastModeChildFlag(t *testing.T) {
 }
 
 func TestResolveFastModeDefaultsOff(t *testing.T) {
-	t.Setenv("ZOT_HOME", t.TempDir())
+	t.Setenv("ZUT_HOME", t.TempDir())
 	if err := SaveConfig(Config{Provider: "openai", Model: "gpt-5"}); err != nil {
 		t.Fatal(err)
 	}
@@ -38,7 +38,7 @@ func TestResolveFastModeDefaultsOff(t *testing.T) {
 }
 
 func TestResolveFastModeFromConfig(t *testing.T) {
-	t.Setenv("ZOT_HOME", t.TempDir())
+	t.Setenv("ZUT_HOME", t.TempDir())
 	enabled := true
 	if err := SaveConfig(Config{Provider: "openai", Model: "gpt-5", FastMode: &enabled}); err != nil {
 		t.Fatal(err)
@@ -54,7 +54,7 @@ func TestResolveFastModeFromConfig(t *testing.T) {
 }
 
 func TestResolveFastModeRemainsEnabledForUnsupportedProviderUntilRequest(t *testing.T) {
-	t.Setenv("ZOT_HOME", t.TempDir())
+	t.Setenv("ZUT_HOME", t.TempDir())
 	enabled := true
 	if err := SaveConfig(Config{Provider: "anthropic", Model: "claude-sonnet-4-5", FastMode: &enabled}); err != nil {
 		t.Fatal(err)
@@ -70,7 +70,7 @@ func TestResolveFastModeRemainsEnabledForUnsupportedProviderUntilRequest(t *test
 }
 
 func TestResolveFastModeRequiresExplicitChildOverride(t *testing.T) {
-	t.Setenv("ZOT_HOME", t.TempDir())
+	t.Setenv("ZUT_HOME", t.TempDir())
 	if err := SaveConfig(Config{Provider: "openai", Model: "gpt-5"}); err != nil {
 		t.Fatal(err)
 	}
@@ -85,7 +85,7 @@ func TestResolveFastModeRequiresExplicitChildOverride(t *testing.T) {
 }
 
 func TestResolveFastModeExplicitChildDisableOverridesConfig(t *testing.T) {
-	t.Setenv("ZOT_HOME", t.TempDir())
+	t.Setenv("ZUT_HOME", t.TempDir())
 	enabled := true
 	if err := SaveConfig(Config{Provider: "openai", Model: "gpt-5", FastMode: &enabled}); err != nil {
 		t.Fatal(err)
@@ -105,7 +105,7 @@ func TestResolveFastModeExplicitChildDisableOverridesConfig(t *testing.T) {
 }
 
 func TestConfigSettingsStorePersistsFastMode(t *testing.T) {
-	t.Setenv("ZOT_HOME", t.TempDir())
+	t.Setenv("ZUT_HOME", t.TempDir())
 	if err := SaveConfig(Config{Theme: "dark"}); err != nil {
 		t.Fatal(err)
 	}

@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/patriceckhart/zot/packages/agent/extproto"
+	"github.com/bnema/zut/packages/agent/extproto"
 )
 
 func TestRPCExtAlertIsJSONOnly(t *testing.T) {
@@ -27,7 +27,7 @@ func TestRPCExtAlertIsJSONOnly(t *testing.T) {
 }
 
 func TestRPCExtAlertWaitsForAuthentication(t *testing.T) {
-	t.Setenv("ZOTCORE_RPC_TOKEN", "synthetic-token")
+	t.Setenv("ZUTCORE_RPC_TOKEN", "synthetic-token")
 
 	var out bytes.Buffer
 	server := &rpcServer{out: &out, provider: "test", model: "test-model", version: "test-version"}

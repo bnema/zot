@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/patriceckhart/zot/packages/agent/extproto"
+	"github.com/bnema/zut/packages/agent/extproto"
 )
 
 // ---------- test harness ----------
@@ -143,7 +143,7 @@ func (h *extHarness) handshake(t *testing.T) {
 	h.sendToExt(t, extproto.HelloAckFromHost{
 		Type:            "hello_ack",
 		ProtocolVersion: extproto.ProtocolVersion,
-		ZotVersion:      "0.0.0-test",
+		ZutVersion:      "0.0.0-test",
 		Provider:        "anthropic",
 		Model:           "claude-test",
 	})
@@ -177,7 +177,7 @@ func TestOnHelloCanRegisterUsingHostInfo(t *testing.T) {
 	h.sendToExt(t, extproto.HelloAckFromHost{
 		Type:            "hello_ack",
 		ProtocolVersion: extproto.ProtocolVersion,
-		ZotVersion:      "0.0.0-test",
+		ZutVersion:      "0.0.0-test",
 		Provider:        "anthropic",
 		Model:           "claude-test",
 		CWD:             "/tmp/project",

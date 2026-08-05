@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/patriceckhart/zot/packages/core"
-	"github.com/patriceckhart/zot/packages/provider"
+	"github.com/bnema/zut/packages/core"
+	"github.com/bnema/zut/packages/provider"
 )
 
 type interactiveTitleClient struct {
@@ -119,7 +119,7 @@ func TestFirstRealPromptSetsAndPersistsTerminalTitle(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("title was not persisted")
 	}
-	waitTerminalOutput(t, term, "\x1b]0;zot: Fix login retries\x07")
+	waitTerminalOutput(t, term, "\x1b]0;zut: Fix login retries\x07")
 	if got := len(ag.Messages()); got != 2 {
 		t.Fatalf("transcript message count = %d, want user + assistant only", got)
 	}
@@ -264,7 +264,7 @@ func TestDisablingTerminalTitlesRestoresNeutralTitle(t *testing.T) {
 	i.applySettingToggle("terminal_title_enabled", false)
 
 	got := term.String()
-	if !strings.Contains(got, "\x1b]0;zot: Existing work\x07") || !strings.Contains(got, "\x1b]0;zot\x07") {
+	if !strings.Contains(got, "\x1b]0;zut: Existing work\x07") || !strings.Contains(got, "\x1b]0;zut\x07") {
 		t.Fatalf("terminal title output = %q, want existing and neutral title sequences", got)
 	}
 }
@@ -283,7 +283,7 @@ func TestLoadedSessionTitleIsRestoredWithoutGeneration(t *testing.T) {
 	})
 	i.markInteractiveStarted()
 
-	if got, want := term.String(), "\x1b]0;zot: Existing work\x07"; got != want {
+	if got, want := term.String(), "\x1b]0;zut: Existing work\x07"; got != want {
 		t.Fatalf("restored terminal title = %q, want %q", got, want)
 	}
 	i.mu.Lock()

@@ -10,8 +10,8 @@ import (
 
 	"github.com/sahilm/fuzzy"
 
-	"github.com/patriceckhart/zot/packages/ignore"
-	"github.com/patriceckhart/zot/packages/tui"
+	"github.com/bnema/zut/packages/ignore"
+	"github.com/bnema/zut/packages/tui"
 )
 
 // recursiveScanLimits bound the recursive walk so the picker stays
@@ -63,7 +63,7 @@ type fileSuggester struct {
 	// cachedMTime is the mtime of cachedDir at the time of the scan.
 	// scan() compares the current mtime against this on every call and
 	// re-reads the directory if it has changed, so files or folders
-	// created mid-session show up in the picker without restarting zot.
+	// created mid-session show up in the picker without restarting zut.
 	// Stat is cheap (single syscall) so doing it per keystroke while
 	// the popup is open does not impact responsiveness.
 	cachedMTime time.Time
@@ -129,7 +129,7 @@ func (s *fileSuggester) browseDir() string {
 // Results are cached by absolute path + mtime: a repeated call against
 // the same directory returns the cached slice when nothing has changed
 // on disk, and re-reads when an entry was added, removed, or renamed
-// (any of which bumps the directory's mtime on every filesystem zot
+// (any of which bumps the directory's mtime on every filesystem zut
 // supports). A failed stat falls through to a fresh ReadDir rather
 // than returning a stale cache so transient errors self-heal.
 func (s *fileSuggester) scan() []fileEntry {

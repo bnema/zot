@@ -4,8 +4,8 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/patriceckhart/zot/packages/agent/extensions"
-	"github.com/patriceckhart/zot/packages/agent/skills"
+	"github.com/bnema/zut/packages/agent/extensions"
+	"github.com/bnema/zut/packages/agent/skills"
 )
 
 func TestInstructionContextPathsPreserveLoadOrder(t *testing.T) {

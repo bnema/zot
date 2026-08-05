@@ -1,5 +1,5 @@
 // stubchild is a minimal subagent-worker stand-in used by the runner
-// end-to-end test. It speaks the daemon protocol the real zot
+// end-to-end test. It speaks the daemon protocol the real zut
 // binary will implement next:
 //
 //   - parses --subagent-worker <path>, --session <path>, --cwd <path>,
@@ -14,7 +14,7 @@
 //
 // The runner test compiles this binary into a tempdir, points
 // subagent's execRunner at it via Command, and asserts the events
-// flow through correctly without needing the full zot model
+// flow through correctly without needing the full zut model
 // machinery.
 package main
 
@@ -28,7 +28,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/patriceckhart/zot/packages/agent/subagents"
+	"github.com/bnema/zut/packages/agent/subagents"
 )
 
 func main() {
@@ -134,7 +134,7 @@ type emitter = func(string, map[string]any)
 func newEmitter() emitter {
 	var mu sync.Mutex
 	enc := json.NewEncoder(os.Stdout)
-	versioned := os.Getenv("ZOT_STUB_PROTOCOL") == "1"
+	versioned := os.Getenv("ZUT_STUB_PROTOCOL") == "1"
 	return func(typ string, data map[string]any) {
 		mu.Lock()
 		defer mu.Unlock()

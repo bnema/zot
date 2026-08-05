@@ -3,7 +3,7 @@ package agent
 import "testing"
 
 func TestConfigSettingsStorePersistsShowInstructionsAtStartup(t *testing.T) {
-	t.Setenv("ZOT_HOME", t.TempDir())
+	t.Setenv("ZUT_HOME", t.TempDir())
 	if err := SaveConfig(Config{Theme: "dark"}); err != nil {
 		t.Fatal(err)
 	}
@@ -24,7 +24,7 @@ func TestConfigSettingsStorePersistsShowInstructionsAtStartup(t *testing.T) {
 }
 
 func TestConfigSettingsStorePersistsTerminalAlerts(t *testing.T) {
-	t.Setenv("ZOT_HOME", t.TempDir())
+	t.Setenv("ZUT_HOME", t.TempDir())
 	if err := SaveConfig(Config{Theme: "dark"}); err != nil {
 		t.Fatal(err)
 	}
@@ -45,7 +45,7 @@ func TestConfigSettingsStorePersistsTerminalAlerts(t *testing.T) {
 }
 
 func TestConfigSettingsStorePersistsTerminalTitle(t *testing.T) {
-	t.Setenv("ZOT_HOME", t.TempDir())
+	t.Setenv("ZUT_HOME", t.TempDir())
 	if err := SaveConfig(Config{Theme: "dark"}); err != nil {
 		t.Fatal(err)
 	}
@@ -66,7 +66,7 @@ func TestConfigSettingsStorePersistsTerminalTitle(t *testing.T) {
 }
 
 func TestConfigSettingsStorePersistsJailByDefault(t *testing.T) {
-	t.Setenv("ZOT_HOME", t.TempDir())
+	t.Setenv("ZUT_HOME", t.TempDir())
 	if err := SaveConfig(Config{Theme: "dark"}); err != nil {
 		t.Fatal(err)
 	}
@@ -87,7 +87,7 @@ func TestConfigSettingsStorePersistsJailByDefault(t *testing.T) {
 }
 
 func TestConfigSettingsStorePersistsAutoCompactThreshold(t *testing.T) {
-	t.Setenv("ZOT_HOME", t.TempDir())
+	t.Setenv("ZUT_HOME", t.TempDir())
 	if err := SaveConfig(Config{Theme: "dark"}); err != nil {
 		t.Fatal(err)
 	}
@@ -108,7 +108,7 @@ func TestConfigSettingsStorePersistsAutoCompactThreshold(t *testing.T) {
 }
 
 func TestConfigSettingsStorePersistsLSPDefaults(t *testing.T) {
-	t.Setenv("ZOT_HOME", t.TempDir())
+	t.Setenv("ZUT_HOME", t.TempDir())
 	if err := SaveConfig(Config{Theme: "dark"}); err != nil {
 		t.Fatal(err)
 	}
@@ -163,7 +163,7 @@ func TestConfigLSPEnabledForDefaultsToTrue(t *testing.T) {
 }
 
 func TestConfigSettingsStorePersistsInheritedTheme(t *testing.T) {
-	t.Setenv("ZOT_HOME", t.TempDir())
+	t.Setenv("ZUT_HOME", t.TempDir())
 	if err := SaveConfig(Config{Theme: "dark"}); err != nil {
 		t.Fatal(err)
 	}

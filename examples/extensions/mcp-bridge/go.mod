@@ -1,12 +1,12 @@
-module github.com/patriceckhart/zot/examples/extensions/mcp-bridge
+module github.com/bnema/zut/examples/extensions/mcp-bridge
 
-go 1.25.5
+go 1.26
 
-replace github.com/patriceckhart/zot => ../../..
+replace github.com/bnema/zut => ../../..
 
 require (
+	github.com/bnema/zut v0.1.0
 	github.com/mark3labs/mcp-go v0.55.1
-	github.com/patriceckhart/zot v0.2.47
 )
 
 require (

@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/patriceckhart/zot/packages/core"
+	"github.com/bnema/zut/packages/core"
 )
 
 type recordingPonytailSettingsStore struct {

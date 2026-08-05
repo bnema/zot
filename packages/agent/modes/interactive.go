@@ -13,16 +13,16 @@ import (
 	"sync"
 	"time"
 
-	"github.com/patriceckhart/zot/packages/agent/extensions"
-	"github.com/patriceckhart/zot/packages/agent/extproto"
-	"github.com/patriceckhart/zot/packages/agent/modes/telegram"
-	"github.com/patriceckhart/zot/packages/agent/skills"
-	"github.com/patriceckhart/zot/packages/agent/subagents"
-	"github.com/patriceckhart/zot/packages/agent/tools"
-	"github.com/patriceckhart/zot/packages/core"
-	"github.com/patriceckhart/zot/packages/provider"
-	"github.com/patriceckhart/zot/packages/provider/auth"
-	"github.com/patriceckhart/zot/packages/tui"
+	"github.com/bnema/zut/packages/agent/extensions"
+	"github.com/bnema/zut/packages/agent/extproto"
+	"github.com/bnema/zut/packages/agent/modes/telegram"
+	"github.com/bnema/zut/packages/agent/skills"
+	"github.com/bnema/zut/packages/agent/subagents"
+	"github.com/bnema/zut/packages/agent/tools"
+	"github.com/bnema/zut/packages/core"
+	"github.com/bnema/zut/packages/provider"
+	"github.com/bnema/zut/packages/provider/auth"
+	"github.com/bnema/zut/packages/tui"
 )
 
 // InteractiveConfig configures the interactive loop.
@@ -121,12 +121,12 @@ type InteractiveConfig struct {
 
 	// FlatTools renders tool calls without the bordered panel (a quiet
 	// header line plus indented, frameless output). Mirrors the
-	// resolved tool_render config / ZOT_FLAT_TOOLS env at startup.
+	// resolved tool_render config / ZUT_FLAT_TOOLS env at startup.
 	FlatTools bool
 
 	// CompactUser renders sent user messages as a single quiet gutter
 	// line instead of a padded, tinted bubble. Mirrors the resolved
-	// compact_input config / ZOT_COMPACT_INPUT env at startup.
+	// compact_input config / ZUT_COMPACT_INPUT env at startup.
 	CompactUser bool
 
 	// CompactMode mirrors the persisted compact_mode flag at startup.
@@ -163,7 +163,7 @@ type InteractiveConfig struct {
 	SubagentsSystemAddendum string
 	SettingsStore           SettingsStore
 
-	// Agent is optional. If nil, zot opens without credentials; the
+	// Agent is optional. If nil, zut opens without credentials; the
 	// user must /login before they can prompt.
 	Agent *core.Agent
 
@@ -209,8 +209,8 @@ type InteractiveConfig struct {
 	// the concrete provider/model in use.
 	BuildAgent func() (*core.Agent, string, string, error)
 
-	// SetKimiCLIFallbackDisabled controls whether zot may fall back to
-	// the official Kimi Code CLI token when zot has no stored Kimi token.
+	// SetKimiCLIFallbackDisabled controls whether zut may fall back to
+	// the official Kimi Code CLI token when zut has no stored Kimi token.
 	SetKimiCLIFallbackDisabled func(disabled bool) error
 
 	// BuildAgentFor rebuilds the agent with an explicit provider/model
@@ -232,13 +232,13 @@ type InteractiveConfig struct {
 	// picker to only show reachable models.
 	LoggedInProviders func() []string
 
-	// ZotHome is zot's global state directory, used by authentication,
+	// ZutHome is zut's global state directory, used by authentication,
 	// themes, extensions, and other shared configuration.
-	ZotHome string
+	ZutHome string
 
 	// SessionsRoot is the root passed to core session operations. It differs
-	// from ZotHome for Zotfile agents, whose sessions are isolated by agent
-	// name. Empty falls back to ZotHome for embedders and tests.
+	// from ZutHome for Zutfile agents, whose sessions are isolated by agent
+	// name. Empty falls back to ZutHome for embedders and tests.
 	SessionsRoot string
 
 	// Version is the binary's current version (from main.version).
@@ -260,7 +260,7 @@ type InteractiveConfig struct {
 	// callback returns the new agent message slice so the TUI can invalidate.
 	LoadSession func(path string) error
 
-	// ChangeCWD switches the running zot session's working directory
+	// ChangeCWD switches the running zut session's working directory
 	// to path. The host closes the current session, rebuilds the
 	// agent so tools / AGENTS.md / sandbox bind to the new cwd, and
 	// opens a fresh session there. Returns an error if path doesn't
@@ -690,7 +690,7 @@ type Interactive struct {
 	// shell escape, updated via BashTool progress for live rendering.
 	shellLive string
 
-	// awaitingStartupPre is true while the zotfile entry.pre auto-submit
+	// awaitingStartupPre is true while the zutfile entry.pre auto-submit
 	// is in flight. When it clears, deferredInitialInput is applied.
 	awaitingStartupPre   bool
 	deferredInitialInput string
@@ -870,7 +870,7 @@ func (i *Interactive) Run(ctx context.Context) error {
 	// selection over the wheel-speed boost, so we no longer turn it
 	// on automatically. Wheel events fall through to the terminal's
 	// own scrollback handler.
-	// Keep zot on the terminal's main screen. We intentionally do not
+	// Keep zut on the terminal's main screen. We intentionally do not
 	// enter the alternate-screen buffer (CSI ?1049h). The renderer emits
 	// chat as normal terminal flow/scrollback and redraws only the live
 	// input/status block on normal typing.
@@ -939,7 +939,7 @@ func (i *Interactive) Run(ctx context.Context) error {
 	// want to dismiss it (e.g. to check /help or /exit first).
 	if i.agent == nil {
 		i.statusErr = "not logged in. pick a login method below or press esc to dismiss."
-		i.dialog.Open(i.cfg.ZotHome)
+		i.dialog.Open(i.cfg.ZutHome)
 	}
 
 	// Input goroutine. Buffered generously so a drag-drop that the
@@ -1441,7 +1441,7 @@ func (i *Interactive) buildChatLocked(cols int) []string {
 	}
 
 	// Update-available banner: prepended above everything else so it's
-	// the first thing the user sees when opening a new zot session.
+	// the first thing the user sees when opening a new zut session.
 	// Once rendered, it stays until the user updates to a newer
 	// version — we don't persist a "dismissed" flag because this is
 	// cheap and re-showing it is how most users remember to update.
@@ -1515,7 +1515,7 @@ func (i *Interactive) sessionsRoot() string {
 	if i.cfg.SessionsRoot != "" {
 		return i.cfg.SessionsRoot
 	}
-	return i.cfg.ZotHome
+	return i.cfg.ZutHome
 }
 
 // lastCols returns the current terminal width in columns.
@@ -1765,7 +1765,7 @@ func (i *Interactive) redraw() {
 	}
 
 	// Busy prefix shown at the far left of the status bar. The
-	// spinner glyph and its funny-line message share the `zot`
+	// spinner glyph and its funny-line message share the `zut`
 	// label colour (Theme.Assistant) so the whole "who's working"
 	// band reads at a glance. Elapsed time stays muted because it
 	// drifts every second and shouldn't grab focus.
@@ -2149,7 +2149,7 @@ func hasImageEscape(line string) bool {
 
 // snapViewportStartToImageBlock treats inline images as atomic blocks for
 // scrolling. Terminal image protocols draw from a single escape row into a
-// separate graphics layer; the following blank rows are only zot's reserved
+// separate graphics layer; the following blank rows are only zut's reserved
 // footprint. If the viewport starts on one of those blank rows, there is no
 // correct partial-image state to render. Snap back to the escape row instead
 // so the image is either shown from its beginning or skipped entirely.
@@ -2857,7 +2857,7 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 		// ("be quiet" in a shell) rather than a deliberate
 		// decision to kill a multi-minute model call that's
 		// already cost tokens. Use esc to interrupt a turn; use
-		// a deliberate double-ctrl+c to exit zot entirely. First
+		// a deliberate double-ctrl+c to exit zut entirely. First
 		// press arms the exit hint, second press within
 		// ctrlCExitWindow quits.
 		if i.busy {
@@ -4094,7 +4094,7 @@ func (i *Interactive) openSettingsDialog() {
 	if themeName == "" {
 		themeName = "auto"
 	}
-	if themeName != "auto" && !tui.ThemeExists(i.cfg.ZotHome, themeName) {
+	if themeName != "auto" && !tui.ThemeExists(i.cfg.ZutHome, themeName) {
 		themeName = "auto"
 		i.cfg.ThemeName = ""
 		if i.cfg.SettingsStore != nil {
@@ -4104,7 +4104,7 @@ func (i *Interactive) openSettingsDialog() {
 	}
 	themeOptions := []settingsOption{}
 	themeChoice := 0
-	availableThemes := tui.AvailableThemes(i.cfg.ZotHome)
+	availableThemes := tui.AvailableThemes(i.cfg.ZutHome)
 	if i.cfg.ExtensionThemes != nil {
 		availableThemes = append(availableThemes, i.cfg.ExtensionThemes()...)
 	}
@@ -4210,7 +4210,7 @@ func (i *Interactive) openSettingsDialog() {
 		{
 			key:     "auto_compact_threshold",
 			label:   "auto-compact threshold",
-			desc:    "choose how full the model context can get before zot condenses conversation history",
+			desc:    "choose how full the model context can get before zut condenses conversation history",
 			options: autoCompactOptions,
 			choice:  autoCompactChoice,
 		},
@@ -4809,7 +4809,7 @@ func (i *Interactive) applySettingToggle(key string, value bool) {
 			}
 		}
 		// Flip the live picker so the next @ reflects the new mode
-		// without restarting zot. SetRecursive drops its cache.
+		// without restarting zut. SetRecursive drops its cache.
 		i.fileSuggest.SetRecursive(value)
 		i.mu.Lock()
 		i.statusOK = "recursive @-file search " + onOff(value)
@@ -4982,13 +4982,13 @@ func (i *Interactive) applyThemeNow(name string) {
 	// themes live; inherited mode must not issue OSC queries while the TUI
 	// already owns raw stdin.
 	detected.Terminal = i.cfg.Theme.Terminal
-	th, applied, err := tui.LoadThemeFromHome(i.cfg.ZotHome, name, detected)
+	th, applied, err := tui.LoadThemeFromHome(i.cfg.ZutHome, name, detected)
 	if err != nil {
 		if i.cfg.SettingsStore != nil {
 			_ = i.cfg.SettingsStore.SetTheme("auto")
 		}
 		i.cfg.ThemeName = ""
-		th, _, _ = tui.LoadThemeFromHome(i.cfg.ZotHome, "auto", detected)
+		th, _, _ = tui.LoadThemeFromHome(i.cfg.ZutHome, "auto", detected)
 		i.mu.Lock()
 		i.statusErr = "theme missing; reset to default"
 		i.mu.Unlock()
@@ -5334,7 +5334,7 @@ func (i *Interactive) runSlash(ctx context.Context, cmd string) (done bool) {
 		i.scrollOffset = 0
 		i.mu.Unlock()
 	case "/login":
-		i.dialog.Open(i.cfg.ZotHome)
+		i.dialog.Open(i.cfg.ZutHome)
 	case "/logout":
 		if len(parts) >= 2 {
 			// Explicit target: /logout anthropic | openai | all
@@ -5431,7 +5431,7 @@ func (i *Interactive) runSlash(ctx context.Context, cmd string) (done bool) {
 		// Hidden command: switch the running session's cwd. Not in
 		// slash_suggest, not in /help. Used by the workspaces
 		// extension's panel-key Enter handler so picking a row
-		// jumps zot into that directory without relaunching.
+		// jumps zut into that directory without relaunching.
 		//
 		// Recovers the raw argument (path) from the original cmd
 		// string rather than parts, so paths with spaces survive.
@@ -5727,11 +5727,11 @@ func (i *Interactive) doLogout(target string) {
 }
 
 func providerSetupInfo(provider string) (string, []string, bool) {
-	const docsURL = "https://raw.githubusercontent.com/patriceckhart/zot/main/docs/providers.md"
+	const docsURL = "https://raw.githubusercontent.com/bnema/zut/main/docs/providers.md"
 	switch provider {
 	case "amazon-bedrock":
 		return "Amazon Bedrock setup", []string{
-			"Amazon Bedrock uses AWS credentials instead of a generic zot API-key entry.",
+			"Amazon Bedrock uses AWS credentials instead of a generic zut API-key entry.",
 			"Configure an AWS profile, IAM keys, bearer token, or role-based credentials.",
 			"",
 			"For Bedrock API keys, set:",
@@ -6736,7 +6736,7 @@ func (i *Interactive) startTurnRequest(parent context.Context, prompt string, im
 	// "last frame had the previous turn's tool overlay" and
 	// "this frame had it cleared above". Without this, the guard
 	// reads delta = -(rows in cleared overlay) and decrements
-	// scrollOffset, which on terminals that mirror zot's pane
+	// scrollOffset, which on terminals that mirror zut's pane
 	// scroll into the host scrollbar visibly yanks the viewport.
 	// See autofollow_shrink_test.go for the exact arithmetic.
 	i.prevChatLen = 0
@@ -6827,7 +6827,7 @@ func (i *Interactive) startTurnRequest(parent context.Context, prompt string, im
 		}
 		// Persist the assistant's reply (and every tool row before
 		// it) to the session file while the turn memory is hot.
-		// Without this, WriteNewTranscript only fires at zot exit,
+		// Without this, WriteNewTranscript only fires at zut exit,
 		// meaning a crash or ungraceful kill drops the whole
 		// conversation. FlushSession is idempotent (it advances the
 		// baseline so subsequent flushes only write new rows).
@@ -7145,7 +7145,7 @@ func (i *Interactive) handleEvent(ev core.AgentEvent) {
 		if tc, ok := i.toolCalls[e.ID]; ok {
 			tc.RawJSONBuf += e.Delta
 			// Refresh the live path as soon as it parses; used in
-			// the header (write /Users/pat/Desktop/demo.ts)
+			// the header (write /Users/example/Desktop/demo.ts)
 			// while the content is still streaming.
 			if p, pok, _ := tui.ExtractPartialStringField(tc.RawJSONBuf, "path"); pok {
 				tc.LivePath = p
@@ -7365,7 +7365,7 @@ func (i *Interactive) openTelegramDialog() {
 	items := i.telegramMenuItems()
 	if len(items) == 0 {
 		i.mu.Lock()
-		i.statusErr = "telegram not configured. run `zot telegram-bot setup` first."
+		i.statusErr = "telegram not configured. run `zut telegram-bot setup` first."
 		i.mu.Unlock()
 		i.invalidate()
 		return
@@ -7378,7 +7378,7 @@ func (i *Interactive) openTelegramDialog() {
 // bridge state. Returns empty when no bot.json exists so the
 // caller can show a helpful status line instead of an empty menu.
 func (i *Interactive) telegramMenuItems() []telegramItem {
-	cfg, err := telegram.LoadConfig(i.cfg.ZotHome)
+	cfg, err := telegram.LoadConfig(i.cfg.ZutHome)
 	if err != nil || cfg.BotToken == "" {
 		return nil
 	}
@@ -7432,7 +7432,7 @@ func (i *Interactive) telegramConnect() {
 		i.invalidate()
 		return
 	}
-	cfg, err := telegram.LoadConfig(i.cfg.ZotHome)
+	cfg, err := telegram.LoadConfig(i.cfg.ZutHome)
 	if err != nil {
 		i.mu.Lock()
 		i.statusErr = "telegram: " + err.Error()
@@ -7442,7 +7442,7 @@ func (i *Interactive) telegramConnect() {
 	}
 	if cfg.BotToken == "" {
 		i.mu.Lock()
-		i.statusErr = "telegram: no bot token configured. run `zot telegram-bot setup` first."
+		i.statusErr = "telegram: no bot token configured. run `zut telegram-bot setup` first."
 		i.mu.Unlock()
 		i.invalidate()
 		return
@@ -7450,10 +7450,10 @@ func (i *Interactive) telegramConnect() {
 	// Refuse to start when a background daemon is already polling
 	// the same bot. Two concurrent long-poll consumers race each
 	// update and one always loses, so DMs get half-delivered. The
-	// user can `zot telegram-bot stop` first, then /telegram connect.
-	if pid, alive, _ := telegram.IsRunning(i.cfg.ZotHome); alive && pid > 0 {
+	// user can `zut telegram-bot stop` first, then /telegram connect.
+	if pid, alive, _ := telegram.IsRunning(i.cfg.ZutHome); alive && pid > 0 {
 		i.mu.Lock()
-		i.statusErr = fmt.Sprintf("telegram: bot daemon already running (pid %d). stop it with `zot telegram-bot stop` first.", pid)
+		i.statusErr = fmt.Sprintf("telegram: bot daemon already running (pid %d). stop it with `zut telegram-bot stop` first.", pid)
 		i.mu.Unlock()
 		i.invalidate()
 		return
@@ -7462,7 +7462,7 @@ func (i *Interactive) telegramConnect() {
 		Client: telegram.NewClient(cfg.BotToken),
 		Config: cfg,
 		Save: func(next telegram.Config) error {
-			return telegram.SaveConfig(i.cfg.ZotHome, next)
+			return telegram.SaveConfig(i.cfg.ZutHome, next)
 		},
 		Host: &telegramHost{iv: i},
 	}
@@ -7884,12 +7884,12 @@ func (i *Interactive) telegramStatus() {
 		} else {
 			msg += " - awaiting pairing"
 		}
-	} else if pid, alive, _ := telegram.IsRunning(i.cfg.ZotHome); alive && pid > 0 {
+	} else if pid, alive, _ := telegram.IsRunning(i.cfg.ZutHome); alive && pid > 0 {
 		msg = fmt.Sprintf("telegram: background daemon running (pid %d) - /telegram connect won't work until you stop it", pid)
 	} else {
-		cfg, _ := telegram.LoadConfig(i.cfg.ZotHome)
+		cfg, _ := telegram.LoadConfig(i.cfg.ZutHome)
 		if cfg.BotToken == "" {
-			msg = "telegram: not configured. run `zot telegram-bot setup` first."
+			msg = "telegram: not configured. run `zut telegram-bot setup` first."
 		} else {
 			msg = "telegram: disconnected"
 			if cfg.BotUsername != "" {
@@ -7963,8 +7963,8 @@ func (h *telegramHost) Notify(level, message string) {
 // transcript on fork; no parent/siblings on tree).
 func (i *Interactive) openSessionOpsDialog() {
 	items := []sessionOpsItem{
-		{label: "export", action: "export", hint: "write the current session to a .zotsession file"},
-		{label: "import", action: "import", hint: "load a .zotsession file into this directory"},
+		{label: "export", action: "export", hint: "write the current session to a .zutsession file"},
+		{label: "import", action: "import", hint: "load a .zutsession file into this directory"},
 		{label: "fork", action: "fork", hint: "branch from a past user message into a new session"},
 		{label: "tree", action: "tree", hint: "switch between branches in this directory"},
 	}
@@ -8034,7 +8034,7 @@ func (i *Interactive) doSessionExport(dst string) {
 	i.invalidate()
 }
 
-// doSessionImport copies the .zotsession file at src into the
+// doSessionImport copies the .zutsession file at src into the
 // running cwd's sessions directory and loads it as the active
 // session, same as `/sessions` -> pick. When src is empty we ask
 // the user to pass a path (no usable default here).
@@ -8042,7 +8042,7 @@ func (i *Interactive) doSessionImport(src string) {
 	src = unquotePath(src)
 	if src == "" {
 		i.mu.Lock()
-		i.statusErr = "import: pass a path — e.g. /session import ~/Downloads/work.zotsession"
+		i.statusErr = "import: pass a path — e.g. /session import ~/Downloads/work.zutsession"
 		i.mu.Unlock()
 		i.invalidate()
 		return

@@ -142,7 +142,7 @@ func isNoListenerErr(err error) bool {
 // distinguish a live worker from a stale path. Callers use this probe before
 // resume/remove operations to avoid racing a detached worker's session and
 // workspace ownership.
-const inboxProbeLine = "__zot_subagent_probe__"
+const inboxProbeLine = "__zut_subagent_probe__"
 
 func inboxLive(path string) bool {
 	if path == "" {
@@ -169,7 +169,7 @@ type Listener struct {
 	path string
 	ln   net.Listener
 	// active is the most recent accepted connection. The protocol
-	// only expects one supervisor (the parent zot), so newer
+	// only expects one supervisor (the parent zut), so newer
 	// connections preempt older ones — the previous parent
 	// presumably crashed.
 	mu        sync.Mutex

@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/patriceckhart/zot/packages/provider"
+	"github.com/bnema/zut/packages/provider"
 )
 
 // TestSessionExportImportRoundTrip writes a few messages to a live
@@ -159,7 +159,7 @@ func TestScanSessionMetaReturnsLatestRowWithoutHydratingMessages(t *testing.T) {
 }
 
 // TestExportToFilePath writes to an explicit file path (no directory
-// guessing) and checks the .zotsession extension is appended when missing.
+// guessing) and checks the .zutsession extension is appended when missing.
 func TestExportToFilePath(t *testing.T) {
 	root := t.TempDir()
 	sess, err := NewSession(root, "/cwd", "anthropic", "claude-opus-4-7", "0.0.0-test")
@@ -172,14 +172,14 @@ func TestExportToFilePath(t *testing.T) {
 	})
 	_ = sess.Close()
 
-	// No extension — should add .zotsession.
+	// No extension — should add .zutsession.
 	dst := filepath.Join(t.TempDir(), "mysession")
 	out, err := ExportSession(sess.Path, dst)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !strings.HasSuffix(out, PortableExt) {
-		t.Errorf("want .zotsession suffix on %q", out)
+		t.Errorf("want .zutsession suffix on %q", out)
 	}
 }
 

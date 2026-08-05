@@ -14,11 +14,11 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/patriceckhart/zot/packages/agent/tools"
-	"github.com/patriceckhart/zot/packages/tui"
+	"github.com/bnema/zut/packages/agent/tools"
+	"github.com/bnema/zut/packages/tui"
 )
 
-func TestReadZotfileConsentKeyAcceptsOnlyYesNo(t *testing.T) {
+func TestReadZutfileConsentKeyAcceptsOnlyYesNo(t *testing.T) {
 	tests := []struct {
 		name  string
 		input []byte
@@ -37,7 +37,7 @@ func TestReadZotfileConsentKeyAcceptsOnlyYesNo(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			var out bytes.Buffer
-			got, err := readZotfileConsentKey(bytes.NewReader(tt.input), func(answer byte) {
+			got, err := readZutfileConsentKey(bytes.NewReader(tt.input), func(answer byte) {
 				if answer == 0 {
 					out.Truncate(out.Len() - 1)
 					return
@@ -57,9 +57,9 @@ func TestReadZotfileConsentKeyAcceptsOnlyYesNo(t *testing.T) {
 	}
 }
 
-func TestReadZotfileConsentKeyWaitsForEnter(t *testing.T) {
+func TestReadZutfileConsentKeyWaitsForEnter(t *testing.T) {
 	var out bytes.Buffer
-	if _, err := readZotfileConsentKey(strings.NewReader("y"), func(answer byte) {
+	if _, err := readZutfileConsentKey(strings.NewReader("y"), func(answer byte) {
 		out.WriteByte(answer)
 	}); !errors.Is(err, io.EOF) {
 		t.Fatalf("error = %v, want EOF before Enter", err)
@@ -69,19 +69,19 @@ func TestReadZotfileConsentKeyWaitsForEnter(t *testing.T) {
 	}
 }
 
-func TestReadZotfileConsentKeyInterruptsOnCtrlC(t *testing.T) {
-	if _, err := readZotfileConsentKey(bytes.NewReader([]byte{'x', 3, 'y'}), nil); !errors.Is(err, errZotfileConsentInterrupted) {
+func TestReadZutfileConsentKeyInterruptsOnCtrlC(t *testing.T) {
+	if _, err := readZutfileConsentKey(bytes.NewReader([]byte{'x', 3, 'y'}), nil); !errors.Is(err, errZutfileConsentInterrupted) {
 		t.Fatalf("error = %v, want interrupted", err)
 	}
 }
 
-func TestReadZotfileConsentKeyReportsInputError(t *testing.T) {
-	if _, err := readZotfileConsentKey(strings.NewReader("xxx"), nil); !errors.Is(err, io.EOF) {
+func TestReadZutfileConsentKeyReportsInputError(t *testing.T) {
+	if _, err := readZutfileConsentKey(strings.NewReader("xxx"), nil); !errors.Is(err, io.EOF) {
 		t.Fatalf("error = %v, want EOF", err)
 	}
 }
 
-func writeTestZotfile(t *testing.T, manifest string) string {
+func writeTestZutfile(t *testing.T, manifest string) string {
 	t.Helper()
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "manifest.json"), []byte(manifest), 0o600); err != nil {
@@ -93,12 +93,12 @@ func writeTestZotfile(t *testing.T, manifest string) string {
 	return dir
 }
 
-func TestLoadZotfileAllowsMissingAgentMD(t *testing.T) {
+func TestLoadZutfileAllowsMissingAgentMD(t *testing.T) {
 	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "manifest.json"), []byte(`{"zotfile":1,"name":"test"}`), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "manifest.json"), []byte(`{"zutfile":1,"name":"test"}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	zf, cleanup, err := loadZotfile(dir)
+	zf, cleanup, err := loadZutfile(dir)
 	if cleanup != nil {
 		defer cleanup()
 	}
@@ -110,65 +110,65 @@ func TestLoadZotfileAllowsMissingAgentMD(t *testing.T) {
 	}
 }
 
-func TestValidateZotfileDirRejectsAgentMDDirectory(t *testing.T) {
+func TestValidateZutfileDirRejectsAgentMDDirectory(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.Mkdir(filepath.Join(dir, "AGENT.md"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := validateZotfileDir(dir); err == nil || !strings.Contains(err.Error(), "regular file") {
+	if err := validateZutfileDir(dir); err == nil || !strings.Contains(err.Error(), "regular file") {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
 
-func TestLoadZotfileRejectsUnenforcedPermissions(t *testing.T) {
+func TestLoadZutfileRejectsUnenforcedPermissions(t *testing.T) {
 	for _, field := range []string{
 		`"net":{"allow":["example.com"]}`,
 		`"env":{"read":["HOME"]}`,
 	} {
-		dir := writeTestZotfile(t, `{"zotfile":1,"name":"test","permissions":{`+field+`}}`)
-		if _, _, err := loadZotfile(dir); err == nil {
+		dir := writeTestZutfile(t, `{"zutfile":1,"name":"test","permissions":{`+field+`}}`)
+		if _, _, err := loadZutfile(dir); err == nil {
 			t.Fatalf("manifest with %s was accepted", field)
 		}
 	}
 }
 
-func TestLoadZotfileBashModes(t *testing.T) {
+func TestLoadZutfileBashModes(t *testing.T) {
 	for _, mode := range []string{"none", "ask", "allowlist"} {
-		manifest := `{"zotfile":1,"name":"test","permissions":{"bash":{"mode":"` + mode + `"}}}`
+		manifest := `{"zutfile":1,"name":"test","permissions":{"bash":{"mode":"` + mode + `"}}}`
 		if mode == "allowlist" {
-			manifest = `{"zotfile":1,"name":"test","permissions":{"bash":{"mode":"allowlist","allow":["git"]}}}`
+			manifest = `{"zutfile":1,"name":"test","permissions":{"bash":{"mode":"allowlist","allow":["git"]}}}`
 		}
-		dir := writeTestZotfile(t, manifest)
-		if _, _, err := loadZotfile(dir); err != nil {
+		dir := writeTestZutfile(t, manifest)
+		if _, _, err := loadZutfile(dir); err != nil {
 			t.Fatalf("mode %q rejected: %v", mode, err)
 		}
 	}
-	dir := writeTestZotfile(t, `{"zotfile":1,"name":"test","permissions":{"bash":{"mode":"all"}}}`)
-	if _, _, err := loadZotfile(dir); err == nil || !strings.Contains(err.Error(), "unsupported bash permission mode") {
+	dir := writeTestZutfile(t, `{"zutfile":1,"name":"test","permissions":{"bash":{"mode":"all"}}}`)
+	if _, _, err := loadZutfile(dir); err == nil || !strings.Contains(err.Error(), "unsupported bash permission mode") {
 		t.Fatalf("unexpected error for all mode: %v", err)
 	}
-	dir = writeTestZotfile(t, `{"zotfile":1,"name":"test","permissions":{"bash":{"mode":"everything"}}}`)
-	if _, _, err := loadZotfile(dir); err == nil || !strings.Contains(err.Error(), "unsupported bash permission mode") {
+	dir = writeTestZutfile(t, `{"zutfile":1,"name":"test","permissions":{"bash":{"mode":"everything"}}}`)
+	if _, _, err := loadZutfile(dir); err == nil || !strings.Contains(err.Error(), "unsupported bash permission mode") {
 		t.Fatalf("unexpected error for unknown mode: %v", err)
 	}
 }
 
-func TestLoadZotfileRejectsUnsafeOrCollidingNames(t *testing.T) {
+func TestLoadZutfileRejectsUnsafeOrCollidingNames(t *testing.T) {
 	for _, name := range []string{"...", "Name", "two words", "a/b"} {
-		dir := writeTestZotfile(t, `{"zotfile":1,"name":"`+name+`"}`)
-		if _, _, err := loadZotfile(dir); err == nil {
+		dir := writeTestZutfile(t, `{"zutfile":1,"name":"`+name+`"}`)
+		if _, _, err := loadZutfile(dir); err == nil {
 			t.Fatalf("unsafe manifest name %q was accepted", name)
 		}
 	}
 }
 
-func TestResolveZotfileRefUsesLocalFirstThenGitHubShorthand(t *testing.T) {
+func TestResolveZutfileRefUsesLocalFirstThenGitHubShorthand(t *testing.T) {
 	dir := t.TempDir()
 	t.Chdir(dir)
 	if err := os.Mkdir("local-agent", 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile("packed-agent.zot", []byte("test"), 0o600); err != nil {
+	if err := os.WriteFile("packed-agent.zut", []byte("test"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -177,9 +177,9 @@ func TestResolveZotfileRefUsesLocalFirstThenGitHubShorthand(t *testing.T) {
 		want string
 	}{
 		{"local-agent", "local-agent"},
-		{"packed-agent", "packed-agent.zot"},
+		{"packed-agent", "packed-agent.zut"},
 		{"remote-agent", "remote-agent"},
-		{"missing.zot", "missing.zot"},
+		{"missing.zut", "missing.zut"},
 		{"agents/remote-agent", "https://github.com/agents/remote-agent"},
 		{`agents\remote-agent`, "https://github.com/agents/remote-agent"},
 		{"frkr/zot-archify", "https://github.com/frkr/zot-archify"},
@@ -190,7 +190,7 @@ func TestResolveZotfileRefUsesLocalFirstThenGitHubShorthand(t *testing.T) {
 		{"https://github.com/acme/agents/example", "https://github.com/acme/agents/example"},
 	}
 	for _, tt := range tests {
-		got, err := resolveZotfileRef(tt.ref)
+		got, err := resolveZutfileRef(tt.ref)
 		if err != nil {
 			t.Fatalf("resolve %q: %v", tt.ref, err)
 		}
@@ -200,8 +200,8 @@ func TestResolveZotfileRefUsesLocalFirstThenGitHubShorthand(t *testing.T) {
 	}
 }
 
-func TestLoadZotfileRejectsBundledExecutableExtension(t *testing.T) {
-	dir := writeTestZotfile(t, `{"zotfile":1,"name":"test"}`)
+func TestLoadZutfileRejectsBundledExecutableExtension(t *testing.T) {
+	dir := writeTestZutfile(t, `{"zutfile":1,"name":"test"}`)
 	ext := filepath.Join(dir, "extensions", "bad")
 	if err := os.MkdirAll(ext, 0o700); err != nil {
 		t.Fatal(err)
@@ -209,31 +209,31 @@ func TestLoadZotfileRejectsBundledExecutableExtension(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(ext, "extension.json"), []byte(`{"name":"bad"}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := loadZotfile(dir); err == nil || !strings.Contains(err.Error(), "cannot yet be confined") {
+	if _, _, err := loadZutfile(dir); err == nil || !strings.Contains(err.Error(), "cannot yet be confined") {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
 
-func TestCheckZotfileMinVersion(t *testing.T) {
-	var zf zotfileLoaded
-	zf.Manifest.Runtime.MinZot = "0.3.0"
-	if err := checkZotfileRequirements(zf, "0.2.75"); err == nil {
-		t.Fatal("old zot version accepted")
+func TestCheckZutfileMinVersion(t *testing.T) {
+	var zf zutfileLoaded
+	zf.Manifest.Runtime.MinZut = "0.3.0"
+	if err := checkZutfileRequirements(zf, "0.2.75"); err == nil {
+		t.Fatal("old zut version accepted")
 	}
-	if err := checkZotfileRequirements(zf, "0.3.0"); err != nil {
+	if err := checkZutfileRequirements(zf, "0.3.0"); err != nil {
 		t.Fatalf("minimum version rejected: %v", err)
 	}
 }
 
-func TestApplyZotfileModelRequirementsRejectsUnsupportedFields(t *testing.T) {
-	var m ZotfileManifest
+func TestApplyZutfileModelRequirementsRejectsUnsupportedFields(t *testing.T) {
+	var m ZutfileManifest
 	m.Model.MinTier = "frontier"
-	if err := applyZotfileModelRequirements(&Args{}, m); err == nil {
+	if err := applyZutfileModelRequirements(&Args{}, m); err == nil {
 		t.Fatal("unsupported min_tier was ignored")
 	}
 	m.Model.MinTier = ""
 	m.Model.Requires = []string{"audio"}
-	if err := applyZotfileModelRequirements(&Args{}, m); err == nil {
+	if err := applyZutfileModelRequirements(&Args{}, m); err == nil {
 		t.Fatal("unsupported capability was ignored")
 	}
 }
@@ -251,7 +251,7 @@ func TestUntarRejectsTraversalAndOversizedEntry(t *testing.T) {
 	if err := untar(bytes.NewReader(makeTar("../escape", 0)), t.TempDir()); err == nil {
 		t.Fatal("path traversal accepted")
 	}
-	if err := untar(bytes.NewReader(makeTar("large", maxZotfileEntrySize+1)), t.TempDir()); err == nil {
+	if err := untar(bytes.NewReader(makeTar("large", maxZutfileEntrySize+1)), t.TempDir()); err == nil {
 		t.Fatal("oversized entry accepted")
 	}
 }
@@ -281,13 +281,13 @@ func TestParseGitHubAgentURL(t *testing.T) {
 	}
 }
 
-func TestLoadRemoteZotfileDownloadsTemporaryGitHubArchive(t *testing.T) {
+func TestLoadRemoteZutfileDownloadsTemporaryGitHubArchive(t *testing.T) {
 	var archive bytes.Buffer
 	gz := gzip.NewWriter(&archive)
 	tw := tar.NewWriter(gz)
 	files := map[string]string{
-		"agents-main/zot-maintenance/manifest.json": `{"zotfile":1,"name":"zot-maintenance"}`,
-		"agents-main/zot-maintenance/AGENT.md":      "Maintain zot.",
+		"agents-main/zut-maintenance/manifest.json": `{"zutfile":1,"name":"zut-maintenance"}`,
+		"agents-main/zut-maintenance/AGENT.md":      "Maintain zut.",
 	}
 	for name, content := range files {
 		if err := tw.WriteHeader(&tar.Header{Name: name, Mode: 0o600, Size: int64(len(content))}); err != nil {
@@ -313,13 +313,13 @@ func TestLoadRemoteZotfileDownloadsTemporaryGitHubArchive(t *testing.T) {
 	githubArchiveURL = func(_, _, _ string) string { return server.URL }
 	t.Cleanup(func() { githubArchiveURL = oldArchiveURL })
 
-	u, _ := url.Parse("https://github.com/acme/agents/zot-maintenance")
-	zf, cleanup, err := loadRemoteZotfile(u)
+	u, _ := url.Parse("https://github.com/acme/agents/zut-maintenance")
+	zf, cleanup, err := loadRemoteZutfile(u)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if zf.Manifest.Name != "zot-maintenance" || !zf.Temp {
-		t.Fatalf("unexpected zotfile: %+v", zf)
+	if zf.Manifest.Name != "zut-maintenance" || !zf.Temp {
+		t.Fatalf("unexpected zutfile: %+v", zf)
 	}
 	root := filepath.Dir(filepath.Dir(zf.Dir))
 	cleanup()
@@ -328,16 +328,16 @@ func TestLoadRemoteZotfileDownloadsTemporaryGitHubArchive(t *testing.T) {
 	}
 }
 
-func TestFormatZotfileConsentUsesThemeColors(t *testing.T) {
+func TestFormatZutfileConsentUsesThemeColors(t *testing.T) {
 	th := tui.Theme{FG: 1, Muted: 2, Accent: 3, Assistant: 4, Warning: 5}
-	zf := zotfileLoaded{}
+	zf := zutfileLoaded{}
 	zf.Manifest.Name = "reviewer"
 	zf.Manifest.Version = "1.2.3"
 	perms := tools.PermissionSet{}
 	perms.FS.Read = []string{"/workspace"}
 	perms.Bash.Mode = "ask"
 
-	got := formatZotfileConsent(zf, perms, th, true)
+	got := formatZutfileConsent(zf, perms, th, true)
 	for _, want := range []string{
 		th.FG256(th.Assistant, "Agent"),
 		th.FG256(th.Accent, "reviewer@1.2.3"),
@@ -374,13 +374,13 @@ func TestPeelLeadingYes(t *testing.T) {
 	}
 }
 
-func TestConsentZotfileAutoYesWritesReceipt(t *testing.T) {
+func TestConsentZutfileAutoYesWritesReceipt(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("ZOT_HOME", home)
-	zf := zotfileLoaded{Digest: "abc123", Manifest: ZotfileManifest{Name: "demo", Version: "1.0.0"}}
+	t.Setenv("ZUT_HOME", home)
+	zf := zutfileLoaded{Digest: "abc123", Manifest: ZutfileManifest{Name: "demo", Version: "1.0.0"}}
 	var perms tools.PermissionSet
 	perms.Bash.Mode = "none"
-	allowed, err := consentZotfile(zf, perms, true)
+	allowed, err := consentZutfile(zf, perms, true)
 	if err != nil || !allowed {
 		t.Fatalf("auto yes: allowed=%v err=%v", allowed, err)
 	}
@@ -389,19 +389,19 @@ func TestConsentZotfileAutoYesWritesReceipt(t *testing.T) {
 		t.Fatalf("consent receipt missing: %v", err)
 	}
 	// Second call without -y should use the receipt.
-	allowed, err = consentZotfile(zf, perms, false)
+	allowed, err = consentZutfile(zf, perms, false)
 	if err != nil || !allowed {
 		t.Fatalf("cached consent: allowed=%v err=%v", allowed, err)
 	}
 }
 
-func TestConsentZotfileAutoYesAskDoesNotCache(t *testing.T) {
+func TestConsentZutfileAutoYesAskDoesNotCache(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("ZOT_HOME", home)
-	zf := zotfileLoaded{Digest: "askdig", Manifest: ZotfileManifest{Name: "ask-agent", Version: "1.0.0"}}
+	t.Setenv("ZUT_HOME", home)
+	zf := zutfileLoaded{Digest: "askdig", Manifest: ZutfileManifest{Name: "ask-agent", Version: "1.0.0"}}
 	var perms tools.PermissionSet
 	perms.Bash.Mode = "ask"
-	if _, err := consentZotfile(zf, perms, true); err != nil {
+	if _, err := consentZutfile(zf, perms, true); err != nil {
 		t.Fatal(err)
 	}
 	path := filepath.Join(home, "agents", "ask-agent", "consents", "askdig.json")

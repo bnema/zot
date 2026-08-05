@@ -8,7 +8,7 @@ import (
 )
 
 // ReadClipboardText reads plain text from a Wayland or X11 clipboard. The
-// small command-line clients are used to preserve zot's CGO-free build.
+// small command-line clients are used to preserve zut's CGO-free build.
 func ReadClipboardText() (string, bool, error) {
 	var commands []clipboardTextCommand
 	if os.Getenv("WAYLAND_DISPLAY") != "" {

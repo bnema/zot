@@ -20,22 +20,22 @@ import (
 	"strings"
 	"time"
 
+	"github.com/bnema/zut/packages/agent/tools"
+	"github.com/bnema/zut/packages/provider"
+	"github.com/bnema/zut/packages/provider/auth"
+	"github.com/bnema/zut/packages/tui"
 	"github.com/klauspost/compress/zstd"
-	"github.com/patriceckhart/zot/packages/agent/tools"
-	"github.com/patriceckhart/zot/packages/provider"
-	"github.com/patriceckhart/zot/packages/provider/auth"
-	"github.com/patriceckhart/zot/packages/tui"
 	"golang.org/x/term"
 )
 
-type ZotfileManifest struct {
-	Zotfile     int    `json:"zotfile"`
+type ZutfileManifest struct {
+	Zutfile     int    `json:"zutfile"`
 	Name        string `json:"name"`
 	Version     string `json:"version"`
 	Description string `json:"description"`
 	License     string `json:"license"`
 	Runtime     struct {
-		MinZot string `json:"min_zot"`
+		MinZut string `json:"min_zut"`
 	} `json:"runtime"`
 	Model struct {
 		Requires   []string `json:"requires"`
@@ -56,14 +56,14 @@ type ZotfileManifest struct {
 	ReplaceSystemPrompt bool `json:"replace_system_prompt"`
 }
 
-type zotfileLoaded struct {
+type zutfileLoaded struct {
 	Dir      string
 	Temp     bool
 	Digest   string
-	Manifest ZotfileManifest
+	Manifest ZutfileManifest
 }
 
-func runZotfileCommand(rawArgs []string, version string) (bool, error) {
+func runZutfileCommand(rawArgs []string, version string) (bool, error) {
 	if len(rawArgs) == 0 {
 		return false, nil
 	}
@@ -77,17 +77,17 @@ func runZotfileCommand(rawArgs []string, version string) (bool, error) {
 		if len(rawArgs) > 2 {
 			out = rawArgs[2]
 		}
-		return true, zotPack(dir, out)
+		return true, zutPack(dir, out)
 	case "inspect":
 		if len(rawArgs) < 2 {
-			return true, fmt.Errorf("zot inspect requires a name, .zot file, directory, or GitHub URL")
+			return true, fmt.Errorf("zut inspect requires a name, .zut file, directory, or GitHub URL")
 		}
-		return true, zotInspect(rawArgs[1])
+		return true, zutInspect(rawArgs[1])
 	case "verify":
 		if len(rawArgs) < 2 {
-			return true, fmt.Errorf("zot verify requires a name, .zot file, directory, or GitHub URL")
+			return true, fmt.Errorf("zut verify requires a name, .zut file, directory, or GitHub URL")
 		}
-		zf, cleanup, err := loadZotfile(rawArgs[1])
+		zf, cleanup, err := loadZutfile(rawArgs[1])
 		if cleanup != nil {
 			defer cleanup()
 		}
@@ -98,11 +98,11 @@ func runZotfileCommand(rawArgs []string, version string) (bool, error) {
 		return true, nil
 	case "run":
 		if len(rawArgs) < 2 {
-			return true, fmt.Errorf("zot run requires a name, .zot file, directory, or GitHub URL")
+			return true, fmt.Errorf("zut run requires a name, .zut file, directory, or GitHub URL")
 		}
 		yes, remaining := peelLeadingYes(rawArgs[1:])
 		if len(remaining) < 1 {
-			return true, fmt.Errorf("zot run requires a name, .zot file, directory, or GitHub URL")
+			return true, fmt.Errorf("zut run requires a name, .zut file, directory, or GitHub URL")
 		}
 		ref := remaining[0]
 		rest := remaining[1:]
@@ -114,37 +114,37 @@ func runZotfileCommand(rawArgs []string, version string) (bool, error) {
 		if yes {
 			args.Yes = true
 		}
-		return true, runLocalZotfile(ref, args, version)
+		return true, runLocalZutfile(ref, args, version)
 	default:
 		return false, nil
 	}
 }
 
-func runLocalZotfile(ref string, args Args, version string) error {
+func runLocalZutfile(ref string, args Args, version string) error {
 	prepareRuntimeCatalog()
-	zf, cleanup, err := loadZotfile(ref)
+	zf, cleanup, err := loadZutfile(ref)
 	if cleanup != nil {
 		defer cleanup()
 	}
 	if err != nil {
 		return err
 	}
-	if err := checkZotfileRequirements(zf, version); err != nil {
+	if err := checkZutfileRequirements(zf, version); err != nil {
 		return err
 	}
-	agentData := filepath.Join(ZotHome(), "agents", safeAgentName(zf.Manifest.Name), "data")
+	agentData := filepath.Join(ZutHome(), "agents", safeAgentName(zf.Manifest.Name), "data")
 	if err := os.MkdirAll(agentData, 0o755); err != nil {
 		return err
 	}
 	perms := zf.Manifest.Permissions.Expand(args.CWD, agentData)
-	allowed, err := consentZotfile(zf, perms, args.Yes)
+	allowed, err := consentZutfile(zf, perms, args.Yes)
 	if err != nil {
 		return err
 	}
 	if !allowed {
 		return nil
 	}
-	if err := applyZotfileModelRequirements(&args, zf.Manifest); err != nil {
+	if err := applyZutfileModelRequirements(&args, zf.Manifest); err != nil {
 		return err
 	}
 	agentPath := filepath.Join(zf.Dir, "AGENT.md")
@@ -167,13 +167,13 @@ func runLocalZotfile(ref string, args Args, version string) error {
 		args.Prompt = *zf.Manifest.Entry.DefaultPrompt
 	}
 	if dirExists(filepath.Join(zf.Dir, "skills")) {
-		old := os.Getenv("ZOT_AGENT_SKILLS")
+		old := os.Getenv("ZUT_AGENT_SKILLS")
 		v := filepath.Join(zf.Dir, "skills")
 		if old != "" {
 			v += string(os.PathListSeparator) + old
 		}
-		_ = os.Setenv("ZOT_AGENT_SKILLS", v)
-		defer os.Setenv("ZOT_AGENT_SKILLS", old)
+		_ = os.Setenv("ZUT_AGENT_SKILLS", v)
+		defer os.Setenv("ZUT_AGENT_SKILLS", old)
 	}
 	args.AgentName = zf.Manifest.Name
 	args.AgentDataDir = agentData
@@ -181,8 +181,8 @@ func runLocalZotfile(ref string, args Args, version string) error {
 	return runWithArgs(args, version)
 }
 
-func zotInspect(ref string) error {
-	zf, cleanup, err := loadZotfile(ref)
+func zutInspect(ref string) error {
+	zf, cleanup, err := loadZutfile(ref)
 	if cleanup != nil {
 		defer cleanup()
 	}
@@ -207,7 +207,7 @@ func zotInspect(ref string) error {
 	})
 }
 
-func applyZotfileModelRequirements(args *Args, m ZotfileManifest) error {
+func applyZutfileModelRequirements(args *Args, m ZutfileManifest) error {
 	minCtx := m.Model.MinContext
 	requires := map[string]bool{}
 	for _, capability := range m.Model.Requires {
@@ -219,7 +219,7 @@ func applyZotfileModelRequirements(args *Args, m ZotfileManifest) error {
 		}
 	}
 	if m.Model.MinTier != "" {
-		return fmt.Errorf("model.min_tier is not supported by this zot version")
+		return fmt.Errorf("model.min_tier is not supported by this zut version")
 	}
 	compatible := func(model provider.Model) bool {
 		if model.ContextWindow < minCtx {
@@ -289,27 +289,27 @@ func prepareRuntimeCatalog() {
 	RefreshModelsAsync()
 }
 
-func zotPack(dir, out string) error {
+func zutPack(dir, out string) error {
 	abs, err := filepath.Abs(dir)
 	if err != nil {
 		return err
 	}
-	if _, err := readZotManifest(abs); err != nil {
+	if _, err := readZutManifest(abs); err != nil {
 		return err
 	}
-	if err := validateZotfileDir(abs); err != nil {
+	if err := validateZutfileDir(abs); err != nil {
 		return err
 	}
 	if out == "" {
-		m, _ := readZotManifest(abs)
+		m, _ := readZutManifest(abs)
 		base := safeAgentName(m.Name)
 		if base == "" {
 			base = filepath.Base(abs)
 		}
-		out = base + ".zot"
+		out = base + ".zut"
 	}
-	if filepath.Ext(out) != ".zot" {
-		out += ".zot"
+	if filepath.Ext(out) != ".zut" {
+		out += ".zut"
 	}
 	outAbs, err := filepath.Abs(out)
 	if err != nil {
@@ -337,53 +337,53 @@ func zotPack(dir, out string) error {
 	return nil
 }
 
-func loadZotfile(ref string) (zotfileLoaded, func(), error) {
-	resolved, err := resolveZotfileRef(ref)
+func loadZutfile(ref string) (zutfileLoaded, func(), error) {
+	resolved, err := resolveZutfileRef(ref)
 	if err != nil {
-		return zotfileLoaded{}, nil, err
+		return zutfileLoaded{}, nil, err
 	}
 	ref = resolved
 	if u, err := url.Parse(ref); err == nil && (u.Scheme == "http" || u.Scheme == "https") {
-		return loadRemoteZotfile(u)
+		return loadRemoteZutfile(u)
 	}
 	info, err := os.Stat(ref)
 	if err != nil {
-		return zotfileLoaded{}, nil, err
+		return zutfileLoaded{}, nil, err
 	}
 	if info.IsDir() {
 		abs, _ := filepath.Abs(ref)
-		m, err := readZotManifest(abs)
+		m, err := readZutManifest(abs)
 		if err != nil {
-			return zotfileLoaded{}, nil, err
+			return zutfileLoaded{}, nil, err
 		}
-		if err := validateZotfileDir(abs); err != nil {
-			return zotfileLoaded{}, nil, err
+		if err := validateZutfileDir(abs); err != nil {
+			return zutfileLoaded{}, nil, err
 		}
-		return zotfileLoaded{Dir: abs, Manifest: m, Digest: digestDirectory(abs)}, nil, nil
+		return zutfileLoaded{Dir: abs, Manifest: m, Digest: digestDirectory(abs)}, nil, nil
 	}
-	tmp, err := os.MkdirTemp("", "zotfile-*")
+	tmp, err := os.MkdirTemp("", "zutfile-*")
 	if err != nil {
-		return zotfileLoaded{}, nil, err
+		return zutfileLoaded{}, nil, err
 	}
 	cleanup := func() { _ = os.RemoveAll(tmp) }
-	digest, err := unpackZotArchive(ref, tmp)
+	digest, err := unpackZutArchive(ref, tmp)
 	if err != nil {
 		cleanup()
-		return zotfileLoaded{}, nil, err
+		return zutfileLoaded{}, nil, err
 	}
-	m, err := readZotManifest(tmp)
+	m, err := readZutManifest(tmp)
 	if err != nil {
 		cleanup()
-		return zotfileLoaded{}, nil, err
+		return zutfileLoaded{}, nil, err
 	}
-	if err := validateZotfileDir(tmp); err != nil {
+	if err := validateZutfileDir(tmp); err != nil {
 		cleanup()
-		return zotfileLoaded{}, nil, err
+		return zutfileLoaded{}, nil, err
 	}
-	return zotfileLoaded{Dir: tmp, Temp: true, Digest: digest, Manifest: m}, cleanup, nil
+	return zutfileLoaded{Dir: tmp, Temp: true, Digest: digest, Manifest: m}, cleanup, nil
 }
 
-func resolveZotfileRef(ref string) (string, error) {
+func resolveZutfileRef(ref string) (string, error) {
 	if u, err := url.Parse(ref); err == nil && (u.Scheme == "http" || u.Scheme == "https") {
 		return ref, nil
 	}
@@ -393,24 +393,24 @@ func resolveZotfileRef(ref string) (string, error) {
 		return "", err
 	}
 	if filepath.Ext(ref) == "" {
-		archive := ref + ".zot"
+		archive := ref + ".zut"
 		if _, err := os.Stat(archive); err == nil {
 			return archive, nil
 		} else if !os.IsNotExist(err) {
 			return "", err
 		}
 	}
-	if strings.HasSuffix(strings.ToLower(ref), ".zot") {
+	if strings.HasSuffix(strings.ToLower(ref), ".zut") {
 		return ref, nil
 	}
 	githubRef := strings.ReplaceAll(ref, "\\", "/")
 	parts := strings.Split(githubRef, "/")
-	if len(parts) == 2 && validGitHubZotfileSegment(parts[0]) && validGitHubZotfileSegment(parts[1]) {
+	if len(parts) == 2 && validGitHubZutfileSegment(parts[0]) && validGitHubZutfileSegment(parts[1]) {
 		return "https://github.com/" + parts[0] + "/" + parts[1], nil
 	}
 	if len(parts) >= 3 {
 		for _, part := range parts {
-			if !validGitHubZotfileSegment(part) {
+			if !validGitHubZutfileSegment(part) {
 				return ref, nil
 			}
 		}
@@ -419,37 +419,37 @@ func resolveZotfileRef(ref string) (string, error) {
 	return ref, nil
 }
 
-func validGitHubZotfileSegment(s string) bool {
+func validGitHubZutfileSegment(s string) bool {
 	return s != "" && s == strings.ToLower(s) && safeAgentName(s) == s
 }
 
-var zotfileHTTPClient = &http.Client{Timeout: 60 * time.Second}
+var zutfileHTTPClient = &http.Client{Timeout: 60 * time.Second}
 
 var githubArchiveURL = func(owner, repo, ref string) string {
 	return fmt.Sprintf("https://github.com/%s/%s/archive/%s.tar.gz", owner, repo, url.PathEscape(ref))
 }
 
-func loadRemoteZotfile(u *url.URL) (zotfileLoaded, func(), error) {
+func loadRemoteZutfile(u *url.URL) (zutfileLoaded, func(), error) {
 	if !strings.EqualFold(u.Hostname(), "github.com") {
-		return zotfileLoaded{}, nil, fmt.Errorf("unsupported zotfile URL host %q; only github.com agent directories are supported", u.Hostname())
+		return zutfileLoaded{}, nil, fmt.Errorf("unsupported zutfile URL host %q; only github.com agent directories are supported", u.Hostname())
 	}
 	owner, repo, ref, subdir, err := parseGitHubAgentURL(u)
 	if err != nil {
-		return zotfileLoaded{}, nil, err
+		return zutfileLoaded{}, nil, err
 	}
-	tmp, err := os.MkdirTemp("", "zotfile-github-*")
+	tmp, err := os.MkdirTemp("", "zutfile-github-*")
 	if err != nil {
-		return zotfileLoaded{}, nil, err
+		return zutfileLoaded{}, nil, err
 	}
 	cleanup := func() { _ = os.RemoveAll(tmp) }
 	if err := downloadGitHubArchive(githubArchiveURL(owner, repo, ref), tmp); err != nil {
 		cleanup()
-		return zotfileLoaded{}, nil, err
+		return zutfileLoaded{}, nil, err
 	}
 	root, err := singleExtractedRoot(tmp)
 	if err != nil {
 		cleanup()
-		return zotfileLoaded{}, nil, err
+		return zutfileLoaded{}, nil, err
 	}
 	dir := filepath.Join(root, filepath.FromSlash(subdir))
 	if subdir == "" {
@@ -457,18 +457,18 @@ func loadRemoteZotfile(u *url.URL) (zotfileLoaded, func(), error) {
 	}
 	if !pathWithin(root, dir) {
 		cleanup()
-		return zotfileLoaded{}, nil, fmt.Errorf("unsafe GitHub agent path %q", subdir)
+		return zutfileLoaded{}, nil, fmt.Errorf("unsafe GitHub agent path %q", subdir)
 	}
-	m, err := readZotManifest(dir)
+	m, err := readZutManifest(dir)
 	if err != nil {
 		cleanup()
-		return zotfileLoaded{}, nil, fmt.Errorf("GitHub agent %s/%s/%s: %w", owner, repo, subdir, err)
+		return zutfileLoaded{}, nil, fmt.Errorf("GitHub agent %s/%s/%s: %w", owner, repo, subdir, err)
 	}
-	if err := validateZotfileDir(dir); err != nil {
+	if err := validateZutfileDir(dir); err != nil {
 		cleanup()
-		return zotfileLoaded{}, nil, err
+		return zutfileLoaded{}, nil, err
 	}
-	return zotfileLoaded{Dir: dir, Temp: true, Digest: digestDirectory(dir), Manifest: m}, cleanup, nil
+	return zutfileLoaded{Dir: dir, Temp: true, Digest: digestDirectory(dir), Manifest: m}, cleanup, nil
 }
 
 func parseGitHubAgentURL(u *url.URL) (owner, repo, ref, subdir string, err error) {
@@ -507,8 +507,8 @@ func downloadGitHubArchive(archiveURL, dst string) error {
 	if err != nil {
 		return err
 	}
-	req.Header.Set("User-Agent", "zot")
-	resp, err := zotfileHTTPClient.Do(req)
+	req.Header.Set("User-Agent", "zut")
+	resp, err := zutfileHTTPClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("download GitHub repository: %w", err)
 	}
@@ -516,7 +516,7 @@ func downloadGitHubArchive(archiveURL, dst string) error {
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("download GitHub repository: HTTP %d", resp.StatusCode)
 	}
-	limited := &io.LimitedReader{R: resp.Body, N: maxZotfileCompressedSize + 1}
+	limited := &io.LimitedReader{R: resp.Body, N: maxZutfileCompressedSize + 1}
 	gr, err := gzip.NewReader(limited)
 	if err != nil {
 		return fmt.Errorf("read GitHub archive: %w", err)
@@ -526,7 +526,7 @@ func downloadGitHubArchive(archiveURL, dst string) error {
 		return fmt.Errorf("extract GitHub archive: %w", err)
 	}
 	if limited.N <= 0 {
-		return fmt.Errorf("GitHub archive exceeds %d MiB compressed size limit", maxZotfileCompressedSize>>20)
+		return fmt.Errorf("GitHub archive exceeds %d MiB compressed size limit", maxZutfileCompressedSize>>20)
 	}
 	return nil
 }
@@ -547,8 +547,8 @@ func singleExtractedRoot(dir string) (string, error) {
 	return filepath.Join(dir, entries[0].Name()), nil
 }
 
-func readZotManifest(dir string) (ZotfileManifest, error) {
-	var m ZotfileManifest
+func readZutManifest(dir string) (ZutfileManifest, error) {
+	var m ZutfileManifest
 	b, err := os.ReadFile(filepath.Join(dir, "manifest.json"))
 	if err != nil {
 		return m, fmt.Errorf("manifest.json is required: %w", err)
@@ -556,8 +556,8 @@ func readZotManifest(dir string) (ZotfileManifest, error) {
 	if err := json.Unmarshal(b, &m); err != nil {
 		return m, fmt.Errorf("manifest.json: %w", err)
 	}
-	if m.Zotfile != 1 {
-		return m, fmt.Errorf("unsupported zotfile version %d", m.Zotfile)
+	if m.Zutfile != 1 {
+		return m, fmt.Errorf("unsupported zutfile version %d", m.Zutfile)
 	}
 	name := strings.TrimSpace(m.Name)
 	if name == "" {
@@ -582,7 +582,7 @@ func readZotManifest(dir string) (ZotfileManifest, error) {
 	return m, nil
 }
 
-func validateZotfileDir(dir string) error {
+func validateZutfileDir(dir string) error {
 	agentPath := filepath.Join(dir, "AGENT.md")
 	st, err := os.Stat(agentPath)
 	switch {
@@ -602,25 +602,25 @@ func validateZotfileDir(dir string) error {
 }
 
 const (
-	maxZotfileCompressedSize = 100 << 20
-	maxZotfileEntrySize      = 64 << 20
-	maxZotfileExpandedSize   = 256 << 20
+	maxZutfileCompressedSize = 100 << 20
+	maxZutfileEntrySize      = 64 << 20
+	maxZutfileExpandedSize   = 256 << 20
 )
 
-func unpackZotArchive(path, dst string) (string, error) {
+func unpackZutArchive(path, dst string) (string, error) {
 	info, err := os.Stat(path)
 	if err != nil {
 		return "", err
 	}
-	if info.Size() > maxZotfileCompressedSize {
-		return "", fmt.Errorf("zotfile exceeds %d MiB compressed size limit", maxZotfileCompressedSize>>20)
+	if info.Size() > maxZutfileCompressedSize {
+		return "", fmt.Errorf("zutfile exceeds %d MiB compressed size limit", maxZutfileCompressedSize>>20)
 	}
 	b, err := os.ReadFile(path)
 	if err != nil {
 		return "", err
 	}
 	digest := sha256.Sum256(b)
-	r, err := zstd.NewReader(bytes.NewReader(b), zstd.WithDecoderMaxMemory(maxZotfileExpandedSize))
+	r, err := zstd.NewReader(bytes.NewReader(b), zstd.WithDecoderMaxMemory(maxZutfileExpandedSize))
 	if err != nil {
 		// Development fallback for older experiments.
 		gr, gerr := gzip.NewReader(bytes.NewReader(b))
@@ -650,7 +650,7 @@ func untar(r io.Reader, dst string) error {
 			return fmt.Errorf("unsafe path in archive: %s", h.Name)
 		}
 		path := filepath.Join(dst, name)
-		if h.Size < 0 || h.Size > maxZotfileEntrySize || expanded+h.Size > maxZotfileExpandedSize {
+		if h.Size < 0 || h.Size > maxZutfileEntrySize || expanded+h.Size > maxZutfileExpandedSize {
 			return fmt.Errorf("archive content exceeds extraction size limit: %s", h.Name)
 		}
 		expanded += h.Size
@@ -699,7 +699,7 @@ func writeCanonicalTar(root string, w io.Writer, exclude ...string) error {
 			return nil
 		}
 		if d.Type()&os.ModeSymlink != 0 {
-			return fmt.Errorf("symlinks are not supported in zotfiles: %s", path)
+			return fmt.Errorf("symlinks are not supported in zutfiles: %s", path)
 		}
 		files = append(files, path)
 		return nil
@@ -747,13 +747,13 @@ func writeCanonicalTar(root string, w io.Writer, exclude ...string) error {
 	return nil
 }
 
-func checkZotfileRequirements(zf zotfileLoaded, version string) error {
-	if min := strings.TrimSpace(zf.Manifest.Runtime.MinZot); min != "" {
+func checkZutfileRequirements(zf zutfileLoaded, version string) error {
+	if min := strings.TrimSpace(zf.Manifest.Runtime.MinZut); min != "" {
 		if isDevVersion(version) {
-			return fmt.Errorf("agent requires zot %s or newer; unversioned development builds cannot satisfy min_zot", min)
+			return fmt.Errorf("agent requires zut %s or newer; unversioned development builds cannot satisfy min_zut", min)
 		}
 		if versionLess(version, min) {
-			return fmt.Errorf("agent requires zot %s or newer; running %s", min, versionOnly(version))
+			return fmt.Errorf("agent requires zut %s or newer; running %s", min, versionOnly(version))
 		}
 	}
 	if len(zf.Manifest.Requirements.OS) > 0 {
@@ -794,14 +794,14 @@ func peelLeadingYes(args []string) (yes bool, rest []string) {
 	return yes, rest
 }
 
-func consentZotfile(zf zotfileLoaded, perms tools.PermissionSet, autoYes bool) (bool, error) {
-	if autoYes || os.Getenv("ZOT_AGENT_CONSENT") == "1" {
-		return acceptZotfileConsent(zf, perms)
+func consentZutfile(zf zutfileLoaded, perms tools.PermissionSet, autoYes bool) (bool, error) {
+	if autoYes || os.Getenv("ZUT_AGENT_CONSENT") == "1" {
+		return acceptZutfileConsent(zf, perms)
 	}
 	// "ask" deliberately requires approval on every launch. Other consent
 	// is durable only for this exact artifact digest, so any package change
 	// causes a fresh prompt.
-	consentPath := filepath.Join(ZotHome(), "agents", safeAgentName(zf.Manifest.Name), "consents", zf.Digest+".json")
+	consentPath := filepath.Join(ZutHome(), "agents", safeAgentName(zf.Manifest.Name), "consents", zf.Digest+".json")
 	if strings.ToLower(strings.TrimSpace(perms.Bash.Mode)) != "ask" {
 		if _, err := os.Stat(consentPath); err == nil {
 			return true, nil
@@ -811,27 +811,27 @@ func consentZotfile(zf zotfileLoaded, perms tools.PermissionSet, autoYes bool) (
 	th := tui.Dark
 	if interactive {
 		cfg, _ := LoadConfig()
-		th, _, _ = tui.DetectThemeWithCustom(ZotHome(), cfg.Theme, 80*time.Millisecond)
+		th, _, _ = tui.DetectThemeWithCustom(ZutHome(), cfg.Theme, 80*time.Millisecond)
 	}
-	fmt.Print(formatZotfileConsent(zf, perms, th, interactive))
+	fmt.Print(formatZutfileConsent(zf, perms, th, interactive))
 	if !interactive {
-		return false, fmt.Errorf("refusing to run without interactive consent; pass -y/--yes or set ZOT_AGENT_CONSENT=1 to allow")
+		return false, fmt.Errorf("refusing to run without interactive consent; pass -y/--yes or set ZUT_AGENT_CONSENT=1 to allow")
 	}
-	allowed, err := readZotfileConsent(os.Stdin, os.Stdout, th)
+	allowed, err := readZutfileConsent(os.Stdin, os.Stdout, th)
 	if err != nil || !allowed {
 		return allowed, err
 	}
-	return acceptZotfileConsent(zf, perms)
+	return acceptZutfileConsent(zf, perms)
 }
 
-// acceptZotfileConsent records durable consent when the bash mode is not
+// acceptZutfileConsent records durable consent when the bash mode is not
 // "ask". Ask mode never caches receipts so every launch re-prompts unless
-// -y / ZOT_AGENT_CONSENT is used for that run.
-func acceptZotfileConsent(zf zotfileLoaded, perms tools.PermissionSet) (bool, error) {
+// -y / ZUT_AGENT_CONSENT is used for that run.
+func acceptZutfileConsent(zf zutfileLoaded, perms tools.PermissionSet) (bool, error) {
 	if strings.ToLower(strings.TrimSpace(perms.Bash.Mode)) == "ask" {
 		return true, nil
 	}
-	consentPath := filepath.Join(ZotHome(), "agents", safeAgentName(zf.Manifest.Name), "consents", zf.Digest+".json")
+	consentPath := filepath.Join(ZutHome(), "agents", safeAgentName(zf.Manifest.Name), "consents", zf.Digest+".json")
 	if err := os.MkdirAll(filepath.Dir(consentPath), 0o700); err != nil {
 		return false, fmt.Errorf("save agent consent: %w", err)
 	}
@@ -843,9 +843,9 @@ func acceptZotfileConsent(zf zotfileLoaded, perms tools.PermissionSet) (bool, er
 	return true, nil
 }
 
-var errZotfileConsentInterrupted = errors.New("interrupted")
+var errZutfileConsentInterrupted = errors.New("interrupted")
 
-func formatZotfileConsent(zf zotfileLoaded, perms tools.PermissionSet, th tui.Theme, color bool) string {
+func formatZutfileConsent(zf zutfileLoaded, perms tools.PermissionSet, th tui.Theme, color bool) string {
 	style := func(c int, text string) string {
 		if !color {
 			return text
@@ -870,10 +870,10 @@ func formatZotfileConsent(zf zotfileLoaded, perms tools.PermissionSet, th tui.Th
 	return sb.String()
 }
 
-// readZotfileConsent accepts one y/n answer followed by Enter without echoing
+// readZutfileConsent accepts one y/n answer followed by Enter without echoing
 // unrelated input. Raw mode also turns Ctrl+C into a byte so the terminal can
 // be restored before the command aborts.
-func readZotfileConsent(in *os.File, out io.Writer, th tui.Theme) (bool, error) {
+func readZutfileConsent(in *os.File, out io.Writer, th tui.Theme) (bool, error) {
 	fd := int(in.Fd())
 	state, err := term.MakeRaw(fd)
 	if err != nil {
@@ -881,7 +881,7 @@ func readZotfileConsent(in *os.File, out io.Writer, th tui.Theme) (bool, error) 
 	}
 	defer func() { _ = term.Restore(fd, state) }()
 
-	answer, err := readZotfileConsentKey(in, func(answer byte) {
+	answer, err := readZutfileConsentKey(in, func(answer byte) {
 		if answer == 0 {
 			fmt.Fprint(out, "\b \b")
 			return
@@ -889,7 +889,7 @@ func readZotfileConsent(in *os.File, out io.Writer, th tui.Theme) (bool, error) 
 		fmt.Fprint(out, th.FG256(th.FG, string(answer)))
 	})
 	switch {
-	case errors.Is(err, errZotfileConsentInterrupted):
+	case errors.Is(err, errZutfileConsentInterrupted):
 		fmt.Fprint(out, "^C\r\n")
 		return false, err
 	case err != nil:
@@ -901,7 +901,7 @@ func readZotfileConsent(in *os.File, out io.Writer, th tui.Theme) (bool, error) 
 	}
 }
 
-func readZotfileConsentKey(r io.Reader, echo func(byte)) (byte, error) {
+func readZutfileConsentKey(r io.Reader, echo func(byte)) (byte, error) {
 	var answer byte
 	var b [1]byte
 	for {
@@ -928,7 +928,7 @@ func readZotfileConsentKey(r io.Reader, echo func(byte)) (byte, error) {
 				}
 			}
 		case 3: // Ctrl+C in raw mode.
-			return 0, errZotfileConsentInterrupted
+			return 0, errZutfileConsentInterrupted
 		}
 	}
 }

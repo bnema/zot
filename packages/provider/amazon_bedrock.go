@@ -610,7 +610,7 @@ func (c *bedrockClient) Stream(ctx context.Context, req Request) (<-chan Event, 
 		msg := strings.TrimSpace(string(b))
 		// A 403 on the bearer route is almost always a region mismatch:
 		// short-term Bedrock API keys are scoped to the region of the
-		// console session that minted them, but zot defaults to
+		// console session that minted them, but zut defaults to
 		// us-east-1. Surface the resolved region and the fix so the user
 		// is not left guessing why a freshly-copied key is "invalid".
 		if resp.StatusCode == http.StatusForbidden && c.bearerToken != "" {

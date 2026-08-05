@@ -1,7 +1,7 @@
-module zot-todo-extension
+module zut-todo-extension
 
-go 1.22
+go 1.26
 
-require github.com/patriceckhart/zot v0.0.0
+require github.com/bnema/zut v0.1.0
 
-replace github.com/patriceckhart/zot => /Users/pat/Developer/zot
+replace github.com/bnema/zut => ../../..

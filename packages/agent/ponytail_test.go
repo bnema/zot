@@ -54,7 +54,7 @@ func TestResolvePonytailModeDefaultAndExplicitDisable(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			root := t.TempDir()
-			t.Setenv("ZOT_HOME", filepath.Join(root, "zot-home"))
+			t.Setenv("ZUT_HOME", filepath.Join(root, "zut-home"))
 			t.Setenv("HOME", filepath.Join(root, "home"))
 			if tc.disabled {
 				disabled := false
@@ -94,13 +94,13 @@ func btoi(value bool) int {
 
 func TestResolvePonytailModeRetainsAddendumWithSystemFile(t *testing.T) {
 	root := t.TempDir()
-	zotHome := filepath.Join(root, "zot-home")
-	t.Setenv("ZOT_HOME", zotHome)
+	zutHome := filepath.Join(root, "zut-home")
+	t.Setenv("ZUT_HOME", zutHome)
 	t.Setenv("HOME", filepath.Join(root, "home"))
-	if err := os.MkdirAll(zotHome, 0o755); err != nil {
+	if err := os.MkdirAll(zutHome, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(zotHome, "SYSTEM.md"), []byte("custom system identity"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(zutHome, "SYSTEM.md"), []byte("custom system identity"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -125,7 +125,7 @@ func TestResolvePonytailModeRetainsAddendumWithSystemFile(t *testing.T) {
 
 func TestResolvePonytailModePrecedesExplicitAppendPrompt(t *testing.T) {
 	root := t.TempDir()
-	t.Setenv("ZOT_HOME", filepath.Join(root, "zot-home"))
+	t.Setenv("ZUT_HOME", filepath.Join(root, "zut-home"))
 	t.Setenv("HOME", filepath.Join(root, "home"))
 
 	const explicit = "explicit invocation guidance"
@@ -150,7 +150,7 @@ func TestResolvePonytailModePrecedesExplicitAppendPrompt(t *testing.T) {
 
 func TestResolvePonytailModeAppliesAcrossHeadlessModesAndCustomIdentity(t *testing.T) {
 	root := t.TempDir()
-	t.Setenv("ZOT_HOME", filepath.Join(root, "zot-home"))
+	t.Setenv("ZUT_HOME", filepath.Join(root, "zut-home"))
 	t.Setenv("HOME", filepath.Join(root, "home"))
 
 	modes := []Mode{"", ModePrint, ModeStream, ModeJSON, ModeRPC, ModeSubagentWorker}
@@ -178,7 +178,7 @@ func TestResolvePonytailModeAppliesAcrossHeadlessModesAndCustomIdentity(t *testi
 }
 
 func TestConfigSettingsStorePersistsPonytailWithoutChangingKnownFields(t *testing.T) {
-	t.Setenv("ZOT_HOME", t.TempDir())
+	t.Setenv("ZUT_HOME", t.TempDir())
 	if err := SaveConfig(Config{Theme: "dark", Provider: "ollama", Model: "local"}); err != nil {
 		t.Fatal(err)
 	}

@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/patriceckhart/zot/packages/provider"
+	"github.com/bnema/zut/packages/provider"
 )
 
 // TestStatusBarAlwaysTwoLines verifies the status bar always emits

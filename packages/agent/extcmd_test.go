@@ -9,15 +9,15 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/patriceckhart/zot/packages/agent/extensions"
+	"github.com/bnema/zut/packages/agent/extensions"
 )
 
-// TestExtInstallDotSource verifies that `zot ext install .` resolves the
+// TestExtInstallDotSource verifies that `zut ext install .` resolves the
 // source directory correctly instead of collapsing it to the extensions/
 // parent directory.
 func TestExtInstallDotSource(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("ZOT_HOME", home)
+	t.Setenv("ZUT_HOME", home)
 
 	// Pre-create extensions/ to mimic a normal first run.
 	if err := os.MkdirAll(filepath.Join(home, "extensions"), 0o755); err != nil {
@@ -56,7 +56,7 @@ func TestExtInstallDotSource(t *testing.T) {
 // successfully when its manifest uses a PATH-resolved executable.
 func TestExtInstallNamedDir(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("ZOT_HOME", home)
+	t.Setenv("ZUT_HOME", home)
 
 	src := filepath.Join(t.TempDir(), "myext")
 	if err := os.MkdirAll(src, 0o755); err != nil {
@@ -76,7 +76,7 @@ func TestExtInstallNamedDir(t *testing.T) {
 
 func TestExtInstallThemeOnly(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("ZOT_HOME", home)
+	t.Setenv("ZUT_HOME", home)
 
 	src := filepath.Join(t.TempDir(), "theme-source")
 	if err := os.MkdirAll(src, 0o755); err != nil {
@@ -102,7 +102,7 @@ func TestExtInstallThemeOnly(t *testing.T) {
 
 func TestExtInstallRejectsMissingExecutable(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("ZOT_HOME", home)
+	t.Setenv("ZUT_HOME", home)
 
 	src := filepath.Join(t.TempDir(), "tasked-phases")
 	if err := os.MkdirAll(src, 0o755); err != nil {
@@ -127,7 +127,7 @@ func TestExtInstallBuildGo(t *testing.T) {
 	}
 
 	home := t.TempDir()
-	t.Setenv("ZOT_HOME", home)
+	t.Setenv("ZUT_HOME", home)
 	src := filepath.Join(t.TempDir(), "go-extension")
 	if err := os.MkdirAll(src, 0o755); err != nil {
 		t.Fatal(err)
@@ -165,7 +165,7 @@ func TestExtInstallBuildFailureLeavesNoDestination(t *testing.T) {
 	}
 
 	home := t.TempDir()
-	t.Setenv("ZOT_HOME", home)
+	t.Setenv("ZUT_HOME", home)
 	src := filepath.Join(t.TempDir(), "broken-go")
 	if err := os.MkdirAll(src, 0o755); err != nil {
 		t.Fatal(err)
@@ -192,7 +192,7 @@ func TestExtInstallBuildFailureLeavesNoDestination(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, entry := range entries {
-		if strings.HasPrefix(entry.Name(), ".zot-extension-install-") {
+		if strings.HasPrefix(entry.Name(), ".zut-extension-install-") {
 			t.Fatalf("failed build left staging directory %s", entry.Name())
 		}
 	}
@@ -240,7 +240,7 @@ func TestParseExtInstallArgs(t *testing.T) {
 
 func TestExtInstallRejectsBuildForThemeOnly(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("ZOT_HOME", home)
+	t.Setenv("ZUT_HOME", home)
 	src := filepath.Join(t.TempDir(), "theme-source")
 	if err := os.MkdirAll(src, 0o755); err != nil {
 		t.Fatal(err)
@@ -263,7 +263,7 @@ func TestExtInstallRejectsBuildForThemeOnly(t *testing.T) {
 
 func TestExtInstallRejectsWhitespaceManifestName(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("ZOT_HOME", home)
+	t.Setenv("ZUT_HOME", home)
 	src := filepath.Join(t.TempDir(), "whitespace-name")
 	if err := os.MkdirAll(src, 0o755); err != nil {
 		t.Fatal(err)
@@ -280,7 +280,7 @@ func TestExtInstallRejectsWhitespaceManifestName(t *testing.T) {
 
 func TestExtInstallRejectsDotManifestName(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("ZOT_HOME", home)
+	t.Setenv("ZUT_HOME", home)
 	src := filepath.Join(t.TempDir(), "dot-name")
 	if err := os.MkdirAll(src, 0o755); err != nil {
 		t.Fatal(err)
@@ -297,7 +297,7 @@ func TestExtInstallRejectsDotManifestName(t *testing.T) {
 
 func TestExtInstallRejectsBuildForPATHExecutable(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("ZOT_HOME", home)
+	t.Setenv("ZUT_HOME", home)
 	src := filepath.Join(t.TempDir(), "path-extension")
 	if err := os.MkdirAll(src, 0o755); err != nil {
 		t.Fatal(err)
@@ -321,7 +321,7 @@ func TestExtInstallRejectsNonExecutable(t *testing.T) {
 	}
 
 	home := t.TempDir()
-	t.Setenv("ZOT_HOME", home)
+	t.Setenv("ZUT_HOME", home)
 	src := filepath.Join(t.TempDir(), "non-executable")
 	if err := os.MkdirAll(src, 0o755); err != nil {
 		t.Fatal(err)
@@ -347,7 +347,7 @@ func TestExtInstallRejectsNonExecutable(t *testing.T) {
 // the manifest name controls the installed directory.
 func TestExtInstallCopiesIgnoredExecutableAndUsesManifestName(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("ZOT_HOME", home)
+	t.Setenv("ZUT_HOME", home)
 
 	src := filepath.Join(t.TempDir(), "source-dir")
 	if err := os.MkdirAll(src, 0o755); err != nil {
@@ -434,7 +434,7 @@ func TestGitignoreNegation(t *testing.T) {
 
 func TestExtDoctorStaticScanAndRender(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("ZOT_HOME", home)
+	t.Setenv("ZUT_HOME", home)
 	cwd := t.TempDir()
 	oldCWD, err := os.Getwd()
 	if err != nil {
@@ -455,11 +455,11 @@ func TestExtDoctorStaticScanAndRender(t *testing.T) {
 		}
 	}
 
-	mustWrite(filepath.Join(cwd, ".zot", "extensions", "disabled", "extension.json"), `{"name":"disabled","exec":"./run.sh","enabled":false}`)
-	mustWrite(filepath.Join(cwd, ".zot", "extensions", "theme", "extension.json"), `{"name":"theme"}`)
-	mustWrite(filepath.Join(cwd, ".zot", "extensions", "theme", "theme.json"), `{"name":"Theme"}`)
-	mustWrite(filepath.Join(cwd, ".zot", "extensions", "bad", "extension.json"), `{bad json`)
-	mustWrite(filepath.Join(cwd, ".zot", "extensions", "dup", "extension.json"), `{"name":"dup","exec":"./project.sh"}`)
+	mustWrite(filepath.Join(cwd, ".zut", "extensions", "disabled", "extension.json"), `{"name":"disabled","exec":"./run.sh","enabled":false}`)
+	mustWrite(filepath.Join(cwd, ".zut", "extensions", "theme", "extension.json"), `{"name":"theme"}`)
+	mustWrite(filepath.Join(cwd, ".zut", "extensions", "theme", "theme.json"), `{"name":"Theme"}`)
+	mustWrite(filepath.Join(cwd, ".zut", "extensions", "bad", "extension.json"), `{bad json`)
+	mustWrite(filepath.Join(cwd, ".zut", "extensions", "dup", "extension.json"), `{"name":"dup","exec":"./project.sh"}`)
 	mustWrite(filepath.Join(home, "extensions", "dup", "extension.json"), `{"name":"dup","exec":"./global.sh"}`)
 
 	rows := scanExtDoctorStatic()

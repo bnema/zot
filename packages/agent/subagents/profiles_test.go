@@ -79,7 +79,7 @@ Implement the requested change.
 func TestDiscoverResolvesConfiguredRelativePathAgainstCWD(t *testing.T) {
 	first := t.TempDir()
 	second := t.TempDir()
-	t.Setenv("ZOT_AGENT_PROFILES", ".agents")
+	t.Setenv("ZUT_AGENT_PROFILES", ".agents")
 	writeProfile(t, filepath.Join(first, ".agents", "reviewer.md"), `---
 name: reviewer
 description: First session profile
@@ -113,7 +113,7 @@ Second.
 func TestDiscoverConfiguredDirectoryWinsAndRejectsUnsafeNames(t *testing.T) {
 	configured := t.TempDir()
 	home := t.TempDir()
-	t.Setenv("ZOT_AGENT_PROFILES", configured)
+	t.Setenv("ZUT_AGENT_PROFILES", configured)
 	writeProfile(t, filepath.Join(configured, "reviewer.md"), `---
 name: reviewer
 description: Configured reviewer

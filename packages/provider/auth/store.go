@@ -1,7 +1,7 @@
 // Package auth handles credential storage and the login methods
-// supported by zot: API keys and provider-specific subscription OAuth.
+// supported by zut: API keys and provider-specific subscription OAuth.
 //
-// All credentials live in $ZOT_HOME/auth.json (mode 0600).
+// All credentials live in $ZUT_HOME/auth.json (mode 0600).
 package auth
 
 import (

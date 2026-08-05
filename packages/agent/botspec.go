@@ -1,7 +1,7 @@
 package agent
 
 import (
-	"github.com/patriceckhart/zot/packages/agent/modes/bot"
+	"github.com/bnema/zut/packages/agent/modes/bot"
 )
 
 // botSpec describes one bot protocol to the generic daemon CLI in
@@ -13,12 +13,12 @@ type botSpec struct {
 	subcommand string   // "telegram-bot", "matrix-bot"
 	aliases    []string // {"tg"}, {"mx"}
 
-	pidPath func(zotHome string) string
-	logPath func(zotHome string) string
+	pidPath func(zutHome string) string
+	logPath func(zutHome string) string
 
 	// configured reports whether setup has been completed (e.g. a
 	// token is present), with a hint error message when it hasn't.
-	configured func(zotHome string) (bool, error)
+	configured func(zutHome string) (bool, error)
 
 	printHelp func()
 	setup     func(tail []string) error
@@ -27,7 +27,7 @@ type botSpec struct {
 
 	// newAdapter builds the protocol adapter for the standalone
 	// daemon. Credential refresh stays generic in botRun.
-	newAdapter func(zotHome string) (bot.BotAdapter, error)
+	newAdapter func(zutHome string) (bot.BotAdapter, error)
 }
 
 // botSpecs is the registry the dispatcher walks. Matrix is appended

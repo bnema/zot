@@ -8,9 +8,9 @@ import (
 
 	"github.com/mattn/go-runewidth"
 
-	"github.com/patriceckhart/zot/packages/core"
-	"github.com/patriceckhart/zot/packages/provider"
-	"github.com/patriceckhart/zot/packages/tui"
+	"github.com/bnema/zut/packages/core"
+	"github.com/bnema/zut/packages/provider"
+	"github.com/bnema/zut/packages/tui"
 )
 
 // sessionTreeBoundary describes what a tree row points at. Message rows are
@@ -738,7 +738,7 @@ func sessionTreeRoleLabel(role provider.Role) string {
 	case provider.RoleUser:
 		return "you"
 	case provider.RoleAssistant:
-		return "zot"
+		return "zut"
 	case provider.RoleTool:
 		return "tool"
 	default:
@@ -822,7 +822,7 @@ func colorSessionTreeLine(th tui.Theme, line string) string {
 	switch {
 	case strings.HasPrefix(plain, "you:"):
 		return th.FG256(th.FG, line)
-	case strings.HasPrefix(plain, "zot:"):
+	case strings.HasPrefix(plain, "zut:"):
 		return th.FG256(th.Muted, line)
 	case strings.HasPrefix(plain, "tool:"):
 		return th.FG256(th.ToolOut, line)

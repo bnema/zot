@@ -6,7 +6,7 @@ import (
 	"io"
 	"os"
 
-	"github.com/patriceckhart/zot/packages/agent/extproto"
+	"github.com/bnema/zut/packages/agent/extproto"
 	"path/filepath"
 	"runtime"
 	"strings"

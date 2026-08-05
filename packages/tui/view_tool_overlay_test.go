@@ -5,13 +5,13 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/patriceckhart/zot/packages/provider"
+	"github.com/bnema/zut/packages/provider"
 )
 
 func TestStartupResourcesRenderAsCompactSections(t *testing.T) {
 	v := View{
 		Theme:            Dark,
-		StartupAgentName: "zot-maintenance",
+		StartupAgentName: "zut-maintenance",
 		StartupContextPaths: []string{
 			"/home/user/AGENTS.md",
 			"/repo/AGENTS.md",
@@ -22,7 +22,7 @@ func TestStartupResourcesRenderAsCompactSections(t *testing.T) {
 
 	plain := stripANSI(strings.Join(v.Build(80), "\n"))
 	for _, want := range []string{
-		"[Agent]", "zot-maintenance",
+		"[Agent]", "zut-maintenance",
 		"[Context]", "/home/user/AGENTS.md, /repo/AGENTS.md",
 		"[Extensions]", "todo, workspaces",
 		"[Skills]", "review, test",

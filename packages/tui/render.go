@@ -28,7 +28,7 @@ type Renderer struct {
 	// prevHadImage tracks whether the previous frame contained an
 	// inline-image escape so we can force a full clear+repaint whenever
 	// the image set changes. Only matters when inline images are
-	// enabled via ZOT_INLINE_IMAGES; defaults to false.
+	// enabled via ZUT_INLINE_IMAGES; defaults to false.
 	prevHadImage bool
 
 	// Main-screen flow renderer state. logLines is the full logical
@@ -60,9 +60,9 @@ type Renderer struct {
 	// \x1b[3J just drops scrollback rows without moving the
 	// viewport, which is what we actually want.
 	//
-	// The trade-off when keepScrollback is true: stale zot frames
+	// The trade-off when keepScrollback is true: stale zut frames
 	// remain in scrollback above the live view, so scrolling up
-	// in VS Code's terminal shows old (already-superseded) zot
+	// in VS Code's terminal shows old (already-superseded) zut
 	// output. That is strictly less disruptive than the
 	// scrollbar yanking to top on every Ctrl+L, and it is a
 	// limitation specific to VS Code's terminal that we have no
@@ -337,7 +337,7 @@ func (r *Renderer) Draw(lines []string, cursorRow, cursorCol int) {
 	// When inline images are in play we always full-repaint (clear
 	// screen first, then rewrite every row). Terminals manage image
 	// pixels in a layer we cannot diff against, so the per-line cache
-	// is unreliable. Inline images are opt-in via ZOT_INLINE_IMAGES;
+	// is unreliable. Inline images are opt-in via ZUT_INLINE_IMAGES;
 	// the common code path below is the fast cached diff.
 	curHasImage := false
 	curHasKittyImage := false
@@ -416,7 +416,7 @@ func (r *Renderer) Draw(lines []string, cursorRow, cursorCol int) {
 	r.cursorCol = cursorCol
 }
 
-// DrawLog renders zot in the terminal's main screen as normal terminal
+// DrawLog renders zut in the terminal's main screen as normal terminal
 // flow rather than a fixed full-screen frame. Chat lines are emitted once
 // into the host terminal scrollback; the current bottom block (dialogs,
 // slash popup, status, editor) is erased and redrawn in place at the end.
@@ -449,7 +449,7 @@ func (r *Renderer) DrawLog(chat, bottom []string, cursorBottomRow, cursorCol int
 	for range bottomMarginRows {
 		lines = append(lines, paintBackgroundRow("", r.cols, r.theme))
 	}
-	// In main-screen flow mode zot normally emits only its logical
+	// In main-screen flow mode zut normally emits only its logical
 	// content rows and leaves the rest of the terminal viewport alone.
 	// When a theme background is configured, fill that otherwise-idle
 	// space with painted blank rows so the full window is tinted while
@@ -505,7 +505,7 @@ func (r *Renderer) DrawLog(chat, bottom []string, cursorBottomRow, cursorCol int
 			} else {
 				w.WriteString(SeqClearScreenNoHome)
 				// Purging scrollback invalidates native terminal selections.
-				// It is safe on the first paint because no zot output can be
+				// It is safe on the first paint because no zut output can be
 				// selected yet, but implicit recovery repaints happen while an
 				// agent is streaming and must preserve the user's selection.
 				if purgeScrollback {

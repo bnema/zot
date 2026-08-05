@@ -1,9 +1,9 @@
-// Minimal Node client for the `zot rpc` JSON protocol.
+// Minimal Node client for the `zut rpc` JSON protocol.
 //
 // Usage:
-//   node zot-client.js "fix the failing test"
+//   node zut-client.js "fix the failing test"
 //
-// Spawns `zot rpc`, sends one prompt, prints assistant text as it
+// Spawns `zut rpc`, sends one prompt, prints assistant text as it
 // streams, and exits when the turn finishes. Pure stdlib — no
 // dependencies. See docs/rpc.md for the full schema.
 "use strict";
@@ -12,9 +12,9 @@ const { spawn } = require("node:child_process");
 const readline = require("node:readline");
 const { randomBytes } = require("node:crypto");
 
-class ZotClient {
+class ZutClient {
   constructor(...flags) {
-    this.proc = spawn("zot", ["rpc", ...flags], {
+    this.proc = spawn("zut", ["rpc", ...flags], {
       stdio: ["pipe", "pipe", "inherit"],
       env: process.env,
     });
@@ -52,13 +52,13 @@ class ZotClient {
 async function main() {
   const prompt = process.argv.slice(2).join(" ");
   if (!prompt) {
-    console.error("usage: node zot-client.js <prompt>");
+    console.error("usage: node zut-client.js <prompt>");
     process.exit(2);
   }
 
-  const client = new ZotClient();
+  const client = new ZutClient();
 
-  const token = process.env.ZOTCORE_RPC_TOKEN;
+  const token = process.env.ZUTCORE_RPC_TOKEN;
   if (token) client.send({ type: "hello", token });
 
   client.send({ type: "prompt", message: prompt });

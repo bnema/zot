@@ -1043,7 +1043,7 @@ func (s *stateStore) load(dataDir, cwd string) error {
 }
 
 // activateSession replaces the project fallback with the opaque snapshot
-// supplied by zot for the active session branch. An empty snapshot means the
+// supplied by zut for the active session branch. An empty snapshot means the
 // branch has no extension state yet and therefore starts clean.
 func (s *stateStore) activateSession(raw json.RawMessage) error {
 	s.mu.Lock()

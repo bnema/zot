@@ -9,7 +9,7 @@ import (
 
 func TestHandleSetupAddGrepGlobal(t *testing.T) {
 	tmp := t.TempDir()
-	t.Setenv("ZOT_HOME", tmp)
+	t.Setenv("ZUT_HOME", tmp)
 
 	out, err := handleSetup([]string{"add", "grep"}, tmp)
 	if err != nil {
@@ -44,7 +44,7 @@ func TestHandleSetupAddFilesystemProject(t *testing.T) {
 		t.Fatalf("handleSetup add filesystem: %v", err)
 	}
 
-	data, err := os.ReadFile(filepath.Join(cwd, ".zot", "mcp.json"))
+	data, err := os.ReadFile(filepath.Join(cwd, ".zut", "mcp.json"))
 	if err != nil {
 		t.Fatalf("read project mcp.json: %v", err)
 	}
@@ -60,7 +60,7 @@ func TestHandleSetupAddFilesystemProject(t *testing.T) {
 
 func TestHandleSetupDuplicate(t *testing.T) {
 	tmp := t.TempDir()
-	t.Setenv("ZOT_HOME", tmp)
+	t.Setenv("ZUT_HOME", tmp)
 
 	if _, err := handleSetup([]string{"add", "grep"}, tmp); err != nil {
 		t.Fatalf("first add failed: %v", err)

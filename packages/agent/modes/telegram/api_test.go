@@ -12,8 +12,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/patriceckhart/zot/packages/agent/modes/bot"
-	"github.com/patriceckhart/zot/packages/provider"
+	"github.com/bnema/zut/packages/agent/modes/bot"
+	"github.com/bnema/zut/packages/provider"
 )
 
 type roundTripFunc func(*http.Request) (*http.Response, error)
@@ -111,7 +111,7 @@ func TestAdapterRunDeletesWebhookBeforePolling(t *testing.T) {
 		mu.Unlock()
 		switch endpoint {
 		case "getMe":
-			return telegramResponse(`{"ok":true,"result":{"id":1,"is_bot":true,"username":"zot_test"}}`), nil
+			return telegramResponse(`{"ok":true,"result":{"id":1,"is_bot":true,"username":"zut_test"}}`), nil
 		case "deleteWebhook":
 			return telegramResponse(`{"ok":true,"result":true}`), nil
 		case "getUpdates":
@@ -122,7 +122,7 @@ func TestAdapterRunDeletesWebhookBeforePolling(t *testing.T) {
 			return nil, errors.New("unreachable")
 		}
 	}))
-	cfg := Config{BotToken: "test", BotID: 1, BotUsername: "zot_test"}
+	cfg := Config{BotToken: "test", BotID: 1, BotUsername: "zut_test"}
 	adapter := NewAdapter(client, &cfg, func(Config) error { return nil })
 
 	err := adapter.Run(ctx, func(bot.InboundMessage) {}, func(bot.Command, bot.InboundMessage) {})
@@ -151,7 +151,7 @@ func TestBridgeStartDeletesWebhookBeforePolling(t *testing.T) {
 		mu.Unlock()
 		switch endpoint {
 		case "getMe":
-			return telegramResponse(`{"ok":true,"result":{"id":1,"is_bot":true,"username":"zot_test"}}`), nil
+			return telegramResponse(`{"ok":true,"result":{"id":1,"is_bot":true,"username":"zut_test"}}`), nil
 		case "deleteWebhook":
 			return telegramResponse(`{"ok":true,"result":true}`), nil
 		case "getUpdates":
@@ -165,7 +165,7 @@ func TestBridgeStartDeletesWebhookBeforePolling(t *testing.T) {
 	}))
 	bridge := &Bridge{
 		Client: client,
-		Config: Config{BotToken: "test", BotID: 1, BotUsername: "zot_test"},
+		Config: Config{BotToken: "test", BotID: 1, BotUsername: "zut_test"},
 		Save:   func(Config) error { return nil },
 		Host:   testBridgeHost{},
 	}
@@ -201,7 +201,7 @@ func TestAdapterRunFailsBeforePollingWhenWebhookRemovalFails(t *testing.T) {
 		endpoint := req.URL.Path[strings.LastIndex(req.URL.Path, "/")+1:]
 		calls.WriteString(endpoint + "\n")
 		if endpoint == "getMe" {
-			return telegramResponse(`{"ok":true,"result":{"id":1,"is_bot":true,"username":"zot_test"}}`), nil
+			return telegramResponse(`{"ok":true,"result":{"id":1,"is_bot":true,"username":"zut_test"}}`), nil
 		}
 		return telegramResponse(`{"ok":false,"description":"webhook removal denied","result":false}`), nil
 	}))

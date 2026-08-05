@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/bnema/zut/packages/tui"
 	"github.com/mattn/go-runewidth"
-	"github.com/patriceckhart/zot/packages/tui"
 )
 
 // helpKeyRows is the list of keybindings shown by /help.
@@ -73,7 +73,7 @@ func renderHelpBlock(th tui.Theme, width int, llamaConfigured bool) []string {
 	}
 
 	var out []string
-	out = append(out, frameHeader(th, "zot help", width), "")
+	out = append(out, frameHeader(th, "zut help", width), "")
 
 	// commands section
 	out = append(out, tui.Bold("slash commands:"))

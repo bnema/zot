@@ -1,4 +1,4 @@
-// Package sdk is the public Go SDK for embedding the zot agent
+// Package sdk is the public Go SDK for embedding the zut agent
 // runtime in third-party programs. It is the only stable, importable
 // surface the project exposes; everything under internal/ is subject
 // to change without notice.
@@ -19,7 +19,7 @@
 // Runtime per project / cwd. The Cancel call interrupts the active
 // prompt; subsequent prompts work normally.
 //
-// For a non-Go consumer, run `zot rpc` and speak the same JSON
+// For a non-Go consumer, run `zut rpc` and speak the same JSON
 // schema over stdin/stdout. See docs/rpc.md.
 package sdk
 
@@ -29,14 +29,14 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/patriceckhart/zot/packages/agent"
-	agenttools "github.com/patriceckhart/zot/packages/agent/tools"
-	"github.com/patriceckhart/zot/packages/core"
-	"github.com/patriceckhart/zot/packages/provider"
+	"github.com/bnema/zut/packages/agent"
+	agenttools "github.com/bnema/zut/packages/agent/tools"
+	"github.com/bnema/zut/packages/core"
+	"github.com/bnema/zut/packages/provider"
 )
 
 // Config configures a Runtime. All fields are optional; sensible
-// defaults are read from $ZOT_HOME/config.json, env vars, and the
+// defaults are read from $ZUT_HOME/config.json, env vars, and the
 // resolver chain (the same one the cli uses).
 type Config struct {
 	// Provider is "anthropic" or "openai". Empty = use the user's
@@ -87,7 +87,7 @@ type Config struct {
 	Lock bool
 }
 
-// Runtime is one zot agent session. Safe for use from one goroutine
+// Runtime is one zut agent session. Safe for use from one goroutine
 // at a time per Runtime; create separate Runtimes for parallel work.
 type Runtime struct {
 	mu       sync.Mutex

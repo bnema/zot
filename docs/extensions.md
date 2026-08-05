@@ -1,6 +1,6 @@
-# zot extensions
+# zut extensions
 
-zot can be extended with custom slash commands by running an external
+zut can be extended with custom slash commands by running an external
 program as a subprocess and exchanging newline-delimited JSON over
 its stdin/stdout. Extensions can be written in **any language** that
 can read and write JSON lines from stdio — Go, TypeScript, Python,
@@ -12,7 +12,7 @@ Six phases shipped so far:
 - **Phase 2**: tools the LLM can call.
 - **Phase 3**: lifecycle event subscriptions + tool-call interception
   for guardrail extensions.
-- **Phase 4**: interactive extension-owned panels rendered inside zot.
+- **Phase 4**: interactive extension-owned panels rendered inside zut.
 - **Phase 5**: branch-aware session lifecycle events and opaque extension
   state persisted with session files.
 - **Phase 6**: hidden per-turn context, persistent status/widgets, and
@@ -28,7 +28,7 @@ no SDK required:
 
 ```python
 #!/usr/bin/env python3
-# $ZOT_HOME/extensions/hello-py/hello.py
+# $ZUT_HOME/extensions/hello-py/hello.py
 import json, sys
 
 def emit(obj):
@@ -63,58 +63,58 @@ Drop it in a directory with this `extension.json`:
 ```
 
 `exec` is required for protocol extensions. If an extension only ships
-`theme.json` or `themes/theme.json`, no `exec` is required and zot does
+`theme.json` or `themes/theme.json`, no `exec` is required and zut does
 not spawn a subprocess.
 
 `chmod +x hello.py`, install:
 
 ```bash
-zot ext install ./hello-py
+zut ext install ./hello-py
 ```
 
-Restart `zot`, type `/hellopy`, the agent greets you. Done.
+Restart `zut`, type `/hellopy`, the agent greets you. Done.
 
 ## Built-in extensions
 
-**zot ships with no extensions installed by default.** A fresh `zot install` (or `go install`) gives you a clean agent. Extensions are entirely opt-in: you install (or `--ext` for one run) only the ones you want.
+**zut ships with no extensions installed by default.** A fresh `zut install` (or `go install`) gives you a clean agent. Extensions are entirely opt-in: you install (or `--ext` for one run) only the ones you want.
 
 The `examples/extensions/` directory in the repo is reference code, not a default install set. To use any of those:
 
 ```bash
 # install a Go example and explicitly build it in the staged install
-zot ext install --build=go path/to/zot/examples/extensions/hello
+zut ext install --build=go path/to/zut/examples/extensions/hello
 
 # or build it in the source tree for a one-run development load
-cd path/to/zot/examples/extensions/hello
+cd path/to/zut/examples/extensions/hello
 go build -o hello .
-zot --ext .
+zut --ext .
 ```
 
-`zot ext install` never builds source code implicitly. For local installs it
+`zut ext install` never builds source code implicitly. For local installs it
 validates `extension.json` and any executable path relative to the extension
 directory, then stages the copy so a missing or ignored runtime artifact fails
 with an explicit error instead of becoming a broken installed extension. For a
 local Go extension, opt into the fixed builder explicitly with
-`zot ext install --build=go <path>`. The builder runs `go build -trimpath` from
+`zut ext install --build=go <path>`. The builder runs `go build -trimpath` from
 the source directory, writes the manifest-declared relative executable into the
 staging directory, and validates it before installation. It may resolve Go
 modules and access the network according to the user's Go environment. Bare
-launchers such as `go`, `node`, and `npx` remain resolved from `PATH` when zot
+launchers such as `go`, `node`, and `npx` remain resolved from `PATH` when zut
 starts; they cannot be used as the output of `--build=go`.
 
 Nothing is auto-installed and nothing reaches out to the network without your explicit action.
 
 ## Layout & discovery
 
-zot scans two directories on startup, in this order:
+zut scans two directories on startup, in this order:
 
-1. **Project-local**: `./.zot/extensions/<name>/extension.json`
-2. **Global**: `$ZOT_HOME/extensions/<name>/extension.json`
+1. **Project-local**: `./.zut/extensions/<name>/extension.json`
+2. **Global**: `$ZUT_HOME/extensions/<name>/extension.json`
 
 A project-local extension with the same name wins over a global one.
-When `XDG_STATE_HOME` is set on any platform, `$ZOT_HOME` defaults to
-`$XDG_STATE_HOME/zot`. Otherwise it defaults to `~/Library/Application Support/zot/`
-on macOS, `~/.local/state/zot` on Linux, or `%LOCALAPPDATA%\zot` on Windows.
+When `XDG_STATE_HOME` is set on any platform, `$ZUT_HOME` defaults to
+`$XDG_STATE_HOME/zut`. Otherwise it defaults to `~/Library/Application Support/zut/`
+on macOS, `~/.local/state/zut` on Linux, or `%LOCALAPPDATA%\zut` on Windows.
 
 Because each extension owns its own directory, the recommended place
 for extension state is inside that directory itself (for example
@@ -123,7 +123,7 @@ extension). The host also passes this path back in `hello_ack` as
 `extension_dir` / `data_dir` so runtime code does not need to guess it.
 
 Each extension owns its own subdirectory. The `extension.json`
-manifest tells zot how to launch it:
+manifest tells zut how to launch it:
 
 ```json
 {
@@ -140,23 +140,23 @@ manifest tells zot how to launch it:
 
 | field | meaning |
 |---|---|
-| `name` | required. how zot identifies the extension; must match what's sent in the `hello` frame. |
-| `version` | optional. shown in `zot ext list`. |
+| `name` | required. how zut identifies the extension; must match what's sent in the `hello` frame. |
+| `version` | optional. shown in `zut ext list`. |
 | `exec` | required. path to the executable (relative to the manifest). |
 | `args` | optional. extra argv passed to `exec`. |
 | `language` | optional. informational only (`go`, `python`, `typescript`, ...). |
-| `description` | optional. shown in `zot ext list`. |
+| `description` | optional. shown in `zut ext list`. |
 | `skills` | optional. relative directories containing bundled `<name>/SKILL.md` files or a direct `SKILL.md`. Paths must remain inside the extension directory. |
 | `enabled` | optional, defaults to `true`. set to `false` to disable without removing. |
 
 ## Lifecycle
 
-1. **Discovery**: zot reads every `extension.json` in the search dirs.
+1. **Discovery**: zut reads every `extension.json` in the search dirs.
 2. **Spawn**: enabled extensions are launched as subprocesses. stderr
-   redirects to `$ZOT_HOME/logs/ext-<name>.log` (one file per
+   redirects to `$ZUT_HOME/logs/ext-<name>.log` (one file per
    extension, append-mode).
 3. **Hello handshake**: the extension's first stdout frame must be
-   `hello`; zot replies with `hello_ack` containing the protocol
+   `hello`; zut replies with `hello_ack` containing the protocol
    version, the active provider/model/cwd, and the extension's own
    data directory so it can persist files beside its manifest.
 4. **Registration**: after receiving `hello_ack`, the extension sends
@@ -164,7 +164,7 @@ manifest tells zot how to launch it:
    sends `ready`. First-come-first-served: a name already taken by a
    built-in or by a previously-loaded extension is silently shadowed
    (logged in the extension's own log file).
-5. **Runtime**: after `ready`, zot dispatches `command_invoked` frames
+5. **Runtime**: after `ready`, zut dispatches `command_invoked` frames
    when the user runs a registered command; the extension responds
    with `command_response`. Extensions can also push `notify`, persistent
    status/widget, and structured `alert` frames during runtime. Extensions
@@ -172,12 +172,12 @@ manifest tells zot how to launch it:
    and their own restored opaque state. Panel-capable extensions may open an
    interactive panel, receive key events, and push redraws while the panel is
    focused.
-6. **Shutdown**: when zot exits, it sends `shutdown` and waits up to
+6. **Shutdown**: when zut exits, it sends `shutdown` and waits up to
    2s for the extension to send `shutdown_ack`. Holdouts are
    SIGTERM'd, then SIGKILL'd.
 
-A crashing extension does not bring down zot. The slash command it
-owned simply stops working until the extension is fixed and zot is
+A crashing extension does not bring down zut. The slash command it
+owned simply stops working until the extension is fixed and zut is
 restarted.
 
 ## Wire format
@@ -204,7 +204,7 @@ or any other stdout frame before `hello`.
  "description":"current weather for a city"}
 ```
 
-Command names are matched case-insensitively. zot sends `command_invoked.name` using the canonical spelling registered here. Registrations that differ only by case conflict, and the first registration remains active.
+Command names are matched case-insensitively. zut sends `command_invoked.name` using the canonical spelling registered here. Registrations that differ only by case conflict, and the first registration remains active.
 
 #### `register_tool`
 
@@ -233,11 +233,11 @@ Set `"deferred": true` to register a tool without advertising its definition ini
  "activate_tools":["weather"]}
 ```
 
-On Kimi K3's OpenAI-compatible routes, zot places newly activated schemas at the tool-result position using Kimi's native deferred-tool format. Other models receive the complete active tool list on the next request. Unknown names are ignored. The Go extension SDK exposes `DeferredTool` and `ToolResult.ActivateTools` for the same protocol.
+On Kimi K3's OpenAI-compatible routes, zut places newly activated schemas at the tool-result position using Kimi's native deferred-tool format. Other models receive the complete active tool list on the next request. Unknown names are ignored. The Go extension SDK exposes `DeferredTool` and `ToolResult.ActivateTools` for the same protocol.
 
 #### `ready`
 
-Sentinel telling zot "all initial registrations are flushed". Send it
+Sentinel telling zut "all initial registrations are flushed". Send it
 right after your last `register_*` frame so the host can build the
 agent's tool registry without racing the registration window.
 
@@ -259,7 +259,7 @@ registered deferred tools that become available after this result.
  "details":{"state":{"version":1}}}
 ```
 
-`details` is opaque extension metadata. Zot excludes it from provider
+`details` is opaque extension metadata. Zut excludes it from provider
 requests and persists it as the latest extension state for the active
 session branch. Keep it valid JSON and reasonably small; the host caps
 persisted snapshots at 256 KiB. The next `session_opened`,
@@ -284,9 +284,9 @@ Recognised event names include `session_start`, `session_opened`,
 
 Session events contain `session` with the current branch ID, parent ID,
 path, cwd, and fork point. They also contain `state`, but only for the
-receiving extension. Zot never exposes another extension's state.
+receiving extension. Zut never exposes another extension's state.
 
-`tool_confirmation_requested` fires only when zot is about to wait for
+`tool_confirmation_requested` fires only when zut is about to wait for
 interactive approval. Calls running in yolo mode, calls covered by a
 remembered approval, and calls blocked before confirmation do not emit it.
 The event includes `tool_id`, `tool_name`, and the short `tool_preview`
@@ -353,9 +353,9 @@ subsequent interceptor sees the previous one's output.
 - `"display"` — appends `display` to the chat as a one-shot styled
   note. No model call, nothing written to the transcript.
 - `"open_panel"` — opens an extension-owned interactive panel inside
-  zot. The panel content lives in `open_panel`.
+  zut. The panel content lives in `open_panel`.
 - `"noop"` — the extension handled it itself (e.g. it pushed
-  `notify` frames or kicked off background work). zot doesn't change
+  `notify` frames or kicked off background work). zut doesn't change
   the UI in response.
 
 Example:
@@ -370,13 +370,13 @@ Example:
  }}
 ```
 
-If `error` is non-empty, zot renders it as a red status line
+If `error` is non-empty, zut renders it as a red status line
 regardless of `action`.
 
 #### `submit` (one-way, any time)
 
 Submits text as a user prompt in the interactive host. If the agent is
-idle, zot starts a turn immediately. If a turn is already running, zot
+idle, zut starts a turn immediately. If a turn is already running, zut
 queues the prompt behind it using the same queue path as typed input.
 Empty or whitespace-only text is ignored.
 
@@ -419,7 +419,7 @@ Sets or replaces one status item owned by the extension. Sending an empty
 #### `widget` (one-way, persistent)
 
 Sets or replaces a compact widget. `position` is a host-defined placement
-hint with these interactive-zot values:
+hint with these interactive-zut values:
 
 - `"above_input"` keeps the widget in the existing persistent chrome above
   the editor.
@@ -499,12 +499,12 @@ Sent in response to `shutdown`. Extension should exit promptly after.
 
 ```json
 {"type":"hello_ack","protocol_version":1,
- "zot_version":"0.0.7","provider":"anthropic",
- "model":"claude-opus-4-7","cwd":"/Users/pat/Developer/zot",
- "extension_dir":"/Users/pat/Developer/zot/.zot/extensions/todos",
- "data_dir":"/Users/pat/Developer/zot/.zot/extensions/todos",
+ "zut_version":"0.0.7","provider":"anthropic",
+ "model":"claude-opus-4-7","cwd":"/path/to/zut",
+ "extension_dir":"/path/to/zut/.zut/extensions/todos",
+ "data_dir":"/path/to/zut/.zut/extensions/todos",
  "session":{"id":"branch-1","parent_id":"root-1",
-             "path":".../session.jsonl","cwd":"/Users/pat/Developer/zot",
+             "path":".../session.jsonl","cwd":"/path/to/zut",
              "fork_point":4}}
 ```
 
@@ -562,7 +562,7 @@ Lifecycle notification for events the extension subscribed to via
 
 #### `event_intercept`
 
-Sent when zot wants to give the extension a chance to block, modify,
+Sent when zut wants to give the extension a chance to block, modify,
 or annotate a lifecycle event before it happens. Reply with
 `event_intercept_response` within 5s; missing the deadline is
 treated as "allow".
@@ -598,7 +598,7 @@ name (`up`, `down`, `left`, `right`, `enter`, `esc`, `tab`, `pageup`,
 
 #### `panel_close`
 
-Sent when the user closes the focused panel from zot (for example with
+Sent when the user closes the focused panel from zut (for example with
 Esc or Ctrl+C). The extension should treat this as the panel lifetime
 ending and stop sending `panel_render` updates for that `panel_id`.
 
@@ -608,29 +608,29 @@ ending and stop sending `panel_render` updates for that `panel_id`.
 
 #### `shutdown`
 
-Sent during graceful zot exit (or `/reload-ext` once that lands).
+Sent during graceful zut exit (or `/reload-ext` once that lands).
 Reply with `shutdown_ack` and then exit.
 
 ## Managing extensions from the CLI
 
 ```
-zot ext list                              list installed extensions and their state
-zot ext doctor                            diagnose load, registration, and conflict issues
-zot ext install <path|git-url>             copy / clone into $ZOT_HOME/extensions/
-zot ext install --build=go <local-path>   build local Go source, then install
-zot ext remove <name>                     delete an extension directory
-zot ext enable <name>           re-enable a disabled extension
-zot ext disable <name>          disable without removing
-zot ext logs <name> [-f]        cat / tail the extension's stderr
+zut ext list                              list installed extensions and their state
+zut ext doctor                            diagnose load, registration, and conflict issues
+zut ext install <path|git-url>             copy / clone into $ZUT_HOME/extensions/
+zut ext install --build=go <local-path>   build local Go source, then install
+zut ext remove <name>                     delete an extension directory
+zut ext enable <name>           re-enable a disabled extension
+zut ext disable <name>          disable without removing
+zut ext logs <name> [-f]        cat / tail the extension's stderr
 ```
 
-`zot ext doctor` runs the same discovery path as zot startup, but reports
+`zut ext doctor` runs the same discovery path as zut startup, but reports
 what happened instead of changing the fail-soft runtime behavior. It shows
 manifest errors, disabled or shadowed extensions, subprocess load errors,
 ready/auto-ready status, registered commands/tools, registration conflicts,
 warnings, and each extension's stderr log path.
 
-`zot ext install <path>` does a recursive copy; `<git-url>` does a
+`zut ext install <path>` does a recursive copy; `<git-url>` does a
 shallow clone. Both validate that the destination contains an
 `extension.json` and roll back if not. No build runs unless the local install
 is invoked with the explicit `--build=go` option. That option currently supports
@@ -639,17 +639,17 @@ only local Go source paths; clone remote source locally before building it.
 ## Loading an extension for one run
 
 For iteration on a working copy, skip the install + reload cycle
-and load straight from disk for one zot session:
+and load straight from disk for one zut session:
 
 ```
-zot --ext ./my-extension        # short form: -e ./my-extension
-zot --ext ./a -e ./b            # repeatable
+zut --ext ./my-extension        # short form: -e ./my-extension
+zut --ext ./a -e ./b            # repeatable
 ```
 
 `--ext` paths take precedence over installed extensions of the same
 name, so you can shadow an installed copy with a work-in-progress
 version without uninstalling first. Nothing is copied or persisted;
-the extension dies with zot like any other subprocess.
+the extension dies with zut like any other subprocess.
 
 ## SDKs
 
@@ -663,7 +663,7 @@ package main
 
 import (
     "encoding/json"
-    "github.com/patriceckhart/zot/packages/agent/ext"
+    "github.com/bnema/zut/packages/agent/ext"
 )
 
 func main() {
@@ -697,10 +697,10 @@ func main() {
 ```
 
 Build with `go build -o hello .`, drop the binary + an `extension.json`
-into `$ZOT_HOME/extensions/hello/`.
+into `$ZUT_HOME/extensions/hello/`.
 
 `OnHello` is optional. Use it when configuration or registrations need
-host metadata such as `HostInfo.CWD`, `Provider`, `Model`, `ZotVersion`,
+host metadata such as `HostInfo.CWD`, `Provider`, `Model`, `ZutVersion`,
 `ExtensionDir`, or `DataDir`. The SDK sends `hello`, waits for
 `hello_ack`, runs `OnHello`, announces registrations, then sends `ready`.
 
@@ -770,7 +770,7 @@ The `tasked-phases` example bundles its companion skill under
 `extension.json`. Installing the extension therefore installs the workflow
 skill automatically. The standalone copy at `examples/skills/tasked-phases/`
 remains useful for project-local skill installation. Its state is restored per
-session branch when zot session persistence is enabled; the extension keeps a
+session branch when zut session persistence is enabled; the extension keeps a
 project-file fallback for hosts that do not persist sessions.
 
 ### Hot reload
@@ -778,7 +778,7 @@ project-file fallback for hosts that do not persist sessions.
 Type `/reload-ext` in the TUI to tear down every running extension
 subprocess, re-read the manifests from disk, and respawn the set.
 The agent's tool registry is rebuilt automatically, so freshly-
-registered extension tools become callable without restarting zot.
+registered extension tools become callable without restarting zut.
 Useful while developing an extension: edit, save, `/reload-ext`,
 done. Explicit `--ext` paths are remembered and reloaded alongside
 discovered extensions. The temporary reload status reports each load
@@ -803,9 +803,9 @@ Extensions run with **the user's full filesystem and network
 permissions**. Treat installing an extension the same as installing
 any other binary on your machine.
 
-`zot ext install <git-url>` clones from any URL you give it. There's
+`zut ext install <git-url>` clones from any URL you give it. There's
 no sandbox in v1; if you need isolation, install only extensions you
-trust or run zot under your platform's sandboxing tool (`bwrap` /
+trust or run zut under your platform's sandboxing tool (`bwrap` /
 `sandbox-exec` / AppContainer).
 
 ## Roadmap
@@ -814,7 +814,7 @@ Phase 1 (shipped):
 - [x] subprocess lifecycle + hello handshake
 - [x] `register_command` + `command_invoked`
 - [x] `notify` + `clear_notes` + structured terminal alerts
-- [x] `zot ext` CLI
+- [x] `zut ext` CLI
 
 Phase 2 (shipped):
 - [x] `register_tool` + `tool_call` + `tool_result`
@@ -832,7 +832,7 @@ Phase 4 (shipped):
       addition to `tool_call`)
 - [x] modify tool args mid-flight via `modified_args`
 - [x] rewrite user-visible assistant text via `replace_text`
-- [x] `/reload-ext` slash command (hot-reload without restarting zot)
+- [x] `/reload-ext` slash command (hot-reload without restarting zut)
 
 Phase 5 (shipped):
 - [x] session/branch identity in `hello_ack` and lifecycle events

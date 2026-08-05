@@ -187,7 +187,7 @@ func prepareTextEdits(path string, edits []TextEdit) ([]byte, os.FileMode, error
 }
 
 func writeTextEdits(path string, out []byte, mode os.FileMode) error {
-	tmp, err := os.CreateTemp(filepath.Dir(path), ".zot-lsp-edit-*")
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".zut-lsp-edit-*")
 	if err != nil {
 		return err
 	}

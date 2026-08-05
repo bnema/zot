@@ -3,7 +3,7 @@ package modes
 import (
 	"strings"
 
-	"github.com/patriceckhart/zot/packages/tui"
+	"github.com/bnema/zut/packages/tui"
 )
 
 type clipboardTextReader func() (string, bool, error)

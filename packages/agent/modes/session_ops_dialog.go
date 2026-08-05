@@ -1,13 +1,13 @@
 package modes
 
 import (
-	"github.com/patriceckhart/zot/packages/tui"
+	"github.com/bnema/zut/packages/tui"
 )
 
 // sessionOpsDialog is the picker shown when the user runs `/session`
 // without an argument. Offers the two portable-file operations on
 // the current conversation: export (write the in-memory transcript
-// plus meta to a .zotsession file) and import (load a .zotsession
+// plus meta to a .zutsession file) and import (load a .zutsession
 // from another machine and swap it in as the active session).
 //
 // Shape mirrors telegramDialog and logoutDialog: tiny list, arrow

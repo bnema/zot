@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/patriceckhart/zot/packages/agent/skills"
+	"github.com/bnema/zut/packages/agent/skills"
 )
 
 func TestExpandSkillCommandForcesNamedSkill(t *testing.T) {

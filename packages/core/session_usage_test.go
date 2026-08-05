@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/patriceckhart/zot/packages/provider"
+	"github.com/bnema/zut/packages/provider"
 )
 
 func TestSessionUsageDetailResetsContextAfterCompaction(t *testing.T) {

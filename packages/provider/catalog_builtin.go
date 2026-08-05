@@ -6,7 +6,7 @@ package provider
 //
 // This file is data; the values are tracked verbatim from each
 // vendor's own public pricing / model-list pages. They drift; users
-// override via $ZOT_HOME/models.json (user entries win).
+// override via $ZUT_HOME/models.json (user entries win).
 //
 // Curated entries in models.go (anthropic / openai / openai-codex /
 // the small seed list for kimi / deepseek / google) are not duplicated

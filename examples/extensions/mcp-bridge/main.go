@@ -1,12 +1,12 @@
-// mcp-bridge — Connect zot to MCP (Model Context Protocol) servers.
+// mcp-bridge — Connect zut to MCP (Model Context Protocol) servers.
 //
 // This extension reads MCP server configurations from standard locations
 // (same format as Claude Desktop, Cursor, etc.) and bridges their tools
-// into zot so the LLM can call them.
+// into zut so the LLM can call them.
 //
 // Config locations:
-//   - Global:  $ZOT_HOME/mcp.json
-//   - Project: .zot/mcp.json
+//   - Global:  $ZUT_HOME/mcp.json
+//   - Project: .zut/mcp.json
 //
 // Smart lazy: servers are spawned on startup to discover tools, then
 // killed after 5 minutes of idle time. On the next tool call, they're
@@ -30,7 +30,7 @@
 //
 // Install:
 //
-//	zot ext install .
+//	zut ext install .
 package main
 
 import (
@@ -41,13 +41,13 @@ import (
 	"strings"
 	"time"
 
-	"github.com/patriceckhart/zot/packages/agent/ext"
+	"github.com/bnema/zut/packages/agent/ext"
 )
 
 func main() {
 	e := ext.New("mcp", "1.1.0")
 
-	// Logger writes to stderr (captured by zot into ext logs)
+	// Logger writes to stderr (captured by zut into ext logs)
 	logger := log.New(os.Stderr, "[mcp-bridge] ", log.LstdFlags)
 
 	var b *bridge
@@ -105,7 +105,7 @@ func main() {
 }
 
 func startBackgroundToolRefresh(e *ext.Extension, b *bridge, logger *log.Logger, cachePath string, cachedToolCount int) {
-	// Refresh discovery in the background so zot startup is not blocked. Only ask
+	// Refresh discovery in the background so zut startup is not blocked. Only ask
 	// for /reload-ext if the discovered tool cache actually changed; otherwise a
 	// reload would just repeat this cycle without adding anything.
 	go func() {
@@ -216,8 +216,8 @@ func mcpHelp(b *bridge) string {
 	sb.WriteString("  /mcp setup templates                  List setup templates\n")
 	sb.WriteString("  /mcp setup add <template> [options]   Add a server template\n")
 	sb.WriteString("\nSetup options\n")
-	sb.WriteString("  --global                              Write to $ZOT_HOME/mcp.json (default)\n")
-	sb.WriteString("  --project                             Write to .zot/mcp.json\n")
+	sb.WriteString("  --global                              Write to $ZUT_HOME/mcp.json (default)\n")
+	sb.WriteString("  --project                             Write to .zut/mcp.json\n")
 	sb.WriteString("  --name <server-name>                  Use a custom configured server name\n")
 	return strings.TrimRight(sb.String(), "\n")
 }

@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/patriceckhart/zot/packages/provider"
+	"github.com/bnema/zut/packages/provider"
 )
 
 func TestAppendMessageRejectsEmptyContent(t *testing.T) {

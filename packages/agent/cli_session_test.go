@@ -9,9 +9,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/patriceckhart/zot/packages/agent/modes"
-	"github.com/patriceckhart/zot/packages/core"
-	"github.com/patriceckhart/zot/packages/provider"
+	"github.com/bnema/zut/packages/agent/modes"
+	"github.com/bnema/zut/packages/core"
+	"github.com/bnema/zut/packages/provider"
 )
 
 func TestTrimMessagesForResumeCarriesDeferredToolActivation(t *testing.T) {
@@ -97,7 +97,7 @@ func TestLiveInteractiveAgentFallsBackBeforeInteractiveConstruction(t *testing.T
 }
 
 func TestPersistModelCallbackDoesNotReenterSessionTransition(t *testing.T) {
-	t.Setenv("ZOT_HOME", t.TempDir())
+	t.Setenv("ZUT_HOME", t.TempDir())
 	sess, err := core.NewSession(t.TempDir(), t.TempDir(), "old-provider", "old-model", "test")
 	if err != nil {
 		t.Fatal(err)

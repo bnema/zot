@@ -8,10 +8,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/patriceckhart/zot/packages/agent/extproto"
-	"github.com/patriceckhart/zot/packages/agent/tools"
-	"github.com/patriceckhart/zot/packages/core"
-	"github.com/patriceckhart/zot/packages/tui"
+	"github.com/bnema/zut/packages/agent/extproto"
+	"github.com/bnema/zut/packages/agent/tools"
+	"github.com/bnema/zut/packages/core"
+	"github.com/bnema/zut/packages/tui"
 )
 
 func TestConfirmToolCallAttachesDiffBeforeDecision(t *testing.T) {

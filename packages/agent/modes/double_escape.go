@@ -5,9 +5,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/patriceckhart/zot/packages/core"
-	"github.com/patriceckhart/zot/packages/provider"
-	"github.com/patriceckhart/zot/packages/tui"
+	"github.com/bnema/zut/packages/core"
+	"github.com/bnema/zut/packages/provider"
+	"github.com/bnema/zut/packages/tui"
 )
 
 const sessionTreeEscapeWindow = 500 * time.Millisecond

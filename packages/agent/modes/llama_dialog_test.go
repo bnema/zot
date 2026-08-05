@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/patriceckhart/zot/packages/provider"
-	"github.com/patriceckhart/zot/packages/tui"
+	"github.com/bnema/zut/packages/provider"
+	"github.com/bnema/zut/packages/tui"
 )
 
 func TestLlamaDialogSearchesAsUserTypes(t *testing.T) {

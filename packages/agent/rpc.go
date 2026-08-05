@@ -12,12 +12,12 @@ import (
 	"sync"
 	"time"
 
-	"github.com/patriceckhart/zot/packages/agent/extensions"
-	"github.com/patriceckhart/zot/packages/agent/extproto"
-	"github.com/patriceckhart/zot/packages/agent/modes"
-	"github.com/patriceckhart/zot/packages/agent/tools"
-	"github.com/patriceckhart/zot/packages/core"
-	"github.com/patriceckhart/zot/packages/provider"
+	"github.com/bnema/zut/packages/agent/extensions"
+	"github.com/bnema/zut/packages/agent/extproto"
+	"github.com/bnema/zut/packages/agent/modes"
+	"github.com/bnema/zut/packages/agent/tools"
+	"github.com/bnema/zut/packages/core"
+	"github.com/bnema/zut/packages/provider"
 )
 
 // runRPCMode implements the JSON-over-stdin/stdout RPC protocol.
@@ -42,7 +42,7 @@ import (
 // ext_widget with extension/id/position/title/lines, and ext_widget_clear
 // with extension/id when loaded extensions publish persistent UI state.
 //
-// Auth: if $ZOTCORE_RPC_TOKEN is set, the first command must be
+// Auth: if $ZUTCORE_RPC_TOKEN is set, the first command must be
 // {"type":"hello","token":"..."} or the connection is closed.
 func runRPCMode(ctx context.Context, args Args, version string) error {
 	if args.NoYolo {
@@ -69,7 +69,7 @@ func runRPCMode(ctx context.Context, args Args, version string) error {
 	// host-hooks integration. Notify/Display calls from extensions
 	// emit RPC events instead of TUI lines so any consumer can react.
 	extHooks := &rpcExtHooks{server: server}
-	extMgr := extensions.New(ZotHome(), r.CWD, version, r.Provider, r.Model, extHooks)
+	extMgr := extensions.New(ZutHome(), r.CWD, version, r.Provider, r.Model, extHooks)
 	for _, e := range extMgr.LoadExplicit(ctx, args.Exts) {
 		fmt.Fprintln(os.Stderr, "extension load:", e)
 	}
@@ -228,7 +228,7 @@ type rpcServer struct {
 
 	// inFlight tracks long-running command goroutines so run() can
 	// wait for them before returning when stdin closes. Without this,
-	// piping a single 'prompt' command into 'zot rpc' would race the
+	// piping a single 'prompt' command into 'zut rpc' would race the
 	// process exit against the agent loop and the prompt would never
 	// produce output.
 	inFlight sync.WaitGroup
@@ -236,10 +236,10 @@ type rpcServer struct {
 
 // run reads NDJSON commands from in and dispatches them. Returns when
 // in is closed AND every in-flight long-running command (prompt /
-// compact) has finished, so a quick `echo cmd | zot rpc` invocation
+// compact) has finished, so a quick `echo cmd | zut rpc` invocation
 // still produces full output before the process exits.
 func (s *rpcServer) run(in io.Reader) error {
-	requireToken := os.Getenv("ZOTCORE_RPC_TOKEN") != ""
+	requireToken := os.Getenv("ZUTCORE_RPC_TOKEN") != ""
 	s.writeMu.Lock()
 	s.started = true
 	s.authed = !requireToken
@@ -272,7 +272,7 @@ func (s *rpcServer) run(in io.Reader) error {
 				Token string `json:"token"`
 			}
 			_ = json.Unmarshal([]byte(line), &hello)
-			if hello.Token != os.Getenv("ZOTCORE_RPC_TOKEN") {
+			if hello.Token != os.Getenv("ZUTCORE_RPC_TOKEN") {
 				s.writeError(head.ID, head.Type, "invalid token")
 				return fmt.Errorf("rpc: bad auth token")
 			}

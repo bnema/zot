@@ -36,7 +36,7 @@ func DetectThemeFromBackground(timeout time.Duration) Theme {
 	// Honour explicit override env vars first; some users and CI environments
 	// know better than the heuristic. The terminal snapshot is still retained
 	// so selecting the inherited theme later remains useful.
-	switch strings.ToLower(strings.TrimSpace(os.Getenv("ZOT_THEME"))) {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("ZUT_THEME"))) {
 	case "dark":
 		base = Dark
 	case "light":

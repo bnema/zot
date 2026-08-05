@@ -13,14 +13,14 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/patriceckhart/zot/packages/agent/modes"
-	"github.com/patriceckhart/zot/packages/agent/subagents"
-	"github.com/patriceckhart/zot/packages/core"
-	"github.com/patriceckhart/zot/packages/provider"
+	"github.com/bnema/zut/packages/agent/modes"
+	"github.com/bnema/zut/packages/agent/subagents"
+	"github.com/bnema/zut/packages/core"
+	"github.com/bnema/zut/packages/provider"
 )
 
 // runSubagentWorkerMode is the daemon-mode entry point used by every
-// subagent-spawned zot subprocess. It's intentionally close in shape to
+// subagent-spawned zut subprocess. It's intentionally close in shape to
 // runJSONMode but with two key differences:
 //
 //   - Lifetime: the process stays alive across many user turns. The
@@ -28,7 +28,7 @@ import (
 //     turns arrive through the inbox unix socket at args.SubagentWorker.
 //
 //   - Output: every emitted JSON line is also mirrored verbatim into
-//     events.jsonl (see ZOT_SUBAGENT_EVENT_LOG) so a separate zot
+//     events.jsonl (see ZUT_SUBAGENT_EVENT_LOG) so a separate zut
 //     process can /subagents open this agent and replay its full history
 //     even after the parent that spawned us is long gone.
 //
@@ -40,7 +40,7 @@ func runSubagentWorkerMode(ctx context.Context, args Args, version string) error
 	if args.SubagentWorker == "" {
 		return fmt.Errorf("--subagent-worker requires a socket path")
 	}
-	if os.Getenv("ZOT_SUBAGENT_CREDENTIAL_STDIN") == "1" {
+	if os.Getenv("ZUT_SUBAGENT_CREDENTIAL_STDIN") == "1" {
 		var inherited subagents.Credential
 		dec := json.NewDecoder(io.LimitReader(os.Stdin, 1<<20))
 		if err := dec.Decode(&inherited); err != nil {
@@ -99,11 +99,11 @@ func runSubagentWorkerMode(ctx context.Context, args Args, version string) error
 
 	// Event log is owned by the supervisor's runner via stdout, but
 	// the daemon also writes a redundant copy here when the runner's
-	// pipe is closed (e.g. parent zot exited but the agent is still
+	// pipe is closed (e.g. parent zut exited but the agent is still
 	// running headless). The env var is set by the runner; if it's
 	// empty we silently skip the second mirror.
 	var logMirror *subagents.EventLog
-	if path := os.Getenv("ZOT_SUBAGENT_EVENT_LOG"); path != "" {
+	if path := os.Getenv("ZUT_SUBAGENT_EVENT_LOG"); path != "" {
 		logMirror, _ = subagents.OpenEventLog(path)
 	}
 	if logMirror != nil {
@@ -111,7 +111,7 @@ func runSubagentWorkerMode(ctx context.Context, args Args, version string) error
 	}
 
 	em := newSubagentEmitter(os.Stdout, logMirror)
-	em.setProtocolIdentity(os.Getenv("ZOT_SUBAGENT_AGENT_ID"))
+	em.setProtocolIdentity(os.Getenv("ZUT_SUBAGENT_AGENT_ID"))
 	em.emit("agent.ready", map[string]any{
 		"version": version,
 		"cwd":     r.CWD,
@@ -125,7 +125,7 @@ func runSubagentWorkerMode(ctx context.Context, args Args, version string) error
 	defer close(heartbeatDone)
 	go func() {
 		interval := 10 * time.Second
-		if raw := os.Getenv("ZOT_SUBAGENT_HEARTBEAT_INTERVAL"); raw != "" {
+		if raw := os.Getenv("ZUT_SUBAGENT_HEARTBEAT_INTERVAL"); raw != "" {
 			if parsed, parseErr := time.ParseDuration(raw); parseErr == nil && parsed > 0 {
 				interval = parsed
 			}
@@ -148,7 +148,7 @@ func runSubagentWorkerMode(ctx context.Context, args Args, version string) error
 		mu           sync.Mutex
 		cancelFn     context.CancelFunc
 		busyTurn     bool
-		turnNo       = initialTurnNumber(os.Getenv("ZOT_SUBAGENT_EVENT_LOG"))
+		turnNo       = initialTurnNumber(os.Getenv("ZUT_SUBAGENT_EVENT_LOG"))
 		turnWG       sync.WaitGroup
 		closing      bool
 		shutdown     = make(chan struct{})
@@ -390,7 +390,7 @@ func (e *subagentEmitter) emit(typ string, data map[string]any) {
 
 	if !e.orphan && err == nil {
 		if _, werr := e.w.Write(line); werr != nil {
-			// Supervisor's stdout pipe is gone (parent zot exited but we
+			// Supervisor's stdout pipe is gone (parent zut exited but we
 			// kept running). Switch to mirror-only mode and preserve this
 			// event in the durable log.
 			e.orphan = true
@@ -451,10 +451,10 @@ func boundedResultSummary(text string) string {
 
 func workerOutputLimits() (maxBytes, maxLines int) {
 	maxBytes, maxLines = 500_000, 5_000
-	if value, err := strconv.Atoi(strings.TrimSpace(os.Getenv("ZOT_SUBAGENT_MAX_OUTPUT_BYTES"))); err == nil && value > 0 {
+	if value, err := strconv.Atoi(strings.TrimSpace(os.Getenv("ZUT_SUBAGENT_MAX_OUTPUT_BYTES"))); err == nil && value > 0 {
 		maxBytes = value
 	}
-	if value, err := strconv.Atoi(strings.TrimSpace(os.Getenv("ZOT_SUBAGENT_MAX_OUTPUT_LINES"))); err == nil && value > 0 {
+	if value, err := strconv.Atoi(strings.TrimSpace(os.Getenv("ZUT_SUBAGENT_MAX_OUTPUT_LINES"))); err == nil && value > 0 {
 		maxLines = value
 	}
 	return maxBytes, maxLines

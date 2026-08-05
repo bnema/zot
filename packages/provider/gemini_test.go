@@ -111,7 +111,7 @@ func TestGeminiStreamInlineImage(t *testing.T) {
 		t.Fatalf("image=%q %q", ib.MimeType, string(ib.Data))
 	}
 	saved, ok := done.Message.Content[2].(TextBlock)
-	if !ok || !strings.Contains(saved.Text, "zot-gemini-image-") || !strings.Contains(saved.Text, ".png") {
+	if !ok || !strings.Contains(saved.Text, "zut-gemini-image-") || !strings.Contains(saved.Text, ".png") {
 		t.Fatalf("saved path block=%T %+v", done.Message.Content[2], done.Message.Content[2])
 	}
 	path := strings.TrimPrefix(saved.Text, "Saved image: `")
@@ -184,7 +184,7 @@ func TestGeminiBuildRequestSystemAndTools(t *testing.T) {
 	c := NewGemini("k", "https://example.invalid").(*geminiClient)
 	wire, _, err := c.buildRequest(Request{
 		Model:  "gemini-2.5-pro",
-		System: "you are zot",
+		System: "you are zut",
 		Tools: []Tool{
 			{Name: "read", Description: "read a file", Schema: json.RawMessage(`{"type":"object","properties":{"path":{"type":"string"}}}`)},
 		},
@@ -193,7 +193,7 @@ func TestGeminiBuildRequestSystemAndTools(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if wire.SystemInstruction == nil || wire.SystemInstruction.Parts[0].Text != "you are zot" {
+	if wire.SystemInstruction == nil || wire.SystemInstruction.Parts[0].Text != "you are zut" {
 		t.Fatalf("system: %+v", wire.SystemInstruction)
 	}
 	if len(wire.Tools) != 1 || len(wire.Tools[0].FunctionDeclarations) != 1 || wire.Tools[0].FunctionDeclarations[0].Name != "read" {
@@ -537,7 +537,7 @@ func TestGeminiStreamReasoning(t *testing.T) {
 	}
 }
 
-// TestGeminiBuildRequestWithReasoningReplay verifies that when zot sends a
+// TestGeminiBuildRequestWithReasoningReplay verifies that when zut sends a
 // historical assistant message containing a ReasoningBlock, buildRequest
 // serializes it into the verbatim Gemini "thought: true" wire representation
 // with its corresponding thoughtSignature.

@@ -8,13 +8,13 @@ import (
 	"runtime"
 	"strings"
 
-	zotdocs "github.com/patriceckhart/zot"
-	"github.com/patriceckhart/zot/packages/agent/lsp"
-	"github.com/patriceckhart/zot/packages/agent/skills"
-	"github.com/patriceckhart/zot/packages/agent/subagents"
-	"github.com/patriceckhart/zot/packages/agent/tools"
-	"github.com/patriceckhart/zot/packages/core"
-	"github.com/patriceckhart/zot/packages/provider"
+	zutdocs "github.com/bnema/zut"
+	"github.com/bnema/zut/packages/agent/lsp"
+	"github.com/bnema/zut/packages/agent/skills"
+	"github.com/bnema/zut/packages/agent/subagents"
+	"github.com/bnema/zut/packages/agent/tools"
+	"github.com/bnema/zut/packages/core"
+	"github.com/bnema/zut/packages/provider"
 )
 
 // ContextFile is an instruction file loaded into the system prompt.
@@ -136,7 +136,7 @@ func (r *Resolved) MergeExtensionTools(mgr ExtensionToolSource) {
 		Tools:      r.ToolSummary,
 		Custom:     r.systemCustom,
 		Append:     r.systemAppend,
-		ZotDocsDir: filepath.Join(ZotHome(), "docs"),
+		ZutDocsDir: filepath.Join(ZutHome(), "docs"),
 	})
 }
 
@@ -217,7 +217,7 @@ func toolSummariesFromRegistry(reg core.Registry, cached map[string]string) []To
 	return out
 }
 
-// defaultModelForProvider returns the model id zot prefers when the
+// defaultModelForProvider returns the model id zut prefers when the
 // caller didn't pick one. Mirrors the per-provider switch used at
 // multiple points in Resolve; centralised so the unknown-model
 // recovery path and the no-model-configured path can't drift.
@@ -289,7 +289,7 @@ func defaultModelForProvider(prov string) string {
 	}
 }
 
-// knownProviders is the set of provider ids zot recognises. Used by
+// knownProviders is the set of provider ids zut recognises. Used by
 // Resolve to validate args.Provider, by extension-callers, and by the
 // auto-fallback logic that picks any logged-in provider when the user's
 // preferred one has no credentials.
@@ -495,7 +495,7 @@ func Resolve(args Args, requireCred bool) (Resolved, error) {
 	// If the user did NOT explicitly pick a provider (neither via --provider
 	// nor by saving one in config.json) and the default one has no
 	// credentials, auto-fall-back to whichever provider is actually logged
-	// in. That way running plain `zot` after `/login` (any provider) never
+	// in. That way running plain `zut` after `/login` (any provider) never
 	// shows a "not logged in" banner.
 	//
 	// Critical: when the user HAS saved a provider in config.json (e.g.
@@ -518,7 +518,7 @@ func Resolve(args Args, requireCred bool) (Resolved, error) {
 		// env-based credential is discovered, e.g. an env-only
 		// amazon-bedrock setup (AWS_BEARER_TOKEN_BEDROCK / AWS_PROFILE /
 		// IAM keys) when no config.json pins the provider, such as after
-		// pointing ZOT_HOME at a fresh home dir. Iteration order of
+		// pointing ZUT_HOME at a fresh home dir. Iteration order of
 		// knownProviders defines fallback priority. Local providers without a
 		// default model are skipped because selecting either one here would
 		// fail before the user can choose a model.
@@ -591,7 +591,7 @@ func Resolve(args Args, requireCred bool) (Resolved, error) {
 	if err != nil {
 		// The model the user (or persisted config) asked for is no
 		// longer in the active catalogue — they probably removed it
-		// from their models.json or upgraded zot and the id changed.
+		// from their models.json or upgraded zut and the id changed.
 		// Refusing to launch is the wrong move: it strands the user
 		// with no way to even open the TUI and pick a new model.
 		// Fall back to the provider's default, warn on stderr, and,
@@ -600,7 +600,7 @@ func Resolve(args Args, requireCred bool) (Resolved, error) {
 		// doesn't repeat on every launch.
 
 		// Gateway providers can accept route-qualified ids that are not in
-		// zot's local catalog yet, for example OpenRouter's
+		// zut's local catalog yet, for example OpenRouter's
 		// "deepseek/deepseek-v4-flash". Preserve only route-qualified ids;
 		// plain unknown values are likely typos and should still fall back.
 		if isGatewayProvider(provName) && isGatewayRoutedModelID(model) {
@@ -628,7 +628,7 @@ func Resolve(args Args, requireCred bool) (Resolved, error) {
 				}
 			}
 			fmt.Fprintf(os.Stderr,
-				"zot: model %q is not in the active catalogue; using %q instead. Pick a different model with --model or /model.\n",
+				"zut: model %q is not in the active catalogue; using %q instead. Pick a different model with --model or /model.\n",
 				model, fm.ID)
 			if args.Model == "" && cfg.Model == model {
 				cfg.Model = fm.ID
@@ -677,7 +677,7 @@ func Resolve(args Args, requireCred bool) (Resolved, error) {
 	}
 
 	if credErr != nil && requireCred {
-		return Resolved{}, fmt.Errorf("%w; set %s_API_KEY, pass --api-key, or run `zot` and /login",
+		return Resolved{}, fmt.Errorf("%w; set %s_API_KEY, pass --api-key, or run `zut` and /login",
 			credErr, envVarName(provName))
 	}
 
@@ -692,7 +692,7 @@ func Resolve(args Args, requireCred bool) (Resolved, error) {
 	lspEnabled := !args.NoLSP && cfg.LSPEnabledFor(subagentSession)
 	reg := buildToolRegistry(args, args.CWD, sandbox, lspEnabled, cfg.LSPDiagnosticsOnWriteEnabled(subagentSession), cfg.LSPDiagnosticsOnEditEnabled(subagentSession))
 
-	docsDir, _ := zotdocs.EnsureInstalled(ZotHome())
+	docsDir, _ := zutdocs.EnsureInstalled(ZutHome())
 
 	// Skill discovery: scan project + global locations + built-in
 	// skills shipped with the binary. If any are found, register
@@ -711,7 +711,7 @@ func Resolve(args Args, requireCred bool) (Resolved, error) {
 	if !args.NoSkill && (selectedProfile == nil || selectedProfile.InheritSkills == nil || *selectedProfile.InheritSkills) {
 		skillsEnabled = true
 		homeDir, _ := os.UserHomeDir()
-		discovered, _ = skills.Discover(ZotHome(), args.CWD, homeDir, args.WithSkills)
+		discovered, _ = skills.Discover(ZutHome(), args.CWD, homeDir, args.WithSkills)
 		if len(discovered) > 0 {
 			skillTool = skills.NewTool(discovered)
 			reg[skillTool.Name()] = skillTool
@@ -724,7 +724,7 @@ func Resolve(args Args, requireCred bool) (Resolved, error) {
 
 	contextFiles := []ContextFile(nil)
 	if selectedProfile == nil || selectedProfile.InheritProjectContext == nil || *selectedProfile.InheritProjectContext {
-		contextFiles = loadAgentsContext(args.CWD, ZotHome())
+		contextFiles = loadAgentsContext(args.CWD, ZutHome())
 	}
 	append_ := []string(nil)
 	if cfg.PonytailModeEnabled() {
@@ -754,13 +754,13 @@ func Resolve(args Args, requireCred bool) (Resolved, error) {
 
 	// Custom system prompt resolution order:
 	//   1. --system-prompt flag (highest priority; ad-hoc per run)
-	//   2. $ZOT_HOME/SYSTEM.md (persistent user override)
+	//   2. $ZUT_HOME/SYSTEM.md (persistent user override)
 	//   3. built-in default (defaultIdentity + defaultGuidelines)
 	custom := args.SystemPrompt
 	if selectedProfile != nil && selectedProfile.SystemPromptMode == "replace" {
 		custom = selectedProfile.SystemPrompt
 	} else if custom == "" {
-		custom = readUserSystemPrompt(ZotHome())
+		custom = readUserSystemPrompt(ZutHome())
 	}
 
 	sys := BuildSystemPrompt(SystemPromptOpts{
@@ -768,7 +768,7 @@ func Resolve(args Args, requireCred bool) (Resolved, error) {
 		Tools:      summaries,
 		Custom:     custom,
 		Append:     append_,
-		ZotDocsDir: docsDir,
+		ZutDocsDir: docsDir,
 	})
 
 	reasoning := provider.NormalizeReasoning(firstNonEmpty(args.Reasoning, cfg.Reasoning))
@@ -818,16 +818,16 @@ func Resolve(args Args, requireCred bool) (Resolved, error) {
 	}, nil
 }
 
-// readUserSystemPrompt looks for $ZOT_HOME/SYSTEM.md and returns its
+// readUserSystemPrompt looks for $ZUT_HOME/SYSTEM.md and returns its
 // trimmed contents, or "" when the file is missing / unreadable /
 // empty. Errors are intentionally swallowed: the file is optional,
 // and any failure to read it should fall back to the built-in
 // default system prompt rather than crash the run.
-func readUserSystemPrompt(zotHome string) string {
-	if zotHome == "" {
+func readUserSystemPrompt(zutHome string) string {
+	if zutHome == "" {
 		return ""
 	}
-	path := filepath.Join(zotHome, "SYSTEM.md")
+	path := filepath.Join(zutHome, "SYSTEM.md")
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		return ""
@@ -836,10 +836,10 @@ func readUserSystemPrompt(zotHome string) string {
 }
 
 // loadAgentsContext loads optional AGENTS.md instruction files. No
-// default file is created or required: zot only includes files that
-// already exist. Global instructions ($ZOT_HOME/AGENTS.md) come first,
+// default file is created or required: zut only includes files that
+// already exist. Global instructions ($ZUT_HOME/AGENTS.md) come first,
 // followed by project instructions from the filesystem root down to cwd.
-func loadAgentsContext(cwd, zotHome string) []ContextFile {
+func loadAgentsContext(cwd, zutHome string) []ContextFile {
 	var files []ContextFile
 	seen := map[string]bool{}
 	add := func(path string) {
@@ -877,7 +877,7 @@ func loadAgentsContext(cwd, zotHome string) []ContextFile {
 		}
 	}
 
-	addFirstFromDir(zotHome)
+	addFirstFromDir(zutHome)
 
 	if cwd != "" {
 		abs, err := filepath.Abs(cwd)
@@ -1250,7 +1250,7 @@ func kimiCodeHeaders() map[string]string {
 		}
 	}
 	if deviceID == "" {
-		deviceID = "zot"
+		deviceID = "zut"
 	}
 	return map[string]string{
 		"User-Agent":         "KimiCLI/1.41.0",

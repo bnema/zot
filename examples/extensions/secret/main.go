@@ -20,9 +20,9 @@
 //
 // Install:
 //
-//	zot ext install .
+//	zut ext install .
 //
-// Try it — ask zot something like:
+// Try it — ask zut something like:
 //
 //	"Fetch https://internal.example.com/report — it needs a password."
 //
@@ -38,7 +38,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/patriceckhart/zot/packages/agent/ext"
+	"github.com/bnema/zut/packages/agent/ext"
 )
 
 const schema = `{

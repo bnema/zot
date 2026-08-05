@@ -164,7 +164,7 @@ func (c *Client) Initialize(ctx context.Context) error {
 			},
 		},
 		"initializationOptions": c.options.InitializationOptions,
-		"clientInfo":            map[string]any{"name": "zot", "version": "lsp"},
+		"clientInfo":            map[string]any{"name": "zut", "version": "lsp"},
 	}
 	result, err := c.Request(ctx, "initialize", params)
 	if err != nil {
@@ -273,7 +273,7 @@ func (c *Client) DidOpen(path, languageID, text string) error {
 }
 
 // DidChange sends a full-content change, which avoids version/range drift
-// between zot and servers that use different incremental-sync policies.
+// between zut and servers that use different incremental-sync policies.
 func (c *Client) DidChange(path, text string) error {
 	uri, err := pathToURI(path)
 	if err != nil {

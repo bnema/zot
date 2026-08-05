@@ -8,7 +8,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/patriceckhart/zot/packages/agent/ext"
+	"github.com/bnema/zut/packages/agent/ext"
 )
 
 type todoItem struct {

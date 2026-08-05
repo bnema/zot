@@ -10,8 +10,8 @@ import (
 	"testing"
 	"unicode/utf8"
 
-	"github.com/patriceckhart/zot/packages/agent/lsp"
-	"github.com/patriceckhart/zot/packages/provider"
+	"github.com/bnema/zut/packages/agent/lsp"
+	"github.com/bnema/zut/packages/provider"
 )
 
 func TestLSPToolSchemaAndFormatting(t *testing.T) {

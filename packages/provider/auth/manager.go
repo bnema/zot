@@ -453,10 +453,10 @@ func parseManualCodeInput(s string) (code, state string) {
 // (containers, SSH without display forwarding, etc.) instead of
 // trying to bind a callback port the user can never reach.
 func HasBrowser() bool {
-	if os.Getenv("ZOT_NO_BROWSER") != "" {
+	if os.Getenv("ZUT_NO_BROWSER") != "" {
 		return false
 	}
-	if os.Getenv("ZOT_FORCE_BROWSER") != "" {
+	if os.Getenv("ZUT_FORCE_BROWSER") != "" {
 		return true
 	}
 	if _, err := os.Stat("/.dockerenv"); err == nil {

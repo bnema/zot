@@ -3,7 +3,7 @@ package core
 import (
 	"testing"
 
-	"github.com/patriceckhart/zot/packages/provider"
+	"github.com/bnema/zut/packages/provider"
 )
 
 func TestAppendUserContextAddsAndPublishesMessage(t *testing.T) {

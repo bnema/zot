@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/patriceckhart/zot/packages/provider"
+	"github.com/bnema/zut/packages/provider"
 )
 
 func testClipboardImage(marker string, data string) clipboardImageAttachment {

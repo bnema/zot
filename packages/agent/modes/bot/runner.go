@@ -8,8 +8,8 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/patriceckhart/zot/packages/core"
-	"github.com/patriceckhart/zot/packages/provider"
+	"github.com/bnema/zut/packages/core"
+	"github.com/bnema/zut/packages/provider"
 )
 
 // stderr is a tiny hook so tests can redirect bot logging.
@@ -17,7 +17,7 @@ var stderr = func() io.Writer { return os.Stderr }
 
 // Config holds runner-level settings that are protocol-independent.
 type Config struct {
-	ZotHome      string
+	ZutHome      string
 	Provider     string
 	Model        string
 	AuthMethod   string
@@ -107,7 +107,7 @@ func (r *Runner) handleCommand(cmd Command, msg InboundMessage) {
 	switch cmd {
 	case CmdStart, CmdHelp:
 		_ = r.adapter.Send(context.Background(), msg.ChannelID,
-			"send me any message and i'll forward it to zot. attach an image and i'll pass it to the model. commands: /status, /stop, or plain stop.",
+			"send me any message and i'll forward it to zut. attach an image and i'll pass it to the model. commands: /status, /stop, or plain stop.",
 			SendOptions{ReplyToMessageID: msg.MessageID})
 	case CmdStatus:
 		r.sendStatus(msg.ChannelID, msg.MessageID)

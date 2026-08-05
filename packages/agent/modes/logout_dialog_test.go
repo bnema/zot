@@ -4,8 +4,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/bnema/zut/packages/tui"
 	"github.com/mattn/go-runewidth"
-	"github.com/patriceckhart/zot/packages/tui"
 )
 
 func TestLogoutDialogSelectionBackgroundSpansFullWidth(t *testing.T) {

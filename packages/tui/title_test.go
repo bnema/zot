@@ -6,7 +6,7 @@ import (
 )
 
 func TestSetTitleUsesOSC0(t *testing.T) {
-	if got, want := SetTitle("zot: fix login"), "\x1b]0;zot: fix login\x07"; got != want {
+	if got, want := SetTitle("zut: fix login"), "\x1b]0;zut: fix login\x07"; got != want {
 		t.Fatalf("SetTitle() = %q, want %q", got, want)
 	}
 }

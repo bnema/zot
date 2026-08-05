@@ -8,9 +8,9 @@ import (
 	"sync"
 	"time"
 
+	"github.com/bnema/zut/packages/provider"
+	"github.com/bnema/zut/packages/tui"
 	"github.com/mattn/go-runewidth"
-	"github.com/patriceckhart/zot/packages/provider"
-	"github.com/patriceckhart/zot/packages/tui"
 )
 
 type llamaDialogStep int

@@ -1,6 +1,6 @@
 package telegram
 
-import "github.com/patriceckhart/zot/packages/agent/modes/bot"
+import "github.com/bnema/zut/packages/agent/modes/bot"
 
 // StatusSnapshot is an alias for bot.StatusSnapshot for backward compatibility.
 type StatusSnapshot = bot.StatusSnapshot

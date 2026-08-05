@@ -1,5 +1,5 @@
 // Package extproto defines the JSON-over-stdin/stdout wire format
-// spoken between zot and its extension subprocesses. Both the host
+// spoken between zut and its extension subprocesses. Both the host
 // (packages/agent/extensions) and the SDK (packages/agent/ext) marshal/
 // unmarshal the same types, so changes here ripple through both.
 //
@@ -7,8 +7,8 @@
 // boundaries follow newline boundaries; no multi-line JSON.
 //
 // Direction conventions in this file:
-//   - Type names ending in "FromExt" are sent by the extension to zot.
-//   - Type names ending in "FromHost" are sent by zot to the extension.
+//   - Type names ending in "FromExt" are sent by the extension to zut.
+//   - Type names ending in "FromHost" are sent by zut to the extension.
 //   - Names without a suffix are direction-neutral payloads or shared
 //     value types.
 //
@@ -228,7 +228,7 @@ type ShutdownAckFromExt struct {
 type HelloAckFromHost struct {
 	Type            string          `json:"type"`
 	ProtocolVersion int             `json:"protocol_version"`
-	ZotVersion      string          `json:"zot_version"`
+	ZutVersion      string          `json:"zut_version"`
 	Provider        string          `json:"provider"`
 	Model           string          `json:"model"`
 	CWD             string          `json:"cwd"`

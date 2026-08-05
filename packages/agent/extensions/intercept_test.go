@@ -83,7 +83,7 @@ done
 		t.Fatal(err)
 	}
 
-	// ZotHome is unused here; we load the extension explicitly.
+	// ZutHome is unused here; we load the extension explicitly.
 	m := New(t.TempDir(), "", "0.0.0-test", "anthropic", "claude-test", nil)
 	t.Cleanup(func() { m.Stop(2 * time.Second) })
 

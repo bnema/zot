@@ -3,7 +3,7 @@ package modes
 import (
 	"strings"
 
-	"github.com/patriceckhart/zot/packages/provider"
+	"github.com/bnema/zut/packages/provider"
 )
 
 type clipboardImageAttachment struct {

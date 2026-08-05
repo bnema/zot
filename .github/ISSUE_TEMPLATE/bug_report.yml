@@ -24,7 +24,7 @@ body:
     attributes:
       label: Expected behavior
       description: What should have happened instead?
-      placeholder: "I expected zot to..."
+      placeholder: "I expected zut to..."
     validations:
       required: true
 
@@ -32,7 +32,7 @@ body:
     id: version
     attributes:
       label: Version
-      description: "e.g. 0.0.1 — run `zot --version` to check"
+      description: "e.g. 0.0.1 — run `zut --version` to check"
     validations:
       required: true
 

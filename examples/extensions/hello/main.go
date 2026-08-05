@@ -1,4 +1,4 @@
-// hello — a tiny zot extension that registers /hello and /summon.
+// hello — a tiny zut extension that registers /hello and /summon.
 //
 // Build it:
 //
@@ -6,14 +6,14 @@
 //	go build -o hello .
 //
 // Then drop it next to its extension.json under
-// $ZOT_HOME/extensions/hello/, or run `zot ext install ./hello`
+// $ZUT_HOME/extensions/hello/, or run `zut ext install ./hello`
 // from this directory.
 package main
 
 import (
 	"strings"
 
-	"github.com/patriceckhart/zot/packages/agent/ext"
+	"github.com/bnema/zut/packages/agent/ext"
 )
 
 func main() {

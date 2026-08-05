@@ -1,5 +1,5 @@
 // Package subagents discovers named agent profiles that can be selected by
-// zot's subagent supervisor. Profiles use the common markdown/frontmatter layout:
+// zut's subagent supervisor. Profiles use the common markdown/frontmatter layout:
 // a YAML-like metadata block followed by the agent's system prompt.
 //
 // Discovery prefers explicitly configured directories, then the shared
@@ -180,7 +180,7 @@ func searchDirs(cwd, userHome string) []location {
 			out = append(out, location{dir: dir, label: label})
 		}
 	}
-	if extra := os.Getenv("ZOT_AGENT_PROFILES"); extra != "" {
+	if extra := os.Getenv("ZUT_AGENT_PROFILES"); extra != "" {
 		for _, dir := range filepath.SplitList(extra) {
 			dir = strings.TrimSpace(dir)
 			if dir != "" && !filepath.IsAbs(dir) && strings.TrimSpace(cwd) != "" {
@@ -192,7 +192,7 @@ func searchDirs(cwd, userHome string) []location {
 	if userHome != "" {
 		add(filepath.Join(userHome, ".agents", "agents"), "global (agents)")
 		// This is an additional compatibility location. The shared .agents
-		// path above remains zot's documented default.
+		// path above remains zut's documented default.
 		add(filepath.Join(userHome, ".pi", "agent", "agents"), "global (pi)")
 	}
 	return out

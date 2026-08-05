@@ -3,8 +3,8 @@ package agent
 import (
 	"fmt"
 
-	"github.com/patriceckhart/zot/packages/provider"
-	"github.com/patriceckhart/zot/packages/tui"
+	"github.com/bnema/zut/packages/provider"
+	"github.com/bnema/zut/packages/tui"
 )
 
 type configSettingsStore struct{}

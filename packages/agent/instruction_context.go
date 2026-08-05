@@ -3,8 +3,8 @@ package agent
 import (
 	"sort"
 
-	"github.com/patriceckhart/zot/packages/agent/extensions"
-	"github.com/patriceckhart/zot/packages/agent/skills"
+	"github.com/bnema/zut/packages/agent/extensions"
+	"github.com/bnema/zut/packages/agent/skills"
 )
 
 // instructionContextPaths returns the loaded instruction paths in effective

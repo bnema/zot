@@ -3,8 +3,8 @@
 .DEFAULT_GOAL := help
 
 GO ?= go
-PKG ?= ./cmd/zot
-BINARY ?= zot
+PKG ?= ./cmd/zut
+BINARY ?= zut
 BIN_DIR ?= bin
 DEV_VERSION ?= 0.0.0-dev
 VERSION ?= $(DEV_VERSION)
@@ -17,7 +17,7 @@ LDFLAGS := -s -w -X main.version=$(VERSION)
 
 help:
 	@printf '%s\n' \
-		'build       build ./bin/zot' \
+		'build       build ./bin/zut' \
 		'install     install the current checkout with go install' \
 		'go-install  install a published module version (GO_INSTALL_VERSION=latest)' \
 		'test        run all tests with the race detector' \
@@ -27,7 +27,7 @@ help:
 		'lint-install install golangci-lint $(GOLANGCI_LINT_VERSION)' \
 		'fmt         format Go source files' \
 		'check       run test-fast and lint' \
-		'run         build and run ./bin/zot (pass ARGS="...")' \
+		'run         build and run ./bin/zut (pass ARGS="...")' \
 		'clean       remove build output' \
 		'release     cross-build release binaries (set VERSION=...)'
 
@@ -41,7 +41,7 @@ install:
 
 # Install a published/module version, rather than the current checkout.
 go-install:
-	$(GO) install github.com/patriceckhart/zot/cmd/zot@$(GO_INSTALL_VERSION)
+	$(GO) install github.com/bnema/zut/cmd/zut@$(GO_INSTALL_VERSION)
 
 test:
 	$(GO) test -race ./...

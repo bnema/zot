@@ -20,7 +20,7 @@ import (
 //     talk to the model.
 //
 //   - Forgetting --cwd: the child resolved tools against the parent
-//     zot's working directory, defeating the whole point of the
+//     zut's working directory, defeating the whole point of the
 //     worktree isolation.
 //
 //   - Forgetting --session: a daemon-mode agent without a session
@@ -31,10 +31,10 @@ import (
 // positions. If a flag is renamed, update both the runner and this
 // test so we notice immediately.
 func TestCredentialStdinHelperProcess(t *testing.T) {
-	if os.Getenv("ZOT_SUBAGENT_CREDENTIAL_HELPER") != "1" {
+	if os.Getenv("ZUT_SUBAGENT_CREDENTIAL_HELPER") != "1" {
 		return
 	}
-	if os.Getenv("ZOT_SUBAGENT_CREDENTIAL_STDIN") != "1" {
+	if os.Getenv("ZUT_SUBAGENT_CREDENTIAL_STDIN") != "1" {
 		os.Exit(2)
 	}
 	var credential Credential
@@ -67,7 +67,7 @@ func TestWorkerEnvironmentRedactsProviderSecrets(t *testing.T) {
 	t.Setenv("CUSTOM_PROVIDER_KEY", "key-secret")
 	t.Setenv("AWS_ACCESS_KEY_ID", "aws-access-secret")
 	t.Setenv("GOOGLE_APPLICATION_CREDENTIALS", "/tmp/service-account.json")
-	t.Setenv("ZOT_SUBAGENT_TEST_VALUE", "not-secret")
+	t.Setenv("ZUT_SUBAGENT_TEST_VALUE", "not-secret")
 	env := strings.Join(workerEnvironment("openai"), "\n")
 	for _, secret := range []string{
 		"OPENAI_API_KEY=openai-secret",
@@ -83,7 +83,7 @@ func TestWorkerEnvironmentRedactsProviderSecrets(t *testing.T) {
 			t.Fatalf("worker environment leaked %s", secret)
 		}
 	}
-	if !strings.Contains(env, "ZOT_SUBAGENT_TEST_VALUE=not-secret") {
+	if !strings.Contains(env, "ZUT_SUBAGENT_TEST_VALUE=not-secret") {
 		t.Fatal("worker environment dropped unrelated variables")
 	}
 
@@ -98,7 +98,7 @@ func TestWorkerEnvironmentRedactsProviderSecrets(t *testing.T) {
 }
 
 func TestExecRunnerTransfersCredentialOnlyOnStdin(t *testing.T) {
-	t.Setenv("ZOT_SUBAGENT_CREDENTIAL_HELPER", "1")
+	t.Setenv("ZUT_SUBAGENT_CREDENTIAL_HELPER", "1")
 	root := t.TempDir()
 	a := &Agent{
 		ID:           "credential-test",
@@ -147,7 +147,7 @@ func TestApplyEventPreservesMultilineRolesAndFinalAssistant(t *testing.T) {
 
 func TestSubagentWorkerArgs(t *testing.T) {
 	args := subagentWorkerArgs(subagentWorkerArgsOpts{
-		Exe:         "/path/to/zot",
+		Exe:         "/path/to/zut",
 		Dir:         "/tmp/worktree",
 		SessionPath: "/tmp/state/session.json",
 		InboxPath:   "/tmp/state/in.sock",
@@ -158,7 +158,7 @@ func TestSubagentWorkerArgs(t *testing.T) {
 	if len(args) < 7 {
 		t.Fatalf("argv unexpectedly short: %v", args)
 	}
-	if args[0] != "/path/to/zot" {
+	if args[0] != "/path/to/zut" {
 		t.Fatalf("argv[0] = %q; want the binary path", args[0])
 	}
 	// The task must come last so anything that looks flag-like in
@@ -195,8 +195,8 @@ func TestSubagentWorkerArgs(t *testing.T) {
 }
 
 func TestResolveSubagentExecutableUsesCurrentWhenAvailable(t *testing.T) {
-	got, err := resolveSubagentExecutable(context.Background(), "/current/bin/zot", "/old/bin/zot", func(_ context.Context, candidate string) (string, error) {
-		if candidate == "/current/bin/zot" {
+	got, err := resolveSubagentExecutable(context.Background(), "/current/bin/zut", "/old/bin/zut", func(_ context.Context, candidate string) (string, error) {
+		if candidate == "/current/bin/zut" {
 			return candidate, nil
 		}
 		return "", os.ErrNotExist
@@ -204,22 +204,22 @@ func TestResolveSubagentExecutableUsesCurrentWhenAvailable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got != "/current/bin/zot" {
+	if got != "/current/bin/zut" {
 		t.Fatalf("executable = %q, want current executable", got)
 	}
 }
 
 func TestResolveSubagentExecutableFallsBackToPath(t *testing.T) {
-	got, err := resolveSubagentExecutable(context.Background(), "/removed/.local/bin/zot", "/removed/.local/bin/zot", func(_ context.Context, candidate string) (string, error) {
-		if candidate == "zot" {
-			return "/active/go/bin/zot", nil
+	got, err := resolveSubagentExecutable(context.Background(), "/removed/.local/bin/zut", "/removed/.local/bin/zut", func(_ context.Context, candidate string) (string, error) {
+		if candidate == "zut" {
+			return "/active/go/bin/zut", nil
 		}
 		return "", os.ErrNotExist
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got != "/active/go/bin/zot" {
+	if got != "/active/go/bin/zut" {
 		t.Fatalf("executable = %q, want PATH fallback", got)
 	}
 }
@@ -227,16 +227,16 @@ func TestResolveSubagentExecutableFallsBackToPath(t *testing.T) {
 func TestResolveSubagentExecutableCancelsOtherLookupsAfterFirstSuccess(t *testing.T) {
 	slowStarted := make(chan struct{})
 	slowCanceled := make(chan struct{})
-	got, err := resolveSubagentExecutable(context.Background(), "/current/bin/zot", "/old/bin/zot", func(ctx context.Context, candidate string) (string, error) {
+	got, err := resolveSubagentExecutable(context.Background(), "/current/bin/zut", "/old/bin/zut", func(ctx context.Context, candidate string) (string, error) {
 		switch candidate {
-		case "/current/bin/zot":
+		case "/current/bin/zut":
 			close(slowStarted)
 			<-ctx.Done()
 			close(slowCanceled)
 			return "", ctx.Err()
-		case "zot":
+		case "zut":
 			<-slowStarted
-			return "/active/go/bin/zot", nil
+			return "/active/go/bin/zut", nil
 		default:
 			return "", os.ErrNotExist
 		}
@@ -244,7 +244,7 @@ func TestResolveSubagentExecutableCancelsOtherLookupsAfterFirstSuccess(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got != "/active/go/bin/zot" {
+	if got != "/active/go/bin/zut" {
 		t.Fatalf("executable = %q, want first successful lookup", got)
 	}
 	select {
@@ -256,7 +256,7 @@ func TestResolveSubagentExecutableCancelsOtherLookupsAfterFirstSuccess(t *testin
 
 func TestSubagentWorkerArgsPropagatesProviderConnectionSettings(t *testing.T) {
 	args := subagentWorkerArgs(subagentWorkerArgsOpts{
-		Exe:         "/zot",
+		Exe:         "/zut",
 		Dir:         "/work",
 		SessionPath: "/state/session.json",
 		InboxPath:   "/state/inbox.sock",
@@ -282,7 +282,7 @@ func TestDefaultChildArgsPropagatesProviderConnectionSettings(t *testing.T) {
 		BaseURL:     "https://gateway.example.test/v1",
 		InsecureTLS: true,
 	}
-	args := defaultChildArgs("/zot", a, "/state/session.json", "/state/inbox.sock")
+	args := defaultChildArgs("/zut", a, "/state/session.json", "/state/inbox.sock")
 	if i := indexOf(args, "--base-url"); i < 0 || safeAt(args, i+1) != a.BaseURL {
 		t.Fatalf("argv = %v, want Agent.BaseURL propagated", args)
 	}
@@ -296,7 +296,7 @@ func TestDefaultChildArgsPropagatesProviderConnectionSettings(t *testing.T) {
 // positional which the arg parser would treat as a real prompt.
 func TestSubagentWorkerArgsEmptyTaskOmitsPositional(t *testing.T) {
 	args := subagentWorkerArgs(subagentWorkerArgsOpts{
-		Exe: "/zot", Dir: "/wt", SessionPath: "/s.json", InboxPath: "/in.sock",
+		Exe: "/zut", Dir: "/wt", SessionPath: "/s.json", InboxPath: "/in.sock",
 	})
 	for _, a := range args {
 		if a == "" {
@@ -320,7 +320,7 @@ func TestSubagentWorkerArgsEmptyTaskOmitsPositional(t *testing.T) {
 // initial user turn.
 func TestDefaultChildArgsSpawnIncludesTask(t *testing.T) {
 	a := &Agent{Dir: "/wt", Task: "do thing"}
-	args := defaultChildArgs("/zot", a, "/s.json", "/in.sock")
+	args := defaultChildArgs("/zut", a, "/s.json", "/in.sock")
 	if got := args[len(args)-1]; got != "do thing" {
 		t.Fatalf("spawn argv last = %q; want %q\n%v", got, "do thing", args)
 	}
@@ -334,7 +334,7 @@ func TestDefaultChildArgsSpawnIncludesTask(t *testing.T) {
 // user types next via the inbox.
 func TestDefaultChildArgsResumeOmitsTask(t *testing.T) {
 	a := &Agent{Dir: "/wt", Task: "do thing", Resuming: true}
-	args := defaultChildArgs("/zot", a, "/s.json", "/in.sock")
+	args := defaultChildArgs("/zut", a, "/s.json", "/in.sock")
 	for _, v := range args {
 		if v == "do thing" {
 			t.Fatalf("resume argv contains the task; it would re-fire as a duplicate turn\n%v", args)

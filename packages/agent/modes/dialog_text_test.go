@@ -6,8 +6,8 @@ import (
 
 	"github.com/mattn/go-runewidth"
 
-	"github.com/patriceckhart/zot/packages/agent/subagents"
-	"github.com/patriceckhart/zot/packages/tui"
+	"github.com/bnema/zut/packages/agent/subagents"
+	"github.com/bnema/zut/packages/tui"
 )
 
 func assertRowsFitWidth(t *testing.T, rows []string, width int) {
