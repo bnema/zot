@@ -56,6 +56,86 @@ func (c *compactQueueClient) Stream(ctx context.Context, req provider.Request) (
 	return out, nil
 }
 
+type autoCompactPacerClient struct {
+	compactionStarted chan struct{}
+	releaseCompaction chan struct{}
+
+	mu    sync.Mutex
+	calls int
+}
+
+func (c *autoCompactPacerClient) Name() string { return "auto-compact-pacer-test" }
+
+func (c *autoCompactPacerClient) Stream(ctx context.Context, _ provider.Request) (<-chan provider.Event, error) {
+	c.mu.Lock()
+	c.calls++
+	call := c.calls
+	c.mu.Unlock()
+
+	out := make(chan provider.Event, 3)
+	go func() {
+		defer close(out)
+		switch call {
+		case 1:
+			const response = "a final response that is still buffered for typewriter rendering"
+			out <- provider.EventTextDelta{Delta: response}
+			out <- provider.EventUsage{Usage: provider.Usage{InputTokens: 150000}}
+			out <- provider.EventDone{
+				Stop: provider.StopEnd,
+				Message: provider.Message{
+					Role:    provider.RoleAssistant,
+					Content: []provider.Content{provider.TextBlock{Text: response}},
+				},
+			}
+		case 2:
+			close(c.compactionStarted)
+			select {
+			case <-ctx.Done():
+				out <- provider.EventDone{Stop: provider.StopAborted, Err: ctx.Err()}
+			case <-c.releaseCompaction:
+				out <- provider.EventTextDelta{Delta: "summary"}
+				out <- provider.EventDone{Stop: provider.StopEnd}
+			}
+		}
+	}()
+	return out, nil
+}
+
+func TestAutoCompactionSettlesFinalStreamingStateBeforeCompacting(t *testing.T) {
+	client := &autoCompactPacerClient{
+		compactionStarted: make(chan struct{}),
+		releaseCompaction: make(chan struct{}),
+	}
+	agent := core.NewAgent(client, "test-model", "", nil)
+	threshold := 70
+	interactive := NewInteractive(InteractiveConfig{
+		Agent:                agent,
+		Provider:             "anthropic",
+		Model:                "claude-sonnet-4-5-20250929",
+		AutoCompactThreshold: &threshold,
+	})
+	interactive.runCtx = context.Background()
+
+	// Do not start the pacer: the test controls the unpainted final delta so
+	// it can prove compaction never races with a still-live streaming frame.
+	interactive.startTurn(context.Background(), "initial request")
+	select {
+	case <-client.compactionStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("auto-compaction did not start")
+	}
+
+	interactive.mu.Lock()
+	streaming, pending := interactive.streaming.Len(), len(interactive.streamPending)
+	streamOn, flushPending := interactive.streamOn, interactive.streamFlushPending
+	interactive.mu.Unlock()
+	if streaming != 0 || pending != 0 || streamOn || flushPending {
+		t.Fatalf("auto-compaction started with live stream state: rendered=%d pending=%d on=%t flush=%t", streaming, pending, streamOn, flushPending)
+	}
+
+	close(client.releaseCompaction)
+}
+
 func TestPromptSubmittedDuringCompactionStartsFollowUpTurn(t *testing.T) {
 	client := &compactQueueClient{
 		compactionStarted: make(chan struct{}),

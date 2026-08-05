@@ -6471,7 +6471,7 @@ func (i *Interactive) runCompact(parent context.Context, auto bool) {
 			i.toolCalls = map[string]*tui.ToolCallView{}
 			i.toolOrder = nil
 			i.toolGate = map[string]int{}
-			i.view.InvalidateRenderCache()
+			i.resetTranscriptRenderLocked()
 			switch {
 			case i.continueAfterCompact:
 				continueExisting = true
@@ -6864,6 +6864,13 @@ func (i *Interactive) startTurnRequest(parent context.Context, prompt string, im
 		}
 		continueQueued := !awaitingPre && !hasNext && agentQueued > 0 && err == nil && ctx.Err() == nil
 		shouldAutoCompact := !awaitingPre && !hasNext && agentQueued == 0 && err == nil && ctx.Err() == nil && i.shouldAutoCompactLocked()
+		// The agent run can finish before the paced final text reaches the
+		// transcript. A compaction replaces that transcript, so it must never
+		// race the still-live stream frame; otherwise stale deltas can repaint
+		// after the replacement and corrupt the scrollback renderer's model.
+		if recoverContextOverflow || shouldAutoCompact {
+			i.resetStreamingStateLocked()
+		}
 		alertReason := mainAlertReason(ctx, err, lastTurnErr, lastStop, awaitingPre, hasNext || agentQueued > 0, offer, recoverContextOverflow, shouldAutoCompact)
 		i.busy = hasNext || continueQueued || recoverContextOverflow || shouldAutoCompact
 		i.mu.Unlock()
@@ -8405,8 +8412,25 @@ func assistantText(m provider.Message) string {
 	return sb.String()
 }
 
+// resetTranscriptRenderLocked invalidates every render cache that assumes
+// the previous transcript remains structurally intact. Compaction is a
+// replacement, not an append: the flow renderer must repaint from the new
+// transcript rather than diff it against scrollback rows from the old one.
+// Must be called with i.mu held.
+func (i *Interactive) resetTranscriptRenderLocked() {
+	i.view.InvalidateRenderCache()
+	i.chatCacheValid = false
+	i.prevChatLen = 0
+	i.prevChatCols = 0
+	i.prevChatRows = 0
+	i.prevScrollOffset = 0
+	if i.rend != nil {
+		i.rend.Invalidate()
+	}
+}
+
 // resetStreamingStateLocked clears every piece of streaming state
-// in one shot. Used by abort paths (turn cancel, compact finish,
+// in one shot. Used by abort paths (turn cancel, compact hand-off,
 // queue drain) so the pacer doesn't keep draining stale runes from
 // a prior turn. Must be called with i.mu held.
 func (i *Interactive) resetStreamingStateLocked() {
