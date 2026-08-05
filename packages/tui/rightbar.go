@@ -77,15 +77,19 @@ func RenderRightBar(th Theme, widgets []RightBarWidget, width, height int) []str
 
 	content := make([]string, 0, height)
 	truncated := false
-	padLine := func(text string) string {
-		text = truncateRightBarLine(text, width)
+	padLine := func(text string, phase bool) string {
+		if phase {
+			text = truncateRightBarPhaseLine(text, width)
+		} else {
+			text = truncateRightBarLine(text, width)
+		}
 		if visible := visibleWidth(text); visible < width {
 			text += strings.Repeat(" ", width-visible)
 		}
 		return text
 	}
 	paintLine := func(text string, color int, dim, phase bool) string {
-		text = padLine(text)
+		text = padLine(text, phase)
 		if color < 0 {
 			return text
 		}
@@ -199,6 +203,23 @@ func truncateRightBarLine(text string, width int) string {
 		return truncateToWidth("...", width)
 	}
 	return truncateToWidth(text, width-3) + "..."
+}
+
+func truncateRightBarPhaseLine(text string, width int) string {
+	if width <= 0 || visibleWidth(text) <= width {
+		return text
+	}
+	nameStart, nameEnd, ok := rightBarChecklistPhaseName(text)
+	if !ok {
+		return truncateRightBarLine(text, width)
+	}
+	prefix := text[:nameStart]
+	suffix := text[nameEnd:]
+	nameWidth := width - visibleWidth(prefix) - visibleWidth(suffix)
+	if nameWidth <= 0 {
+		return truncateRightBarLine(text, width)
+	}
+	return prefix + truncateRightBarLine(text[nameStart:nameEnd], nameWidth) + suffix
 }
 
 func rightBarChecklistIndent(lines []string) int {

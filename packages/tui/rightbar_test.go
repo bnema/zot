@@ -71,6 +71,23 @@ func TestRenderRightBarClipsLongWidgetLinesWithEllipsis(t *testing.T) {
 	}
 }
 
+func TestRenderRightBarPreservesPhaseProgressWhenTitleIsClipped(t *testing.T) {
+	lines := RenderRightBar(Dark, []RightBarWidget{
+		{
+			Extension: "tasked-phases",
+			Lines:     []string{"[ ] A phase title that is much too long to fit  0/3"},
+		},
+	}, 24, 5)
+	plainLines := strings.Split(stripANSI(strings.Join(lines, "\n")), "\n")
+	if len(plainLines) < 3 {
+		t.Fatalf("phase row is missing: %q", plainLines)
+	}
+	phase := strings.TrimRight(plainLines[2], " ")
+	if !strings.HasSuffix(phase, "0/3") || !strings.Contains(phase, "...  0/3") {
+		t.Fatalf("phase progress was clipped with its title: %q", phase)
+	}
+}
+
 func TestRenderRightBarUsesChecklistIndentEllipsisAndBoldPhases(t *testing.T) {
 	lines := RenderRightBar(Dark, []RightBarWidget{{
 		Extension: "tasked-phases",
