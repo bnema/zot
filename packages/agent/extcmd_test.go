@@ -215,6 +215,7 @@ func TestParseExtInstallArgs(t *testing.T) {
 		{name: "equals", args: []string{"--build=go", "./ext"}, builder: "go"},
 		{name: "separate", args: []string{"./ext", "--build", "go"}, builder: "go"},
 		{name: "missing builder", args: []string{"--build=", "./ext"}, wantErr: "requires a builder"},
+		{name: "missing separate builder", args: []string{"./ext", "--build"}, wantErr: "requires a builder"},
 		{name: "missing source", args: []string{"--build=go"}, wantErr: "usage:"},
 		{name: "extra source", args: []string{"./one", "./two"}, wantErr: "usage:"},
 		{name: "unknown option", args: []string{"--wat", "./ext"}, wantErr: "unknown ext install option"},
@@ -257,6 +258,23 @@ func TestExtInstallRejectsBuildForThemeOnly(t *testing.T) {
 	}
 	if _, statErr := os.Stat(filepath.Join(home, "extensions", "theme-only")); !os.IsNotExist(statErr) {
 		t.Fatalf("failed build left a destination: %v", statErr)
+	}
+}
+
+func TestExtInstallRejectsWhitespaceManifestName(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("ZOT_HOME", home)
+	src := filepath.Join(t.TempDir(), "whitespace-name")
+	if err := os.MkdirAll(src, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(src, "extension.json"), []byte(`{"name":" whitespace-name ","exec":"go"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	err := extInstall([]string{src})
+	if err == nil || !strings.Contains(err.Error(), "leading or trailing whitespace") {
+		t.Fatalf("error = %v, want whitespace validation error", err)
 	}
 }
 

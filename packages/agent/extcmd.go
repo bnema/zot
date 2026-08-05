@@ -92,7 +92,7 @@ func extList() error {
 			continue
 		}
 		for _, e := range entries {
-			if !e.IsDir() {
+			if !e.IsDir() || strings.HasPrefix(e.Name(), ".") {
 				continue
 			}
 			extDir := filepath.Join(dir, e.Name())
@@ -223,7 +223,7 @@ func scanExtDoctorStatic() []extDoctorStaticRow {
 		}
 		sort.Slice(entries, func(i, j int) bool { return entries[i].Name() < entries[j].Name() })
 		for _, e := range entries {
-			if !e.IsDir() {
+			if !e.IsDir() || strings.HasPrefix(e.Name(), ".") {
 				continue
 			}
 			extDir := filepath.Join(sd.dir, e.Name())
@@ -523,7 +523,7 @@ func extInstall(args []string) error {
 		return fmt.Errorf("copy extension: %w", err)
 	}
 	if opts.builder != "" {
-		if err := buildLocalExtension(opts.builder, absSrc, staged, manifest); err != nil {
+		if err := buildLocalExtension(absSrc, staged, manifest); err != nil {
 			return err
 		}
 	}
@@ -591,14 +591,10 @@ func parseExtInstallArgs(args []string) (extInstallOptions, error) {
 	return opts, nil
 }
 
-func buildLocalExtension(builder, sourceDir, stagedDir string, manifest extensions.Manifest) error {
+func buildLocalExtension(sourceDir, stagedDir string, manifest extensions.Manifest) error {
 	if manifest.Exec == "" {
 		return errors.New("cannot build a theme-only extension; it does not declare an executable")
 	}
-	if builder != "go" {
-		return fmt.Errorf("unsupported extension builder %q (currently supported: go)", builder)
-	}
-
 	execRel, err := extensionRelativeExecPath(sourceDir, manifest.Exec)
 	if err != nil {
 		return fmt.Errorf("%w: --build=go requires an extension-relative executable path", err)
@@ -685,6 +681,9 @@ func readExtensionManifest(dir string) (extensions.Manifest, error) {
 	if strings.TrimSpace(manifest.Name) == "" {
 		return extensions.Manifest{}, errors.New("manifest: name is required")
 	}
+	if manifest.Name != strings.TrimSpace(manifest.Name) {
+		return extensions.Manifest{}, fmt.Errorf("manifest: extension name %q has leading or trailing whitespace", manifest.Name)
+	}
 	if manifest.Name == "." || manifest.Name == ".." || strings.ContainsAny(manifest.Name, `/\\`) {
 		return extensions.Manifest{}, fmt.Errorf("manifest: invalid extension name %q", manifest.Name)
 	}
@@ -744,7 +743,7 @@ func validateExtensionExecutable(dir string, manifest extensions.Manifest) error
 		return fmt.Errorf("extension executable %q is a directory", manifest.Exec)
 	}
 	if runtime.GOOS != "windows" && info.Mode().Perm()&0o111 == 0 {
-		return fmt.Errorf("extension executable %q is not executable; run chmod +x %s before installing", manifest.Exec, filepath.Base(path))
+		return fmt.Errorf("extension executable %q is not executable; run chmod +x on it in the source directory before installing", manifest.Exec)
 	}
 	return nil
 }

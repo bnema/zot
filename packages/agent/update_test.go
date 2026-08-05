@@ -2,6 +2,8 @@ package agent
 
 import (
 	"context"
+	"errors"
+	"net/http"
 	"os"
 	"path/filepath"
 	"testing"
@@ -20,8 +22,22 @@ func TestIsDevVersion(t *testing.T) {
 	}
 }
 
+type countingRoundTripper struct {
+	calls int
+}
+
+func (r *countingRoundTripper) RoundTrip(*http.Request) (*http.Response, error) {
+	r.calls++
+	return nil, errors.New("unexpected network request")
+}
+
 func TestCheckForUpdateSkipsDevVersionWithoutCacheOrNetwork(t *testing.T) {
 	home := t.TempDir()
+	transport := &countingRoundTripper{}
+	previousTransport := http.DefaultTransport
+	http.DefaultTransport = transport
+	t.Cleanup(func() { http.DefaultTransport = previousTransport })
+
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
@@ -31,5 +47,8 @@ func TestCheckForUpdateSkipsDevVersionWithoutCacheOrNetwork(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(home, updateCheckFile)); !os.IsNotExist(err) {
 		t.Fatalf("development check wrote a cache file: %v", err)
+	}
+	if transport.calls != 0 {
+		t.Fatalf("development check made %d network requests, want 0", transport.calls)
 	}
 }

@@ -4,6 +4,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"regexp"
 	"runtime/debug"
 	"strings"
 
@@ -59,23 +60,8 @@ func resolvedVersionFromBuildInfo(linkedVersion string, info *debug.BuildInfo) s
 	return strings.TrimPrefix(info.Main.Version, "v")
 }
 
+var pseudoVersionPattern = regexp.MustCompile(`^v[0-9]+\.(0\.0-|[0-9]+\.[0-9]+-([^+]*\.)?0\.)[0-9]{14}-[A-Za-z0-9]+(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$`)
+
 func isPseudoVersion(version string) bool {
-	version = strings.TrimPrefix(version, "v")
-	parts := strings.Split(version, "-")
-	if len(parts) < 3 {
-		return false
-	}
-	timestamp := parts[len(parts)-2]
-	if strings.HasPrefix(timestamp, "0.") {
-		timestamp = timestamp[2:]
-	}
-	if len(timestamp) != 14 {
-		return false
-	}
-	for _, ch := range timestamp {
-		if ch < '0' || ch > '9' {
-			return false
-		}
-	}
-	return true
+	return pseudoVersionPattern.MatchString(version)
 }

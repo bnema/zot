@@ -84,7 +84,8 @@ The `examples/extensions/` directory in the repo is reference code, not a defaul
 # install a Go example and explicitly build it in the staged install
 zot ext install --build=go path/to/zot/examples/extensions/hello
 
-# or load straight from the repo for one zot session
+# or build it in the source tree for a one-run development load
+cd path/to/zot/examples/extensions/hello && go build -o hello .
 zot --ext path/to/zot/examples/extensions/hello
 ```
 

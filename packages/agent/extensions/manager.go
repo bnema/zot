@@ -279,7 +279,7 @@ func (m *Manager) Discover(ctx context.Context) []error {
 			continue // missing directory is fine
 		}
 		for _, e := range entries {
-			if !e.IsDir() {
+			if !e.IsDir() || strings.HasPrefix(e.Name(), ".") {
 				continue
 			}
 			if seenDirs[e.Name()] {

@@ -66,13 +66,13 @@ clean:
 	rm -rf "$(BIN_DIR)"
 
 release:
-	@if [ "$(VERSION)" = "$(DEV_VERSION)" ] || [ "$(VERSION)" = "0.0.0" ]; then \
+	@if [ "$(VERSION)" = "$(DEV_VERSION)" ] || [ "$(VERSION)" = "0.0.0" ] || printf '%s\n' "$(VERSION)" | grep -Eq '(^|[.-])[0-9]{14}-[A-Za-z0-9]+'; then \
 		echo "set VERSION to a release version, for example: make release VERSION=0.1.0" >&2; \
 		exit 1; \
 	fi
 	@mkdir -p "$(BIN_DIR)"
-	GOOS=linux   GOARCH=amd64 $(GO) build -trimpath -ldflags "$(LDFLAGS)" -o "$(BIN_DIR)/zot-linux-amd64" ./cmd/zot
-	GOOS=linux   GOARCH=arm64 $(GO) build -trimpath -ldflags "$(LDFLAGS)" -o "$(BIN_DIR)/zot-linux-arm64" ./cmd/zot
-	GOOS=darwin  GOARCH=amd64 $(GO) build -trimpath -ldflags "$(LDFLAGS)" -o "$(BIN_DIR)/zot-darwin-amd64" ./cmd/zot
-	GOOS=darwin  GOARCH=arm64 $(GO) build -trimpath -ldflags "$(LDFLAGS)" -o "$(BIN_DIR)/zot-darwin-arm64" ./cmd/zot
-	GOOS=windows GOARCH=amd64 $(GO) build -trimpath -ldflags "$(LDFLAGS)" -o "$(BIN_DIR)/zot-windows-amd64.exe" ./cmd/zot
+	GOOS=linux   GOARCH=amd64 $(GO) build -trimpath -ldflags "$(LDFLAGS)" -o "$(BIN_DIR)/$(BINARY)-linux-amd64" $(PKG)
+	GOOS=linux   GOARCH=arm64 $(GO) build -trimpath -ldflags "$(LDFLAGS)" -o "$(BIN_DIR)/$(BINARY)-linux-arm64" $(PKG)
+	GOOS=darwin  GOARCH=amd64 $(GO) build -trimpath -ldflags "$(LDFLAGS)" -o "$(BIN_DIR)/$(BINARY)-darwin-amd64" $(PKG)
+	GOOS=darwin  GOARCH=arm64 $(GO) build -trimpath -ldflags "$(LDFLAGS)" -o "$(BIN_DIR)/$(BINARY)-darwin-arm64" $(PKG)
+	GOOS=windows GOARCH=amd64 $(GO) build -trimpath -ldflags "$(LDFLAGS)" -o "$(BIN_DIR)/$(BINARY)-windows-amd64.exe" $(PKG)
