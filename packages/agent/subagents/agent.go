@@ -370,15 +370,6 @@ func (a *Agent) SetOnTurnEnd(fn func(step int, errMsg string)) {
 	}
 }
 
-func (a *Agent) setStatus(s Status) {
-	a.mu.Lock()
-	a.status = s
-	a.mu.Unlock()
-	if s == StatusRunning {
-		a.setProcessState(ProcessAlive)
-	}
-}
-
 func (a *Agent) setActivity(msg string) {
 	a.mu.Lock()
 	a.activity = strings.TrimSpace(msg)

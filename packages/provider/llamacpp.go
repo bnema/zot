@@ -508,9 +508,9 @@ func (c *HuggingFaceClient) request(ctx context.Context, path string, out any) e
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		if resp.StatusCode == http.StatusTooManyRequests {
-			return errors.New("Hugging Face rate limit reached")
+			return errors.New("hugging face rate limit reached")
 		}
-		return fmt.Errorf("Hugging Face returned HTTP %d", resp.StatusCode)
+		return fmt.Errorf("hugging face returned HTTP %d", resp.StatusCode)
 	}
 	if err := json.NewDecoder(resp.Body).Decode(out); err != nil {
 		return fmt.Errorf("parse Hugging Face response: %w", err)

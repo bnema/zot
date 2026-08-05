@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"image/png"
 	"io"
@@ -17,6 +18,8 @@ import (
 
 	"golang.org/x/image/tiff"
 )
+
+var errClipboardImageTooLarge = errors.New("clipboard image exceeds size limit")
 
 const readClipboardImageScript = `
 on run argv

@@ -78,9 +78,7 @@ func RenderMarkdown(src string, th Theme, width int) string {
 			continue
 		}
 		if inFence {
-			if strings.HasPrefix(line, fenceIndent) {
-				line = line[len(fenceIndent):]
-			}
+			line = strings.TrimPrefix(line, fenceIndent)
 			fenceBuf.WriteString(line)
 			fenceBuf.WriteString("\n")
 			continue
@@ -175,12 +173,8 @@ func splitTableRow(line string) []string {
 	if !strings.Contains(line, "|") {
 		return nil
 	}
-	if strings.HasPrefix(line, "|") {
-		line = strings.TrimPrefix(line, "|")
-	}
-	if strings.HasSuffix(line, "|") {
-		line = strings.TrimSuffix(line, "|")
-	}
+	line = strings.TrimPrefix(line, "|")
+	line = strings.TrimSuffix(line, "|")
 	parts := splitUnescapedPipes(line)
 	for i := range parts {
 		parts[i] = strings.TrimSpace(strings.ReplaceAll(parts[i], `\|`, "|"))

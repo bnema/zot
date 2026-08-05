@@ -548,7 +548,7 @@ func (c *openaiClient) runStream(ctx context.Context, resp *http.Response, req R
 		toolByIdx    = map[int]*blockEntry{} // openai tool_call index -> block
 		reasoningBuf strings.Builder
 		usage        Usage
-		stop         StopReason = StopEnd
+		stop         = StopEnd
 		finalErr     error
 	)
 

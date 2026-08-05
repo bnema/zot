@@ -1079,20 +1079,6 @@ func (v *View) wrapLiveBody(body []string, width int) []string {
 	return out
 }
 
-// toolResultBlock wraps text in thin horizontal rules (top + bottom),
-// indenting the body with four spaces. The rules span the content column.
-// toolBlockRule renders the muted horizontal separator drawn
-// above and below a tool call block. Spans the full content
-// width so it reads as a real section break in the chat
-// regardless of terminal size.
-func toolBlockRule(th Theme, width int) string {
-	w := width
-	if w < 8 {
-		w = 8
-	}
-	return th.FG256(th.Muted, strings.Repeat("─", w))
-}
-
 // toolBoxInnerPad is the number of blank cells kept between a box
 // edge (┌, │, └) and the content inside it. One cell of breathing
 // room makes the label read as part of the box rather than fused to
@@ -2203,21 +2189,6 @@ func (v *View) renderRawFile(text, sourcePath string, startLine int) []string {
 	return out
 }
 
-// toolResultBlock renders the live tool-call result body (shown
-// while the turn is still in flight). The rules that used to
-// bracket this block have been dropped so the live path looks
-// identical to the transcript rendering that replaces it when
-// the turn ends.
-func toolResultBlock(th Theme, text string, width int, color int) []string {
-	var out []string
-	for _, l := range strings.Split(text, "\n") {
-		for _, w := range wrapLine(l, width-4, "    ") {
-			out = append(out, "    "+th.FG256(color, w))
-		}
-	}
-	return out
-}
-
 // defaultToolArgWidth is the number of cells the tool-call header
 // truncates the primary argument (path/command/query) to when the
 // ZOT_TOOL_ARG_WIDTH environment variable is unset or invalid.
@@ -2337,27 +2308,6 @@ func toInt(v any) (int, bool) {
 		return i, true
 	}
 	return 0, false
-}
-
-func collectText(blocks []provider.Content) string {
-	var sb strings.Builder
-	for _, b := range blocks {
-		if tb, ok := b.(provider.TextBlock); ok {
-			if sb.Len() > 0 {
-				sb.WriteString("\n")
-			}
-			sb.WriteString(tb.Text)
-		}
-	}
-	return sb.String()
-}
-
-func truncateLines(s string, n int) string {
-	lines := strings.Split(s, "\n")
-	if len(lines) <= n {
-		return s
-	}
-	return strings.Join(lines[:n], "\n") + "\n  ... (" + fmt.Sprintf("%d", len(lines)-n) + " more)"
 }
 
 // renderCompactionBlock renders a compaction summary as a distinct

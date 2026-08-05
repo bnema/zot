@@ -613,7 +613,6 @@ func Resolve(args Args, requireCred bool) (Resolved, error) {
 				BaseURL:       "",
 				Source:        "gateway",
 			}
-			err = nil
 			// Don't repair config — the routed model id may be valid upstream.
 		} else {
 			fallback := defaultModelForProvider(provName)
@@ -624,10 +623,8 @@ func Resolve(args Args, requireCred bool) (Resolved, error) {
 				// provider, then the global DefaultModel.
 				if candidates := provider.ModelsForProvider(provName); len(candidates) > 0 {
 					fm = candidates[0]
-					ferr = nil
 				} else {
 					fm = provider.DefaultModel
-					ferr = nil
 				}
 			}
 			fmt.Fprintf(os.Stderr,

@@ -1391,9 +1391,7 @@ func (i *Interactive) buildChatLocked(cols int) []string {
 	// transcript area while the command runs, then is replaced by the
 	// final user-context message when it finishes.
 	if i.shellRunning && i.shellLive != "" {
-		for _, line := range strings.Split(strings.TrimRight(i.shellLive, "\n"), "\n") {
-			chat = append(chat, line)
-		}
+		chat = append(chat, strings.Split(strings.TrimRight(i.shellLive, "\n"), "\n")...)
 		chat = append(chat, "")
 	}
 
@@ -4703,7 +4701,7 @@ func (i *Interactive) applyThemeNow(name string) {
 			_ = i.cfg.SettingsStore.SetTheme("auto")
 		}
 		i.cfg.ThemeName = ""
-		th, applied, _ = tui.LoadThemeFromHome(i.cfg.ZotHome, "auto", detected)
+		th, _, _ = tui.LoadThemeFromHome(i.cfg.ZotHome, "auto", detected)
 		i.mu.Lock()
 		i.statusErr = "theme missing; reset to default"
 		i.mu.Unlock()
@@ -5869,81 +5867,6 @@ func (i *Interactive) applySessionSelection(path string) {
 		i.mu.Unlock()
 		i.invalidate()
 	}()
-}
-
-// scrollToLastTurn parks the viewport at the most recent user turn,
-// or at the top if the transcript has no user messages. Used after
-// resume so the user lands looking at where they left off.
-func (i *Interactive) scrollToLastTurn(msgs []provider.Message) {
-	if len(msgs) == 0 {
-		i.mu.Lock()
-		i.scrollOffset = 0
-		i.mu.Unlock()
-		return
-	}
-	// Find the last user message index.
-	lastUser := -1
-	turnNo, totalTurns := 0, 0
-	for idx, m := range msgs {
-		if m.Role == provider.RoleUser {
-			totalTurns++
-			lastUser = idx
-		}
-	}
-	if lastUser < 0 {
-		i.mu.Lock()
-		i.scrollOffset = 0
-		i.mu.Unlock()
-		return
-	}
-	turnNo = totalTurns
-
-	cols := i.lastCols()
-	chat, anchors := i.view.BuildWithAnchors(cols)
-	var row int
-	found := false
-	for _, a := range anchors {
-		if a.MessageIdx == lastUser {
-			row = a.Row
-			found = true
-			break
-		}
-	}
-	if !found {
-		i.mu.Lock()
-		i.scrollOffset = 0
-		i.mu.Unlock()
-		return
-	}
-
-	chatLen := len(chat)
-	page := i.chatPage()
-	if page < 1 {
-		page = 1
-	}
-	offset := chatLen - (row + page)
-	if offset < 0 {
-		offset = 0
-	}
-	maxOffset := chatLen - page
-	if maxOffset < 0 {
-		maxOffset = 0
-	}
-	if offset > maxOffset {
-		offset = maxOffset
-	}
-
-	i.mu.Lock()
-	i.scrollOffset = offset
-	// Mark the parked-turn footer so the user sees "viewing turn N of
-	// M - pgdn to catch up" — same affordance as /jump. Tells them at
-	// a glance that they're looking at history, not the live tail.
-	if offset > 0 {
-		i.parkedTurn = turnNo
-		i.parkedTotal = totalTurns
-	}
-	i.mu.Unlock()
-	i.invalidate()
 }
 
 func (i *Interactive) applyModelSelection(prov, model string) {

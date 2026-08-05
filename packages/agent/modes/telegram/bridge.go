@@ -49,7 +49,6 @@ type Bridge struct {
 	cancel        context.CancelFunc
 	me            *User
 	chatID        int64 // populated after first DM from the paired user
-	replyBuf      strings.Builder
 	workingCancel context.CancelFunc
 
 	// nextReplyFromTelegram is set when the next assistant reply

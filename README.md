@@ -1043,7 +1043,8 @@ make help      # list the important developer commands
 make build     # build ./bin/zot as 0.0.0-dev
 make test      # go test -race ./...
 make test-fast # go test ./...
-make lint      # go vet + gofmt check
+make lint      # golangci-lint + go vet + gofmt check
+make lint-install # install the pinned golangci-lint version
 make fmt       # gofmt -w .
 make install   # install the current checkout with go install
 make go-install # install the latest published module version

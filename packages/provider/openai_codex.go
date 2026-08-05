@@ -463,7 +463,7 @@ func (c *codexClient) runStream(ctx context.Context, resp *http.Response, req Re
 		items    = map[int]*itemState{}
 		order    []int
 		usage    Usage
-		stop     StopReason = StopEnd
+		stop     = StopEnd
 		finalErr error
 	)
 

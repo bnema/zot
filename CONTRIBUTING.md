@@ -75,7 +75,8 @@ make install     # install the current checkout with go install
 make go-install  # install a published module version
 make test        # run all tests with the race detector
 make test-fast   # run all tests without the race detector
-make lint        # run go vet and verify gofmt
+make lint        # run golangci-lint, go vet, and verify gofmt
+make lint-install # install the pinned golangci-lint version
 ```
 
 Tests must not depend on real provider credentials, paid model calls, a developer's global zot state, or a specific terminal. Use local HTTP test servers, fixtures, temporary directories, and synthetic credentials.
@@ -133,6 +134,7 @@ Run focused package tests while developing. Before opening a pull request that c
 ```sh
 gofmt -w <changed-go-files>
 go vet ./...
+golangci-lint run ./...
 go test -race ./...
 git diff --check
 ```

@@ -149,10 +149,10 @@ func (t *ReadTool) Execute(ctx context.Context, raw json.RawMessage, progress fu
 		sb.WriteString("\n")
 	}
 	if truncLines {
-		sb.WriteString(fmt.Sprintf("... [truncated at %d lines]\n", maxReadLines))
+		fmt.Fprintf(&sb, "... [truncated at %d lines]\n", maxReadLines)
 	}
 	if truncBytes {
-		sb.WriteString(fmt.Sprintf("... [truncated at %d bytes]\n", maxReadBytes))
+		fmt.Fprintf(&sb, "... [truncated at %d bytes]\n", maxReadBytes)
 	}
 
 	return core.ToolResult{

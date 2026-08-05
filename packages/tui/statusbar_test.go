@@ -98,7 +98,7 @@ func TestStatusBarReasoningLevelBetweenModelAndStats(t *testing.T) {
 	if modelIdx < 0 || reasoningIdx < 0 || statsIdx < 0 {
 		t.Fatalf("line should contain model, reasoning level, and stats, got %q", plain)
 	}
-	if !(modelIdx < reasoningIdx && reasoningIdx < statsIdx) {
+	if modelIdx >= reasoningIdx || reasoningIdx >= statsIdx {
 		t.Fatalf("reasoning level should sit between model and stats, got %q", plain)
 	}
 }

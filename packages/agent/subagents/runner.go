@@ -6,7 +6,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -403,7 +402,7 @@ func workerEnvironment(provider string) []string {
 	var env []string
 	for _, entry := range os.Environ() {
 		name, _, ok := strings.Cut(entry, "=")
-		if ok && workerSecretEnvName(name) && !(provider == "amazon-bedrock" && isBedrockCredentialEnv(name)) {
+		if ok && workerSecretEnvName(name) && (provider != "amazon-bedrock" || !isBedrockCredentialEnv(name)) {
 			continue
 		}
 		env = append(env, entry)
@@ -436,7 +435,7 @@ func workerSecretEnvName(name string) bool {
 }
 
 func readBoundedLine(r *bufio.Reader, limit int) ([]byte, error, bool) {
-	line, err, truncated, _, _ := readBoundedLineStats(r, limit)
+	line, truncated, _, _, err := readBoundedLineStats(r, limit)
 	return line, err, truncated
 }
 
@@ -444,7 +443,7 @@ func readBoundedLine(r *bufio.Reader, limit int) ([]byte, error, bool) {
 // number of source bytes consumed and whether a newline terminated the record.
 // The follower uses those extra values to avoid advancing past a partial final
 // JSONL record that may be completed by a concurrent append.
-func readBoundedLineStats(r *bufio.Reader, limit int) ([]byte, error, bool, int64, bool) {
+func readBoundedLineStats(r *bufio.Reader, limit int) ([]byte, bool, int64, bool, error) {
 	if limit <= 0 {
 		limit = 512 * 1024
 	}
@@ -467,7 +466,7 @@ func readBoundedLineStats(r *bufio.Reader, limit int) ([]byte, error, bool, int6
 			}
 		}
 		if err != bufio.ErrBufferFull {
-			return line, err, truncated, consumed, len(chunk) > 0 && chunk[len(chunk)-1] == '\n'
+			return line, truncated, consumed, len(chunk) > 0 && chunk[len(chunk)-1] == '\n', err
 		}
 	}
 }
@@ -684,22 +683,3 @@ func applyEventToSink(ev Event, sink Sink) {
 type RunnerFunc func(ctx context.Context, sink Sink) error
 
 func (f RunnerFunc) Run(ctx context.Context, sink Sink) error { return f(ctx, sink) }
-
-// streamLines kept around for any caller still using it directly.
-//
-// Deprecated: the runner now parses JSONL from stdout via
-// parseEventLine; this helper is unused inside the package but
-// remains exported via internal use by tests in the runner_test
-// suite that pre-date the daemon switch.
-func streamLines(r io.Reader, fn func(string)) {
-	br := bufio.NewReader(r)
-	for {
-		line, err := br.ReadString('\n')
-		if line != "" {
-			fn(strings.TrimRight(line, "\r\n"))
-		}
-		if err != nil {
-			return
-		}
-	}
-}

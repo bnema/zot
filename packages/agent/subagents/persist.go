@@ -470,11 +470,12 @@ func replayEventsIntoAgent(a *Agent, evs []Event) {
 		case EventTurnResult, "turn_result":
 			if result, err := decodeTurnResultEvent(ev, a.ID, a.maxOutputBytes, a.maxOutputLines); err == nil {
 				a.setResult(result)
-				if result.Status == ResultFailed {
+				switch result.Status {
+				case ResultFailed:
 					a.setTurnState(TurnFailed, result.TurnID)
-				} else if result.Status == ResultCanceled {
+				case ResultCanceled:
 					a.setTurnState(TurnCanceled, result.TurnID)
-				} else {
+				default:
 					a.setTurnState(TurnSucceeded, result.TurnID)
 				}
 			}

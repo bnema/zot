@@ -134,9 +134,7 @@ func (d *loginDialog) Render(th tui.Theme, width int) []string {
 			"subscription (claude pro/max - chatgpt plus/pro - chatgpt codex - kimi code - github copilot)",
 		}
 		lines = append(lines, frameHeader(th, "login", width))
-		for _, l := range d.renderStatusLines(th) {
-			lines = append(lines, l)
-		}
+		lines = append(lines, d.renderStatusLines(th)...)
 		lines = append(lines, th.FG256(th.Muted, "choose login method (↑/↓, enter, esc to cancel):"))
 		for i, o := range opts {
 			plain := "  " + o
@@ -150,9 +148,7 @@ func (d *loginDialog) Render(th tui.Theme, width int) []string {
 	case loginStepProvider:
 		opts := d.providerOptions()
 		lines = append(lines, frameHeader(th, "login - "+d.method, width))
-		for _, l := range d.renderStatusLines(th) {
-			lines = append(lines, l)
-		}
+		lines = append(lines, d.renderStatusLines(th)...)
 		hint := "pick a provider (↑/↓, enter, esc to cancel) - type to filter"
 		if d.providerQuery != "" {
 			hint = fmt.Sprintf("filter: %s (%d match)", d.providerQuery, len(opts))
@@ -226,9 +222,7 @@ func (d *loginDialog) Render(th tui.Theme, width int) []string {
 			d.codeEd = tui.NewEditor(th.AccentBar(th.Accent))
 		}
 		edLines, _, _ := d.codeEd.Render(width - 2)
-		for _, l := range edLines {
-			lines = append(lines, l)
-		}
+		lines = append(lines, edLines...)
 		lines = append(lines, "")
 		lines = append(lines, th.FG256(th.Muted, "enter submits - esc cancels - waiting for browser callback in background"))
 		lines = append(lines, frameRule(th, width))
@@ -248,9 +242,7 @@ func (d *loginDialog) Render(th tui.Theme, width int) []string {
 			d.codeEd = tui.NewEditor(th.AccentBar(th.Accent))
 		}
 		edLines, _, _ := d.codeEd.Render(width - 2)
-		for _, l := range edLines {
-			lines = append(lines, l)
-		}
+		lines = append(lines, edLines...)
 		lines = append(lines, "")
 		lines = append(lines, th.FG256(th.Muted, "enter submits - esc cancels"))
 		lines = append(lines, frameRule(th, width))
@@ -260,9 +252,7 @@ func (d *loginDialog) Render(th tui.Theme, width int) []string {
 			title = "login - setup"
 		}
 		lines = append(lines, frameHeader(th, title, width))
-		for _, l := range d.infoLines {
-			lines = append(lines, l)
-		}
+		lines = append(lines, d.infoLines...)
 		lines = append(lines, "")
 		lines = append(lines, th.FG256(th.Muted, "press any key to close"))
 		lines = append(lines, frameRule(th, width))
@@ -681,11 +671,4 @@ func (d *loginDialog) CursorPos(width int) (row, col int) {
 	// prompt above it.
 	baseOffset := 1 /*frameHeader*/ + 1 /*padDialogFrame blank*/ + 1 /*hint*/ + urlLines + 1 /*blank*/ + 1 /*prompt*/
 	return baseOffset + eRow, eCol
-}
-
-func max0(x int) int {
-	if x < 0 {
-		return 0
-	}
-	return x
 }

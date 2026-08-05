@@ -415,33 +415,8 @@ func preflightSessionTreeFamily(root *core.TreeNode) (map[string]sessionTreeSnap
 	return snapshots, nil
 }
 
-// flattenSessionFamily is retained for package callers/tests that already
-// provide a TreeNode. The dialog itself uses the snapshot variant so all
-// reads happen before activation.
-func flattenSessionFamily(root *core.TreeNode, currentPath string) []sessionTreeItem {
-	snapshots, err := preflightSessionTreeFamily(root)
-	if err != nil {
-		return nil
-	}
-	return flattenSessionFamilySnapshot(root, currentPath, snapshots)
-}
-
 func flattenSessionFamilySnapshot(root *core.TreeNode, currentPath string, snapshots map[string]sessionTreeSnapshot) []sessionTreeItem {
 	return flattenSessionNode(root, currentPath, snapshots, 0, 0, true, false)
-}
-
-// flattenSessionBranch remains a small compatibility helper. It is useful in
-// focused package tests and keeps the old helper available to nearby callers.
-func flattenSessionBranch(node *core.TreeNode, currentPath string, depth int) []sessionTreeItem {
-	snapshots, err := preflightSessionTreeFamily(node)
-	if err != nil {
-		return nil
-	}
-	parentLen := 0
-	if snap, ok := snapshots[node.Summary.Path]; ok {
-		parentLen = len(snap.messages)
-	}
-	return flattenSessionNode(node, currentPath, snapshots, depth, parentLen, false, false)
 }
 
 // flattenSessionNode emits the visible suffix for a node and inserts children
@@ -744,33 +719,6 @@ func completeUserDraft(msg provider.Message) string {
 		}
 	}
 	return strings.Join(text, "\n")
-}
-
-func findTreeRootForPath(roots []*core.TreeNode, path string) *core.TreeNode {
-	if path == "" {
-		return nil
-	}
-	for _, root := range roots {
-		if treeContainsPath(root, path) {
-			return root
-		}
-	}
-	return nil
-}
-
-func treeContainsPath(n *core.TreeNode, path string) bool {
-	if n == nil {
-		return false
-	}
-	if n.Summary.Path == path {
-		return true
-	}
-	for _, child := range n.Children {
-		if treeContainsPath(child, path) {
-			return true
-		}
-	}
-	return false
 }
 
 func indexCurrentTreeItem(items []sessionTreeItem) int {
