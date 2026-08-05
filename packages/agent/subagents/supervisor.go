@@ -201,6 +201,14 @@ func (f *Supervisor) RepoRoot() string {
 	return f.cfg.RepoRoot
 }
 
+// MaxTurns returns the maximum prompt-level turns allowed for subsequently
+// spawned agents.
+func (f *Supervisor) MaxTurns() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.cfg.Policy.MaxTurns
+}
+
 // SetFastMode updates the fast-mode setting for subsequently spawned
 // children. Existing agents keep the setting captured at their spawn
 // boundary so resumes remain deterministic.
