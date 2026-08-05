@@ -103,11 +103,11 @@ Symlinks are not supported and cause `zot pack` to fail.
 
 ## `AGENT.md`
 
-`AGENT.md` is optional. When present, it is appended to zot's system prompt by default. It should describe the agent's role, workflow, constraints, output format, and when to load bundled skills. When absent, the system prompt is left unchanged.
+`AGENT.md` is optional. When present, it is appended to zot's system prompt by default. It should describe the agent's role, workflow, constraints, output format, and when to load bundled skills. When absent, it contributes no agent-specific text; other enabled global addenda still follow their normal rules.
 
 Keep capability and security declarations out of this file. Permissions come only from `manifest.json` and are enforced independently of agent-authored prose.
 
-Set `replace_system_prompt` to `true` in the manifest to use `AGENT.md` as the replacement system prompt:
+Set `replace_system_prompt` to `true` in the manifest to use `AGENT.md` as the replacement base identity:
 
 ```json
 {
@@ -115,7 +115,7 @@ Set `replace_system_prompt` to `true` in the manifest to use `AGENT.md` as the r
 }
 ```
 
-Replacement is intended for fully specialized agents. The default layering behavior is usually preferable because it retains zot's normal identity and tool-use guidance.
+Replacement is intended for fully specialized agents. It replaces zot's built-in identity, while global append addenda such as enabled Ponytail coding guidance, project context, and skills retain their normal inclusion rules. The default layering behavior is usually preferable because it retains zot's normal identity and tool-use guidance.
 
 ## Bundled skills
 
@@ -205,7 +205,7 @@ The current manifest shape is:
 | `permissions` | no | Filesystem and bash permission ceiling. Omitted scopes deny access. |
 | `requirements` | no | Required operating systems and executables. |
 | `entry` | no | Initial presentation and prompt metadata. |
-| `replace_system_prompt` | no | Replaces rather than appends to the normal system prompt when `true`. Defaults to `false`. |
+| `replace_system_prompt` | no | Replaces the built-in identity rather than appending the agent body when `true`; global append addenda retain their normal inclusion rules. Defaults to `false`. |
 
 ### Name rules
 

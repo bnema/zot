@@ -25,6 +25,8 @@ You'll see one JSON object per line on stdout: a response acknowledging the prom
 
 `zot rpc` accepts the same flags as the other modes: `--provider`, `--model`, `--cwd`, `--api-key`, `--base-url`, `--system-prompt`, `--append-system-prompt`, `--reasoning`, `--max-steps`, `--no-tools`, `--tools`. Sessions are disabled by default in RPC mode — the embedding application owns persistence.
 
+RPC agents use the same resolved system-prompt policy as other modes. Ponytail coding mode is enabled when `ponytail_enabled` is missing or `true` in `$ZOT_HOME/config.json`, and disabled when it is `false`. A custom `--system-prompt` replaces the built-in identity, while enabled append addenda remain present.
+
 ## Auth
 
 If the environment variable `ZOTCORE_RPC_TOKEN` is set on the spawned process, the first line on stdin **must** be a `hello` command containing the matching token:

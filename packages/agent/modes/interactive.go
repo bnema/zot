@@ -72,6 +72,10 @@ type InteractiveConfig struct {
 	// re-reading config.json on every open.
 	AutoSubagentsEnabled *bool
 
+	// PonytailEnabled mirrors the persisted default-on coding-guidance
+	// setting at startup. nil/missing means enabled.
+	PonytailEnabled *bool
+
 	// AutoSubagentsToolAllowed is nil for normal sessions and false when the
 	// launch-time --no-tools/--tools policy excludes delegation.
 	AutoSubagentsToolAllowed *bool
@@ -173,7 +177,11 @@ type InteractiveConfig struct {
 
 	// RefreshTools re-resolves the live agent registry after a setting
 	// changes the main session's tool availability. Optional for embedders.
-	RefreshTools func()
+	RefreshTools func() error
+
+	// RefreshPrompt re-resolves the complete live prompt and tool registry
+	// after a prompt-affecting setting changes. Optional for embedders.
+	RefreshPrompt func() error
 
 	// AutoSubmitInitial, when true, auto-submits InitialInput after
 	// StartupPre completes (or immediately when StartupPre is empty).
@@ -450,6 +458,10 @@ type fastModeSettingsStore interface {
 	SetFastMode(enabled bool) error
 }
 
+type ponytailSettingsStore interface {
+	SetPonytailEnabled(enabled bool) error
+}
+
 type Interactive struct {
 	cfg  InteractiveConfig
 	view *tui.View
@@ -507,6 +519,7 @@ type Interactive struct {
 	cumUsage         provider.Usage
 	lastCtxInput     int // input_tokens of the most recent turn — approximates current context size
 	busy             bool
+	pendingIdleWork  []func()
 	dirty            chan struct{}
 	modelRefresh     chan modelRefreshResult
 	modelRefreshing  bool
@@ -3648,6 +3661,18 @@ func (i *Interactive) Display(extName, text string) {
 	i.invalidate()
 }
 
+// ReportError surfaces a host-side error in the interactive status area.
+func (i *Interactive) ReportError(err error) {
+	if err == nil {
+		return
+	}
+	i.mu.Lock()
+	i.statusOK = ""
+	i.statusErr = err.Error()
+	i.mu.Unlock()
+	i.invalidate()
+}
+
 // SetStatus replaces one persistent status item owned by an extension.
 func (i *Interactive) SetStatus(extName, key, level, text string) {
 	if strings.TrimSpace(extName) == "" || strings.TrimSpace(key) == "" {
@@ -3864,6 +3889,13 @@ func (i *Interactive) openSettingsDialog() {
 		autoSubagents = false
 	}
 
+	ponytailEnabled := i.ponytailEnabled()
+	ponytailDisabled := !i.ponytailSettingsAvailable()
+	ponytailHint := ""
+	if ponytailDisabled {
+		ponytailHint = "requires persistent settings and live prompt refresh support"
+	}
+
 	fastMode := i.cfg.FastMode != nil && *i.cfg.FastMode
 	fastModeHint := "OpenAI service tier"
 	if !provider.SupportsFastMode(i.cfg.Provider) {
@@ -3989,6 +4021,14 @@ func (i *Interactive) openSettingsDialog() {
 			value:    autoSubagents,
 			disabled: autoSubagentsDisabled,
 			hint:     autoSubagentsHint,
+		},
+		{
+			key:      "ponytail_enabled",
+			label:    "ponytail coding mode",
+			desc:     "apply compact coding guidance that favors small, validated, maintainable changes",
+			value:    ponytailEnabled,
+			disabled: ponytailDisabled,
+			hint:     ponytailHint,
 		},
 		{
 			key:   "fast_mode",
@@ -4319,6 +4359,15 @@ func (i *Interactive) resetSettingsToggle(key string, value bool) {
 	}
 }
 
+func (i *Interactive) ponytailEnabled() bool {
+	return i.cfg.PonytailEnabled == nil || *i.cfg.PonytailEnabled
+}
+
+func (i *Interactive) ponytailSettingsAvailable() bool {
+	_, persistent := i.cfg.SettingsStore.(ponytailSettingsStore)
+	return persistent && i.cfg.RefreshPrompt != nil
+}
+
 func (i *Interactive) applySettingToggle(key string, value bool) {
 	// Every setting toggle forces a full repaint at the end — same
 	// effect as the user pressing Ctrl+L — so any per-setting visual
@@ -4394,6 +4443,56 @@ func (i *Interactive) applySettingToggle(key string, value bool) {
 		i.statusOK = "AI terminal titles " + onOff(value)
 		i.statusErr = ""
 		i.mu.Unlock()
+	case "ponytail_enabled":
+		previous := i.ponytailEnabled()
+		store, available := i.cfg.SettingsStore.(ponytailSettingsStore)
+		if !available || i.cfg.RefreshPrompt == nil {
+			i.resetSettingsToggle(key, previous)
+			i.mu.Lock()
+			i.statusOK = ""
+			i.statusErr = "ponytail coding mode unavailable: persistent settings and live prompt refresh are required"
+			i.mu.Unlock()
+			return
+		}
+		if err := store.SetPonytailEnabled(value); err != nil {
+			i.resetSettingsToggle(key, previous)
+			i.mu.Lock()
+			i.statusOK = ""
+			i.statusErr = "settings: " + err.Error()
+			i.mu.Unlock()
+			return
+		}
+		val := value
+		i.cfg.PonytailEnabled = &val
+		if err := i.cfg.RefreshPrompt(); err != nil {
+			errMsg := "settings: ponytail prompt refresh: " + err.Error()
+			if rollbackErr := store.SetPonytailEnabled(previous); rollbackErr != nil {
+				// The first write succeeded, so keep the in-memory setting at
+				// the value that remains durable instead of claiming that the
+				// rollback took effect.
+				i.resetSettingsToggle(key, value)
+				errMsg += "; rollback persistence: " + rollbackErr.Error()
+				if reconcileErr := i.cfg.RefreshPrompt(); reconcileErr != nil {
+					errMsg += "; durable-state refresh: " + reconcileErr.Error()
+				}
+			} else {
+				previousVal := previous
+				i.cfg.PonytailEnabled = &previousVal
+				i.resetSettingsToggle(key, previous)
+				if refreshErr := i.cfg.RefreshPrompt(); refreshErr != nil {
+					errMsg += "; rollback refresh: " + refreshErr.Error()
+				}
+			}
+			i.mu.Lock()
+			i.statusOK = ""
+			i.statusErr = errMsg
+			i.mu.Unlock()
+			return
+		}
+		i.mu.Lock()
+		i.statusOK = "ponytail coding mode " + onOff(value)
+		i.statusErr = ""
+		i.mu.Unlock()
 	case "auto_subagents_enabled":
 		if value && !i.autoSubagentsAvailable() {
 			i.mu.Lock()
@@ -4458,7 +4557,9 @@ func (i *Interactive) applySettingToggle(key string, value bool) {
 		i.statusErr = ""
 		i.mu.Unlock()
 	case "lsp_enabled":
-		if store, ok := i.cfg.SettingsStore.(lspSettingsStore); ok {
+		previous := i.cfg.LSPEnabled == nil || *i.cfg.LSPEnabled
+		store, hasStore := i.cfg.SettingsStore.(lspSettingsStore)
+		if hasStore {
 			if err := store.SetLSPEnabled(value); err != nil {
 				i.mu.Lock()
 				i.statusErr = "settings: " + err.Error()
@@ -4469,7 +4570,33 @@ func (i *Interactive) applySettingToggle(key string, value bool) {
 		val := value
 		i.cfg.LSPEnabled = &val
 		if i.cfg.RefreshTools != nil {
-			i.cfg.RefreshTools()
+			if err := i.cfg.RefreshTools(); err != nil {
+				errMsg := "settings: refresh tools: " + err.Error()
+				rollbackErr := error(nil)
+				if hasStore {
+					rollbackErr = store.SetLSPEnabled(previous)
+				}
+				if rollbackErr != nil {
+					// The first write succeeded, so keep the in-memory setting at
+					// the value that remains durable instead of claiming that the
+					// rollback took effect.
+					errMsg += "; rollback persistence: " + rollbackErr.Error()
+					if reconcileErr := i.cfg.RefreshTools(); reconcileErr != nil {
+						errMsg += "; durable-state refresh: " + reconcileErr.Error()
+					}
+				} else {
+					previousVal := previous
+					i.cfg.LSPEnabled = &previousVal
+					if refreshErr := i.cfg.RefreshTools(); refreshErr != nil {
+						errMsg += "; rollback refresh: " + refreshErr.Error()
+					}
+				}
+				i.mu.Lock()
+				i.statusOK = ""
+				i.statusErr = errMsg
+				i.mu.Unlock()
+				return
+			}
 		}
 		i.mu.Lock()
 		i.statusOK = "lsp in main session " + onOff(value)
@@ -6053,7 +6180,9 @@ func (i *Interactive) startAutoCompactContinuation(parent context.Context) {
 	if ag == nil {
 		i.mu.Lock()
 		i.busy = false
+		pendingIdleWork := i.takePendingIdleWorkLocked()
 		i.mu.Unlock()
+		runPendingIdleWork(pendingIdleWork)
 		i.invalidate()
 		return
 	}
@@ -6122,6 +6251,8 @@ func (i *Interactive) runCompact(parent context.Context, auto bool) {
 		// inspecting the queues lets them race a new turn or be stranded.
 		i.resetStreamingStateLocked()
 		i.cancelTurn = nil
+		i.autoCompacting = false
+		pendingIdleWork := i.takePendingIdleWorkLocked()
 
 		// Drain pending work after the transcript is clean. Overflow recovery
 		// continues the user message already in the transcript. Pre-turn
@@ -6207,6 +6338,7 @@ func (i *Interactive) runCompact(parent context.Context, auto bool) {
 		i.compacting = false
 		i.autoCompacting = false
 		i.mu.Unlock()
+		runPendingIdleWork(pendingIdleWork)
 		i.invalidate()
 
 		if hasNext || continueExisting || continueAutomatically {
@@ -6330,6 +6462,7 @@ func (i *Interactive) startShellEscape(parent context.Context, cmd string) {
 		i.shellLive = ""
 		i.busy = false
 		i.cancelTurn = nil
+		pendingIdleWork := i.takePendingIdleWorkLocked()
 		awaitingPre := i.awaitingStartupPre
 		if failed {
 			if cancelled {
@@ -6343,6 +6476,7 @@ func (i *Interactive) startShellEscape(parent context.Context, cmd string) {
 			i.statusErr = ""
 		}
 		i.mu.Unlock()
+		runPendingIdleWork(pendingIdleWork)
 		i.invalidate()
 		if awaitingPre {
 			i.completeStartupPre()
@@ -6483,6 +6617,7 @@ func (i *Interactive) startTurnRequest(parent context.Context, prompt string, im
 			i.streamOn = false
 		}
 		i.cancelTurn = nil
+		pendingIdleWork := i.takePendingIdleWorkLocked()
 		if err != nil && ctx.Err() == nil {
 			i.statusErr = err.Error()
 		}
@@ -6534,6 +6669,7 @@ func (i *Interactive) startTurnRequest(parent context.Context, prompt string, im
 		// baseline so subsequent flushes only write new rows).
 		flush := i.cfg.FlushSession
 		i.mu.Unlock()
+		runPendingIdleWork(pendingIdleWork)
 		if flush != nil {
 			flush()
 		}
@@ -6921,6 +7057,57 @@ func (i *Interactive) handleEvent(ev core.AgentEvent) {
 		// failures are routed to the rescue picker instead — which
 		// keeps the chat clean while the agent is working.
 		_ = e.Err
+	}
+}
+
+// ApplyAgentPromptConfig commits a resolved prompt and tool registry only if
+// ag is still the live interactive agent. It serializes the identity check
+// with agent replacement and swaps both values atomically in core.Agent.
+func (i *Interactive) ApplyAgentPromptConfig(ag *core.Agent, system string, tools core.Registry) (core.Registry, bool) {
+	if ag == nil {
+		return nil, false
+	}
+	// Match the lock order used by dynamic tool mutations so a refresh
+	// cannot race a snapshot-and-replace operation that would reintroduce
+	// the old registry after the atomic prompt swap.
+	i.agentMu.Lock()
+	defer i.agentMu.Unlock()
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	if i.agent != ag {
+		return nil, false
+	}
+	return ag.SetPromptConfig(system, tools), true
+}
+
+// DeferUntilIdle runs work immediately when the interactive agent is idle,
+// or after the current turn/compaction/shell operation releases the busy
+// state. Callbacks run outside i.mu.
+func (i *Interactive) DeferUntilIdle(fn func()) {
+	if fn == nil {
+		return
+	}
+	i.mu.Lock()
+	if i.busy {
+		i.pendingIdleWork = append(i.pendingIdleWork, fn)
+		i.mu.Unlock()
+		return
+	}
+	i.mu.Unlock()
+	fn()
+}
+
+func (i *Interactive) takePendingIdleWorkLocked() []func() {
+	work := i.pendingIdleWork
+	i.pendingIdleWork = nil
+	return work
+}
+
+func runPendingIdleWork(work []func()) {
+	for _, fn := range work {
+		if fn != nil {
+			fn()
+		}
 	}
 }
 

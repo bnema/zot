@@ -20,6 +20,26 @@ func TestAgentRejectsEmptyPrompt(t *testing.T) {
 	}
 }
 
+func TestAgentSetPromptConfigSwapsPromptAndToolsAtomically(t *testing.T) {
+	oldTool := &recordingTool{}
+	newTool := &recordingTool{}
+	oldRegistry := Registry{"old": oldTool}
+	newRegistry := Registry{"new": newTool}
+	ag := NewAgent(nil, "model", "old system", oldRegistry)
+
+	previous := ag.SetPromptConfig("new system", newRegistry)
+	if previous["old"] != oldTool {
+		t.Fatalf("previous registry = %#v, want old registry", previous)
+	}
+	system, tools := ag.PromptConfig()
+	if system != "new system" {
+		t.Fatalf("system prompt = %q, want new system", system)
+	}
+	if tools["new"] != newTool || len(tools) != 1 {
+		t.Fatalf("current registry = %#v, want new registry", tools)
+	}
+}
+
 func TestSessionRoundTrip(t *testing.T) {
 	dir := t.TempDir()
 	os.Setenv("ZOT_HOME", dir)
