@@ -278,20 +278,6 @@ func (f *Supervisor) armQueueTimeout(a *Agent) {
 
 func (f *Supervisor) expireQueued(id string) { f.cancelQueued(id, context.DeadlineExceeded) }
 
-func (f *Supervisor) removeQueued(a *Agent) {
-	if a == nil {
-		return
-	}
-	f.mu.Lock()
-	for i, queued := range f.queue {
-		if queued == a {
-			f.queue = append(f.queue[:i], f.queue[i+1:]...)
-			break
-		}
-	}
-	f.mu.Unlock()
-}
-
 func (f *Supervisor) cancelQueued(id string, cause error) {
 	a := f.Get(id)
 	if a == nil {

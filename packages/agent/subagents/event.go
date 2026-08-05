@@ -297,7 +297,7 @@ func readFollowerEvents(r io.Reader, offset int64) ([]Event, int64) {
 	ring := newEventRing()
 	committed := offset
 	for {
-		line, err, truncated, consumed, complete := readBoundedLineStats(br, maxEventLogLineBytes)
+		line, truncated, consumed, complete, err := readBoundedLineStats(br, maxEventLogLineBytes)
 		if !complete {
 			break
 		}
