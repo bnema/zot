@@ -63,7 +63,7 @@ type subagentSpawnArgs struct {
 	MaxTurns  *int   `json:"max_turns,omitempty"`
 }
 
-const subagentSpawnSchema = `{
+const subagentSpawnSchemaTemplate = `{
   "type": "object",
   "properties": {
     "task": {
@@ -104,7 +104,8 @@ const subagentSpawnSchema = `{
     "max_turns": {
       "type": "integer",
       "minimum": 1,
-      "description": "Maximum prompt-level turns for this worker."
+      "maximum": %d,
+      "description": "Optional maximum prompt-level turns for this worker. Omit to use the supervisor default; the effective policy allows 1 through %d."
     }
   },
   "required": ["task"]
@@ -115,7 +116,15 @@ func (t *SubagentSpawnTool) Description() string {
 	return "Spawn a background sub-agent to work on a parallel sub-task. Optionally select a named markdown profile, model/provider/reasoning, timeout, turn limit, and shared/worktree isolation, and fast-mode preference. Returns the sub-agent id immediately; completion arrives through the result/event path."
 
 }
-func (t *SubagentSpawnTool) Schema() json.RawMessage { return json.RawMessage(subagentSpawnSchema) }
+func (t *SubagentSpawnTool) Schema() json.RawMessage {
+	maxTurns := 3
+	if t.Supervisor != nil {
+		if limit := t.Supervisor.MaxTurns(); limit > 0 {
+			maxTurns = limit
+		}
+	}
+	return json.RawMessage(fmt.Sprintf(subagentSpawnSchemaTemplate, maxTurns, maxTurns))
+}
 
 func (t *SubagentSpawnTool) Execute(ctx context.Context, raw json.RawMessage, progress func(string)) (core.ToolResult, error) {
 	prefix := t.Name()
@@ -149,8 +158,13 @@ func (t *SubagentSpawnTool) Execute(ctx context.Context, raw json.RawMessage, pr
 		}
 		timeout = parsed
 	}
-	if a.MaxTurns != nil && *a.MaxTurns < 1 {
-		return protocolToolError(prefix + ": max_turns must be positive")
+	if a.MaxTurns != nil {
+		if *a.MaxTurns < 1 {
+			return protocolToolError(prefix + ": max_turns must be positive")
+		}
+		if limit := t.Supervisor.MaxTurns(); limit > 0 && *a.MaxTurns > limit {
+			return protocolToolError(fmt.Sprintf("%s: max_turns must be 1 through %d; omit it to use the supervisor default", prefix, limit))
+		}
 	}
 
 	agentName := strings.TrimSpace(a.Agent)

@@ -395,7 +395,7 @@ Background subagents that run alongside your main session. Each one is a separat
 
 **`/session export` does NOT bundle subagents.** A `.zotsession` is just the main chat transcript; per-agent state (session file, unix-socket inbox) is machine-local and doesn't round-trip through a JSONL file. To share what an agent said, copy it out of the transcript view manually.
 
-**Auto-subagents.** With `/settings` -> auto-subagents on, the main agent gets the canonical `subagent_spawn` tool and a system-prompt nudge to delegate independent work. The tool returns the child id and lifecycle state immediately; completion is a durable `turn.result` with a `subagent://<id>/result` reference. It accepts named profiles, timeout, `max_turns`, and `isolation:"shared"` or `isolation:"worktree"`. Global concurrency and total-spawn budgets apply equally to slash commands, tool calls, and batches. Off by default; toggle from `/settings`.
+**Auto-subagents.** With `/settings` -> auto-subagents on, the main agent gets the canonical `subagent_spawn` tool and a system-prompt nudge to delegate independent work. The tool returns the child id and lifecycle state immediately; completion is a durable `turn.result` with a `subagent://<id>/result` reference. It accepts named profiles, timeout, `max_turns`, and `isolation:"shared"` or `isolation:"worktree"`. Omit `max_turns` to use the supervisor policy; the default ceiling is 3 and `subagents.max_turns` changes it. Global concurrency and total-spawn budgets apply equally to slash commands, tool calls, and batches. Off by default; toggle from `/settings`.
 
 ### Named subagent profiles
 
