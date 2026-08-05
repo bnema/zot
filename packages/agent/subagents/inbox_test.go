@@ -41,7 +41,7 @@ func TestInboxRoundTrip(t *testing.T) {
 	}
 	defer ln.Close()
 
-	got := collectFor(t, ln.Lines(), 3, time.Second)
+	got := collectFor(t, ln.Lines(), 4, time.Second)
 	inbox := NewInbox(path)
 	defer inbox.Close()
 
@@ -51,15 +51,29 @@ func TestInboxRoundTrip(t *testing.T) {
 			t.Fatalf("sendBytes(%q): %v", msg, err)
 		}
 	}
+	if err := inbox.SendCommand(NewCommand(CommandTurnStart, "agent-1", "turn-1", TurnStartPayload{Prompt: "round trip"})); err != nil {
+		t.Fatalf("SendCommand: %v", err)
+	}
 
 	gotLines := <-got
-	if len(gotLines) != len(want) {
-		t.Fatalf("got %d lines, want %d: %v", len(gotLines), len(want), gotLines)
+	if len(gotLines) != len(want)+1 {
+		t.Fatalf("got %d lines, want %d: %v", len(gotLines), len(want)+1, gotLines)
 	}
 	for i, w := range want {
 		if gotLines[i] != w {
 			t.Errorf("line %d = %q; want %q", i, gotLines[i], w)
 		}
+	}
+	parsed, err := ParseCommand(gotLines[len(want)])
+	if err != nil {
+		t.Fatalf("ParseCommand: %v", err)
+	}
+	var payload TurnStartPayload
+	if err := parsed.DecodePayload(&payload); err != nil {
+		t.Fatalf("DecodePayload: %v", err)
+	}
+	if payload.Prompt != "round trip" {
+		t.Fatalf("decoded prompt = %q, want %q", payload.Prompt, "round trip")
 	}
 }
 

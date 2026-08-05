@@ -46,9 +46,10 @@ const (
 	CaptureDiff  CaptureMode = "diff"
 )
 
-// SubagentPolicy contains manager-owned safety and resource limits. Zero
-// values mean "use the manager default" for limits that have a safe default;
-// zero remains unlimited for optional output caps and timeouts.
+// SubagentPolicy contains manager-owned safety and resource limits. normalize
+// replaces zero MaxOutputBytes, MaxOutputLines, QueueTimeout, and
+// DefaultTimeout values with positive manager defaults. Other zero values retain
+// their documented semantics.
 type SubagentPolicy struct {
 	MaxConcurrent          int
 	MaxConcurrentPerParent int

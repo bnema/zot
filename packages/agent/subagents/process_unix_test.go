@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"strconv"
@@ -27,6 +28,9 @@ func TestWorkerCancellationKillsProcessGroup(t *testing.T) {
 
 	cmd := exec.CommandContext(ctx, shell, "-c", fmt.Sprintf("sleep 30 & echo $! > %q; wait", pidPath))
 	configureWorkerProcess(cmd)
+	if cmd.WaitDelay != workerProcessWaitDelay {
+		t.Fatalf("WaitDelay = %s, want %s", cmd.WaitDelay, workerProcessWaitDelay)
+	}
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
@@ -51,6 +55,31 @@ func TestWorkerCancellationKillsProcessGroup(t *testing.T) {
 	}
 	if processExists(childPID) {
 		t.Fatalf("worker descendant pid %d survived process-group cancellation", childPID)
+	}
+}
+
+func TestWorkerCancellationClosesOutputPipes(t *testing.T) {
+	cmd := exec.Command("sh")
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	stderr, err := cmd.StderrPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stdout.Close()
+	defer stderr.Close()
+
+	configureWorkerProcess(cmd)
+	if err := cmd.Cancel(); err != nil {
+		t.Fatal(err)
+	}
+	for name, pipe := range map[string]io.Reader{"stdout": stdout, "stderr": stderr} {
+		data := make([]byte, 1)
+		if _, err := pipe.Read(data); err != io.EOF {
+			t.Errorf("%s read error = %v, want EOF", name, err)
+		}
 	}
 }
 

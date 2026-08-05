@@ -180,22 +180,6 @@ func readAgentMeta(stateDir string) (agentMeta, error) {
 	return m, nil
 }
 
-// Reload scans <root>/agents/*/meta.json and re-registers every
-// previously-spawned agent as a StatusDetached entry. Agents already
-// present in memory are left alone (Reload is idempotent and safe to
-// call after Spawn, though in practice the cli invokes it exactly
-// once just after New()).
-//
-// The reloaded agents have no live Runner; the user can:
-//   - view their transcript (the dashboard reads from EventLogPath),
-//   - resume them via Supervisor.Resume (starts a fresh subprocess on the
-//     same worktree / session / inbox path),
-//   - remove them (worktree + meta + events log gone).
-//
-// Reload returns the number of agents loaded plus any per-directory
-// error encountered. Malformed entries are skipped rather than
-// failing the whole reload — one bad meta.json shouldn't hide the
-// rest of the subagents.
 func safeAgentID(id string) bool {
 	return id != "" && id != "." && id != ".." && filepath.Base(id) == id && !strings.ContainsAny(id, `/\\`)
 }
@@ -258,6 +242,22 @@ func firstNonEmpty(values ...string) string {
 	return ""
 }
 
+// Reload scans <root>/agents/*/meta.json and re-registers every
+// previously-spawned agent as a StatusDetached entry. Agents already
+// present in memory are left alone (Reload is idempotent and safe to
+// call after Spawn, though in practice the cli invokes it exactly
+// once just after New()).
+//
+// The reloaded agents have no live Runner; the user can:
+//   - view their transcript (the dashboard reads from EventLogPath),
+//   - resume them via Supervisor.Resume (starts a fresh subprocess on the
+//     same worktree / session / inbox path),
+//   - remove them (worktree + meta + events log gone).
+//
+// Reload returns the number of agents loaded plus any per-directory
+// error encountered. Malformed entries are skipped rather than
+// failing the whole reload — one bad meta.json shouldn't hide the
+// rest of the subagents.
 func (f *Supervisor) Reload() (loaded int, errs []error) {
 	root := filepath.Clean(f.cfg.Root)
 	if root == "." {

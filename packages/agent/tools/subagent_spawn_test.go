@@ -70,6 +70,27 @@ func TestSubagentSpawnInheritsHostModelAndProviderWhenOmitted(t *testing.T) {
 	if agents[0].Model != "gpt-5" || agents[0].Provider != "openai-codex" || agents[0].Reasoning != "medium" {
 		t.Fatalf("agent model/provider/reasoning = %q/%q/%q, want gpt-5/openai-codex/medium", agents[0].Model, agents[0].Provider, agents[0].Reasoning)
 	}
+	if agents[0].MaxTurns != 3 {
+		t.Fatalf("omitted max_turns = %d, want default 3", agents[0].MaxTurns)
+	}
+}
+
+func TestSubagentSpawnRejectsExplicitZeroMaxTurns(t *testing.T) {
+	tool := &SubagentSpawnTool{
+		Supervisor: newTestSupervisor(t),
+		Enabled:    func() bool { return true },
+	}
+
+	res, err := tool.Execute(context.Background(), json.RawMessage(`{"task":"research docs","max_turns":0}`), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.IsError || !strings.Contains(textResult(res.Content), "max_turns must be positive") {
+		t.Fatalf("result = %#v, want max_turns validation error", res)
+	}
+	if got := len(tool.Supervisor.List()); got != 0 {
+		t.Fatalf("spawned agents = %d, want 0", got)
+	}
 }
 
 func TestSubagentSpawnSelectsProfileAndReasoning(t *testing.T) {

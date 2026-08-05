@@ -157,7 +157,7 @@ func (l *EventLog) Append(ev Event) error {
 		return errors.New("event log: closed")
 	}
 	if ev.Time.IsZero() {
-		ev.Time = time.Now()
+		ev.Time = time.Now().UTC()
 	}
 	b, err := json.Marshal(ev)
 	if err != nil {
@@ -209,22 +209,63 @@ func ReadEventLog(path string) ([]Event, error) {
 	return readEvents(f)
 }
 
+type eventRing struct {
+	events []Event
+	next   int
+	count  int
+}
+
+func newEventRing() eventRing {
+	return eventRing{events: make([]Event, maxEventLogEvents)}
+}
+
+func (r *eventRing) append(ev Event) {
+	r.events[r.next] = ev
+	r.next = (r.next + 1) % len(r.events)
+	if r.count < len(r.events) {
+		r.count++
+	}
+}
+
+func (r *eventRing) last() (Event, bool) {
+	if r.count == 0 {
+		return Event{}, false
+	}
+	i := r.next - 1
+	if i < 0 {
+		i += len(r.events)
+	}
+	return r.events[i], true
+}
+
+func (r *eventRing) isLikelyDoubleWrite(ev Event) bool {
+	previous, ok := r.last()
+	return ok && isLikelyDoubleWrite(ev, previous)
+}
+
+func (r *eventRing) materialize() []Event {
+	out := make([]Event, r.count)
+	if r.count == 0 {
+		return out
+	}
+	start := r.next - r.count
+	if start < 0 {
+		start += len(r.events)
+	}
+	n := copy(out, r.events[start:])
+	copy(out[n:], r.events[:r.count-n])
+	return out
+}
+
 func readEvents(r io.Reader) ([]Event, error) {
 	br := bufio.NewReader(r)
-	out := make([]Event, 0, 256)
+	ring := newEventRing()
 	for {
 		line, err, truncated := readBoundedLine(br, maxEventLogLineBytes)
 		if len(line) > 0 && !truncated {
 			var ev Event
-			if jerr := json.Unmarshal(line, &ev); jerr == nil {
-				if !isLikelyDoubleWrite(ev, out) {
-					if len(out) >= maxEventLogEvents {
-						copy(out, out[1:])
-						out[len(out)-1] = ev
-					} else {
-						out = append(out, ev)
-					}
-				}
+			if jerr := json.Unmarshal(line, &ev); jerr == nil && !ring.isLikelyDoubleWrite(ev) {
+				ring.append(ev)
 			}
 			// Malformed and oversized lines are skipped silently; the
 			// dashboard renders only well-formed events and the child is
@@ -232,9 +273,9 @@ func readEvents(r io.Reader) ([]Event, error) {
 		}
 		if err != nil {
 			if errors.Is(err, io.EOF) {
-				return out, nil
+				return ring.materialize(), nil
 			}
-			return out, err
+			return ring.materialize(), err
 		}
 	}
 }
@@ -245,7 +286,7 @@ func readEvents(r io.Reader) ([]Event, error) {
 // make the completed event invisible on the next poll.
 func readFollowerEvents(r io.Reader, offset int64) ([]Event, int64) {
 	br := bufio.NewReader(r)
-	out := make([]Event, 0, 256)
+	ring := newEventRing()
 	committed := offset
 	for {
 		line, err, truncated, consumed, complete := readBoundedLineStats(br, maxEventLogLineBytes)
@@ -255,45 +296,35 @@ func readFollowerEvents(r io.Reader, offset int64) ([]Event, int64) {
 		committed += consumed
 		if len(line) > 0 && !truncated {
 			var ev Event
-			if jerr := json.Unmarshal(line, &ev); jerr == nil && !isLikelyDoubleWrite(ev, out) {
-				if len(out) >= maxEventLogEvents {
-					copy(out, out[1:])
-					out[len(out)-1] = ev
-				} else {
-					out = append(out, ev)
-				}
+			if jerr := json.Unmarshal(line, &ev); jerr == nil && !ring.isLikelyDoubleWrite(ev) {
+				ring.append(ev)
 			}
 		}
 		if err != nil {
 			break
 		}
 	}
-	return out, committed
+	return ring.materialize(), committed
 }
 
 // isLikelyDoubleWrite reports whether ev is a back-to-back duplicate
-// of the most recent event in `tail` — same type and identical Data
-// payload, with timestamps within a small window (the supervisor and
-// the child's mirror used to BOTH write each event to disk, landing
-// the same content twice in quick succession in events.jsonl). The
-// historical behaviour was fixed at write time (the child's mirror
-// is now dormant unless the supervisor is gone), but on-disk files
-// from before the fix are still polluted, so we dedupe defensively
-// at read time too.
+// of previous — same type and identical Data payload, with timestamps
+// within a small window (the supervisor and the child's mirror used to
+// BOTH write each event to disk, landing the same content twice in quick
+// succession in events.jsonl). The historical behaviour was fixed at write
+// time (the child's mirror is now dormant unless the supervisor is gone),
+// but on-disk files from before the fix are still polluted, so we dedupe
+// defensively at read time too.
 //
-// We deliberately bound by time (250ms) so two genuinely identical
-// adjacent events that happen seconds apart — e.g. an agent that
-// runs the same tool twice in a row — still both render.
-func isLikelyDoubleWrite(ev Event, tail []Event) bool {
-	if len(tail) == 0 {
+// We deliberately bound by time (250ms) so two genuinely identical adjacent
+// events that happen seconds apart — e.g. an agent that runs the same tool
+// twice in a row — still both render.
+func isLikelyDoubleWrite(ev, previous Event) bool {
+	if previous.Type != ev.Type {
 		return false
 	}
-	prev := tail[len(tail)-1]
-	if prev.Type != ev.Type {
-		return false
-	}
-	if !ev.Time.IsZero() && !prev.Time.IsZero() {
-		dt := ev.Time.Sub(prev.Time)
+	if !ev.Time.IsZero() && !previous.Time.IsZero() {
+		dt := ev.Time.Sub(previous.Time)
 		if dt < 0 {
 			dt = -dt
 		}
@@ -301,7 +332,7 @@ func isLikelyDoubleWrite(ev Event, tail []Event) bool {
 			return false
 		}
 	}
-	return sameEventData(prev.Data, ev.Data)
+	return sameEventData(previous.Data, ev.Data)
 }
 
 // sameEventData deep-compares two event payloads. Cheap because the

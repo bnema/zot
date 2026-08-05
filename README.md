@@ -352,7 +352,7 @@ Background subagents that run alongside your main session. Each one is a separat
 
 > **Choose the workspace deliberately.** Use `isolation:"worktree"` for parallel coding so children cannot edit the host checkout. Use shared mode for read-only review or explicitly coordinated work. Worktree isolation is an accident-prevention guardrail, not a security sandbox.
 
-```
+```text
 /subagents                                      # open the dashboard
 /subagents new <task>                           # spawn an agent (shared mode)
 /subagents new --agent reviewer <task>          # use a named markdown profile

@@ -3,18 +3,38 @@
 package subagents
 
 import (
+	"io"
 	"os/exec"
+	"sync"
 	"syscall"
+	"time"
 )
 
 // configureWorkerProcess makes cancellation target the worker's process
 // group rather than only the worker itself. CommandContext calls cmd.Cancel
 // from its context watcher, so descendants that inherited the worker's group
 // are terminated before execRunner waits for their output pipes to close.
-func configureWorkerProcess(cmd *exec.Cmd) {
+func configureWorkerProcess(cmd *exec.Cmd, pipes ...io.Closer) {
 	setProcessGroup(cmd)
+	cmd.WaitDelay = workerProcessWaitDelay
+	var closePipes sync.Once
 	cmd.Cancel = func() error {
-		return killProcessGroup(cmd)
+		err := killProcessGroup(cmd)
+		closePipes.Do(func() { closeWorkerPipes(pipes) })
+		return err
+	}
+}
+
+const workerProcessWaitDelay = 5 * time.Second
+
+// closeWorkerPipes closes the parent-side readers returned by StdoutPipe and
+// StderrPipe. Closing these descriptors lets the custom reader goroutines exit
+// if a descendant has outlived the worker process.
+func closeWorkerPipes(pipes []io.Closer) {
+	for _, pipe := range pipes {
+		if pipe != nil {
+			_ = pipe.Close()
+		}
 	}
 }
 

@@ -133,6 +133,7 @@ func (GitWorktreeWorkspace) Prepare(ctx context.Context, req WorkspaceRequest) (
 	}
 	if !reuse {
 		_ = os.RemoveAll(worktreeDir)
+		_, _ = gitOutput(ctx, actualRoot, "worktree", "prune")
 		if _, err := gitOutput(ctx, actualRoot, "worktree", "add", "--detach", worktreeDir, base); err != nil {
 			_ = os.RemoveAll(worktreeDir)
 			_, _ = gitOutput(ctx, actualRoot, "worktree", "prune")
@@ -220,11 +221,11 @@ func (w *gitWorktreeHandle) Capture(ctx context.Context) (WorkspaceCapture, erro
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	statusBytes, err := gitOutputBytes(ctx, w.dir, "status", "--porcelain")
+	statusBytes, err := gitOutputBytes(ctx, w.dir, "status", "--porcelain", "-z")
 	if err != nil {
 		return WorkspaceCapture{}, fmt.Errorf("subagents worktree status: %w", err)
 	}
-	changed := changedFilesFromStatus(string(statusBytes))
+	changed := changedFilesFromStatus(statusBytes)
 	args := []string{"diff"}
 	if w.capture == CapturePatch || w.capture == "" {
 		args = append(args, "--binary")
@@ -317,7 +318,7 @@ func gitUntrackedDiff(ctx context.Context, dir, name string, binary bool) ([]byt
 	if binary {
 		args = append(args, "--binary")
 	}
-	args = append(args, "/dev/null", "--", name)
+	args = append(args, os.DevNull, "--", name)
 	cmd := exec.CommandContext(ctx, "git", args...)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
@@ -348,23 +349,36 @@ func splitNUL(data []byte) []string {
 	return out
 }
 
-func changedFilesFromStatus(status string) []string {
+func changedFilesFromStatus(status []byte) []string {
 	var files []string
-	for _, line := range strings.Split(status, "\n") {
-		line = strings.TrimRight(line, "\r")
-		if len(line) < 4 {
+	for i := 0; i < len(status); {
+		end := bytes.IndexByte(status[i:], 0)
+		if end < 0 {
+			end = len(status) - i
+		}
+		record := status[i : i+end]
+		i += end + 1
+		if len(record) < 4 {
 			continue
 		}
-		path := strings.TrimSpace(line[3:])
-		if path == "" {
+		// With `git status --porcelain -z`, rename and copy records contain
+		// the new path in the status record, followed by the old path as the
+		// next NUL-delimited field.
+		path := record[3:]
+		if len(path) == 0 {
 			continue
 		}
-		// Porcelain rename entries are `old -> new`; the new path is the
-		// useful reference to callers.
-		if idx := strings.LastIndex(path, " -> "); idx >= 0 {
-			path = strings.TrimSpace(path[idx+4:])
+		files = append(files, string(path))
+		isRename := record[0] == 'R' || record[0] == 'C' || record[1] == 'R' || record[1] == 'C'
+		if isRename {
+			if i < len(status) {
+				if end := bytes.IndexByte(status[i:], 0); end >= 0 {
+					i += end + 1
+				} else {
+					i = len(status)
+				}
+			}
 		}
-		files = append(files, strings.Trim(path, "\""))
 	}
 	return files
 }

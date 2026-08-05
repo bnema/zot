@@ -39,25 +39,6 @@ const (
 	EventAgentExited    = "agent.exited"
 )
 
-// Short aliases are kept alongside the direction-prefixed names because the
-// latter read well at call sites while the former are convenient in switches.
-const (
-	AgentPing     = CommandAgentPing
-	TurnStart     = CommandTurnStart
-	TurnCancel    = CommandTurnCancel
-	AgentShutdown = CommandAgentShutdown
-
-	AgentReady     = EventAgentReady
-	AgentHeartbeat = EventAgentHeartbeat
-	TurnStarted    = EventTurnStarted
-	TurnProgress   = EventTurnProgress
-	ToolStarted    = EventToolStarted
-	ToolFinished   = EventToolFinished
-	MessageDelta   = EventMessageDelta
-	AgentIdle      = EventAgentIdle
-	AgentExited    = EventAgentExited
-)
-
 var (
 	// ErrEmptyProtocolLine is returned for a blank JSONL line or command.
 	ErrEmptyProtocolLine = errors.New("subagent protocol: empty line")
@@ -107,11 +88,6 @@ func IsEventName(name string) bool {
 	return ok
 }
 
-// CommandName and EventName make APIs which accept only a direction more
-// self-documenting without preventing unknown names from being preserved.
-type CommandName string
-type EventName string
-
 // MessageID returns a fresh opaque id suitable for correlating a command and
 // its result. UUIDs are used rather than a counter so ids remain unique when
 // several supervisors or workers are running at once.
@@ -152,15 +128,12 @@ type Envelope struct {
 	// Unknown contains unrecognised top-level fields from a versioned
 	// envelope. Payload itself retains unrecognised payload fields.
 	Unknown map[string]json.RawMessage `json:"-"`
-}
 
-// Command and ProtocolEvent are aliases rather than separate structs so a
-// caller can pass either kind to the same JSONL transport without a wrapper.
-// Direction checks are available through IsCommand and IsEvent.
-type Command = Envelope
-type ProtocolEvent = Envelope
-type EventEnvelope = Envelope
-type CommandEnvelope = Envelope
+	// constructionErr records a payload-construction failure for the
+	// compatibility-preserving value constructor. It is surfaced by Validate
+	// and MarshalJSON rather than being turned into a valid null payload.
+	constructionErr error
+}
 
 // NewEnvelope creates a current-protocol envelope and assigns a message id
 // and timestamp. payload may be any JSON-marshalable value. A nil payload is
@@ -174,18 +147,18 @@ func NewEnvelope(typ, agentID, turnID string, payload ...any) Envelope {
 	if err == nil {
 		return e
 	}
-	// Keep the constructor useful in error-free call sites. MarshalJSON will
-	// still succeed with a valid JSON null; callers which need the original
-	// error should use NewEnvelopeWithPayload. Preserve the metadata even
-	// when only the caller's payload was not marshalable.
+	// Preserve the value-returning API used by command/event call sites, but
+	// retain the construction failure so validation and wire encoding fail
+	// instead of silently sending a null payload.
 	return Envelope{
-		Version:   ProtocolVersion,
-		Type:      typ,
-		MessageID: NewMessageID(),
-		AgentID:   agentID,
-		TurnID:    turnID,
-		Timestamp: time.Now().UTC(),
-		Payload:   json.RawMessage("null"),
+		Version:         ProtocolVersion,
+		Type:            typ,
+		MessageID:       NewMessageID(),
+		AgentID:         agentID,
+		TurnID:          turnID,
+		Timestamp:       time.Now().UTC(),
+		Payload:         nil,
+		constructionErr: fmt.Errorf("subagent protocol payload: %w", err),
 	}
 }
 
@@ -216,25 +189,9 @@ func NewCommand(name, agentID, turnID string, payload ...any) Envelope {
 }
 
 // NewEventEnvelope creates a current-protocol event. The name is not checked
-// against EventName so unknown future events remain forward-compatible.
+// against the known event registry so unknown future events remain forward-compatible.
 func NewEventEnvelope(name, agentID, turnID string, payload ...any) Envelope {
 	return NewEnvelope(name, agentID, turnID, payload...)
-}
-
-// NewProtocolEvent is a more explicit spelling of NewEventEnvelope. NewEvent
-// is the canonical event-envelope constructor in this package.
-func NewProtocolEvent(name, agentID, turnID string, payload ...any) Envelope {
-	return NewEventEnvelope(name, agentID, turnID, payload...)
-}
-
-// NewCommandEnvelope is an explicit alias for NewCommand.
-func NewCommandEnvelope(name, agentID, turnID string, payload ...any) Envelope {
-	return NewCommand(name, agentID, turnID, payload...)
-}
-
-// NewEventMessage is an explicit alias for NewEventEnvelope.
-func NewEventMessage(name, agentID, turnID string, payload ...any) Envelope {
-	return NewEventEnvelope(name, agentID, turnID, payload...)
 }
 
 func firstPayload(payload []any) any {
@@ -259,6 +216,9 @@ func marshalPayload(payload any) (json.RawMessage, error) {
 // intentionally separate from ParseEnvelope: parsing an unknown future event
 // should succeed, while a sender can opt into strict validation before write.
 func (e Envelope) Validate() error {
+	if e.constructionErr != nil {
+		return e.constructionErr
+	}
 	if e.Version != ProtocolVersion {
 		return fmt.Errorf("%w: %d", ErrUnsupportedProtocolVersion, e.Version)
 	}
@@ -357,18 +317,9 @@ func ParseEnvelope(data []byte) (Envelope, error) {
 	return e, nil
 }
 
-// DecodeEnvelope is an alias for ParseEnvelope for callers using decoder
-// terminology.
-func DecodeEnvelope(data []byte) (Envelope, error) { return ParseEnvelope(data) }
-
 // ParseJSONL parses one newline-delimited JSON message. It accepts a final
 // line without a newline, as is customary for a stream after a clean EOF.
 func ParseJSONL(line []byte) (Envelope, error) { return ParseEnvelope(line) }
-
-// ParseEnvelopeLine is the string form of ParseJSONL.
-func ParseEnvelopeLine(line string) (Envelope, error) {
-	return ParseEnvelope([]byte(line))
-}
 
 // ParseEvent parses a current-protocol JSON event. A known command is
 // rejected; unknown types are accepted because an older peer cannot know
@@ -383,12 +334,6 @@ func ParseEvent(data []byte) (Envelope, error) {
 	}
 	return e, nil
 }
-
-// ParseProtocolEvent is an explicit alias for ParseEvent.
-func ParseProtocolEvent(data []byte) (Envelope, error) { return ParseEvent(data) }
-
-// ParseEventLine parses one JSONL event line.
-func ParseEventLine(line string) (Envelope, error) { return ParseEvent([]byte(line)) }
 
 // ParseCommand parses one current-protocol JSON command.
 func ParseCommand(line string) (Envelope, error) {
@@ -406,9 +351,6 @@ func ParseCommand(line string) (Envelope, error) {
 	return e, nil
 }
 
-// ParseCommandLine is an alias for ParseCommand.
-func ParseCommandLine(line string) (Envelope, error) { return ParseCommand(line) }
-
 // MarshalEnvelope returns one JSON object without a trailing newline.
 func MarshalEnvelope(e Envelope) ([]byte, error) {
 	return json.Marshal(e)
@@ -422,9 +364,6 @@ func MarshalJSONL(e Envelope) ([]byte, error) {
 	}
 	return append(b, '\n'), nil
 }
-
-// EncodeEnvelope is the stream-friendly spelling of MarshalJSONL.
-func EncodeEnvelope(e Envelope) ([]byte, error) { return MarshalJSONL(e) }
 
 // WriteEnvelope writes one complete newline-terminated JSONL message.
 func WriteEnvelope(w io.Writer, e Envelope) error {
@@ -467,7 +406,13 @@ func (e Envelope) MarshalJSON() ([]byte, error) {
 }
 
 func (e Envelope) marshalVersionedJSON() ([]byte, error) {
+	if e.constructionErr != nil {
+		return nil, e.constructionErr
+	}
 	version := e.Version
+	if version == 0 {
+		version = ProtocolVersion
+	}
 	messageID := e.MessageID
 	if messageID == "" {
 		messageID = NewMessageID()

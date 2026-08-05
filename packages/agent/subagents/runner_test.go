@@ -64,6 +64,8 @@ func TestWorkerEnvironmentRedactsProviderSecrets(t *testing.T) {
 	t.Setenv("HF_TOKEN", "hf-secret")
 	t.Setenv("GITHUB_TOKEN", "github-secret")
 	t.Setenv("CUSTOM_PROVIDER_TOKEN", "token-secret")
+	t.Setenv("CUSTOM_PROVIDER_KEY", "key-secret")
+	t.Setenv("AWS_ACCESS_KEY_ID", "aws-access-secret")
 	t.Setenv("GOOGLE_APPLICATION_CREDENTIALS", "/tmp/service-account.json")
 	t.Setenv("ZOT_SUBAGENT_TEST_VALUE", "not-secret")
 	env := strings.Join(workerEnvironment("openai"), "\n")
@@ -73,6 +75,8 @@ func TestWorkerEnvironmentRedactsProviderSecrets(t *testing.T) {
 		"HF_TOKEN=hf-secret",
 		"GITHUB_TOKEN=github-secret",
 		"CUSTOM_PROVIDER_TOKEN=token-secret",
+		"CUSTOM_PROVIDER_KEY=key-secret",
+		"AWS_ACCESS_KEY_ID=aws-access-secret",
 		"GOOGLE_APPLICATION_CREDENTIALS=/tmp/service-account.json",
 	} {
 		if strings.Contains(env, secret) {
@@ -87,6 +91,9 @@ func TestWorkerEnvironmentRedactsProviderSecrets(t *testing.T) {
 	bedrockEnv := strings.Join(workerEnvironment("amazon-bedrock"), "\n")
 	if !strings.Contains(bedrockEnv, "AWS_BEARER_TOKEN_BEDROCK=bedrock-secret") {
 		t.Fatal("Bedrock ambient credential chain was unexpectedly removed")
+	}
+	if !strings.Contains(bedrockEnv, "AWS_ACCESS_KEY_ID=aws-access-secret") {
+		t.Fatal("Bedrock AWS access-key credential was unexpectedly removed")
 	}
 }
 
@@ -281,6 +288,40 @@ func TestDefaultChildArgsResumeOmitsTask(t *testing.T) {
 	}
 }
 
+func TestUpdateAgentFromEventIgnoresProviderToolLoopTurnEnd(t *testing.T) {
+	a := &Agent{}
+	a.setTurnState(TurnRunning, "turn-1")
+	persisted := 0
+	a.persistFn = func(*Agent) { persisted++ }
+
+	updateAgentFromEvent(a, NewEvent("turn_end", map[string]any{"stop": "tool_use"}))
+
+	if got := a.TurnState(); got != TurnRunning {
+		t.Fatalf("turn state = %q, want %q", got, TurnRunning)
+	}
+	if got := a.CurrentTurnID(); got != "turn-1" {
+		t.Fatalf("turn ID = %q, want turn-1", got)
+	}
+	if persisted != 0 {
+		t.Fatalf("persist called %d times for provider/tool-loop turn_end, want 0", persisted)
+	}
+}
+
+func TestUpdateAgentFromEventPersistsTerminalTurnEndWithStep(t *testing.T) {
+	a := &Agent{}
+	persisted := 0
+	a.persistFn = func(*Agent) { persisted++ }
+
+	updateAgentFromEvent(a, NewEvent("turn_end", map[string]any{"step": float64(2), "error": "boom"}))
+
+	if got := a.TurnState(); got != TurnFailed {
+		t.Fatalf("turn state = %q, want %q", got, TurnFailed)
+	}
+	if persisted != 1 {
+		t.Fatalf("persist called %d times for terminal turn_end, want 1", persisted)
+	}
+}
+
 func TestNotifyPromptTurnEndIgnoresProviderToolLoopTurnEnd(t *testing.T) {
 	called := make(chan struct{}, 1)
 	a := &Agent{}
@@ -317,6 +358,31 @@ func TestNotifyPromptTurnEndFiresForDaemonPromptCompletion(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("OnTurnEnd did not fire for prompt-level turn_end with step")
+	}
+}
+
+func TestSetOnTurnEndReplaysPendingNoticesInArrivalOrder(t *testing.T) {
+	a := &Agent{}
+	notifyPromptTurnEnd(a, NewEvent("turn_end", map[string]any{"step": float64(1)}))
+	notifyPromptTurnEnd(a, NewEvent("turn_end", map[string]any{"step": float64(2), "error": "boom"}))
+
+	type notice struct {
+		step int
+		err  string
+	}
+	var got []notice
+	a.SetOnTurnEnd(func(step int, errMsg string) {
+		got = append(got, notice{step: step, err: errMsg})
+	})
+
+	want := []notice{{step: 1}, {step: 2, err: "boom"}}
+	if len(got) != len(want) {
+		t.Fatalf("replayed %d notices, want %d: %+v", len(got), len(want), got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("replayed notice %d = %+v, want %+v", i, got[i], want[i])
+		}
 	}
 }
 

@@ -3,16 +3,16 @@ package subagents
 import (
 	"context"
 	"errors"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 )
 
-// newTestSupervisor builds a Supervisor rooted in t.TempDir with the in-memory
-// and a Runner factory the test controls. Returns the subagent plus a
-// slice of runners keyed by spawn order so tests can assert they
-// were actually invoked.
+// newTestSupervisor builds a Supervisor rooted in t.TempDir and configured
+// with the Runner factory controlled by the test.
 func newTestSupervisor(t *testing.T, mk func(a *Agent) Runner) *Supervisor {
 	t.Helper()
 	root := t.TempDir()
@@ -141,6 +141,64 @@ func TestStopCancelsRunningAgent(t *testing.T) {
 	}
 }
 
+func TestStopContextCancelsDetachedWaitWithoutHoldingOperationLock(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("subagent inbox transport uses Unix-domain sockets")
+	}
+	path := filepath.Join(t.TempDir(), "agent.sock")
+	listener, err := Listen(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+
+	f := New(Config{
+		Root: t.TempDir(),
+		Policy: SubagentPolicy{
+			CancelGracePeriod: time.Hour,
+		},
+	})
+	a := &Agent{
+		ID:        "detached-agent",
+		InboxPath: path,
+		inbox:     NewInbox(path),
+		status:    StatusDetached,
+		done:      make(chan struct{}),
+	}
+	defer a.inbox.Close()
+	close(a.done)
+	f.mu.Lock()
+	f.agents[a.ID] = a
+	f.order = append(f.order, a.ID)
+	f.mu.Unlock()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	stopDone := make(chan error, 1)
+	go func() { stopDone <- f.StopContext(ctx, a.ID) }()
+
+	// The listener notification proves Stop reached its shutdown wait. The
+	// operation lock must already be available while that wait is in progress.
+	if msg := <-listener.Lines(); msg == "" {
+		t.Fatal("shutdown command was empty")
+	}
+	operationReleased := make(chan struct{})
+	go func() {
+		f.operationMu.Lock()
+		close(operationReleased)
+		f.operationMu.Unlock()
+	}()
+	<-operationReleased
+
+	cancel()
+	if err := <-stopDone; !errors.Is(err, context.Canceled) {
+		t.Fatalf("StopContext error = %v; want context.Canceled", err)
+	}
+	if got := a.Status(); got != StatusDetached {
+		t.Fatalf("status after canceled stop = %s; want detached", got)
+	}
+}
+
 func TestStopAfterDoneIsNoop(t *testing.T) {
 	f := newTestSupervisor(t, func(a *Agent) Runner {
 		return RunnerFunc(func(ctx context.Context, sink Sink) error { return nil })
@@ -233,6 +291,19 @@ func TestSnapshotIsStableAcrossAccess(t *testing.T) {
 	close(stop)
 	if a.Status() != StatusDone {
 		t.Fatalf("status = %s", a.Status())
+	}
+}
+
+func TestTruncateIsRuneAware(t *testing.T) {
+	input := "αβγδεζη"
+	if got := truncate(input, 6); got != "αβγ..." {
+		t.Fatalf("truncate(%q, 6) = %q; want %q", input, got, "αβγ...")
+	}
+	if got := truncate(input, 3); got != "..." {
+		t.Fatalf("truncate(%q, 3) = %q; want %q", input, got, "...")
+	}
+	if got := truncate(input, 2); got != ".." {
+		t.Fatalf("truncate(%q, 2) = %q; want %q", input, got, "..")
 	}
 }
 

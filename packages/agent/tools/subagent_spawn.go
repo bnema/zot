@@ -60,7 +60,7 @@ type subagentSpawnArgs struct {
 	Thinking  string `json:"thinking,omitempty"`
 	Isolation string `json:"isolation,omitempty"`
 	Timeout   string `json:"timeout,omitempty"`
-	MaxTurns  int    `json:"max_turns,omitempty"`
+	MaxTurns  *int   `json:"max_turns,omitempty"`
 }
 
 const subagentSpawnSchema = `{
@@ -149,7 +149,7 @@ func (t *SubagentSpawnTool) Execute(ctx context.Context, raw json.RawMessage, pr
 		}
 		timeout = parsed
 	}
-	if a.MaxTurns < 0 {
+	if a.MaxTurns != nil && *a.MaxTurns < 1 {
 		return protocolToolError(prefix + ": max_turns must be positive")
 	}
 
@@ -217,6 +217,10 @@ func (t *SubagentSpawnTool) Execute(ctx context.Context, raw json.RawMessage, pr
 		}
 	}
 
+	maxTurns := 0
+	if a.MaxTurns != nil {
+		maxTurns = *a.MaxTurns
+	}
 	agent, err := t.Supervisor.SpawnReq(ctx, subagents.SpawnRequest{
 		Task:          task,
 		Model:         model,
@@ -225,7 +229,7 @@ func (t *SubagentSpawnTool) Execute(ctx context.Context, raw json.RawMessage, pr
 		FastMode:      fastModeOverride,
 		Subagent:      agentName,
 		Timeout:       timeout,
-		MaxTurns:      a.MaxTurns,
+		MaxTurns:      maxTurns,
 		WorkspaceMode: workspaceMode,
 		Tools:         profileTools,
 	})

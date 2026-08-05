@@ -458,6 +458,9 @@ type Interactive struct {
 
 	mu    sync.Mutex
 	agent *core.Agent
+	// agentMu serializes live registry replacement with side-dialog
+	// snapshots, whose copied-agent constructor reads the registry field.
+	agentMu sync.Mutex
 	// managedAutoSubagentsAddenda records exact prompt blocks appended by
 	// auto-subagents. Disable only removes these owned occurrences, leaving
 	// identical text that came from the user's base prompt untouched.
@@ -782,7 +785,7 @@ func NewInteractive(cfg InteractiveConfig) *Interactive {
 		baseURL, _, err := cfg.LlamaCPPConfig()
 		i.llamaConfigured = err == nil && baseURL != ""
 	}
-	if cfg.AutoSubagentsEnabled != nil && *cfg.AutoSubagentsEnabled {
+	if cfg.AutoSubagentsEnabled != nil && *cfg.AutoSubagentsEnabled && cfg.Supervisor != nil && (cfg.AutoSubagentsToolAllowed == nil || *cfg.AutoSubagentsToolAllowed) {
 		i.managedAutoSubagentsAddenda = autoSubagentsAddenda(cfg)
 	}
 	if cfg.Agent != nil {
@@ -3504,7 +3507,7 @@ func (i *Interactive) applyChangedCWD(ag *core.Agent, provider, model, cwd strin
 	i.agent = ag
 	i.cfg.CWD = cwd
 	i.cfg.SubagentsSystemAddendum = subagentsAddendum
-	if i.autoSubagentsEnabled() {
+	if i.autoSubagentsEnabledLocked() {
 		i.managedAutoSubagentsAddenda = autoSubagentsAddenda(i.cfg)
 	} else {
 		i.managedAutoSubagentsAddenda = nil
@@ -3855,11 +3858,10 @@ func (i *Interactive) openSettingsDialog() {
 	if i.cfg.AutoSubagentsEnabled != nil {
 		autoSubagents = *i.cfg.AutoSubagentsEnabled
 	}
-	autoSubagentsDisabled := i.cfg.Supervisor == nil
-	autoSubagentsHint := ""
+	autoSubagentsDisabled := !i.autoSubagentsAvailable()
+	autoSubagentsHint := i.autoSubagentsUnavailableHint()
 	if autoSubagentsDisabled {
 		autoSubagents = false
-		autoSubagentsHint = "subagent supervisor not available in this mode"
 	}
 
 	fastMode := i.cfg.FastMode != nil && *i.cfg.FastMode
@@ -4393,8 +4395,17 @@ func (i *Interactive) applySettingToggle(key string, value bool) {
 		i.statusErr = ""
 		i.mu.Unlock()
 	case "auto_subagents_enabled":
+		if value && !i.autoSubagentsAvailable() {
+			i.mu.Lock()
+			i.statusOK = ""
+			i.statusErr = "auto-subagents unavailable: " + i.autoSubagentsUnavailableHint()
+			i.mu.Unlock()
+			return
+		}
 		val := value
+		i.mu.Lock()
 		i.cfg.AutoSubagentsEnabled = &val
+		i.mu.Unlock()
 		if i.cfg.SettingsStore != nil {
 			if err := i.cfg.SettingsStore.SetAutoSubagents(value); err != nil {
 				i.mu.Lock()
@@ -5415,7 +5426,7 @@ func (i *Interactive) doLogout(target string) {
 		// it so prompts can't go out with the stale client, and hint at
 		// /login. Close any LSP processes owned by its tools first.
 		if i.agent != nil {
-			_ = tools.CloseLSPManagers(i.agent.Tools)
+			_ = tools.CloseLSPManagers(i.agent.ToolsSnapshot())
 		}
 		i.agent = nil
 		i.statusOK = "logged out of " + strings.Join(providers, ", ") + ". type /login to sign back in."
@@ -5625,14 +5636,29 @@ func (i *Interactive) cancelAndWaitForIdle() {
 // submitted as the first question, so '/btw does X work?' fires the
 // model call immediately instead of just opening an empty dialog.
 func (i *Interactive) openBtwDialog(args []string) {
-	if i.agent == nil {
+	i.agentMu.Lock()
+	defer i.agentMu.Unlock()
+	i.mu.Lock()
+	ag := i.agent
+	system := ""
+	if ag != nil {
+		system, _ = ag.PromptConfig()
+	}
+	theme := i.cfg.Theme
+	model := i.cfg.Model
+	cwd := i.cfg.CWD
+	compact := i.compactModeEnabled()
+	flatTools := i.cfg.FlatTools
+	lineInput := tui.NormalizeInputStyle(i.cfg.TUIInputStyle) == tui.InputStyleLines
+	i.mu.Unlock()
+	if ag == nil {
 		i.mu.Lock()
 		i.statusErr = "not logged in. type /login first."
 		i.mu.Unlock()
 		return
 	}
 	seed := strings.TrimSpace(strings.Join(args, " "))
-	i.btwDialog.Open(i.cfg.Theme, i.agent, i.agent.System, i.cfg.Model, i.cfg.CWD, seed, i.compactModeEnabled(), i.cfg.FlatTools, tui.NormalizeInputStyle(i.cfg.TUIInputStyle) == tui.InputStyleLines, i.invalidate)
+	i.btwDialog.Open(theme, ag, system, model, cwd, seed, compact, flatTools, lineInput, i.invalidate)
 	i.invalidate()
 }
 
@@ -6009,7 +6035,7 @@ func (i *Interactive) swapModelUnserialized(prov, model string, builder func(str
 	ag.SeedCost(carryCost)
 
 	if i.agent != nil && i.agent != ag {
-		_ = tools.CloseLSPManagers(i.agent.Tools)
+		_ = tools.CloseLSPManagers(i.agent.ToolsSnapshot())
 	}
 	i.mu.Lock()
 	i.agent = ag
@@ -6061,7 +6087,7 @@ func (i *Interactive) handleAuthEvent(ev auth.Event) {
 			i.statusOK = "logged in to " + ev.Provider + " via " + ev.Method
 			i.mu.Unlock()
 			if oldAgent != nil {
-				_ = tools.CloseLSPManagers(oldAgent.Tools)
+				_ = tools.CloseLSPManagers(oldAgent.ToolsSnapshot())
 			}
 			i.applyAutoSubagentsTool(i.autoSubagentsEnabled())
 			i.applyTelegramTools(i.telegramBridge != nil && i.telegramBridge.Active())
@@ -7374,12 +7400,14 @@ func removeLastAutoSubagentsAddendum(system, addendum string) (string, bool) {
 // The profile manifest and delegation guidance are managed together so
 // toggling auto-subagents never leaves the model with names but no tool.
 func (i *Interactive) applyAutoSubagentsSystemPrompt(active bool) {
+	i.mu.Lock()
+	defer i.mu.Unlock()
 	if i.agent == nil {
 		return
 	}
 	addenda := autoSubagentsAddenda(i.cfg)
 	if active {
-		sys := i.agent.System
+		sys, _ := i.agent.PromptConfig()
 		for _, addendum := range addenda {
 			if containsAutoSubagentsAddendum(i.managedAutoSubagentsAddenda, addendum) {
 				continue
@@ -7390,11 +7418,11 @@ func (i *Interactive) applyAutoSubagentsSystemPrompt(active bool) {
 			sys += addendum
 			i.managedAutoSubagentsAddenda = append(i.managedAutoSubagentsAddenda, addendum)
 		}
-		i.agent.System = sys
+		i.agent.SetSystemPrompt(sys)
 		return
 	}
 
-	sys := i.agent.System
+	sys, _ := i.agent.PromptConfig()
 	changed := false
 	for idx := len(i.managedAutoSubagentsAddenda) - 1; idx >= 0; idx-- {
 		var removed bool
@@ -7403,7 +7431,7 @@ func (i *Interactive) applyAutoSubagentsSystemPrompt(active bool) {
 	}
 	i.managedAutoSubagentsAddenda = nil
 	if changed {
-		i.agent.System = strings.TrimRight(sys, "\n") + "\n"
+		i.agent.SetSystemPrompt(strings.TrimRight(sys, "\n") + "\n")
 	}
 }
 
@@ -7412,15 +7440,44 @@ func (i *Interactive) applyAutoSubagentsSystemPrompt(active bool) {
 // when /settings -> auto-subagents is enabled. Mirrors applyTelegramTools'
 // snapshot+mutate pattern so extension tools and /reload-ext additions
 // survive a toggle.
+func (i *Interactive) autoSubagentsAvailable() bool {
+	return i.cfg.Supervisor != nil && (i.cfg.AutoSubagentsToolAllowed == nil || *i.cfg.AutoSubagentsToolAllowed)
+}
+
+func (i *Interactive) autoSubagentsUnavailableHint() string {
+	var hints []string
+	if i.cfg.Supervisor == nil {
+		hints = append(hints, "subagent supervisor not available in this mode")
+	}
+	if !i.autoSubagentsToolAllowed() {
+		hints = append(hints, "launch-time tool policy excludes subagent_spawn")
+	}
+	return strings.Join(hints, "; ")
+}
+
+func (i *Interactive) autoSubagentsToolAllowed() bool {
+	return i.cfg.AutoSubagentsToolAllowed == nil || *i.cfg.AutoSubagentsToolAllowed
+}
+
 func (i *Interactive) autoSubagentsEnabled() bool {
-	return i.cfg.AutoSubagentsEnabled != nil && *i.cfg.AutoSubagentsEnabled
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	return i.autoSubagentsEnabledLocked()
+}
+
+func (i *Interactive) autoSubagentsEnabledLocked() bool {
+	return i.cfg.AutoSubagentsEnabled != nil && *i.cfg.AutoSubagentsEnabled && i.autoSubagentsAvailable()
 }
 
 func (i *Interactive) applyAutoSubagentsTool(active bool) {
+	i.agentMu.Lock()
+	defer i.agentMu.Unlock()
+	i.mu.Lock()
+	defer i.mu.Unlock()
 	if i.agent == nil {
 		return
 	}
-	current := i.agent.Tools
+	current := i.agent.ToolsSnapshot()
 	next := core.Registry{}
 	for name, t := range current {
 		if name == "subagent_spawn" {
@@ -7428,11 +7485,10 @@ func (i *Interactive) applyAutoSubagentsTool(active bool) {
 		}
 		next[name] = t
 	}
-	toolAllowed := i.cfg.AutoSubagentsToolAllowed == nil || *i.cfg.AutoSubagentsToolAllowed
-	if active && toolAllowed && i.cfg.Supervisor != nil {
+	if active && i.autoSubagentsAvailable() {
 		canonical := &tools.SubagentSpawnTool{
 			Supervisor:       i.cfg.Supervisor,
-			Enabled:          func() bool { return true },
+			Enabled:          func() bool { return i.autoSubagentsEnabled() },
 			DefaultModel:     func() string { return i.cfg.Model },
 			DefaultProvider:  func() string { return i.cfg.Provider },
 			DefaultReasoning: func() string { return i.cfg.Reasoning },
@@ -7452,10 +7508,14 @@ func (i *Interactive) applyAutoSubagentsTool(active bool) {
 // later /telegram disconnect (we only add or strip the two telegram
 // entries, never the rest).
 func (i *Interactive) applyTelegramTools(active bool) {
+	i.agentMu.Lock()
+	defer i.agentMu.Unlock()
+	i.mu.Lock()
+	defer i.mu.Unlock()
 	if i.agent == nil {
 		return
 	}
-	current := i.agent.Tools
+	current := i.agent.ToolsSnapshot()
 	next := core.Registry{}
 	for name, t := range current {
 		if name == "telegram_send_image" || name == "telegram_send_file" {

@@ -235,6 +235,7 @@ func runSubagentWorkerMode(ctx context.Context, args Args, version string) error
 		})
 		em.emit("agent.idle", map[string]any{"turn_id": turnID})
 
+		cancel()
 		mu.Lock()
 		busyTurn = false
 		cancelFn = nil
@@ -538,7 +539,3 @@ func truncateForLog(s string, n int) string {
 	}
 	return s[:n-3] + "..."
 }
-
-// _ keeps the provider import used; provider types may surface
-// through ag.OnEvent / modes.EventToJSON in future iterations.
-var _ provider.Content = provider.TextBlock{}

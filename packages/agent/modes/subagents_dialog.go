@@ -115,12 +115,6 @@ type subagentsDialog struct {
 
 func newSubagentsDialog() *subagentsDialog { return &subagentsDialog{} }
 
-// SetCurrentModel pins the model + provider every fresh spawn will
-// inherit. The host wires this to the same Model / Provider the rest
-// of zot is currently using, so agents started from the dashboard
-// run on whatever the user last picked via /model. Pass empty
-// strings to clear the override (the child then resolves its own
-// default the same way a bare `zot` invocation does).
 func (d *subagentsDialog) SetCompactMode(enabled bool) {
 	d.compactMode = enabled
 }
@@ -136,6 +130,12 @@ func (d *subagentsDialog) editorPrompt(th tui.Theme) string {
 	return th.AccentBar(th.Accent)
 }
 
+// SetCurrentModel pins the model + provider every fresh spawn will
+// inherit. The host wires this to the same Model / Provider the rest
+// of zot is currently using, so agents started from the dashboard
+// run on whatever the user last picked via /model. Pass empty
+// strings to clear the override (the child then resolves its own
+// default the same way a bare `zot` invocation does).
 func (d *subagentsDialog) SetCurrentModel(model, providerID string) {
 	d.pendingModel = model
 	d.pendingProvider = providerID
@@ -1067,7 +1067,7 @@ func (d *subagentsDialog) Render(th tui.Theme, width int) []string {
 	}
 
 	// Column header for readability.
-	header := fmt.Sprintf("  %-18s  %-26s  %-8s  %s", "PROCESS/TURN STATUS", "ID", "AGE", "ACTIVITY")
+	header := fmt.Sprintf("  %-18s  %-26s  %-8s  %s", "PROC/TURN STATUS", "ID", "AGE", "ACTIVITY")
 	out = append(out, th.FG256(th.Muted, header))
 
 	for i, r := range d.rows {

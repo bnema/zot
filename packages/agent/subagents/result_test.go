@@ -1,7 +1,9 @@
 package subagents
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -44,6 +46,48 @@ func TestTurnResultBoundedHonorsLineAndUTF8Limits(t *testing.T) {
 	}
 	if !utf8.ValidString(bounded.Output) {
 		t.Fatal("bounded output is not valid UTF-8")
+	}
+}
+
+func TestTruncateUTF8CutsOnlyIncompleteTrailingRune(t *testing.T) {
+	invalidPrefix := string([]byte{0xff, 'a', 'b', 'c'})
+	tests := []struct {
+		name     string
+		value    string
+		maxBytes int
+		want     string
+	}{
+		{
+			name:     "multibyte",
+			value:    "prefix😀suffix",
+			maxBytes: len([]byte("prefix")) + 2,
+			want:     "prefix",
+		},
+		{
+			name:     "invalid byte before incomplete rune",
+			value:    invalidPrefix + string([]byte{0xe2, 0x82}) + "tail",
+			maxBytes: len([]byte(invalidPrefix)) + 2,
+			want:     invalidPrefix,
+		},
+		{
+			name:     "invalid byte before ascii cut",
+			value:    invalidPrefix + "😀",
+			maxBytes: len([]byte(invalidPrefix)),
+			want:     invalidPrefix,
+		},
+		{
+			name:     "invalid trailing byte is preserved",
+			value:    string([]byte{'a', 0xff, 0x80}) + "😀",
+			maxBytes: 3,
+			want:     string([]byte{'a', 0xff, 0x80}),
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := truncateUTF8(tt.value, tt.maxBytes); got != tt.want {
+				t.Fatalf("truncateUTF8() = %q (%x), want %q (%x)", got, got, tt.want, tt.want)
+			}
+		})
 	}
 }
 
@@ -103,5 +147,162 @@ func TestTurnResultReferencesAndPersistence(t *testing.T) {
 	}
 	if info.Mode().Perm() != 0o600 {
 		t.Fatalf("result permissions = %o, want 600", info.Mode().Perm())
+	}
+}
+
+func TestWriteTurnResultCleansTemporaryFileAfterRenameFailure(t *testing.T) {
+	state := t.TempDir()
+	if err := os.Mkdir(resultPath(state), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	result := &TurnResult{AgentID: "a", TurnID: "t", Status: ResultSucceeded}
+	if err := writeTurnResult(state, result); err == nil {
+		t.Fatal("writeTurnResult succeeded when the result path was a directory")
+	}
+	if _, err := os.Stat(resultPath(state) + ".tmp"); !os.IsNotExist(err) {
+		t.Fatalf("temporary result file still exists, stat error = %v", err)
+	}
+}
+
+func TestCaptureWorkspaceFailureIsDurableAndPrivate(t *testing.T) {
+	makeAgent := func(stateDir string, capture func() (WorkspaceCapture, error)) *Agent {
+		return &Agent{ID: "agent-1", stateDir: stateDir, workspaceCapture: capture}
+	}
+	assertFailure := func(t *testing.T, supervisor *Supervisor, agent *Agent, stateDir string) {
+		t.Helper()
+		supervisor.captureWorkspace(agent)
+		supervisor.ensureResult(agent, StatusDone, nil)
+		checkCaptureFailureResult(t, agent, stateDir)
+	}
+
+	t.Run("stat", func(t *testing.T) {
+		stateDir := filepath.Join(t.TempDir(), "missing")
+		agent := makeAgent(stateDir, func() (WorkspaceCapture, error) {
+			t.Fatal("workspace capture should not run when the state directory cannot be stat'ed")
+			return WorkspaceCapture{}, nil
+		})
+		assertFailure(t, &Supervisor{}, agent, stateDir)
+	})
+
+	t.Run("capture", func(t *testing.T) {
+		stateDir := t.TempDir()
+		agent := makeAgent(stateDir, func() (WorkspaceCapture, error) {
+			return WorkspaceCapture{}, errors.New("capture leaked /private/secret")
+		})
+		assertFailure(t, &Supervisor{}, agent, stateDir)
+	})
+
+	t.Run("temp write", func(t *testing.T) {
+		stateDir := t.TempDir()
+		if err := os.Mkdir(patchPath(stateDir)+".tmp", 0o700); err != nil {
+			t.Fatal(err)
+		}
+		agent := makeAgent(stateDir, func() (WorkspaceCapture, error) {
+			return WorkspaceCapture{Patch: []byte("patch")}, nil
+		})
+		assertFailure(t, &Supervisor{}, agent, stateDir)
+	})
+
+	t.Run("rename", func(t *testing.T) {
+		stateDir := t.TempDir()
+		if err := os.Mkdir(patchPath(stateDir), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		agent := makeAgent(stateDir, func() (WorkspaceCapture, error) {
+			return WorkspaceCapture{Patch: []byte("patch")}, nil
+		})
+		assertFailure(t, &Supervisor{}, agent, stateDir)
+		if _, err := os.Stat(patchPath(stateDir) + ".tmp"); !os.IsNotExist(err) {
+			t.Fatalf("workspace temporary patch still exists, stat error = %v", err)
+		}
+	})
+}
+
+func TestCaptureWorkspaceSuccessPersistsPatch(t *testing.T) {
+	stateDir := t.TempDir()
+	agent := &Agent{
+		ID:       "agent-1",
+		stateDir: stateDir,
+		workspaceCapture: func() (WorkspaceCapture, error) {
+			return WorkspaceCapture{Patch: []byte("patch"), ChangedFiles: []string{"file.txt"}}, nil
+		},
+	}
+	(&Supervisor{}).captureWorkspace(agent)
+
+	patch, err := os.ReadFile(patchPath(stateDir))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(patch) != "patch" {
+		t.Fatalf("patch = %q, want %q", patch, "patch")
+	}
+	agent.lifecycleMu.Lock()
+	patchRef := agent.patchRef
+	changedFiles := append([]string(nil), agent.changedFiles...)
+	agent.lifecycleMu.Unlock()
+	if patchRef != PatchRef(agent.ID) || len(changedFiles) != 1 || changedFiles[0] != "file.txt" {
+		t.Fatalf("capture metadata = ref %q, changed files %#v", patchRef, changedFiles)
+	}
+}
+
+func checkCaptureFailureResult(t *testing.T, agent *Agent, stateDir string) {
+	t.Helper()
+	result := agent.Result()
+	if result == nil || result.Status != ResultFailed || result.Error == nil {
+		t.Fatalf("capture failure result = %#v", result)
+	}
+	if result.Error.Code != workspaceCaptureErrorCode || result.Error.Message != workspaceCaptureErrorMessage {
+		t.Fatalf("capture failure error = %#v", result.Error)
+	}
+	if strings.Contains(result.Error.Message, stateDir) || strings.Contains(result.Error.Message, "secret") {
+		t.Fatalf("capture failure leaked private data: %#v", result.Error)
+	}
+	durable, err := readTurnResult(stateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if durable.Error == nil || durable.Error.Code != workspaceCaptureErrorCode || durable.Status != ResultFailed {
+		t.Fatalf("durable capture failure = %#v", durable)
+	}
+}
+
+func TestEnsureResultReconcilesChildStatusWithRunnerError(t *testing.T) {
+	tests := []struct {
+		name      string
+		status    Status
+		runErr    error
+		wantState TurnStatus
+	}{
+		{name: "runner failure", status: StatusFailed, runErr: errors.New("runner failed"), wantState: ResultFailed},
+		{name: "runner cancellation", status: StatusFailed, runErr: context.Canceled, wantState: ResultCanceled},
+		{name: "killed", status: StatusKilled, runErr: context.Canceled, wantState: ResultCanceled},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			stateDir := t.TempDir()
+			agent := &Agent{
+				ID:       "agent-1",
+				stateDir: stateDir,
+				result: &TurnResult{
+					AgentID: "agent-1", TurnID: "turn-1", Status: ResultSucceeded,
+				},
+			}
+			supervisor := &Supervisor{}
+			supervisor.ensureResult(agent, tt.status, tt.runErr)
+			result := agent.Result()
+			if result == nil || result.Status != tt.wantState {
+				t.Fatalf("result status = %#v, want %q", result, tt.wantState)
+			}
+			if result.Error == nil {
+				t.Fatal("runner error was not recorded")
+			}
+			durable, err := readTurnResult(stateDir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if durable.Status != tt.wantState {
+				t.Fatalf("durable result status = %q, want %q", durable.Status, tt.wantState)
+			}
+		})
 	}
 }

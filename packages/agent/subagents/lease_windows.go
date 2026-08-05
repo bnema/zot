@@ -14,7 +14,8 @@ func acquireAgentLease(stateDir string) (*agentLease, error) {
 		return nil, err
 	}
 	flags := uint32(windows.LOCKFILE_EXCLUSIVE_LOCK | windows.LOCKFILE_FAIL_IMMEDIATELY)
-	if err := windows.LockFileEx(windows.Handle(file.Fd()), flags, 0, 1, 0, nil); err != nil {
+	var overlapped windows.Overlapped
+	if err := windows.LockFileEx(windows.Handle(file.Fd()), flags, 0, 1, 0, &overlapped); err != nil {
 		_ = file.Close()
 		if errors.Is(err, windows.ERROR_LOCK_VIOLATION) {
 			return nil, ErrAgentLeaseHeld
@@ -28,7 +29,8 @@ func (l *agentLease) Close() error {
 	if l == nil || l.file == nil {
 		return nil
 	}
-	unlockErr := windows.UnlockFileEx(windows.Handle(l.file.Fd()), 0, 1, 0, nil)
+	var overlapped windows.Overlapped
+	unlockErr := windows.UnlockFileEx(windows.Handle(l.file.Fd()), 0, 1, 0, &overlapped)
 	closeErr := l.file.Close()
 	l.file = nil
 	if unlockErr != nil {

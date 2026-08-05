@@ -17,10 +17,14 @@ import (
 //	/subagents new [--agent A] [--model M] [--provider P] [--reasoning L] <task...>
 //	                             -> spawn an agent with optional profile/model overrides
 //	/subagents kill <id>             -> stop a running agent
+//	/subagents cancel <id>           -> cancel the active turn
 //	/subagents remove <id>           -> tear down a terminated agent
 //	/subagents logs <id>             -> open the scrollable transcript view
+//	/subagents result|inspect <id>   -> show the completed result
+//	/subagents wait <id>             -> wait for the agent to finish
 //	/subagents send <id> <text...>   -> send a follow-up user turn to <id>
 //	/subagents resume [id]           -> resume an agent (omit id to pick from a list)
+//	/subagents restart-task|restart <id> -> restart the original task
 //	/subagents attach <id>           -> (planned) drop into the agent's TUI
 //
 // When cfg.Supervisor is nil the command tells the user the feature is
@@ -240,8 +244,15 @@ func (i *Interactive) runSubagents(ctx context.Context, args []string) {
 			return
 		}
 		go func() {
-			a.Wait()
-			i.subagentsStatus("completed "+a.ID, "")
+			if err := a.WaitContext(ctx); err != nil {
+				return
+			}
+			// If cancellation became observable at the same time as
+			// completion, do not report a completion that the caller
+			// no longer owns.
+			if ctx.Err() == nil {
+				i.subagentsStatus("completed "+a.ID, "")
+			}
 		}()
 		i.subagentsStatus("waiting for "+a.ID, "")
 	case "resume-session", "resume", "reattach", "reopen":
@@ -311,7 +322,7 @@ func (i *Interactive) runSubagents(ctx context.Context, args []string) {
 		// feature. Point the user at /subagents logs in the meantime.
 		i.subagentsStatus("", "/subagents attach: not implemented yet (needs PTY reparenting). Use /subagents logs "+firstWord(rest)+" to watch its transcript.")
 	default:
-		i.subagentsStatus("", "/subagents: unknown subcommand "+sub+" (try list / new / kill / remove / logs / send / result / resume-session / restart-task)")
+		i.subagentsStatus("", "/subagents: unknown subcommand "+sub+" (try list / new / kill / cancel / remove / logs / send / result / wait / resume-session / restart-task)")
 	}
 }
 

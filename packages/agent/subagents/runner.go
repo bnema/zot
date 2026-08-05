@@ -213,7 +213,6 @@ func (r *execRunner) Run(ctx context.Context, sink Sink) error {
 	}
 
 	cmd := exec.CommandContext(ctx, args[0], args[1:]...)
-	configureWorkerProcess(cmd)
 	cmd.Dir = r.agent.Dir
 	cmd.Env = append(workerEnvironment(r.agent.Provider),
 		"ZOT_SUBAGENT_AGENT_ID="+r.agent.ID,
@@ -251,6 +250,7 @@ func (r *execRunner) Run(ctx context.Context, sink Sink) error {
 	if err != nil {
 		return err
 	}
+	configureWorkerProcess(cmd, stdout, stderr)
 
 	// "spawning" is briefly shown until the first event arrives;
 	// the child's "spawned" lifecycle event then overwrites it.
@@ -422,13 +422,13 @@ func isBedrockCredentialEnv(name string) bool {
 
 func workerSecretEnvName(name string) bool {
 	name = strings.ToUpper(strings.TrimSpace(name))
-	for _, suffix := range []string{"_API_KEY", "_OAUTH_TOKEN", "_TOKEN", "_SECRET", "_PASSWORD", "_CREDENTIAL", "_CREDENTIALS"} {
+	for _, suffix := range []string{"_KEY", "_API_KEY", "_OAUTH_TOKEN", "_TOKEN", "_SECRET", "_PASSWORD", "_CREDENTIAL", "_CREDENTIALS"} {
 		if strings.HasSuffix(name, suffix) {
 			return true
 		}
 	}
 	switch name {
-	case "HF_TOKEN", "AWS_BEARER_TOKEN_BEDROCK", "COPILOT_GITHUB_TOKEN", "GITHUB_COPILOT_TOKEN", "GOOGLE_APPLICATION_CREDENTIALS":
+	case "AWS_ACCESS_KEY_ID", "HF_TOKEN", "AWS_BEARER_TOKEN_BEDROCK", "COPILOT_GITHUB_TOKEN", "GITHUB_COPILOT_TOKEN", "GOOGLE_APPLICATION_CREDENTIALS":
 		return true
 	default:
 		return false
@@ -568,6 +568,13 @@ func updateAgentFromEvent(a *Agent, ev Event) {
 		a.setProcessState(ProcessExited)
 		persist = true
 	case "turn_end":
+		// Provider/tool-loop turn_end events (for example stop=tool_use)
+		// do not carry the daemon's prompt step and are not terminal for
+		// the delegated task. They remain in the event log, but must not
+		// overwrite the delegated turn state or trigger persistence.
+		if _, ok := ev.Data["step"].(float64); !ok {
+			break
+		}
 		if message, _ := ev.Data["error"].(string); message != "" {
 			a.setTurnState(TurnFailed, ev.TurnID)
 		} else {

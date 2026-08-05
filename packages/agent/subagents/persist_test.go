@@ -152,12 +152,12 @@ func TestResumePreservesPerAgentTimeout(t *testing.T) {
 	first.StopAll()
 	a.Wait()
 
-	var observed time.Duration
+	observedCh := make(chan time.Duration, 1)
 	second := New(Config{
 		Root: root, RepoRoot: root,
 		Policy: SubagentPolicy{DefaultTimeout: time.Hour},
 		NewRunner: func(a *Agent) Runner {
-			observed = a.Timeout
+			observedCh <- a.Timeout
 			return RunnerFunc(func(ctx context.Context, _ Sink) error {
 				<-ctx.Done()
 				return ctx.Err()
@@ -171,6 +171,7 @@ func TestResumePreservesPerAgentTimeout(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	observed := <-observedCh
 	if resumed.Timeout != wantTimeout || observed != wantTimeout {
 		t.Fatalf("resumed timeout = %s, runner observed %s; want %s", resumed.Timeout, observed, wantTimeout)
 	}

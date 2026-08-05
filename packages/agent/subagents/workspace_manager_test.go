@@ -13,10 +13,7 @@ func TestSpawnWorktreeCapturesBeforeCleanup(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git is required")
 	}
-	repo := t.TempDir()
-	runGit(t, repo, "init")
-	runGit(t, repo, "config", "user.email", "test@example.invalid")
-	runGit(t, repo, "config", "user.name", "Test User")
+	repo := initTestRepo(t)
 	if err := os.WriteFile(filepath.Join(repo, "main.txt"), []byte("host\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}

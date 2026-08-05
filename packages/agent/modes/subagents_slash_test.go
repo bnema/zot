@@ -81,6 +81,9 @@ func TestRunSupervisorSubcommandsDoNotPanic(t *testing.T) {
 			iv.runSubagents(context.Background(), args)
 		}()
 	}
+	if !strings.Contains(iv.statusErr, "cancel") || !strings.Contains(iv.statusErr, "wait") {
+		t.Fatalf("unknown-command hint = %q; want cancel and wait", iv.statusErr)
+	}
 }
 
 func TestRunSupervisorRejectsNamedProfileWithoutResolver(t *testing.T) {
@@ -227,6 +230,69 @@ func TestRunSupervisorSendDeliversToAgentInbox(t *testing.T) {
 	}
 	if iv.statusOK == "" || iv.statusOK[:7] != "sent to" {
 		t.Fatalf("status ok = %q; want \"sent to ...\"", iv.statusOK)
+	}
+}
+
+func TestRunSupervisorWaitHonorsRunContext(t *testing.T) {
+	iv, f := newInteractiveForSupervisorTest(t)
+	defer f.StopAll()
+
+	a, err := f.Spawn(context.Background(), "long-running task")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	iv.runSubagents(ctx, []string{"wait", a.ID})
+	iv.mu.Lock()
+	status := iv.statusOK
+	iv.mu.Unlock()
+	if status != "waiting for "+a.ID {
+		t.Fatalf("initial wait status = %q", status)
+	}
+	cancel()
+
+	// The wait watcher must stop observing the run context and must not
+	// later overwrite the status with a false completion after cleanup.
+	time.Sleep(20 * time.Millisecond)
+	iv.mu.Lock()
+	status = iv.statusOK
+	iv.mu.Unlock()
+	if strings.Contains(status, "completed ") {
+		t.Fatalf("wait reported completion after cancellation: %q", status)
+	}
+}
+
+func TestRunSupervisorWaitReportsCompletionBeforeCancellation(t *testing.T) {
+	root := t.TempDir()
+	f := subagents.New(subagents.Config{
+		Root:     root,
+		RepoRoot: root,
+		NewRunner: func(*subagents.Agent) subagents.Runner {
+			return subagents.RunnerFunc(func(context.Context, subagents.Sink) error { return nil })
+		},
+	})
+	defer f.StopAll()
+	iv := &Interactive{subagentsDialog: newSubagentsDialog(), dirty: make(chan struct{}, 1)}
+	iv.cfg.Supervisor = f
+
+	a, err := f.Spawn(context.Background(), "quick task")
+	if err != nil {
+		t.Fatal(err)
+	}
+	iv.runSubagents(context.Background(), []string{"wait", a.ID})
+	deadline := time.After(time.Second)
+	for {
+		iv.mu.Lock()
+		status := iv.statusOK
+		iv.mu.Unlock()
+		if status == "completed "+a.ID {
+			return
+		}
+		select {
+		case <-deadline:
+			t.Fatalf("wait did not report completion; status = %q", status)
+		case <-time.After(time.Millisecond):
+		}
 	}
 }
 

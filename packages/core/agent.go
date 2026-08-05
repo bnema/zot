@@ -264,6 +264,36 @@ func (a *Agent) SetTools(reg Registry) {
 	a.mu.Unlock()
 }
 
+// SetSystemPrompt replaces the system prompt used for subsequent turns.
+func (a *Agent) SetSystemPrompt(system string) {
+	a.mu.Lock()
+	a.System = system
+	a.mu.Unlock()
+}
+
+// PromptConfig returns a consistent snapshot of the system prompt and tools
+// used to construct a provider request.
+func (a *Agent) PromptConfig() (string, Registry) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	tools := make(Registry, len(a.Tools))
+	for name, tool := range a.Tools {
+		tools[name] = tool
+	}
+	return a.System, tools
+}
+
+// ToolsSnapshot returns a copy of the current tool registry.
+func (a *Agent) ToolsSnapshot() Registry {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	tools := make(Registry, len(a.Tools))
+	for name, tool := range a.Tools {
+		tools[name] = tool
+	}
+	return tools
+}
+
 // SetMessages replaces the transcript (used when resuming a session).
 func (a *Agent) SetMessages(msgs []provider.Message) {
 	a.mu.Lock()
@@ -594,7 +624,7 @@ func (a *Agent) oneTurn(ctx context.Context, sink func(AgentEvent), turnContext 
 	if err := provider.ValidateFastMode(a.Client.Name(), fastMode); err != nil {
 		return provider.StopError, provider.Message{}, err
 	}
-	system := a.System
+	system, tools := a.PromptConfig()
 	if contextText := boundedTurnContext(turnContext); contextText != "" {
 		if system != "" {
 			system += "\n\n"
@@ -613,7 +643,7 @@ func (a *Agent) oneTurn(ctx context.Context, sink func(AgentEvent), turnContext 
 		// with "tool_use ids were found without tool_result blocks". The
 		// repair is pure and a no-op on already-valid transcripts.
 		Messages:    repairToolUseResultPairs(a.Messages()),
-		Tools:       a.Tools.Specs(),
+		Tools:       tools.Specs(),
 		Reasoning:   a.Reasoning,
 		FastMode:    fastMode,
 		MaxTokens:   a.MaxTokens,
@@ -723,6 +753,7 @@ func (a *Agent) executeTools(ctx context.Context, msg provider.Message, sink fun
 	var results []provider.Content
 	var addedTools []string
 	hadError := false
+	tools := a.ToolsSnapshot()
 
 	for _, c := range msg.Content {
 		tc, ok := c.(provider.ToolCallBlock)
@@ -739,7 +770,7 @@ func (a *Agent) executeTools(ctx context.Context, msg provider.Message, sink fun
 			IsError: res.IsError,
 		})
 		for _, name := range res.ActivateTools {
-			if _, err := a.Tools.Get(name); err == nil && !containsString(addedTools, name) {
+			if _, err := tools.Get(name); err == nil && !containsString(addedTools, name) {
 				addedTools = append(addedTools, name)
 			}
 		}
@@ -758,7 +789,8 @@ func (a *Agent) executeTools(ctx context.Context, msg provider.Message, sink fun
 }
 
 func (a *Agent) runOneTool(ctx context.Context, tc provider.ToolCallBlock, sink func(AgentEvent)) ToolResult {
-	tool, err := a.Tools.Get(tc.Name)
+	tools := a.ToolsSnapshot()
+	tool, err := tools.Get(tc.Name)
 	if err != nil {
 		return ToolResult{
 			Content: []provider.Content{provider.TextBlock{Text: err.Error()}},

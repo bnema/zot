@@ -108,9 +108,9 @@ func TestProtocolJSONCommandsAndDirectionChecks(t *testing.T) {
 	if err != nil {
 		t.Fatalf("MarshalJSONL: %v", err)
 	}
-	got, err := ParseCommandLine(string(line))
+	got, err := ParseCommand(string(line))
 	if err != nil {
-		t.Fatalf("ParseCommandLine: %v", err)
+		t.Fatalf("ParseCommand: %v", err)
 	}
 	if !got.IsCommand() || got.IsEvent() || got.Type != CommandTurnStart {
 		t.Fatalf("direction = command:%v event:%v type:%q", got.IsCommand(), got.IsEvent(), got.Type)
@@ -124,7 +124,7 @@ func TestProtocolJSONCommandsAndDirectionChecks(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Marshal event: %v", err)
 	}
-	if _, err := ParseCommandLine(string(eventLine)); !errors.Is(err, ErrNotCommand) {
+	if _, err := ParseCommand(string(eventLine)); !errors.Is(err, ErrNotCommand) {
 		t.Fatalf("ParseCommand(event) = %v, want ErrNotCommand", err)
 	}
 }
@@ -199,6 +199,37 @@ func TestProtocolEmptyAndMalformedInputs(t *testing.T) {
 	}
 	if _, err := ParseEnvelope([]byte(`{"version":1,"type":"x","payload":`)); err == nil {
 		t.Fatal("ParseEnvelope malformed JSON succeeded")
+	}
+
+	invalid := NewEnvelope("x", "agent-1", "turn-1", func() {})
+	if err := invalid.Validate(); err == nil {
+		t.Fatal("NewEnvelope accepted an unmarshalable payload")
+	}
+	if _, err := MarshalEnvelope(invalid); err == nil {
+		t.Fatal("MarshalEnvelope accepted an unmarshalable payload")
+	}
+
+	zeroVersion := Envelope{
+		Type:      "x",
+		MessageID: "message-1",
+		AgentID:   "agent-1",
+		Timestamp: time.Now().UTC(),
+		Payload:   json.RawMessage(`{}`),
+	}
+	wire, err := MarshalEnvelope(zeroVersion)
+	if err != nil {
+		t.Fatalf("MarshalEnvelope zero version: %v", err)
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(wire, &fields); err != nil {
+		t.Fatalf("decode zero-version envelope: %v", err)
+	}
+	var version int
+	if err := json.Unmarshal(fields["version"], &version); err != nil {
+		t.Fatalf("decode version: %v", err)
+	}
+	if version != ProtocolVersion {
+		t.Fatalf("version = %d, want %d", version, ProtocolVersion)
 	}
 }
 

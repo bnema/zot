@@ -48,6 +48,31 @@ func TestEventLogAppendAndRead(t *testing.T) {
 	}
 }
 
+func TestEventLogAppendUsesUTCForZeroTimestamp(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "events.jsonl")
+	log, err := OpenEventLog(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := log.Append(Event{Type: "zero_time", Version: ProtocolVersion, Data: map[string]any{}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := log.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := ReadEventLog(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("got %d events, want 1", len(got))
+	}
+	if got[0].Time.Location() != time.UTC {
+		t.Fatalf("zero timestamp location = %v, want UTC", got[0].Time.Location())
+	}
+}
+
 // TestReadEventLogIgnoresGarbage documents that one malformed line
 // doesn't break the whole replay. The runner's responsibility is to
 // only write well-formed events, but a partial crash could leave
@@ -88,6 +113,50 @@ func TestReadEventLogSkipsOversizedLines(t *testing.T) {
 	}
 	if len(got) != 1 || got[0].Type != "valid" {
 		t.Fatalf("oversized line affected replay: %+v", got)
+	}
+}
+
+func TestEventReadersRetainLatestEventsInOrder(t *testing.T) {
+	total := maxEventLogEvents + 2
+	var input bytes.Buffer
+	for i := 0; i < total; i++ {
+		ev := Event{
+			Time:    time.Unix(int64(i), 0).UTC(),
+			Type:    "indexed",
+			Version: ProtocolVersion,
+			Data:    map[string]any{"index": i},
+		}
+		line, err := json.Marshal(ev)
+		if err != nil {
+			t.Fatal(err)
+		}
+		input.Write(line)
+		input.WriteByte('\n')
+	}
+
+	check := func(name string, got []Event) {
+		t.Helper()
+		if len(got) != maxEventLogEvents {
+			t.Fatalf("%s retained %d events, want %d", name, len(got), maxEventLogEvents)
+		}
+		for i, ev := range got {
+			index, ok := ev.Data["index"].(float64)
+			if !ok || int(index) != i+2 {
+				t.Fatalf("%s event %d index = %v, want %d", name, i, ev.Data["index"], i+2)
+			}
+		}
+	}
+
+	got, err := readEvents(bytes.NewReader(input.Bytes()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	check("readEvents", got)
+
+	got, offset := readFollowerEvents(bytes.NewReader(input.Bytes()), 0)
+	check("readFollowerEvents", got)
+	if offset != int64(input.Len()) {
+		t.Fatalf("follower offset = %d, want %d", offset, input.Len())
 	}
 }
 

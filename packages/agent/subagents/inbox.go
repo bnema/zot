@@ -178,6 +178,7 @@ type Listener struct {
 	out       chan string
 	done      chan struct{}
 	wg        sync.WaitGroup
+	closed    bool
 	closeOnce sync.Once
 }
 
@@ -186,8 +187,12 @@ type Listener struct {
 // A live endpoint is preserved and rejected; only a refused probe
 // is treated as a stale socket eligible for removal.
 func Listen(path string) (*Listener, error) {
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, fmt.Errorf("inbox dir: %w", err)
+	}
+	if err := os.Chmod(dir, 0o700); err != nil {
+		return nil, fmt.Errorf("inbox dir permissions: %w", err)
 	}
 	// Probe an existing endpoint before removing it. Unlinking an active
 	// Unix socket does not stop its listener, so blindly removing the path
@@ -227,8 +232,9 @@ func (l *Listener) Lines() <-chan string { return l.out }
 // the socket file, and closes Lines. Idempotent.
 func (l *Listener) Close() error {
 	l.closeOnce.Do(func() {
-		close(l.done)
 		l.mu.Lock()
+		l.closed = true
+		close(l.done)
 		for conn := range l.conns {
 			_ = conn.Close()
 		}
@@ -257,9 +263,14 @@ func (l *Listener) acceptLoop() {
 			}
 		}
 		l.mu.Lock()
+		if l.closed {
+			l.mu.Unlock()
+			_ = c.Close()
+			return
+		}
 		l.conns[c] = struct{}{}
-		l.mu.Unlock()
 		l.wg.Add(1)
+		l.mu.Unlock()
 		go func() {
 			defer l.wg.Done()
 			l.readLoop(c)

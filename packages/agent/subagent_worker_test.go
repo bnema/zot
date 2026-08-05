@@ -99,10 +99,8 @@ func TestSupervisorEmitterMirrorDormantUntilStdoutBreaks(t *testing.T) {
 	}
 }
 
-// TestSupervisorEmitterStdoutShapeMatchesSupervisorParser pins the
-// wire-format contract: each emitted event lands on stdout as one
-// JSON object per line with type+time at top level alongside the
-// data fields. The supervisor's runner parses this exact shape.
+// TestSupervisorEmitterLargeResultIsNotDuplicatedOnWire regresses the
+// large-result wire duplication bug.
 func TestSupervisorEmitterLargeResultIsNotDuplicatedOnWire(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "events.jsonl")
 	file, err := os.Create(path)
@@ -148,6 +146,10 @@ func TestSupervisorEmitterLargeResultIsNotDuplicatedOnWire(t *testing.T) {
 	}
 }
 
+// TestSupervisorEmitterStdoutShapeMatchesSupervisorParser pins the
+// wire-format contract: each emitted event lands on stdout as one
+// JSON object per line with type+time at top level alongside the
+// data fields. The supervisor's runner parses this exact shape.
 func TestSupervisorEmitterStdoutShapeMatchesSupervisorParser(t *testing.T) {
 	// Pipe so we can read what the emitter wrote.
 	r, w, err := os.Pipe()

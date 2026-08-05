@@ -202,6 +202,13 @@ func (a *Agent) CurrentTurnID() string {
 	return a.currentTurnID
 }
 
+// AttemptValue returns the current process attempt number.
+func (a *Agent) AttemptValue() int {
+	a.lifecycleMu.Lock()
+	defer a.lifecycleMu.Unlock()
+	return a.Attempt
+}
+
 // ProcessPIDValue returns the current worker pid, when known.
 func (a *Agent) ProcessPIDValue() int {
 	a.lifecycleMu.Lock()
@@ -304,6 +311,19 @@ func (a *Agent) Err() error {
 // and by /subagents wait <id>.
 func (a *Agent) Wait() { <-a.done }
 
+// WaitContext waits for the agent to finish or for ctx cancellation.
+func (a *Agent) WaitContext(ctx context.Context) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	select {
+	case <-a.done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
 func (a *Agent) waitForTurnResult(ctx context.Context) (*TurnResult, error) {
 	if ctx == nil {
 		ctx = context.Background()
@@ -345,7 +365,7 @@ func (a *Agent) SetOnTurnEnd(fn func(step int, errMsg string)) {
 	a.mu.Unlock()
 	if fn != nil {
 		for _, notice := range pending {
-			go fn(notice.step, notice.errMsg)
+			fn(notice.step, notice.errMsg)
 		}
 	}
 }
@@ -386,7 +406,10 @@ func (a *Agent) appendTranscriptLocked(chunk, linePrefix string, assistant bool)
 	}
 	a.mu.Lock()
 	for _, line := range strings.Split(chunk, "\n") {
-		a.transcript = append(a.transcript, linePrefix+line)
+		line = linePrefix + line
+		a.transcript = append(a.transcript, line)
+		a.outputBytes += len(line) + 1
+		a.outputLines++
 	}
 	if assistant {
 		a.lastAssistant = boundInlineText(message, a.maxOutputBytes, a.maxOutputLines)
@@ -401,26 +424,22 @@ func (a *Agent) appendTranscriptLocked(chunk, linePrefix string, assistant bool)
 	if byteCap <= 0 {
 		byteCap = 500_000
 	}
-	for len(a.transcript) > lineCap {
+	for a.outputLines > lineCap {
+		line := a.transcript[0]
 		a.transcript = a.transcript[1:]
+		a.outputBytes -= len(line) + 1
+		a.outputLines--
 		a.outputTruncated = true
 	}
-	for len(a.transcript) > 0 {
-		bytes := 0
-		for _, line := range a.transcript {
-			bytes += len(line) + 1
-		}
-		if bytes <= byteCap {
-			a.outputBytes = bytes
-			a.outputLines = len(a.transcript)
-			break
-		}
+	for a.outputLines > 0 && a.outputBytes > byteCap {
+		line := a.transcript[0]
 		a.transcript = a.transcript[1:]
+		a.outputBytes -= len(line) + 1
+		a.outputLines--
 		a.outputTruncated = true
 	}
-	if len(a.transcript) == 0 {
+	if a.outputLines == 0 {
 		a.outputBytes = 0
-		a.outputLines = 0
 	}
 	a.mu.Unlock()
 	a.markActivity(time.Now())
@@ -430,27 +449,6 @@ func (a *Agent) appendTranscriptLocked(chunk, linePrefix string, assistant bool)
 // form "<slug>-<nano>". The slug is derived from the task text so
 // dashboards stay readable; the nano suffix guarantees uniqueness
 // even when two agents are spawned in the same millisecond.
-func boundInlineText(value string, maxBytes, maxLines int) string {
-	const marker = "...[output truncated]"
-	if maxLines > 0 {
-		lines := strings.Split(value, "\n")
-		if len(lines) > maxLines {
-			if maxLines == 1 {
-				value = marker
-			} else {
-				value = strings.Join(lines[:maxLines-1], "\n") + "\n" + marker
-			}
-		}
-	}
-	if maxBytes > 0 && len([]byte(value)) > maxBytes {
-		if maxBytes <= len(marker) {
-			return truncateUTF8(value, maxBytes)
-		}
-		return truncateUTF8(value, maxBytes-len(marker)) + marker
-	}
-	return value
-}
-
 func newAgentID(task string, now time.Time) string {
 	slug := taskSlug(task)
 	return fmt.Sprintf("%s-%d", slug, now.UnixNano()%1_000_000)

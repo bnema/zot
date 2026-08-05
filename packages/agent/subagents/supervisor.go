@@ -170,9 +170,9 @@ func New(cfg Config) *Supervisor {
 	}
 }
 
-// SetRepoRoot updates the shared working directory for subsequently
-// spawned agents. Existing agents keep the directory they were started
-// with; callers use this when the host session changes cwd.
+// workerContext derives a child worker context from the supervisor lifetime.
+// A positive timeout limits the worker lifetime; otherwise it is cancellable
+// only when the supervisor shuts down or the agent is stopped.
 func (f *Supervisor) workerContext(timeout time.Duration) (context.Context, context.CancelFunc) {
 	base := f.lifetimeCtx
 	if base == nil {
@@ -184,6 +184,9 @@ func (f *Supervisor) workerContext(timeout time.Duration) (context.Context, cont
 	return context.WithCancel(base)
 }
 
+// SetRepoRoot updates the shared working directory for subsequently
+// spawned agents. Existing agents keep the directory they were started
+// with; callers use this when the host session changes cwd.
 func (f *Supervisor) SetRepoRoot(root string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -214,16 +217,18 @@ func (f *Supervisor) FastMode() bool {
 	return f.cfg.FastMode
 }
 
-// SetProviderSettings updates the effective connection settings used by
-// subsequently spawned children. Existing agents keep their persisted values
-// so a model/provider switch cannot silently change a running or resumed
-// worker's endpoint.
+// SetProvider updates the provider used by subsequently spawned children.
+// Existing agents keep their persisted provider selection.
 func (f *Supervisor) SetProvider(provider string) {
 	f.mu.Lock()
 	f.cfg.Provider = strings.TrimSpace(provider)
 	f.mu.Unlock()
 }
 
+// SetProviderSettings updates the effective connection settings used by
+// subsequently spawned children. Existing agents keep their persisted values
+// so a model/provider switch cannot silently change a running or resumed
+// worker's endpoint.
 func (f *Supervisor) SetProviderSettings(baseURL string, insecureTLS bool) {
 	f.mu.Lock()
 	f.cfg.BaseURL = strings.TrimSpace(baseURL)
@@ -681,11 +686,48 @@ func (f *Supervisor) Get(id string) *Agent {
 	return nil
 }
 
+var errDetachedStopTimeout = errors.New("detached worker stop timeout")
+
+const detachedStopPollInterval = 20 * time.Millisecond
+
+// waitForDetachedWorker waits for the worker inbox to disappear, returning a
+// sentinel when the grace period expires. Polling is interruptible so a
+// caller's context is not made to wait for the next fixed sleep interval.
+func waitForDetachedWorker(ctx context.Context, path string, timeout time.Duration) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	ticker := time.NewTicker(detachedStopPollInterval)
+	defer ticker.Stop()
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if !inboxLive(path) {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-timer.C:
+			if !inboxLive(path) {
+				return nil
+			}
+			return errDetachedStopTimeout
+		case <-ticker.C:
+		}
+	}
+}
+
 // Stop cancels the agent's context. The Runner should observe the
 // cancellation and return promptly; the goroutine then finalises the
 // agent in StatusKilled. Also closes the supervisor-side inbox handle
 // so any pending send retries fail fast instead of dialing a
-// socket about to be unlinked.
+// socket about to be unlinked. Stop uses a background context; callers
+// that need cancellation while waiting for a detached worker should use
+// StopContext.
 //
 // Stop is a no-op for any agent that's not in a live runnable state
 // — Done / Failed / Killed (already finalised). Reloaded Detached agents
@@ -693,10 +735,24 @@ func (f *Supervisor) Get(id string) *Agent {
 // shutdown command through the durable inbox instead of pretending no
 // process exists.
 func (f *Supervisor) Stop(id string) error {
+	return f.stop(context.Background(), id)
+}
+
+// StopContext is Stop with a context that can interrupt detached-worker
+// shutdown and its graceful and force-stop waits. The context is not held
+// under the supervisor operation lock while those waits run.
+func (f *Supervisor) StopContext(ctx context.Context, id string) error {
+	return f.stop(ctx, id)
+}
+
+func (f *Supervisor) stop(ctx context.Context, id string) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	f.operationMu.Lock()
-	defer f.operationMu.Unlock()
 	a := f.Get(id)
 	if a == nil {
+		f.operationMu.Unlock()
 		return fmt.Errorf("no such agent %q", id)
 	}
 
@@ -711,6 +767,7 @@ func (f *Supervisor) Stop(id string) error {
 	if status == StatusDone || status == StatusFailed || status == StatusKilled {
 		a.mu.Unlock()
 		f.mu.Unlock()
+		f.operationMu.Unlock()
 		return nil
 	}
 	if status == StatusDetached {
@@ -719,46 +776,10 @@ func (f *Supervisor) Stop(id string) error {
 		pid := a.ProcessPIDValue()
 		a.mu.Unlock()
 		f.mu.Unlock()
-		if inbox == nil || !inboxLive(path) {
-			return nil
-		}
-		err := inbox.SendCommand(NewCommand(CommandAgentShutdown, a.ID, a.CurrentTurnID(), AgentShutdownPayload{}))
-		if err != nil {
-			return err
-		}
-		a.setActivity("shutdown requested")
-		grace := f.cfg.Policy.CancelGracePeriod
-		if grace <= 0 {
-			grace = 10 * time.Second
-		}
-		deadline := time.Now().Add(grace)
-		for inboxLive(path) {
-			if time.Now().After(deadline) {
-				if pid <= 0 {
-					return fmt.Errorf("agent %s live worker did not stop within %s and has no recorded pid", a.ID, grace)
-				}
-				if killErr := forceKillProcess(pid); killErr != nil {
-					return fmt.Errorf("agent %s force-stop: %w", a.ID, killErr)
-				}
-				forceDeadline := time.Now().Add(time.Second)
-				for inboxLive(path) && time.Now().Before(forceDeadline) {
-					time.Sleep(20 * time.Millisecond)
-				}
-				if inboxLive(path) {
-					return fmt.Errorf("agent %s live worker did not stop after force-stop", a.ID)
-				}
-			}
-			time.Sleep(20 * time.Millisecond)
-		}
-		a.mu.Lock()
-		a.status = StatusKilled
-		a.activity = "killed"
-		a.mu.Unlock()
-		a.setProcessState(ProcessKilled)
-		a.setTurnState(TurnCanceled, a.CurrentTurnID())
-		a.setProcessPID(0)
-		f.persistAgent(a)
-		return nil
+		// The detached worker may take the full grace period to exit. Do not
+		// serialize unrelated supervisor operations for that entire wait.
+		f.operationMu.Unlock()
+		return f.stopDetached(ctx, a, path, inbox, pid)
 	}
 	a.status = StatusKilled
 	a.activity = "canceling"
@@ -773,6 +794,7 @@ func (f *Supervisor) Stop(id string) error {
 	}
 	a.mu.Unlock()
 	f.mu.Unlock()
+	f.operationMu.Unlock()
 	a.setTurnState(TurnCanceling, a.CurrentTurnID())
 
 	if status == StatusPending {
@@ -790,12 +812,21 @@ func (f *Supervisor) Stop(id string) error {
 		_ = a.releaseLease()
 		a.closeDone()
 		f.schedule()
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		return nil
 	}
 
 	// Ask a live worker to shut down cleanly first. If the socket is not
 	// ready, fall back immediately; a forceful context cancellation is
 	// safer than leaving a supervisor entry running forever.
+	if err := ctx.Err(); err != nil {
+		if a.cancel != nil {
+			a.cancel()
+		}
+		return err
+	}
 	graceful := false
 	if a.inbox != nil {
 		err := a.inbox.SendCommand(NewCommand(CommandAgentShutdown, a.ID, a.CurrentTurnID(), AgentShutdownPayload{}))
@@ -816,6 +847,13 @@ func (f *Supervisor) Stop(id string) error {
 			defer timer.Stop()
 			select {
 			case <-a.done:
+			case <-ctx.Done():
+				if a.cancel != nil {
+					a.cancel()
+				}
+				if a.inbox != nil {
+					_ = a.inbox.Close()
+				}
 			case <-timer.C:
 				if a.cancel != nil {
 					a.cancel()
@@ -826,21 +864,120 @@ func (f *Supervisor) Stop(id string) error {
 			}
 		}()
 	}
+	if err := ctx.Err(); err != nil {
+		if a.cancel != nil {
+			a.cancel()
+		}
+		if a.inbox != nil {
+			_ = a.inbox.Close()
+		}
+		return err
+	}
 	return nil
+}
+
+func (f *Supervisor) stopDetached(ctx context.Context, a *Agent, path string, inbox *Inbox, pid int) error {
+	if inbox == nil {
+		return nil
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if !inboxLive(path) {
+		return nil
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := inbox.SendCommand(NewCommand(CommandAgentShutdown, a.ID, a.CurrentTurnID(), AgentShutdownPayload{})); err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return ctxErr
+		}
+		return err
+	}
+	a.setActivity("shutdown requested")
+	grace := f.cfg.Policy.CancelGracePeriod
+	if grace <= 0 {
+		grace = 10 * time.Second
+	}
+	waitErr := waitForDetachedWorker(ctx, path, grace)
+	if waitErr != nil && !errors.Is(waitErr, errDetachedStopTimeout) {
+		return waitErr
+	}
+	if waitErr == nil {
+		f.markDetachedKilled(a)
+		return nil
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if pid <= 0 {
+		return fmt.Errorf("agent %s live worker did not stop within %s and has no recorded pid", a.ID, grace)
+	}
+	if killErr := forceKillProcess(pid); killErr != nil {
+		return fmt.Errorf("agent %s force-stop: %w", a.ID, killErr)
+	}
+	if waitErr := waitForDetachedWorker(ctx, path, time.Second); waitErr != nil {
+		if errors.Is(waitErr, errDetachedStopTimeout) {
+			return fmt.Errorf("agent %s live worker did not stop after force-stop", a.ID)
+		}
+		return waitErr
+	}
+	f.markDetachedKilled(a)
+	return nil
+}
+
+func (f *Supervisor) markDetachedKilled(a *Agent) {
+	f.operationMu.Lock()
+	defer f.operationMu.Unlock()
+	a.mu.Lock()
+	a.status = StatusKilled
+	a.activity = "killed"
+	a.mu.Unlock()
+	a.setProcessState(ProcessKilled)
+	a.setTurnState(TurnCanceled, a.CurrentTurnID())
+	a.setProcessPID(0)
+	f.persistAgent(a)
 }
 
 // StopAll cancels every running agent. Used on shutdown.
 func (f *Supervisor) StopAll() {
+	_ = f.stopAll(context.Background())
+}
+
+// StopAllContext is the context-aware shutdown variant. It returns the
+// context error when cancellation interrupts a detached-worker wait.
+func (f *Supervisor) StopAllContext(ctx context.Context) error {
+	return f.stopAll(ctx)
+}
+
+func (f *Supervisor) stopAll(ctx context.Context) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	agents := f.List()
+	var firstErr error
 	for _, a := range agents {
-		_ = f.Stop(a.ID)
+		if err := f.stop(ctx, a.ID); err != nil && firstErr == nil {
+			firstErr = err
+		}
 	}
+	defer func() {
+		if f.lifetimeCancel != nil {
+			f.lifetimeCancel()
+		}
+	}()
 	for _, a := range agents {
-		a.Wait()
+		select {
+		case <-a.done:
+		case <-ctx.Done():
+			if firstErr == nil {
+				firstErr = ctx.Err()
+			}
+			return firstErr
+		}
 	}
-	if f.lifetimeCancel != nil {
-		f.lifetimeCancel()
-	}
+	return firstErr
 }
 
 // Remove tears down the per-agent state for a terminated agent. It
@@ -1042,13 +1179,14 @@ func (s agentSink) userMessage(text string)      { s.a.appendUserMessage(text) }
 func (s agentSink) assistantMessage(text string) { s.a.appendAssistantMessage(text) }
 
 func truncate(s string, n int) string {
-	if len(s) <= n {
+	runes := []rune(s)
+	if len(runes) <= n {
 		return s
 	}
 	if n <= 3 {
 		return strings.Repeat(".", n)
 	}
-	return s[:n-3] + "..."
+	return string(runes[:n-3]) + "..."
 }
 
 func lastN(lines []string, n int) []string {
