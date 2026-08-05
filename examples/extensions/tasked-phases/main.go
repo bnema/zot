@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"strings"
 	"sync"
 
 	"github.com/patriceckhart/zot/packages/agent/ext"
@@ -88,10 +87,14 @@ func main() {
 		}
 		if err := a.store.load(dataDir, host.CWD); err != nil {
 			e.Logf("load project state: %v", err)
+			a.publishUnavailableChrome()
 			return
 		}
 		if state, err := a.store.snapshot(); err == nil {
 			a.publishChrome(state)
+		} else {
+			e.Logf("snapshot project state: %v", err)
+			a.publishUnavailableChrome()
 		}
 	})
 	restoreSession := func(event ext.Event) {
@@ -103,6 +106,9 @@ func main() {
 		if state, err := a.store.snapshot(); err == nil {
 			a.publishChrome(state)
 			a.renderPanelIfOpen(state)
+		} else {
+			e.Logf("restore session snapshot: %v", err)
+			a.publishUnavailableChrome()
 		}
 	}
 	e.On("session_opened", restoreSession)
@@ -132,6 +138,7 @@ func main() {
 func (a *app) handleCommand(_ string) ext.Response {
 	state, err := a.store.snapshot()
 	if err != nil {
+		a.publishUnavailableChrome()
 		return ext.Errorf("load tasked phases: %v", err)
 	}
 	a.publishChrome(state)
@@ -177,6 +184,7 @@ func (a *app) handleTool(args json.RawMessage) ext.ToolResult {
 	if params.Action == actionGetStatus {
 		state, err := a.store.snapshot()
 		if err != nil {
+			a.publishUnavailableChrome()
 			return toolResult(params.Action, PlanState{}, "", err)
 		}
 		a.publishChrome(state)
@@ -188,11 +196,13 @@ func (a *app) handleTool(args json.RawMessage) ext.ToolResult {
 		return applyAction(current, params)
 	})
 	// A zero state means transact could not obtain a loaded snapshot. Do not
-	// replace persistent chrome with an invented empty plan. For action and
-	// persistence errors, transact returns the unchanged usable state, which
-	// should remain visible to help the user recover.
+	// replace persistent chrome with an invented empty plan; clear it instead.
+	// For action and persistence errors, transact returns the unchanged usable
+	// state, which should remain visible to help the user recover.
 	if err == nil || state.Version != 0 {
 		a.publishChrome(state)
+	} else {
+		a.publishUnavailableChrome()
 	}
 	if err == nil {
 		a.renderPanelIfOpen(state)
@@ -201,8 +211,7 @@ func (a *app) handleTool(args json.RawMessage) ext.ToolResult {
 }
 
 func (a *app) publishUnavailableChrome() {
-	a.ext.SetStatus("progress", "plan unavailable")
-	a.ext.SetWidget("plan", ext.WidgetPositionRightBar, "Tasked phases", []string{"Plan state could not be restored for this session."})
+	clearChrome(a.ext)
 	a.panelMu.Lock()
 	open := a.panelOpen
 	a.panelMu.Unlock()
@@ -212,28 +221,107 @@ func (a *app) publishUnavailableChrome() {
 }
 
 type chromeContent struct {
-	status string
-	lines  []string
+	summary string
+	lines   []string
 }
 
+const (
+	chromePhaseMaxChars = 32
+	chromeTaskMaxChars  = 64
+)
+
 func buildChrome(state PlanState) (chromeContent, bool) {
-	// An empty state is the normal idle state, not useful persistent chrome.
-	if !hasStoredPlan(state) {
+	// A spec-only state is still a plan in progress. Show its compact summary
+	// so the right bar opens as soon as planning starts, without exposing the
+	// spec text in persistent chrome.
+	if !hasStoredPlan(state) || isPlanComplete(state) || isPlanClosed(state) {
 		return chromeContent{}, false
 	}
-
-	status := ""
-	if isPlanClosed(state) {
-		status = "closed: " + state.ClosedSummary
-	} else if done, total := getPlanProgress(state); total > 0 {
-		status = fmt.Sprintf("%d/%d tasks checked", done, total)
-	} else {
-		status = "no active plan"
-	}
 	return chromeContent{
-		status: status,
-		lines:  strings.Split(buildCompactSummary(state), "\n"),
+		summary: buildChromeSummary(state),
+		lines:   buildChecklistLines(state),
 	}, true
+}
+
+func buildChromeSummary(state PlanState) string {
+	phaseDone := 0
+	for _, phase := range state.Phases {
+		if isPhaseDone(phase) {
+			phaseDone++
+		}
+	}
+	taskDone, taskTotal := getPlanProgress(state)
+	return fmt.Sprintf("p %d/%d | t %d/%d", phaseDone, len(state.Phases), taskDone, taskTotal)
+}
+
+func chromeLabel(value, fallback string, maxLength int) string {
+	value = truncatePlain(displaySingleLine(value), maxLength)
+	if value == "" {
+		return fallback
+	}
+	return value
+}
+
+func getChromePhase(state PlanState) *Phase {
+	if current := getCurrentPhase(state); current != nil && !isPhaseDone(*current) {
+		return current
+	}
+	for i := range state.Phases {
+		if !isPhaseDone(state.Phases[i]) {
+			return &state.Phases[i]
+		}
+	}
+	if len(state.Phases) == 0 {
+		return nil
+	}
+	return &state.Phases[len(state.Phases)-1]
+}
+
+func getChromeTask(phase Phase) *PhaseTask {
+	for i := range phase.Tasks {
+		if !phase.Tasks[i].Checked {
+			return &phase.Tasks[i]
+		}
+	}
+	return nil
+}
+
+func buildChecklistLines(state PlanState) []string {
+	activePhase := getChromePhase(state)
+	activeTaskID := ""
+	if activePhase != nil {
+		if activeTask := getChromeTask(*activePhase); activeTask != nil {
+			activeTaskID = activeTask.ID
+		}
+	}
+
+	lines := make([]string, 0)
+	for phaseIndex, phase := range state.Phases {
+		if phaseIndex > 0 {
+			lines = append(lines, "")
+		}
+		phaseDone, phaseTotal := getPhaseProgress(phase)
+		phaseMarker := "[ ]"
+		if isPhaseDone(phase) {
+			phaseMarker = "[x]"
+		} else if activePhase != nil && phase.ID == activePhase.ID {
+			phaseMarker = "[>]"
+		}
+		lines = append(lines, fmt.Sprintf("%s %s  %d/%d", phaseMarker, chromeLabel(formatPhaseTitle(phase), "untitled phase", chromePhaseMaxChars), phaseDone, phaseTotal))
+		for _, task := range phase.Tasks {
+			taskMarker := "[ ]"
+			if task.Checked {
+				taskMarker = "[x]"
+			} else if activePhase != nil && phase.ID == activePhase.ID && task.ID == activeTaskID {
+				taskMarker = "[>]"
+			}
+			lines = append(lines, fmt.Sprintf(" %s %s", taskMarker, chromeLabel(formatTaskText(task), "untitled task", chromeTaskMaxChars)))
+		}
+	}
+	if len(lines) == 0 {
+		lines = append(lines, "No phases yet")
+	}
+	return lines
 }
 
 type chromeHost interface {
@@ -243,15 +331,19 @@ type chromeHost interface {
 	ClearWidget(id string)
 }
 
+func clearChrome(host chromeHost) {
+	host.ClearStatus("progress")
+	host.ClearWidget("plan")
+}
+
 func applyChrome(host chromeHost, state PlanState) {
 	chrome, ok := buildChrome(state)
 	if !ok {
-		host.ClearStatus("progress")
-		host.ClearWidget("plan")
+		clearChrome(host)
 		return
 	}
-	host.SetStatus("progress", chrome.status)
-	host.SetWidget("plan", ext.WidgetPositionRightBar, "Tasked phases", chrome.lines)
+	host.SetStatus("progress", chrome.summary)
+	host.SetWidget("plan", ext.WidgetPositionRightBar, chrome.summary, chrome.lines)
 }
 
 func (a *app) publishChrome(state PlanState) {

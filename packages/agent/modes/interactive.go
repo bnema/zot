@@ -518,6 +518,7 @@ type Interactive struct {
 	reloadStatusSeq  uint64
 	extStatuses      map[string]map[string]extensionStatus
 	extWidgets       map[string]map[string]extensionWidget
+	rightBarHidden   bool     // session-only Ctrl+B toggle; zero value keeps the rail visible
 	liveBlock        []string // live streaming/tool progress rendered outside scrollback
 	helpBlock        []string // rendered above the chat when /help was typed
 	cumUsage         provider.Usage
@@ -1239,6 +1240,10 @@ func (i *Interactive) extensionWidgetsKeyLocked() string {
 const maxExtensionWidgetRows = 12
 const maxExtensionStatusRows = 6
 
+// maxNarrowExtensionChromeRows bounds right-bar widgets when they fall back
+// above the input, leaving one row for the truncation marker.
+const maxNarrowExtensionChromeRows = 6
+
 func (i *Interactive) rightBarWidgetsLocked() []tui.RightBarWidget {
 	var out []tui.RightBarWidget
 	for _, extName := range sortedNestedOuterKeys(i.extWidgets) {
@@ -1260,6 +1265,17 @@ func (i *Interactive) rightBarWidgetsLocked() []tui.RightBarWidget {
 
 func (i *Interactive) extensionChromeLinesLocked(cols int) []string {
 	return i.extensionChromeLinesAtLocked(cols, false)
+}
+
+func (i *Interactive) extensionChromeLinesForLayoutLocked(cols int, rightBarActive, rightBarFallback bool) []string {
+	lines := i.extensionChromeLinesAtLocked(cols, rightBarActive)
+	if !rightBarFallback || len(lines) <= maxNarrowExtensionChromeRows {
+		return lines
+	}
+	limit := maxNarrowExtensionChromeRows
+	trimmed := append([]string(nil), lines[:limit-1]...)
+	trimmed = append(trimmed, i.cfg.Theme.FG256(i.cfg.Theme.Muted, truncateLine("  ... extension chrome truncated ...", cols)))
+	return trimmed
 }
 
 func (i *Interactive) extensionChromeLinesAtLocked(cols int, rightBarActive bool) []string {
@@ -1595,13 +1611,14 @@ func (i *Interactive) redraw() {
 	rightBarWidgets := i.rightBarWidgetsLocked()
 	rightBarActive := false
 	var rightBarWidth int
-	if len(rightBarWidgets) > 0 {
+	if !i.rightBarHidden && len(rightBarWidgets) > 0 {
 		if width, rail, ok := tui.RightBarColumns(cols); ok {
 			mainCols = width
 			rightBarWidth = rail
 			rightBarActive = true
 		}
 	}
+	rightBarFallback := len(rightBarWidgets) > 0 && !rightBarActive
 	chat := i.cachedChatLocked(mainCols)
 
 	// Dialogs (login or model picker) render between chat and the editor.
@@ -1838,7 +1855,7 @@ func (i *Interactive) redraw() {
 		queue = append(queue, i.cfg.Theme.FG256(i.cfg.Theme.Muted, hint))
 	}
 
-	extensionLines := i.extensionChromeLinesAtLocked(mainCols, rightBarActive)
+	extensionLines := i.extensionChromeLinesForLayoutLocked(mainCols, rightBarActive, rightBarFallback)
 
 	// Bottom-sticky sections (always visible, never scroll). Each
 	// non-empty subsection (dialog, suggest popup, sliding-in queue)
@@ -2925,6 +2942,13 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 		if i.ed.IsEmpty() && !i.busy {
 			return true
 		}
+	case tui.KeyCtrlB:
+		i.mu.Lock()
+		i.rightBarHidden = !i.rightBarHidden
+		i.mu.Unlock()
+		i.rend.Invalidate()
+		i.invalidate()
+		return false
 	case tui.KeyCtrlL:
 		i.rend.Clear()
 		i.invalidate()

@@ -18,6 +18,10 @@ Use the `tasked_phases` tool as the source of truth for the spec, phases, curren
 7. Use `set_phase_checked` to complete or reopen every task in a phase. The phase must already contain at least one task.
 8. When every task is checked, treat the plan as closed. For unrelated work, call `clear` to discard the plan, or call `set_spec` immediately followed by `replace_plan` to record a new spec and a new set of phases.
 
+Successful mutations return one progress line; use `get_status` or
+`replace_plan` for details. `set_task_checked` changes one task;
+`set_phase_checked` changes every task in a phase.
+
 ## Planning rules
 
 - Prefer 3–7 phases unless the task is tiny.

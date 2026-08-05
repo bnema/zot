@@ -18,6 +18,10 @@ set_current_phase set_task_checked set_phase_checked
 clear
 ```
 
+Successful mutations return one progress line; use `get_status` or
+`replace_plan` for details. `set_task_checked` changes one task;
+`set_phase_checked` changes every task in a phase.
+
 ## Build and run
 
 From the zot repository:
@@ -63,7 +67,7 @@ as it is completed, and advance the current phase when work moves forward.
 Completed phases and future phases are not repeated in every provider request;
 use `get_status` or `/phases` when the full checklist is needed.
 
-When a plan is active, the extension publishes its compact checklist through the
-host's generic `right_bar` widget position. zot keeps it beside the transcript on
-wide terminals and automatically falls back to the normal above-input widget on
-narrow terminals. The extension does not implement any terminal layout code.
+Active plans publish `p done/total | t done/total` and checklist rows through
+`right_bar`. The host dims inactive phases, uses a bounded above-input fallback
+on narrow terminals or when `Ctrl+B` hides the rail, and clears the chrome when
+the plan is complete. Use `get_status` or `/phases` for full details.

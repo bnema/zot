@@ -184,11 +184,8 @@ func TestPhaseLookupAcceptsRawBracketedSummaryAndUniqueTitle(t *testing.T) {
 func TestSummariesAreFullOrCompactAsAppropriate(t *testing.T) {
 	state := sampleState()
 	compact := buildToolResultText(actionSetTaskChecked, state, "Checked task task-3", nil)
-	if !strings.Contains(compact, "Progress: 3/4 tasks checked") || !strings.Contains(compact, "[ ] Remaining implementation task [task-4]") {
-		t.Fatalf("compact summary omitted useful active state: %s", compact)
-	}
-	if strings.Contains(compact, "Phases:") || strings.Contains(compact, "Completed discovery task") {
-		t.Fatalf("compact summary included full checklist: %s", compact)
+	if want := "Checked task task-3 (p 1/2 | t 3/4)"; compact != want {
+		t.Fatalf("mutation result = %q, want %q", compact, want)
 	}
 	full := buildToolResultText(actionGetStatus, state, "Current phased plan status", nil)
 	if !strings.Contains(full, "Phases:") || !strings.Contains(full, "Completed discovery task [task-1]") {
@@ -286,7 +283,7 @@ func TestDisplayRenderingSanitizesUntrustedTextWithoutMutatingState(t *testing.T
 	original := state
 
 	for _, rendered := range []string{
-		buildSummary(state), buildCompactSummary(state), buildTurnContext(state), strings.Join(buildViewLines(state), "\n"),
+		buildSummary(state), buildTurnContext(state), strings.Join(buildViewLines(state), "\n"),
 	} {
 		if strings.Contains(rendered, "\x1b") || strings.ContainsRune(rendered, '\x00') || strings.ContainsRune(rendered, '\x7f') || strings.ContainsRune(rendered, '\r') || strings.ContainsRune(rendered, '\t') {
 			t.Fatalf("rendered text contains terminal/control injection: %q", rendered)

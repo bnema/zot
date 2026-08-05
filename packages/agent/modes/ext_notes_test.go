@@ -1,6 +1,7 @@
 package modes
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"testing"
@@ -79,6 +80,28 @@ func TestPersistentExtensionStatusRowsAreBounded(t *testing.T) {
 	}
 	if !strings.Contains(strings.Join(got, "\n"), "extension statuses truncated") {
 		t.Fatalf("bounded status rows omitted truncation marker: %v", got)
+	}
+}
+
+func TestNarrowRightBarFallbackCapsCombinedExtensionChrome(t *testing.T) {
+	i := newNotesTestInteractive()
+	for n := 0; n < 3; n++ {
+		lines := make([]string, 4)
+		for row := range lines {
+			lines[row] = fmt.Sprintf("extension-%d-line-%d", n, row)
+		}
+		i.SetWidget(fmt.Sprintf("extension-%d", n), "plan", "right_bar", "Plan", lines)
+	}
+	i.SetStatus("status-extension", "progress", "info", "still visible")
+
+	i.mu.Lock()
+	got := i.extensionChromeLinesForLayoutLocked(72, false, true)
+	i.mu.Unlock()
+	if len(got) != maxNarrowExtensionChromeRows {
+		t.Fatalf("narrow fallback rows = %d, want %d: %v", len(got), maxNarrowExtensionChromeRows, got)
+	}
+	if !strings.Contains(strings.Join(got, "\n"), "extension chrome truncated") {
+		t.Fatalf("narrow fallback omitted truncation marker: %v", got)
 	}
 }
 
@@ -170,11 +193,39 @@ func TestInteractiveRedrawPlacesWideRightBarBesideMainPane(t *testing.T) {
 	i.SetWidget("tasked-phases", "plan", "right_bar", "Plan", []string{"[ ] read files"})
 	i.redraw()
 
-	out := term.String()
+	out := stripANSIBytes(term.String())
 	if !strings.Contains(out, "Plan") || !strings.Contains(out, "[ ] read files") {
 		t.Fatalf("wide redraw omitted right-bar content: %q", out)
 	}
 	if !strings.Contains(out, "│") {
 		t.Fatal("wide redraw omitted the main-pane divider")
+	}
+}
+
+func TestCtrlBTogglesRightBarAndFallsBackAboveInput(t *testing.T) {
+	term := &alertTestTerminal{}
+	i := NewInteractive(InteractiveConfig{Terminal: term, Theme: tui.Dark})
+	i.SetWidget("tasked-phases", "plan", "right_bar", "Plan", []string{"[ ] read files"})
+
+	if i.rightBarHidden {
+		t.Fatal("right bar starts hidden")
+	}
+	if done := i.handleKey(context.Background(), tui.Key{Kind: tui.KeyCtrlB}); done {
+		t.Fatal("ctrl+b unexpectedly exited interactive mode")
+	}
+	if !i.rightBarHidden {
+		t.Fatal("ctrl+b did not hide the right bar")
+	}
+
+	i.mu.Lock()
+	fallback := strings.Join(i.extensionChromeLinesForLayoutLocked(80, false, true), "\n")
+	i.mu.Unlock()
+	if !strings.Contains(fallback, "Plan") {
+		t.Fatalf("hidden right-bar widget did not fall back above input: %q", fallback)
+	}
+
+	i.handleKey(context.Background(), tui.Key{Kind: tui.KeyCtrlB})
+	if i.rightBarHidden {
+		t.Fatal("second ctrl+b did not show the right bar")
 	}
 }

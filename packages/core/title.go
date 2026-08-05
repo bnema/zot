@@ -76,6 +76,9 @@ func GenerateSessionTitle(ctx context.Context, client provider.Client, model, pr
 		return "", fmt.Errorf("title generation stream: %w", finalErr)
 	}
 	if !done {
+		if err := ctx.Err(); err != nil {
+			return "", fmt.Errorf("title generation stream: %w", err)
+		}
 		return "", fmt.Errorf("title generation stream ended without a result")
 	}
 	if text.Len() == 0 {
