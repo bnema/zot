@@ -19,6 +19,21 @@ saved in `$ZOT_HOME/config.json` and apply immediately. If the selected
 file is deleted later, zot resets the setting to the built-in auto
 (default) theme.
 
+The built-in choices are:
+
+- **auto** — detect the terminal background and use zot's built-in dark or
+  light palette. This remains the default.
+- **inherited (from terminal)** — use the terminal's reported foreground,
+  background, and ANSI palette. When `COLORTERM=truecolor`/`24bit` or
+  `TERM` ends in `-direct`, zot emits truecolor; otherwise it quantizes
+  derived colors to the xterm-256 palette as a best effort. Terminals that
+  do not answer OSC color queries fall back to zot's built-in palette while
+  still using the advertised color depth.
+- **dark** / **light** — use zot's fixed built-in palettes.
+
+The inherited terminal snapshot is captured at startup and reused when the
+setting is changed live; restart zot to pick up terminal palette changes.
+
 Theme files bundled with extensions are discovered in-place from loaded
 extension directories:
 
@@ -176,7 +191,11 @@ You may also put overrides directly at the top level or directly under
 
 ## Color fields
 
-Most color fields are xterm-256 indexes (`0`–`255`).
+Most color fields are xterm-256 indexes (`0`–`255`) for JSON themes.
+The built-in inherited theme resolves semantic accents through the terminal's
+ANSI palette, fades muted/selected surfaces toward the terminal background,
+and emits truecolor or best-effort 256-color sequences according to terminal
+capability.
 
 - `fg` — default foreground text.
 - `muted` — secondary text, dividers, gutters, inactive hints.

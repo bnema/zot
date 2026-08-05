@@ -172,6 +172,135 @@ func (c *TerminalColorValue) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
+// InheritedTheme returns a theme derived from the terminal snapshot carried
+// by detected. It prefers the terminal's reported ANSI palette for semantic
+// accents, derives muted and selected surfaces by fading toward the terminal
+// background, and uses truecolor output only when the terminal advertises it.
+func InheritedTheme(detected Theme) Theme {
+	base := Dark
+	if detected.Terminal.SchemeKnown {
+		if detected.Terminal.Light {
+			base = Light
+		}
+	} else if IsLightTheme(detected) {
+		base = Light
+	}
+	t := withTerminalProfile(base, detected)
+	t.Inherited = true
+	t.ColorMode = ColorMode256
+	if t.Terminal.TrueColor {
+		t.ColorMode = ColorModeTrueColor
+	}
+
+	if t.Terminal.HasForeground {
+		t.FG = terminalColorIndex(t.Terminal.Foreground)
+	}
+
+	accentFallback := t.Accent
+	if IsLightTheme(t) {
+		accentFallback = Light.Accent
+	}
+	t.Accent = terminalPaletteIndex(t.Terminal, accentFallback, 12, 4, 14, 6, 13, 5)
+	t.Assistant = t.Accent
+	t.Tool = terminalPaletteIndex(t.Terminal, t.Tool, 10, 2)
+	t.Error = terminalPaletteIndex(t.Terminal, t.Error, 9, 1)
+	t.Warning = terminalPaletteIndex(t.Terminal, t.Warning, 11, 3)
+	t.Spinner = terminalPaletteIndex(t.Terminal, t.Spinner, 13, 5)
+	t.ThinkingMax = terminalPaletteIndex(t.Terminal, t.ThinkingMax, 13, 5)
+	t.User = terminalPaletteIndex(t.Terminal, t.User, 11, 3)
+
+	if t.Terminal.HasForeground && t.Terminal.HasBackground {
+		t.Muted = terminalColorIndex(t.DimColor(t.FG, 45))
+		t.ToolOut = t.Muted
+		background := t.Terminal.Background
+		foreground := t.Terminal.Foreground
+		t.UserBubbleBG = blendTerminalColors(background, foreground, 12)
+		t.SelectionBG = terminalColorIndex(blendTerminalColors(background, foreground, 25))
+	}
+
+	// FG256 receives an index rather than a semantic role. Keep the inherited
+	// foreground index distinct from accent/status roles so a terminal whose
+	// default foreground happens to be ANSI blue does not recolor every blue
+	// accent as the terminal default foreground.
+	if t.Terminal.HasForeground {
+		used := map[int]bool{
+			t.Muted: true, t.Accent: true, t.Assistant: true, t.Tool: true,
+			t.ToolOut: true, t.Error: true, t.Warning: true, t.Spinner: true,
+			t.ThinkingMax: true, t.User: true, t.SelectionBG: true,
+		}
+		if used[t.FG] {
+			t.FG = nearestXtermColorExcluding(t.Terminal.Foreground, used)
+		}
+	}
+	t.UserBubbleFG = t.FG
+	t.SelectionFG = t.FG
+
+	// Keep the terminal's configured background untouched. Painting an
+	// inherited RGB background across every row would make terminal theme
+	// changes and scrollback behavior less predictable.
+	t.Background = nil
+	return t
+}
+
+func withTerminalProfile(base, detected Theme) Theme {
+	base.Terminal = detected.Terminal
+	return base
+}
+
+func terminalPaletteIndex(profile TerminalProfile, fallback int, preferred ...int) int {
+	for _, index := range preferred {
+		if _, ok := profile.PaletteColor(index); ok {
+			return index
+		}
+	}
+	return fallback
+}
+
+func terminalColorIndex(color TerminalColor) int {
+	if color.Mode == terminalColor256 {
+		return clampXtermIndex(color.Index)
+	}
+	if color.Mode == terminalColorANSI {
+		if index, ok := ansiSGRToXtermIndex(color.Index); ok {
+			return index
+		}
+		return 0
+	}
+	return nearestXtermColor(color.R, color.G, color.B)
+}
+
+func blendTerminalColors(from, to TerminalColor, percent int) TerminalColor {
+	fromRGB, _ := rgbForTerminalColor(from)
+	toRGB, _ := rgbForTerminalColor(to)
+	percent = clampPercent(percent)
+	return ColorRGB(
+		blendChannel(fromRGB[0], toRGB[0], percent),
+		blendChannel(fromRGB[1], toRGB[1], percent),
+		blendChannel(fromRGB[2], toRGB[2], percent),
+	)
+}
+
+func nearestXtermColorExcluding(color TerminalColor, excluded map[int]bool) int {
+	rgb, _ := rgbForTerminalColor(color)
+	best := 0
+	bestDistance := int(^uint(0) >> 1)
+	for index := 0; index < 256; index++ {
+		if excluded[index] {
+			continue
+		}
+		cr, cg, cb := xterm256RGB(index)
+		dr := rgb[0] - cr
+		dg := rgb[1] - cg
+		db := rgb[2] - cb
+		distance := dr*dr + dg*dg + db*db
+		if distance < bestDistance {
+			best = index
+			bestDistance = distance
+		}
+	}
+	return best
+}
+
 // LoadThemeFromHome applies a custom theme from $ZOT_HOME/themes/*.json
 // to detected. Empty/auto/default keeps the built-in detected theme.
 // If preferred is set, it may be a theme name, a basename without
@@ -187,10 +316,12 @@ func LoadThemeFromHome(zotHome, preferred string, detected Theme) (Theme, string
 		return detected, "", err
 	}
 	switch path {
+	case "builtin:inherited":
+		return InheritedTheme(detected), "inherited", nil
 	case "builtin:dark":
-		return Dark, "dark", nil
+		return withTerminalProfile(Dark, detected), "dark", nil
 	case "builtin:light":
-		return Light, "light", nil
+		return withTerminalProfile(Light, detected), "light", nil
 	}
 	b, err := os.ReadFile(path)
 	if err != nil {
@@ -226,10 +357,11 @@ func LoadThemeFromHome(zotHome, preferred string, detected Theme) (Theme, string
 func AvailableThemes(zotHome string) []ThemeOption {
 	out := []ThemeOption{
 		{Value: "auto", Label: "auto", Description: "detect terminal background and use zot defaults", Builtin: true},
+		{Value: "inherited", Label: "inherited (from terminal)", Description: "use terminal colors with truecolor or best-effort 256-color output", Builtin: true},
 		{Value: "dark", Label: "dark", Description: "built-in dark theme", Builtin: true},
 		{Value: "light", Label: "light", Description: "built-in light theme", Builtin: true},
 	}
-	seen := map[string]bool{"auto": true, "dark": true, "light": true}
+	seen := map[string]bool{"auto": true, "inherited": true, "dark": true, "light": true}
 	paths, _ := themeFilesIn(filepath.Join(zotHome, "themes"))
 	sort.Strings(paths)
 	for _, path := range paths {
@@ -299,6 +431,8 @@ func resolveThemePath(zotHome, preferred string) (string, error) {
 	switch strings.ToLower(preferred) {
 	case "", "auto", "default", "system":
 		return "", nil
+	case "inherited", "terminal", "terminal-inherited":
+		return "builtin:inherited", nil
 	case "dark":
 		return "builtin:dark", nil
 	case "light":
@@ -471,7 +605,10 @@ func applySyntaxOverrides(s SyntaxTheme, o SyntaxThemeOverrides) SyntaxTheme {
 }
 
 func IsLightTheme(th Theme) bool {
-	return th.FG == Light.FG && th.SelectionBG == Light.SelectionBG && th.SelectionFG == Light.SelectionFG
+	if th.FG == Light.FG && th.SelectionBG == Light.SelectionBG && th.SelectionFG == Light.SelectionFG {
+		return true
+	}
+	return th.Inherited && th.Terminal.SchemeKnown && th.Terminal.Light
 }
 
 func isLightTheme(th Theme) bool { return IsLightTheme(th) }

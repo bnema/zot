@@ -4118,7 +4118,7 @@ func (i *Interactive) openSettingsDialog() {
 		{
 			key:     "theme",
 			label:   "color theme",
-			desc:    "choose a theme from $ZOT_HOME/themes or a loaded extension",
+			desc:    "choose auto, inherited terminal colors, a built-in dark/light theme, or a loaded theme file",
 			options: themeOptions,
 			choice:  themeChoice,
 		},
@@ -4820,6 +4820,10 @@ func (i *Interactive) applyThemeNow(name string) {
 	if tui.IsLightTheme(i.cfg.Theme) {
 		detected = tui.Light
 	}
+	// Keep the startup terminal snapshot available when a user switches
+	// themes live; inherited mode must not issue OSC queries while the TUI
+	// already owns raw stdin.
+	detected.Terminal = i.cfg.Theme.Terminal
 	th, applied, err := tui.LoadThemeFromHome(i.cfg.ZotHome, name, detected)
 	if err != nil {
 		if i.cfg.SettingsStore != nil {

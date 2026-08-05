@@ -37,7 +37,11 @@ func (th Theme) HighlightCode(src, lang string) []string {
 		return out
 	}
 	style := th.chromaStyle()
-	formatter := formatters.Get("terminal256")
+	formatterName := "terminal256"
+	if th.ColorMode == ColorModeTrueColor {
+		formatterName = "terminal16m"
+	}
+	formatter := formatters.Get(formatterName)
 	if formatter == nil {
 		return strings.Split(src, "\n")
 	}
@@ -238,7 +242,12 @@ func (th Theme) chromaStyle() *chroma.Style {
 
 func (th Theme) syntaxKey() string {
 	syn := th.Syntax
+	outputMode := "256"
+	if th.ColorMode == ColorModeTrueColor {
+		outputMode = "truecolor"
+	}
 	return strings.Join([]string{
+		outputMode,
 		th.SyntaxBaseStyle,
 		syn.Keyword,
 		syn.KeywordConstant,

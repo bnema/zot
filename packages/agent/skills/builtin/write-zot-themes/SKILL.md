@@ -17,6 +17,11 @@ nothing is required. A file may contain only colors, only spinner
 settings, only syntax colors, or only metadata. Missing values always
 inherit from the built-in detected light/dark default.
 
+The `/settings` picker also provides an **inherited (from terminal)**
+built-in theme. It uses the terminal's reported colors and emits truecolor
+when advertised, with a best-effort xterm-256 fallback otherwise. JSON theme
+files remain explicit zot palettes and use the color forms documented below.
+
 User themes are discovered from:
 
 ```text

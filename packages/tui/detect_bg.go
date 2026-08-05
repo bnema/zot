@@ -9,71 +9,229 @@ import (
 	"golang.org/x/term"
 )
 
-// DetectThemeFromBackground queries the controlling tty for its
-// current background colour using the OSC 11 escape sequence and
-// returns Dark or Light based on the response's perceived
-// luminance. Falls back to Dark when the terminal does not
-// reply within timeout, which is the expected behaviour for
-// terminals that do not implement OSC 11 (Linux console, VS Code's
-// integrated terminal in some configurations, tmux without
-// pass-through, very old emulators).
-//
-// The query / parse runs synchronously before the TUI is
-// initialised so the returned theme can drive the entire session.
-// We briefly put stdin into raw mode and disable echo so the OSC
-// reply doesn't leak onto the user's screen as visible bytes.
-func DetectThemeFromBackground(timeout time.Duration) Theme {
-	// Honour explicit override env var first; some users / CI envs
-	// know better than the heuristic.
-	switch strings.ToLower(strings.TrimSpace(os.Getenv("ZOT_THEME"))) {
-	case "dark":
-		return Dark
-	case "light":
-		return Light
+// DetectTrueColor reports whether TERM or COLORTERM advertises direct color
+// support. This follows the same conservative signals used by ../vev.
+func DetectTrueColor(termEnv, colorTerm string) bool {
+	switch strings.ToLower(strings.TrimSpace(colorTerm)) {
+	case "truecolor", "24bit":
+		return true
 	}
 
-	if !term.IsTerminal(int(os.Stdin.Fd())) || !term.IsTerminal(int(os.Stdout.Fd())) {
-		return Dark
+	termEnv = strings.ToLower(strings.TrimSpace(termEnv))
+	return termEnv == "xterm-direct" || strings.HasSuffix(termEnv, "-direct")
+}
+
+// DetectThemeFromBackground queries the controlling tty for its current
+// foreground, background, and ANSI palette using OSC 10/11/4. The returned
+// theme keeps the detected light/dark built-in colors for the normal auto
+// theme and carries the terminal snapshot for the inherited theme.
+//
+// The query / parse runs synchronously before the TUI is initialised so the
+// returned snapshot can drive the entire session. We briefly put stdin into
+// raw mode and disable echo so OSC replies do not leak onto the user's screen.
+func DetectThemeFromBackground(timeout time.Duration) Theme {
+	profile := detectTerminalProfile(timeout)
+	base := Dark
+
+	// Honour explicit override env vars first; some users and CI environments
+	// know better than the heuristic. The terminal snapshot is still retained
+	// so selecting the inherited theme later remains useful.
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("ZOT_THEME"))) {
+	case "dark":
+		base = Dark
+	case "light":
+		base = Light
+	default:
+		if profile.HasBackground {
+			luma := 0.2126*float64(profile.Background.R) +
+				0.7152*float64(profile.Background.G) +
+				0.0722*float64(profile.Background.B)
+			if luma >= 127.5 {
+				base = Light
+			}
+		}
+	}
+
+	base.Terminal = profile
+	return base
+}
+
+type oscColorResponse struct {
+	kind  int
+	slot  int
+	color TerminalColor
+}
+
+func detectTerminalProfile(timeout time.Duration) TerminalProfile {
+	profile := TerminalProfile{TrueColor: DetectTrueColor(os.Getenv("TERM"), os.Getenv("COLORTERM"))}
+	if !term.IsTerminal(int(os.Stdin.Fd())) || !term.IsTerminal(int(os.Stdout.Fd())) || timeout <= 0 {
+		return profile
 	}
 
 	fd := int(os.Stdin.Fd())
 	st, err := term.MakeRaw(fd)
 	if err != nil {
-		return Dark
+		return profile
 	}
 	defer term.Restore(fd, st)
 
-	// Send the query. ST (\x1b\\) and BEL (\x07) are both accepted
-	// terminators; some terminals only honour one of them, so we
-	// send BEL which is more widely supported.
-	if _, err := os.Stdout.Write([]byte("\x1b]11;?\x07")); err != nil {
-		return Dark
+	queries := terminalColorQueries()
+	if _, err := os.Stdout.Write([]byte(queries)); err != nil {
+		return profile
 	}
 
-	deadline := time.Now().Add(timeout)
-	resp := readOSCResponse(deadline)
-	if resp == "" {
-		return Dark
+	responses := readOSCColorResponses(time.Now().Add(timeout), terminalColorQueryCount)
+	for _, response := range responses {
+		switch response.kind {
+		case 10:
+			profile.Foreground = response.color
+			profile.HasForeground = true
+		case 11:
+			profile.Background = response.color
+			profile.HasBackground = true
+		case 4:
+			if response.slot >= 0 && response.slot < len(profile.Palette) {
+				profile.Palette[response.slot] = response.color
+				profile.PaletteKnown |= uint16(1) << response.slot
+			}
+		}
 	}
-
-	r, g, b, ok := parseOSC11Reply(resp)
-	if !ok {
-		return Dark
+	if profile.HasBackground {
+		luma := 0.2126*float64(profile.Background.R) +
+			0.7152*float64(profile.Background.G) +
+			0.0722*float64(profile.Background.B)
+		profile.Light = luma >= 127.5
+		profile.SchemeKnown = true
 	}
-
-	// Rec. 709 luma. Threshold at 0.5: anything brighter than
-	// mid-grey gets the light theme.
-	luma := 0.2126*float64(r) + 0.7152*float64(g) + 0.0722*float64(b)
-	if luma >= 0.5 {
-		return Light
-	}
-	return Dark
+	return profile
 }
 
-// readOSCResponse drains stdin into a small buffer until either a
-// terminator (BEL or ST) is seen, the deadline expires, or stdin
-// hits EOF. Returns whatever was collected, or "" on no usable
-// response.
+const (
+	terminalColorQueryCount    = 18
+	terminalColorResponseLimit = 64
+)
+
+func terminalColorQueries() string {
+	var b strings.Builder
+	b.Grow(terminalColorQueryCount * 12)
+	b.WriteString("\x1b]10;?\x07\x1b]11;?\x07")
+	for slot := 0; slot < 16; slot++ {
+		b.WriteString("\x1b]4;")
+		b.WriteString(itoa(slot))
+		b.WriteString(";?\x07")
+	}
+	return b.String()
+}
+
+// readOSCColorResponses drains terminal replies until all expected replies
+// arrive, the deadline expires, or stdin hits EOF. It only consumes complete
+// BEL/ST-terminated OSC color responses; an incomplete tail is discarded at
+// timeout so a failed query cannot poison the next interactive read.
+func readOSCColorResponses(deadline time.Time, expected int) []oscColorResponse {
+	responses := make([]oscColorResponse, 0, expected)
+	buf := make([]byte, 0, 64)
+	for len(responses) < expected && time.Now().Before(deadline) {
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			break
+		}
+		b, ok, err := peekStdin(os.Stdin, remaining)
+		if err != nil || !ok {
+			break
+		}
+		if len(buf) >= terminalColorResponseLimit {
+			buf = buf[:0]
+		}
+		buf = append(buf, b)
+		if b != '\x07' && !(len(buf) >= 2 && buf[len(buf)-2] == '\x1b' && buf[len(buf)-1] == '\\') {
+			continue
+		}
+		if response, ok := parseOSCColorResponse(buf); ok {
+			responses = append(responses, response)
+		}
+		buf = buf[:0]
+	}
+	return responses
+}
+
+func parseOSCColorResponse(raw []byte) (oscColorResponse, bool) {
+	s := string(raw)
+	s = strings.TrimSuffix(s, "\x07")
+	s = strings.TrimSuffix(s, "\x1b\\")
+
+	if strings.HasPrefix(s, "\x1b]10;") {
+		color, ok := parseTerminalRGB(s[len("\x1b]10;"):])
+		return oscColorResponse{kind: 10, color: color}, ok
+	}
+	if strings.HasPrefix(s, "\x1b]11;") {
+		color, ok := parseTerminalRGB(s[len("\x1b]11;"):])
+		return oscColorResponse{kind: 11, color: color}, ok
+	}
+	if strings.HasPrefix(s, "\x1b]4;") {
+		body := s[len("\x1b]4;"):]
+		parts := strings.SplitN(body, ";", 2)
+		if len(parts) != 2 || parts[0] == "" {
+			return oscColorResponse{}, false
+		}
+		slot, err := strconv.Atoi(parts[0])
+		if err != nil || slot < 0 || slot >= 16 {
+			return oscColorResponse{}, false
+		}
+		color, ok := parseTerminalRGB(parts[1])
+		return oscColorResponse{kind: 4, slot: slot, color: color}, ok
+	}
+	return oscColorResponse{}, false
+}
+
+func parseTerminalRGB(value string) (TerminalColor, bool) {
+	value = strings.TrimSpace(value)
+	if strings.HasPrefix(value, "#") {
+		if len(value) != 7 {
+			return TerminalColor{}, false
+		}
+		r, ok := parseHexByte(value[1:3])
+		if !ok {
+			return TerminalColor{}, false
+		}
+		g, ok := parseHexByte(value[3:5])
+		if !ok {
+			return TerminalColor{}, false
+		}
+		b, ok := parseHexByte(value[5:7])
+		if !ok {
+			return TerminalColor{}, false
+		}
+		return ColorRGB(r, g, b), true
+	}
+	if !strings.HasPrefix(value, "rgb:") {
+		return TerminalColor{}, false
+	}
+	parts := strings.Split(value[len("rgb:"):], "/")
+	if len(parts) != 3 {
+		return TerminalColor{}, false
+	}
+	var channels [3]int
+	for i, part := range parts {
+		if len(part) < 1 || len(part) > 4 {
+			return TerminalColor{}, false
+		}
+		v, err := strconv.ParseUint(part, 16, 16)
+		if err != nil {
+			return TerminalColor{}, false
+		}
+		max := uint64(1)
+		for range part {
+			max *= 16
+		}
+		max--
+		channels[i] = int(v * 255 / max)
+	}
+	return ColorRGB(channels[0], channels[1], channels[2]), true
+}
+
+// readOSCResponse drains stdin into a small buffer until either a terminator
+// (BEL or ST) is seen, the deadline expires, or stdin hits EOF. It remains a
+// small helper for callers that only need one OSC reply.
 func readOSCResponse(deadline time.Time) string {
 	var buf [128]byte
 	n := 0
@@ -90,12 +248,9 @@ func readOSCResponse(deadline time.Time) string {
 			buf[n] = b
 			n++
 		}
-		// BEL terminator
 		if b == 0x07 {
 			return string(buf[:n])
 		}
-		// ST terminator: ESC then '\\'. We saw it the moment the
-		// previous byte was ESC and the current byte is '\\'.
 		if n >= 2 && buf[n-2] == 0x1b && buf[n-1] == '\\' {
 			return string(buf[:n])
 		}
@@ -103,19 +258,16 @@ func readOSCResponse(deadline time.Time) string {
 	return string(buf[:n])
 }
 
-// parseOSC11Reply extracts the (r, g, b) colour components from an
-// OSC 11 reply of the form "\x1b]11;rgb:RRRR/GGGG/BBBB\x07" (or with
-// ST terminator). The component widths can be 1, 2, 3, or 4 hex
-// digits per channel; we normalise them into the 0..1 range.
+// parseOSC11Reply extracts the (r, g, b) colour components from an OSC 11
+// reply of the form "\\x1b]11;rgb:RRRR/GGGG/BBBB\\x07" (or with ST
+// terminator). The component widths can be 1, 2, 3, or 4 hex digits per
+// channel; we normalise them into the 0..1 range.
 func parseOSC11Reply(s string) (float64, float64, float64, bool) {
-	// Locate "rgb:" within the response.
 	i := strings.Index(s, "rgb:")
 	if i < 0 {
 		return 0, 0, 0, false
 	}
-	body := s[i+len("rgb:"):]
-	// Trim trailing terminator(s).
-	body = strings.TrimRight(body, "\x07")
+	body := strings.TrimRight(s[i+len("rgb:"):], "\x07")
 	body = strings.TrimSuffix(body, "\x1b\\")
 	parts := strings.Split(body, "/")
 	if len(parts) != 3 {
@@ -129,9 +281,8 @@ func parseOSC11Reply(s string) (float64, float64, float64, bool) {
 		if err != nil {
 			return 0, false
 		}
-		// Normalise to 0..1: max value is (16^len - 1).
 		max := uint64(1)
-		for j := 0; j < len(hexstr); j++ {
+		for range hexstr {
 			max *= 16
 		}
 		max--
