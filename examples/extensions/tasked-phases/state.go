@@ -774,7 +774,6 @@ func checkedWord(checked bool) string {
 }
 
 const (
-	compactVisibleIncompleteTasks     = 4
 	turnContextVisibleIncompleteTasks = 3
 	maxTurnContextChars               = 2048
 )
@@ -787,13 +786,6 @@ func getIncompleteTasks(phase Phase) []PhaseTask {
 		}
 	}
 	return incomplete
-}
-
-func formatRemainingTaskCount(count int) string {
-	if count == 1 {
-		return "1 remaining"
-	}
-	return fmt.Sprintf("%d remaining", count)
 }
 
 func formatPhaseTitle(phase Phase) string  { return truncatePlain(displaySingleLine(phase.Title), 120) }
@@ -865,41 +857,6 @@ func buildSummary(state PlanState) string {
 	return strings.Join(lines, "\n")
 }
 
-func buildCompactSummary(state PlanState) string {
-	if !hasStoredPlan(state) {
-		return "No spec or phased checklist has been stored yet."
-	}
-	lines := make([]string, 0)
-	if state.Spec != "" {
-		lines = append(lines, "Spec: "+truncatePlain(displaySingleLine(state.Spec), 220))
-	}
-	done, total := getPlanProgress(state)
-	lines = append(lines, fmt.Sprintf("Progress: %d/%d tasks checked", done, total))
-	if isPlanClosed(state) {
-		closedSummary := state.ClosedSummary
-		if closedSummary == "" {
-			closedSummary = "all phases complete"
-		}
-		lines = append(lines, "Plan closed: "+displaySingleLine(closedSummary))
-		return strings.Join(lines, "\n")
-	}
-	if currentPhase := getActivePhase(state); currentPhase != nil {
-		incompleteTasks := getIncompleteTasks(*currentPhase)
-		goalSuffix := ""
-		if currentPhase.Goal != "" {
-			goalSuffix = " - " + truncatePlain(displaySingleLine(currentPhase.Goal), 120)
-		}
-		lines = append(lines, fmt.Sprintf("Current phase: %s [%s] (%s)%s", formatPhaseTitle(*currentPhase), formatTurnContextID(currentPhase.ID), formatRemainingTaskCount(len(incompleteTasks)), goalSuffix))
-		if len(incompleteTasks) > 0 {
-			lines = append(lines, "Incomplete tasks:")
-			appendIncompleteTaskLines(&lines, incompleteTasks, compactVisibleIncompleteTasks, "  ")
-		}
-	} else if len(state.Phases) > 0 {
-		lines = append(lines, "Current phase: none")
-	}
-	return strings.Join(lines, "\n")
-}
-
 // buildTurnContext returns the small amount of plan state the model needs at
 // the start of a turn. It deliberately excludes the spec, completed phases,
 // and future phases; get_status and /phases remain the full-state views.
@@ -943,14 +900,13 @@ func shouldReturnFullSummary(action string, err error) bool {
 }
 
 func buildToolResultText(action string, state PlanState, headline string, err error) string {
-	summary := buildCompactSummary(state)
-	if shouldReturnFullSummary(action, err) {
-		summary = buildSummary(state)
-	}
 	if err != nil {
-		return "Error: " + err.Error() + "\n\n" + summary
+		return "Error: " + err.Error() + "\n\n" + buildSummary(state)
 	}
-	return headline + "\n\n" + summary
+	if shouldReturnFullSummary(action, nil) {
+		return headline + "\n\n" + buildSummary(state)
+	}
+	return fmt.Sprintf("%s (%s)", headline, buildChromeSummary(state))
 }
 
 func buildViewLines(state PlanState) []string {

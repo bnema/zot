@@ -57,30 +57,14 @@ func RightBarColumns(cols int) (mainWidth, rightBarWidth int, ok bool) {
 	return available - rightBarWidth, rightBarWidth, true
 }
 
-// RenderRightBar renders a bounded, full-height side rail. Widgets are sorted
-// by extension name and ID so output stays deterministic even when extension
-// frames arrive concurrently. Content that does not fit is replaced by a
-// compact marker rather than overflowing the terminal or growing the frame.
+// RenderRightBar renders a bounded, full-height side rail without adding a
+// second frame around the host-owned separator. Widgets are sorted by
+// extension name and ID so output stays deterministic even when extension
+// frames arrive concurrently. Long content wraps to the rail width, and
+// content that does not fit is replaced by a compact marker.
 func RenderRightBar(th Theme, widgets []RightBarWidget, width, height int) []string {
 	if width <= 0 || height <= 0 {
 		return nil
-	}
-	if width == 1 {
-		return make([]string, height)
-	}
-	if width == 2 {
-		out := make([]string, height)
-		for row := range out {
-			out[row] = strings.Repeat(" ", width)
-		}
-		out[0] = th.FG256(th.Muted, "──")
-		if height > 1 {
-			out[height-1] = th.FG256(th.Muted, "──")
-		}
-		return out
-	}
-	if height == 1 {
-		return []string{th.FG256(th.Muted, strings.Repeat("─", width))}
 	}
 
 	ordered := append([]RightBarWidget(nil), widgets...)
@@ -91,40 +75,91 @@ func RenderRightBar(th Theme, widgets []RightBarWidget, width, height int) []str
 		return ordered[a].ID < ordered[b].ID
 	})
 
-	innerWidth := width - 2
-	contentRows := height - 2
-	content := make([]string, 0, contentRows)
+	content := make([]string, 0, height)
 	truncated := false
-	appendContent := func(text string, color int) bool {
-		if len(content) >= contentRows {
-			truncated = true
-			return false
+	padLine := func(text string) string {
+		text = truncateToWidth(text, width)
+		if visible := visibleWidth(text); visible < width {
+			text += strings.Repeat(" ", width-visible)
 		}
-		text = strings.ReplaceAll(strings.ReplaceAll(text, "\r", ""), "\n", " ↩ ")
-		text = truncateToWidth(text, innerWidth)
-		if visible := visibleWidth(text); visible < innerWidth {
-			text += strings.Repeat(" ", innerWidth-visible)
+		return text
+	}
+	paintLine := func(text string, color int, dim, phase bool) string {
+		text = padLine(text)
+		if color < 0 {
+			return text
 		}
-		if color >= 0 {
-			text = th.FG256(color, text)
+		paint := func(value string, valueColor int) string {
+			if dim {
+				value = Dim(value)
+			}
+			return th.FG256(valueColor, value)
 		}
-		content = append(content, text)
+		if markerStart, markerEnd, _, ok := rightBarChecklistMarker(text); ok {
+			if phase {
+				if nameStart, nameEnd, ok := rightBarChecklistPhaseName(text); ok {
+					return paint(text[:markerStart], color) +
+						paint(text[markerStart:markerEnd], th.Muted) +
+						paint(text[markerEnd:nameStart], color) +
+						paint(Bold(text[nameStart:nameEnd]), color) +
+						paint(text[nameEnd:], color)
+				}
+			}
+			return paint(text[:markerStart], color) +
+				paint(text[markerStart:markerEnd], th.Muted) +
+				paint(text[markerEnd:], color)
+		}
+		if phase {
+			return paint(Bold(text), color)
+		}
+		return paint(text, color)
+	}
+	appendContent := func(text string, color int, dim, phase bool) bool {
+		text = strings.ReplaceAll(text, "\r", "")
+		for _, physicalLine := range strings.Split(text, "\n") {
+			wrapped := rightBarWrapLine(physicalLine, width)
+			if len(wrapped) == 0 {
+				wrapped = []string{""}
+			}
+			for _, line := range wrapped {
+				if len(content) >= height {
+					truncated = true
+					return false
+				}
+				content = append(content, paintLine(line, color, dim, phase))
+			}
+		}
 		return true
 	}
 
 	for idx, widget := range ordered {
-		if idx > 0 && !appendContent("", -1) {
+		if idx > 0 && !appendContent("", -1, false, false) {
 			break
 		}
 		label := "[" + widget.Extension + "]"
 		if widget.Title != "" {
 			label += " " + widget.Title
 		}
-		if !appendContent(label, th.Accent) {
+		if !appendContent(label, th.Accent, false, false) {
 			break
 		}
+		if !appendContent("", -1, false, false) {
+			break
+		}
+		activePhaseIndent := rightBarActivePhaseIndent(widget.Lines)
+		if activePhaseIndent >= 0 {
+			activePhaseIndent++ // host-owned line prefix
+		}
+		phaseIndent := rightBarChecklistIndent(widget.Lines)
+		if phaseIndent >= 0 {
+			phaseIndent++ // host-owned line prefix
+		}
+		activePhase := false
 		for _, line := range widget.Lines {
-			if !appendContent("  "+line, th.FG) {
+			line = " " + line
+			dim := rightBarChecklistLineDim(line, activePhaseIndent, &activePhase)
+			phase := rightBarChecklistPhaseLine(line, phaseIndent)
+			if !appendContent(line, th.FG, dim, phase) {
 				break
 			}
 		}
@@ -133,30 +168,156 @@ func RenderRightBar(th Theme, widgets []RightBarWidget, width, height int) []str
 		}
 	}
 	if truncated {
-		marker := "... right bar ..."
-		marker = truncateToWidth(marker, innerWidth)
-		if len(content) == contentRows {
-			content[len(content)-1] = ""
+		marker := paintLine("... right bar ...", th.Muted, false, false)
+		if len(content) == height {
+			content[len(content)-1] = marker
+		} else {
+			content = append(content, marker)
 		}
-		if !appendContent(marker, th.Muted) && len(content) > 0 {
-			// appendContent cannot append when the row budget is full, so
-			// replace the final row with the already-padded marker instead.
-			marker = marker + strings.Repeat(" ", max(0, innerWidth-visibleWidth(marker)))
-			content[len(content)-1] = th.FG256(th.Muted, marker)
-		}
+	}
+	for len(content) < height {
+		content = append(content, strings.Repeat(" ", width))
+	}
+	return content
+}
+
+func rightBarChecklistMarker(text string) (start, end int, marker byte, ok bool) {
+	start = 0
+	for start < len(text) && text[start] == ' ' {
+		start++
+	}
+	if len(text) < start+3 || text[start] != '[' || text[start+2] != ']' {
+		return 0, 0, 0, false
+	}
+	switch text[start+1] {
+	case ' ', 'x', 'X', '>':
+		return start, start + 3, text[start+1], true
+	default:
+		return 0, 0, 0, false
+	}
+}
+
+func rightBarWrapLine(text string, width int) []string {
+	_, end, _, ok := rightBarChecklistMarker(text)
+	if !ok {
+		return WrapANSILine(text, width)
 	}
 
-	border := func(glyph string) string { return th.FG256(th.Muted, glyph) }
-	out := make([]string, 0, height)
-	out = append(out, border("┌")+strings.Repeat("─", innerWidth)+border("┐"))
-	for _, line := range content {
-		out = append(out, border("│")+line+border("│"))
+	bodyStart := end
+	if bodyStart < len(text) && text[bodyStart] == ' ' {
+		bodyStart++
 	}
-	for len(out) < height-1 {
-		out = append(out, border("│")+strings.Repeat(" ", innerWidth)+border("│"))
+	prefix := text[:bodyStart]
+	prefixWidth := visibleWidth(prefix)
+	bodyWidth := width - prefixWidth
+	if bodyWidth < 1 {
+		return WrapANSILine(text, width)
 	}
-	out = append(out, border("└")+strings.Repeat("─", innerWidth)+border("┘"))
-	return out
+	bodyLines := WrapANSILine(text[bodyStart:], bodyWidth)
+	continuation := strings.Repeat(" ", prefixWidth)
+	wrapped := make([]string, len(bodyLines))
+	for i, bodyLine := range bodyLines {
+		if i == 0 {
+			wrapped[i] = prefix + bodyLine
+		} else {
+			wrapped[i] = continuation + bodyLine
+		}
+	}
+	return wrapped
+}
+
+func rightBarChecklistIndent(lines []string) int {
+	indent := -1
+	for _, line := range lines {
+		start, _, _, ok := rightBarChecklistMarker(line)
+		if ok && (indent < 0 || start < indent) {
+			indent = start
+		}
+	}
+	return indent
+}
+
+func rightBarChecklistPhaseLine(text string, phaseIndent int) bool {
+	if phaseIndent < 0 {
+		return false
+	}
+	start, _, _, ok := rightBarChecklistMarker(text)
+	return ok && start == phaseIndent
+}
+
+func rightBarChecklistPhaseName(text string) (start, end int, ok bool) {
+	_, markerEnd, _, markerOK := rightBarChecklistMarker(text)
+	if !markerOK {
+		return 0, 0, false
+	}
+	start = markerEnd
+	if start < len(text) && text[start] == ' ' {
+		start++
+	}
+	trimmedEnd := len(strings.TrimRight(text, " "))
+	if trimmedEnd <= start {
+		return 0, 0, false
+	}
+	suffix := text[start:trimmedEnd]
+	separator := strings.LastIndex(suffix, "  ")
+	if separator < 0 {
+		return 0, 0, false
+	}
+	nameEnd := start + separator
+	progress := strings.TrimSpace(text[nameEnd:trimmedEnd])
+	if !rightBarProgressToken(progress) {
+		return 0, 0, false
+	}
+	for nameEnd > start && text[nameEnd-1] == ' ' {
+		nameEnd--
+	}
+	if nameEnd <= start {
+		return 0, 0, false
+	}
+	return start, nameEnd, true
+}
+
+func rightBarProgressToken(value string) bool {
+	separator := strings.IndexByte(value, '/')
+	if separator <= 0 || separator == len(value)-1 {
+		return false
+	}
+	for _, part := range []string{value[:separator], value[separator+1:]} {
+		for _, r := range part {
+			if r < '0' || r > '9' {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+func rightBarActivePhaseIndent(lines []string) int {
+	for _, line := range lines {
+		start, _, marker, ok := rightBarChecklistMarker(line)
+		if ok && marker == '>' {
+			return start
+		}
+	}
+	return -1
+}
+
+func rightBarChecklistLineDim(text string, activePhaseIndent int, activePhase *bool) bool {
+	if activePhaseIndent < 0 {
+		return false
+	}
+	start, _, marker, ok := rightBarChecklistMarker(text)
+	if !ok {
+		return false
+	}
+	if start == activePhaseIndent {
+		*activePhase = marker == '>'
+		return !*activePhase
+	}
+	if start > activePhaseIndent {
+		return !*activePhase
+	}
+	return false
 }
 
 // JoinRightBar combines one main-pane row and one right-bar row without
