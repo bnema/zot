@@ -20,11 +20,15 @@
 //	~/.agents/skills/<name>/SKILL.md         — global (agent-compat)
 //
 // The compat paths are deliberate: a SKILL.md written for any of
-// the related ecosystems works in zot unchanged.
+// the related ecosystems works in zot unchanged. User skill roots are
+// walked recursively, and nested files can also be addressed by their
+// slash-separated path relative to the root (for example,
+// systems-backend/subskills/golang-patterns).
 package skills
 
 import (
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
@@ -37,6 +41,11 @@ type Skill struct {
 	// invokes the `skill` tool. Taken from the frontmatter `name`
 	// field; falls back to the directory basename.
 	Name string
+
+	// Aliases are alternate identifiers accepted by FindByName. Nested
+	// user skills include their slash-separated path relative to the
+	// search root, so routers can refer to them by file-system path.
+	Aliases []string
 
 	// Description is the one-line summary shown to the model in the
 	// system-prompt manifest.
@@ -130,15 +139,9 @@ func DiscoverWithBundled(zotHome, cwd, userHome string, includeUser bool, bundle
 	}
 	// Built-ins fill in any name the user or an extension didn't provide.
 	for _, s := range loadBuiltins() {
-		if _, dup := seen[s.Name]; dup {
-			continue
-		}
-		seen[s.Name] = s
+		registerSkill(seen, s)
 	}
-	out := make([]*Skill, 0, len(seen))
-	for _, s := range seen {
-		out = append(out, s)
-	}
+	out := uniqueSkills(seen)
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out, errs
 }
@@ -152,10 +155,7 @@ func LoadBundled(bundled []BundledSkillDir) ([]*Skill, []error) {
 	for _, dir := range bundled {
 		errs = append(errs, scanBundledSkills(dir, seen)...)
 	}
-	out := make([]*Skill, 0, len(seen))
-	for _, s := range seen {
-		out = append(out, s)
-	}
+	out := uniqueSkills(seen)
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out, errs
 }
@@ -219,9 +219,7 @@ func scanBundledSkills(dir BundledSkillDir, seen map[string]*Skill) []error {
 		if s.Name == "" {
 			s.Name = fallbackName
 		}
-		if _, dup := seen[s.Name]; !dup {
-			seen[s.Name] = s
-		}
+		registerSkill(seen, s)
 	}
 	skillPath := filepath.Join(dir.Dir, "SKILL.md")
 	if info, err := os.Stat(skillPath); err == nil {
@@ -248,38 +246,114 @@ func scanBundledSkills(dir BundledSkillDir, seen map[string]*Skill) []error {
 	return errs
 }
 
-// scanUserSkills walks the user-skill search dirs and populates
-// `seen` with first-match-wins per name. Split out so Discover's
-// includeUser=false path doesn't have to skip over a giant block.
+// scanUserSkills walks the user-skill search dirs recursively and
+// populates `seen` with first-match-wins per name or alias. Split out
+// so Discover's includeUser=false path doesn't have to skip over a
+// giant block.
 func scanUserSkills(zotHome, cwd, userHome string, seen map[string]*Skill) []error {
 	var errs []error
 	for _, loc := range searchDirs(zotHome, cwd, userHome) {
-		entries, err := os.ReadDir(loc.dir)
-		if err != nil {
-			continue // missing dir is fine
-		}
-		for _, e := range entries {
-			if !e.IsDir() {
-				continue
+		_ = filepath.WalkDir(loc.dir, func(path string, entry fs.DirEntry, walkErr error) error {
+			if walkErr != nil {
+				if !os.IsNotExist(walkErr) {
+					errs = append(errs, fmt.Errorf("%s: %w", path, walkErr))
+				}
+				return nil
 			}
-			path := filepath.Join(loc.dir, e.Name(), "SKILL.md")
+			if entry.IsDir() || entry.Name() != "SKILL.md" {
+				return nil
+			}
+
+			rel, err := filepath.Rel(loc.dir, filepath.Dir(path))
+			if err != nil {
+				errs = append(errs, fmt.Errorf("%s: determine skill name: %w", path, err))
+				return nil
+			}
+			if rel == "." {
+				// Keep the existing convention that a search root is a
+				// collection of skill directories, not a skill itself.
+				return nil
+			}
+
 			s, err := load(path, loc.label)
 			if err != nil {
 				if !os.IsNotExist(err) {
 					errs = append(errs, fmt.Errorf("%s: %w", path, err))
 				}
-				continue
+				return nil
 			}
 			if s.Name == "" {
-				s.Name = e.Name()
+				s.Name = filepath.Base(filepath.Dir(path))
 			}
-			if _, dup := seen[s.Name]; dup {
-				continue // higher-priority location already won
-			}
-			seen[s.Name] = s
-		}
+			addRelativeAlias(s, loc.dir, path)
+			registerSkill(seen, s)
+			return nil
+		})
 	}
 	return errs
+}
+
+// addRelativeAlias makes a nested skill addressable by the directory path
+// used by common skill routers, for example
+// systems-backend/subskills/golang-patterns.
+func addRelativeAlias(s *Skill, root, path string) {
+	if s == nil {
+		return
+	}
+	rel, err := filepath.Rel(root, filepath.Dir(path))
+	if err != nil || rel == "." || rel == "" {
+		return
+	}
+	alias := filepath.ToSlash(rel)
+	if alias == s.Name {
+		return
+	}
+	for _, existing := range s.Aliases {
+		if existing == alias {
+			return
+		}
+	}
+	s.Aliases = append(s.Aliases, alias)
+}
+
+// registerSkill records a skill under its canonical name and aliases. A
+// collision on any identifier means a higher-priority skill already owns
+// that identifier, so the new skill is skipped as one unit.
+func registerSkill(seen map[string]*Skill, s *Skill) bool {
+	if s == nil || s.Name == "" {
+		return false
+	}
+	keys := append([]string{s.Name}, s.Aliases...)
+	for _, key := range keys {
+		if key == "" {
+			continue
+		}
+		if _, exists := seen[key]; exists {
+			return false
+		}
+	}
+	for _, key := range keys {
+		if key != "" {
+			seen[key] = s
+		}
+	}
+	return true
+}
+
+func uniqueSkills(seen map[string]*Skill) []*Skill {
+	out := make([]*Skill, 0, len(seen))
+	added := make(map[*Skill]struct{}, len(seen))
+	for _, s := range seen {
+		if s == nil {
+			continue
+		}
+		if _, exists := added[s]; exists {
+			continue
+		}
+		added[s] = struct{}{}
+		out = append(out, s)
+	}
+	return out
 }
 
 // SystemPromptAddendum returns the text to append to the system
@@ -337,11 +411,21 @@ func skillSourcePointer(s *Skill, home string) string {
 	return p
 }
 
-// FindByName returns the skill with the given name, or nil.
+// FindByName returns the skill with the given name or alias, or nil.
 func FindByName(skills []*Skill, name string) *Skill {
 	for _, s := range skills {
-		if s.Name == name {
+		if s != nil && s.Name == name {
 			return s
+		}
+	}
+	for _, s := range skills {
+		if s == nil {
+			continue
+		}
+		for _, alias := range s.Aliases {
+			if alias == name {
+				return s
+			}
 		}
 	}
 	return nil
