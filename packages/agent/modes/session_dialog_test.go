@@ -3,7 +3,9 @@ package modes
 import (
 	"context"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 	"unicode"
 
 	"github.com/patriceckhart/zot/packages/core"
@@ -86,6 +88,9 @@ func TestSessionDialogCanceledParentDoesNotRemainLoading(t *testing.T) {
 	if d.Loading() {
 		t.Fatal("dialog remained loading with an already-canceled parent")
 	}
+	if d.Active() {
+		t.Fatal("dialog remained active with an already-canceled parent")
+	}
 	if _, ok := <-events; ok {
 		t.Fatal("canceled dialog emitted a load event")
 	}
@@ -102,6 +107,159 @@ func TestSessionDialogCancellationFinishesLoading(t *testing.T) {
 	if d.Loading() {
 		t.Fatal("dialog remained loading after parent cancellation")
 	}
+	if d.Active() {
+		t.Fatal("dialog remained active after parent cancellation")
+	}
+}
+
+func TestSessionDialogCancellationDoesNotEmitFinished(t *testing.T) {
+	root := t.TempDir()
+	cwd := t.TempDir()
+	session, err := core.NewSession(root, cwd, "test", "test-model", "test-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := session.AppendMessage(provider.Message{
+		Role:    provider.RoleUser,
+		Content: []provider.Content{provider.TextBlock{Text: "cancel this load"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := session.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	entered := make(chan struct{})
+	d := newSessionDialog()
+	d.describeSession = func(ctx context.Context, path string) core.SessionSummary {
+		close(entered)
+		<-ctx.Done()
+		return core.SessionSummary{Path: path}
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	events := d.Open(ctx, root, cwd)
+	t.Cleanup(func() {
+		cancel()
+		d.Close()
+	})
+
+	select {
+	case event, ok := <-events:
+		if !ok || event.kind != sessionLoadStarted {
+			t.Fatalf("first load event = %+v, open %v; want sessionLoadStarted", event, ok)
+		}
+		d.ApplyLoad(event)
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for sessionLoadStarted")
+	}
+	select {
+	case <-entered:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for the session worker")
+	}
+
+	cancel()
+	for {
+		select {
+		case event, ok := <-events:
+			if !ok {
+				d.ApplyLoadClosed()
+				if d.Loading() || d.Active() {
+					t.Fatalf("dialog after cancellation = loading %v, active %v; want both false", d.Loading(), d.Active())
+				}
+				return
+			}
+			if event.kind == sessionLoadFinished {
+				t.Fatal("canceled load emitted sessionLoadFinished")
+			}
+			d.ApplyLoad(event)
+		case <-time.After(time.Second):
+			t.Fatal("timed out waiting for canceled session load to close")
+		}
+	}
+}
+
+func TestSessionDialogPreCanceledOpenPreservesPreviousLoadBarrier(t *testing.T) {
+	root := t.TempDir()
+	cwd := t.TempDir()
+	session, err := core.NewSession(root, cwd, "test", "test-model", "test-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := session.AppendMessage(provider.Message{
+		Role:    provider.RoleUser,
+		Content: []provider.Content{provider.TextBlock{Text: "wait for the prior load"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := session.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	var enteredOnce sync.Once
+	var releaseOnce sync.Once
+	releaseLoad := func() { releaseOnce.Do(func() { close(release) }) }
+	d := newSessionDialog()
+	d.describeSession = func(ctx context.Context, path string) core.SessionSummary {
+		enteredOnce.Do(func() { close(entered) })
+		<-release
+		return core.SessionSummary{Path: path, MessageCount: 1}
+	}
+	firstCtx, firstCancel := context.WithCancel(context.Background())
+	firstEvents := d.Open(firstCtx, root, cwd)
+	t.Cleanup(func() {
+		firstCancel()
+		releaseLoad()
+		d.Close()
+	})
+
+	select {
+	case event, ok := <-firstEvents:
+		if !ok || event.kind != sessionLoadStarted {
+			t.Fatalf("first load event = %+v, open %v; want sessionLoadStarted", event, ok)
+		}
+		d.ApplyLoad(event)
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for the first load to start")
+	}
+	select {
+	case <-entered:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for the first worker")
+	}
+
+	preCanceled, cancelPreCanceled := context.WithCancel(context.Background())
+	cancelPreCanceled()
+	preCanceledEvents := d.Open(preCanceled, root, cwd)
+	if _, ok := <-preCanceledEvents; ok {
+		t.Fatal("pre-canceled open emitted a load event")
+	}
+
+	thirdCtx, cancelThird := context.WithCancel(context.Background())
+	thirdEvents := d.Open(thirdCtx, root, cwd)
+	select {
+	case event, ok := <-thirdEvents:
+		t.Fatalf("third open started before the first load finished: %+v, open %v", event, ok)
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	releaseLoad()
+	firstCancel()
+	select {
+	case event, ok := <-thirdEvents:
+		if !ok || event.kind != sessionLoadStarted {
+			t.Fatalf("third load event = %+v, open %v; want sessionLoadStarted after barrier", event, ok)
+		}
+		d.ApplyLoad(event)
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for third load after releasing the first")
+	}
+	cancelThird()
+	for event := range thirdEvents {
+		d.ApplyLoad(event)
+	}
 }
 
 func TestSessionDialogEscapeCancelsLoading(t *testing.T) {
@@ -115,7 +273,7 @@ func TestSessionDialogEscapeCancelsLoading(t *testing.T) {
 	}
 }
 
-func TestSessionDialogAppliesLoadedEntriesInPathOrder(t *testing.T) {
+func TestSessionDialogAppliesLoadedEntriesIncrementallyInPathOrder(t *testing.T) {
 	d := newSessionDialog()
 	d.active = true
 	d.loading = true
@@ -132,6 +290,9 @@ func TestSessionDialogAppliesLoadedEntriesInPathOrder(t *testing.T) {
 		index:      2,
 		summary:    core.SessionSummary{Path: "third", MessageCount: 1},
 	})
+	if len(d.sessions) != 0 {
+		t.Fatalf("older out-of-order entry appeared before newest entry: %+v", d.sessions)
+	}
 	d.ApplyLoad(sessionLoadEvent{
 		kind:       sessionLoadEntry,
 		generation: 7,
@@ -150,6 +311,13 @@ func TestSessionDialogAppliesLoadedEntriesInPathOrder(t *testing.T) {
 		index:      0,
 		summary:    core.SessionSummary{Path: "first", MessageCount: 1},
 	})
+	if !d.Loading() {
+		t.Fatal("dialog stopped loading before the terminal event")
+	}
+	if len(d.sessions) != 2 || d.sessions[0].Path != "first" || d.sessions[1].Path != "third" {
+		t.Fatalf("incremental sessions = %+v, want first then third", d.sessions)
+	}
+
 	d.ApplyLoad(sessionLoadEvent{kind: sessionLoadFinished, generation: 7})
 
 	if d.Loading() {
@@ -160,15 +328,53 @@ func TestSessionDialogAppliesLoadedEntriesInPathOrder(t *testing.T) {
 	}
 }
 
+func TestSessionDialogCanSelectLoadedEntryWhileLoading(t *testing.T) {
+	d := newSessionDialog()
+	d.active = true
+	d.loading = true
+	d.loadGeneration = 9
+
+	d.ApplyLoad(sessionLoadEvent{
+		kind:       sessionLoadStarted,
+		generation: 9,
+		total:      2,
+	})
+	d.ApplyLoad(sessionLoadEvent{
+		kind:       sessionLoadEntry,
+		generation: 9,
+		index:      0,
+		summary:    core.SessionSummary{Path: "newest", MessageCount: 1, FirstUserText: "recent work"},
+	})
+
+	if !d.Loading() {
+		t.Fatal("dialog stopped loading after first entry")
+	}
+	rendered := strings.Join(d.Render(tui.Dark, 100), "\n")
+	if !strings.Contains(rendered, "recent work") {
+		t.Fatalf("incremental render missing newest entry: %q", rendered)
+	}
+
+	act := d.HandleKey(tui.Key{Kind: tui.KeyEnter})
+	if !act.Select || act.Path != "newest" || d.Active() {
+		t.Fatalf("select while loading = %+v, active %v; want newest selected and dialog closed", act, d.Active())
+	}
+}
+
 func TestSessionDialogIgnoresStaleLoadResults(t *testing.T) {
 	first := newSessionDialog()
 	firstEvents := first.Open(context.Background(), t.TempDir(), t.TempDir())
 	firstGeneration := first.loadGeneration
 
 	secondEvents := first.Open(context.Background(), t.TempDir(), t.TempDir())
-	if first.loadGeneration == firstGeneration {
+	secondGeneration := first.loadGeneration
+	if secondGeneration == firstGeneration {
 		t.Fatal("reopening picker did not advance load generation")
 	}
+	first.ApplyLoad(sessionLoadEvent{
+		kind:       sessionLoadStarted,
+		generation: secondGeneration,
+		total:      1,
+	})
 
 	first.ApplyLoad(sessionLoadEvent{
 		kind:       sessionLoadEntry,

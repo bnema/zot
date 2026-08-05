@@ -54,7 +54,15 @@ type sessionDialog struct {
 	loadGeneration   uint64
 	loadCancel       context.CancelFunc
 	loadDone         chan struct{}
+	// loadReadyThrough is the contiguous path prefix whose summaries have
+	// arrived. It prevents an older worker result from appearing before a
+	// newer session that is still being read.
 	loadSlots        []sessionLoadSlot
+	loadReadyThrough int
+
+	// describeSession is replaceable in tests so cancellation can be
+	// exercised without relying on file-size-dependent timing.
+	describeSession func(context.Context, string) core.SessionSummary
 
 	// MaxRows is the maximum number of session rows the dialog
 	// will render in a single frame. Set by the host right before
@@ -110,12 +118,15 @@ func (d *sessionDialog) Open(parent context.Context, root, cwd string) <-chan se
 	d.loadingTotal = 0
 	d.loadingStartedAt = time.Now()
 	d.loadSlots = nil
+	d.loadReadyThrough = 0
 	d.active = true
 
 	if ctxErr := ctx.Err(); ctxErr != nil {
 		cancel()
 		d.loadCancel = nil
 		d.loading = false
+		d.active = false
+		d.loadDone = previousDone
 		events := make(chan sessionLoadEvent)
 		close(events)
 		close(done)
@@ -130,6 +141,10 @@ func (d *sessionDialog) Open(parent context.Context, root, cwd string) <-chan se
 		case <-ctx.Done():
 			return false
 		}
+	}
+	describeSession := d.describeSession
+	if describeSession == nil {
+		describeSession = core.DescribeSessionContext
 	}
 	go func() {
 		defer close(done)
@@ -169,7 +184,7 @@ func (d *sessionDialog) Open(parent context.Context, root, cwd string) <-chan se
 						if !ok {
 							return
 						}
-						summary := core.DescribeSessionContext(ctx, job.path)
+						summary := describeSession(ctx, job.path)
 						select {
 						case <-ctx.Done():
 							return
@@ -197,6 +212,9 @@ func (d *sessionDialog) Open(parent context.Context, root, cwd string) <-chan se
 		}
 		close(jobs)
 		wg.Wait()
+		if ctx.Err() != nil {
+			return
+		}
 		send(sessionLoadEvent{kind: sessionLoadFinished, generation: generation})
 	}()
 	return events
@@ -213,6 +231,7 @@ func (d *sessionDialog) ApplyLoad(event sessionLoadEvent) {
 		d.loadingTotal = event.total
 		d.loadingDone = 0
 		d.loadSlots = make([]sessionLoadSlot, event.total)
+		d.loadReadyThrough = 0
 		d.sessions = nil
 	case sessionLoadEntry:
 		if event.index < 0 || event.index >= len(d.loadSlots) || d.loadSlots[event.index].loaded {
@@ -220,6 +239,11 @@ func (d *sessionDialog) ApplyLoad(event sessionLoadEvent) {
 		}
 		d.loadSlots[event.index] = sessionLoadSlot{loaded: true, summary: event.summary}
 		d.loadingDone++
+		previousReady := d.loadReadyThrough
+		for d.loadReadyThrough < len(d.loadSlots) && d.loadSlots[d.loadReadyThrough].loaded {
+			d.loadReadyThrough++
+		}
+		d.appendLoadedSessions(previousReady, d.loadReadyThrough)
 	case sessionLoadFinished:
 		d.finishLoad(true)
 	}
@@ -232,25 +256,56 @@ func (d *sessionDialog) ApplyLoadClosed() {
 		return
 	}
 	d.finishLoad(false)
+	d.active = false
 }
 
 func (d *sessionDialog) finishLoad(complete bool) {
 	if complete {
-		d.rebuildLoadedSessions()
+		d.rebuildLoadedSessions(len(d.loadSlots))
 	} else {
 		d.sessions = nil
 	}
 	d.loading = false
 	d.loadSlots = nil
+	d.loadReadyThrough = 0
 	if d.loadCancel != nil {
 		d.loadCancel()
 		d.loadCancel = nil
 	}
 }
 
-func (d *sessionDialog) rebuildLoadedSessions() {
-	filtered := make([]core.SessionSummary, 0, len(d.loadSlots))
-	for _, slot := range d.loadSlots {
+// appendLoadedSessions exposes the newly contiguous portion of the path
+// list. Paths are already newest-first, so this keeps the first visible entry
+// stable while workers finish out of order without rescanning old slots.
+func (d *sessionDialog) appendLoadedSessions(start, end int) {
+	limit := len(d.loadSlots)
+	if start < 0 {
+		start = 0
+	} else if start > limit {
+		start = limit
+	}
+	if end < 0 {
+		end = 0
+	} else if end > limit {
+		end = limit
+	}
+	if start >= end {
+		return
+	}
+	for _, slot := range d.loadSlots[start:end] {
+		if !slot.loaded || slot.summary.HideFromSessions || slot.summary.MessageCount == 0 {
+			continue
+		}
+		d.sessions = append(d.sessions, slot.summary)
+	}
+}
+
+func (d *sessionDialog) rebuildLoadedSessions(limit int) {
+	if limit > len(d.loadSlots) {
+		limit = len(d.loadSlots)
+	}
+	filtered := make([]core.SessionSummary, 0, limit)
+	for _, slot := range d.loadSlots[:limit] {
 		if !slot.loaded || slot.summary.HideFromSessions || slot.summary.MessageCount == 0 {
 			continue
 		}
@@ -284,6 +339,7 @@ func (d *sessionDialog) Close() {
 	}
 	d.loading = false
 	d.loadSlots = nil
+	d.loadReadyThrough = 0
 	d.active = false
 }
 
@@ -303,7 +359,7 @@ func (d *sessionDialog) Render(th tui.Theme, width int) []string {
 	if d.loading {
 		lines = append(lines, th.FG256(th.Muted, d.loadingMessage(th)))
 		if len(d.sessions) == 0 {
-			lines = append(lines, th.FG256(th.Muted, "session entries will appear when loading completes"))
+			lines = append(lines, th.FG256(th.Muted, "session entries appear as they load"))
 			lines = append(lines, frameRule(th, width))
 			return lines
 		}
@@ -325,9 +381,11 @@ func (d *sessionDialog) Render(th tui.Theme, width int) []string {
 		lines = append(lines, frameRule(th, width))
 		return lines
 	}
-	if !d.loading {
-		lines = append(lines, th.FG256(th.Muted, "pick a session (↑/↓, pgup/pgdn, enter resume, r rename, esc cancel)"))
+	hint := "pick a session (↑/↓, pgup/pgdn, enter resume, r rename, esc cancel)"
+	if d.loading {
+		hint = "pick a session (↑/↓, pgup/pgdn, enter resume, esc cancel; more loading)"
 	}
+	lines = append(lines, th.FG256(th.Muted, hint))
 
 	// Viewport: windowed slice of d.sessions around d.cursor so a
 	// list taller than the terminal still scrolls. Caller sets
@@ -526,7 +584,7 @@ func (d *sessionDialog) HandleKey(k tui.Key) sessionDialogAction {
 		return sessionDialogAction{}
 	}
 
-	if d.loading {
+	if d.loading && len(d.sessions) == 0 {
 		if k.Kind == tui.KeyEsc {
 			d.Close()
 			return sessionDialogAction{Close: true}
@@ -581,7 +639,7 @@ func (d *sessionDialog) HandleKey(k tui.Key) sessionDialogAction {
 		d.Close()
 		return sessionDialogAction{Select: true, Path: s.Path}
 	case tui.KeyRune:
-		if k.Rune == 'r' && len(d.sessions) > 0 {
+		if k.Rune == 'r' && !d.loading && len(d.sessions) > 0 {
 			s := d.sessions[d.cursor]
 			d.renaming = true
 			if s.Title != "" {
