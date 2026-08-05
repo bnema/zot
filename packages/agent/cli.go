@@ -275,6 +275,52 @@ func liveInteractiveAgent(iv *modes.Interactive, fallback *core.Agent) *core.Age
 	return fallback
 }
 
+func newSessionTransition(mu *sync.RWMutex) func(func()) {
+	return func(fn func()) {
+		mu.Lock()
+		defer mu.Unlock()
+		fn()
+	}
+}
+
+// newPersistModelCallback returns the callback used by the TUI while its
+// session transition write lock is held. It must not acquire that lock again
+// because sync.RWMutex is not reentrant.
+func newPersistModelCallback(persistMu *sync.Mutex, sess **core.Session, activeProvider, activeModel *string, notify func(string)) func(string, string) {
+	return func(providerName, model string) {
+		providerName = strings.TrimSpace(providerName)
+		model = strings.TrimSpace(model)
+
+		persistMu.Lock()
+		var sessionErr error
+		if *sess != nil {
+			sessionErr = (*sess).UpdateModel(providerName, model)
+		}
+		*activeProvider = providerName
+		*activeModel = model
+		persistMu.Unlock()
+		if sessionErr != nil {
+			if notify != nil {
+				notify("model change was not persisted: " + sessionErr.Error())
+			}
+			return
+		}
+
+		cfg, err := LoadConfig()
+		if err != nil {
+			if notify != nil {
+				notify("model changed for this run, but config could not be read: " + err.Error())
+			}
+			return
+		}
+		cfg.Provider = providerName
+		cfg.Model = model
+		if err := SaveConfig(cfg); err != nil && notify != nil {
+			notify("model changed for this run, but config could not be saved: " + err.Error())
+		}
+	}
+}
+
 func closeAgentLSP(ag *core.Agent) {
 	if ag != nil {
 		_ = tools.CloseLSPManagers(ag.Tools)
@@ -2053,15 +2099,11 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 			writeNewTranscriptLocked(currentAg, sess, sessBaselineMsgs)
 			sessBaselineMsgs = len(currentAg.Messages())
 		},
-		SessionTransition: func(fn func()) {
-			sessionTransitionMu.Lock()
-			defer sessionTransitionMu.Unlock()
-			fn()
-		},
-		Extensions:      extMgr,
-		Swarm:           swarmMgr,
-		ResolveSubagent: resolveSubagent,
-		ChangelogChan:   changelogCh,
+		SessionTransition: newSessionTransition(&sessionTransitionMu),
+		Extensions:        extMgr,
+		Swarm:             swarmMgr,
+		ResolveSubagent:   resolveSubagent,
+		ChangelogChan:     changelogCh,
 		OnChangelogDismiss: func() {
 			// For dev builds (0.0.0) store the actual release version
 			// so the same changelog doesn't show again next launch.
@@ -2092,44 +2134,11 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 		},
 		NoYolo:      args.NoYolo,
 		ConfirmGate: confirmGate,
-		PersistModel: func(providerName, model string) {
-			providerName = strings.TrimSpace(providerName)
-			model = strings.TrimSpace(model)
-			// Persist the active session metadata before publishing the
-			// selection used by future resumes. The live agent has already
-			// switched pairs, so keep the in-memory selection aligned even
-			// when the append fails and report that persistence error below.
-			sessionTransitionMu.RLock()
-			defer sessionTransitionMu.RUnlock()
-			persistMu.Lock()
-			var sessionErr error
-			if sess != nil {
-				sessionErr = sess.UpdateModel(providerName, model)
+		PersistModel: newPersistModelCallback(&persistMu, &sess, &activeProvider, &activeModel, func(message string) {
+			if iv != nil {
+				iv.Notify("session", "error", message)
 			}
-			activeProvider = providerName
-			activeModel = model
-			persistMu.Unlock()
-			if sessionErr != nil {
-				if iv != nil {
-					iv.Notify("session", "error", "model change was not persisted: "+sessionErr.Error())
-				}
-				return
-			}
-
-			// Update config.json so next launch uses the same pick.
-			cfg, cfgErr := LoadConfig()
-			if cfgErr != nil {
-				if iv != nil {
-					iv.Notify("session", "error", "model changed for this run, but config could not be read: "+cfgErr.Error())
-				}
-				return
-			}
-			cfg.Provider = providerName
-			cfg.Model = model
-			if cfgErr = SaveConfig(cfg); cfgErr != nil && iv != nil {
-				iv.Notify("session", "error", "model changed for this run, but config could not be saved: "+cfgErr.Error())
-			}
-		},
+		}),
 		CurrentSessionTitle: func() string {
 			sessionTransitionMu.RLock()
 			defer sessionTransitionMu.RUnlock()
