@@ -119,10 +119,10 @@ func TestInheritedThemeUsesTrueColorAndTerminalPalette(t *testing.T) {
 	if !th.Inherited || !th.Terminal.TrueColor {
 		t.Fatalf("inherited theme mode = (inherited=%v, trueColor=%v), want truecolor", th.Inherited, th.Terminal.TrueColor)
 	}
-	if got := th.FG256(th.Accent, "x"); !strings.Contains(got, "\x1b[38;2;40;100;240m") {
+	if got := th.FGColor(th.Accent, "x"); !strings.Contains(got, "\x1b[38;2;40;100;240m") {
 		t.Fatalf("accent did not use the reported terminal palette: %q", got)
 	}
-	if got := th.FG256(th.FG, "x"); !strings.Contains(got, "\x1b[38;2;220;210;200m") {
+	if got := th.FGColor(th.FG, "x"); !strings.Contains(got, "\x1b[38;2;220;210;200m") {
 		t.Fatalf("foreground did not inherit the terminal default: %q", got)
 	}
 	if got := th.UserBubble("x", 3); !strings.Contains(got, "\x1b[48;2;") {
@@ -141,7 +141,7 @@ func TestInheritedThemeFallsBackTo256Colors(t *testing.T) {
 	if !th.Inherited || th.Terminal.TrueColor {
 		t.Fatalf("inherited theme mode = (inherited=%v, trueColor=%v), want 256", th.Inherited, th.Terminal.TrueColor)
 	}
-	if got := th.FG256(th.Accent, "x"); !strings.Contains(got, "\x1b[38;5;12m") || strings.Contains(got, "\x1b[38;2;") {
+	if got := th.FGColor(th.Accent, "x"); !strings.Contains(got, "\x1b[38;5;12m") || strings.Contains(got, "\x1b[38;2;") {
 		t.Fatalf("accent did not use 256-color fallback: %q", got)
 	}
 	if got := th.UserBubble("x", 3); strings.Contains(got, "\x1b[48;2;") || !strings.Contains(got, "\x1b[48;5;") {
@@ -156,7 +156,7 @@ func TestInheritedThemeFallsBackTo256Colors(t *testing.T) {
 }
 
 func TestExplicitThemesFollowTerminalCapability(t *testing.T) {
-	if got, want := Dark.FG256(Dark.Accent, "x"), "\x1b[38;5;111mx\x1b[0m"; got != want {
+	if got, want := Dark.FGColor(Dark.Accent, "x"), "\x1b[38;5;111mx\x1b[0m"; got != want {
 		t.Fatalf("explicit theme output = %q, want %q", got, want)
 	}
 	if got := Dark.UserBubble("x", 1); !strings.Contains(got, "\x1b[48;5;") || strings.Contains(got, "\x1b[48;2;") {
@@ -164,7 +164,7 @@ func TestExplicitThemesFollowTerminalCapability(t *testing.T) {
 	}
 
 	trueColor := withTerminalProfile(Dark, Theme{Terminal: TerminalProfile{TrueColor: true}})
-	if got := trueColor.FG256(trueColor.Accent, "x"); !strings.Contains(got, "\x1b[38;2;") {
+	if got := trueColor.FGColor(trueColor.Accent, "x"); !strings.Contains(got, "\x1b[38;2;") {
 		t.Fatalf("truecolor explicit theme did not emit RGB: %q", got)
 	}
 	if got := trueColor.UserBubble("x", 1); !strings.Contains(got, "\x1b[48;2;66;69;75m") {

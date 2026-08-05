@@ -126,8 +126,8 @@ func TestEditConfirmationPreviewRendersDiffInsteadOfNewText(t *testing.T) {
 		}
 	}
 	for _, want := range []string{
-		Dark.FG256(Dark.Error, "-  1 "),
-		Dark.FG256(Dark.Tool, "+  1 "),
+		Dark.FGColor(Dark.Error, "-  1 "),
+		Dark.FGColor(Dark.Tool, "+  1 "),
 	} {
 		if !strings.Contains(rendered, want) {
 			t.Fatalf("confirmation preview missing diff color %q:\n%s", want, rendered)

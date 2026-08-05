@@ -131,7 +131,7 @@ func TestLoadThemeAcceptsRGBSemanticColors(t *testing.T) {
 	if th.SelectionBG != Color256(237) || th.SelectionFG != Color256(250) {
 		t.Fatalf("indexed semantic colors were not preserved: bg=%#v fg=%#v", th.SelectionBG, th.SelectionFG)
 	}
-	if got := th.FG256(th.Accent, "x"); !strings.Contains(got, "\x1b[38;2;200;100;50m") {
+	if got := th.FGColor(th.Accent, "x"); !strings.Contains(got, "\x1b[38;2;200;100;50m") {
 		t.Fatalf("RGB accent was not rendered as truecolor: %q", got)
 	}
 }
@@ -144,7 +144,7 @@ func TestLoadThemeQuantizesRGBSemanticColorsWithoutTrueColor(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := nearestXtermColor(200, 100, 50)
-	if got := th.FG256(th.Accent, "x"); got != sgrFG(want)+"x\x1b[0m" {
+	if got := th.FGColor(th.Accent, "x"); got != sgrFG(want)+"x\x1b[0m" {
 		t.Fatalf("RGB accent fallback = %q, want xterm-256 index %d", got, want)
 	}
 }

@@ -74,7 +74,7 @@ func (d *extPanelDialog) Render(th tui.Theme, width int) []string {
 	}
 	if strings.TrimSpace(d.footer) != "" {
 		out = append(out, "")
-		out = append(out, th.FG256(th.Muted, d.footer))
+		out = append(out, th.FGColor(th.Muted, d.footer))
 	}
 	out = append(out, frameRuleColor(th, width, th.Accent))
 	return out
@@ -92,7 +92,7 @@ func styleExtPanelLine(th tui.Theme, raw string, plain string, width int, select
 	if raw != plain {
 		return raw + "\x1b[0m"
 	}
-	styled := th.FG256(th.Muted, plain)
-	styled = strings.ReplaceAll(styled, "✓", th.FG256(th.Tool, "✓"))
+	styled := th.FGColor(th.Muted, plain)
+	styled = strings.ReplaceAll(styled, "✓", th.FGColor(th.Tool, "✓"))
 	return styled
 }

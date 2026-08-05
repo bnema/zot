@@ -383,7 +383,7 @@ func (d *btwDialog) Render(th tui.Theme, width int) []string {
 	out = append(out, frameHeaderColor(th, "btw - side chat (esc closes; nothing is added to the main thread)", width, th.Accent))
 
 	if len(d.turns) == 0 && !d.loading {
-		out = append(out, "  "+th.FG256(th.Muted, "ask anything; replies stay private to this side chat."))
+		out = append(out, "  "+th.FGColor(th.Muted, "ask anything; replies stay private to this side chat."))
 	}
 
 	for _, t := range d.turns {
@@ -402,7 +402,7 @@ func (d *btwDialog) Render(th tui.Theme, width int) []string {
 			out = append(out, renderDialogMarkdownRows(t.Assistant, th, width)...)
 		}
 		if t.Err != "" {
-			out = append(out, wrapDialogTextRows(th.FG256(th.Error, "✖ "+t.Err), width)...)
+			out = append(out, wrapDialogTextRows(th.FGColor(th.Error, "✖ "+t.Err), width)...)
 		}
 	}
 
@@ -412,11 +412,11 @@ func (d *btwDialog) Render(th tui.Theme, width int) []string {
 		// rotating funny-line, elapsed seconds, then a muted hint
 		// that esc cancels.
 		prefix := fmt.Sprintf("%s %s - %s",
-			th.FG256(th.Assistant, d.spin.Frame()),
-			th.FG256(th.Assistant, d.spin.Message()),
-			th.FG256(th.Muted, d.spin.Elapsed().String()),
+			th.FGColor(th.Assistant, d.spin.Frame()),
+			th.FGColor(th.Assistant, d.spin.Message()),
+			th.FGColor(th.Muted, d.spin.Elapsed().String()),
 		)
-		out = append(out, "  "+prefix+"  "+th.FG256(th.Muted, "(esc cancels)"))
+		out = append(out, "  "+prefix+"  "+th.FGColor(th.Muted, "(esc cancels)"))
 	}
 
 	out = append(out, "")
@@ -477,7 +477,7 @@ func (d *btwDialog) CursorPos(width int) (row, col int) {
 			editorOffset += len(renderDialogMarkdownRows(t.Assistant, d.theme, width))
 		}
 		if t.Err != "" {
-			editorOffset += len(wrapDialogTextRows(d.theme.FG256(d.theme.Error, "✖ "+t.Err), width))
+			editorOffset += len(wrapDialogTextRows(d.theme.FGColor(d.theme.Error, "✖ "+t.Err), width))
 		}
 	}
 	if d.loading {
@@ -505,7 +505,7 @@ func btwUserBubbleRows(th tui.Theme, text string, bubbleWidth int, compactMode b
 	if innerWidth < 1 {
 		innerWidth = 1
 	}
-	bar := th.BG(th.UserBubbleBG, th.FG256(th.Accent, "▌ "))
+	bar := th.BG(th.UserBubbleBG, th.FGColor(th.Accent, "▌ "))
 	row := func(content string) string {
 		inner := strings.Repeat(" ", leftGutter) + content
 		return "  " + bar + th.UserBubble(inner, bubbleWidth-2)
@@ -516,7 +516,7 @@ func btwUserBubbleRows(th tui.Theme, text string, bubbleWidth int, compactMode b
 			innerWidth = 1
 		}
 		row = func(content string) string {
-			return "  " + th.FG256(th.Accent, "▌ ") + th.FG256(th.Muted, content)
+			return "  " + th.FGColor(th.Accent, "▌ ") + th.FGColor(th.Muted, content)
 		}
 	}
 	var bubble []string

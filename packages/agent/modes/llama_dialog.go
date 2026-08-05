@@ -497,15 +497,15 @@ func (d *llamaDialog) Render(th tui.Theme, width int) []string {
 	}
 	lines := []string{frameHeader(th, "llama.cpp models", width)}
 	if d.client != nil {
-		lines = append(lines, th.FG256(th.Muted, d.client.ServerURL))
+		lines = append(lines, th.FGColor(th.Muted, d.client.ServerURL))
 	}
 	if d.message != "" {
-		lines = append(lines, th.FG256(th.Muted, d.message))
+		lines = append(lines, th.FGColor(th.Muted, d.message))
 	}
 
 	switch d.step {
 	case llamaLoading:
-		lines = append(lines, th.FG256(th.Muted, "  working..."))
+		lines = append(lines, th.FGColor(th.Muted, "  working..."))
 	case llamaModels:
 		const visible = 12
 		start, end := dialogWindow(d.cursor, len(d.models)+1, visible)
@@ -523,10 +523,10 @@ func (d *llamaDialog) Render(th tui.Theme, width int) []string {
 			if index == d.cursor {
 				lines = append(lines, th.PadHighlight(line, width))
 			} else {
-				lines = append(lines, th.FG256(th.Muted, line))
+				lines = append(lines, th.FGColor(th.Muted, line))
 			}
 		}
-		lines = append(lines, th.FG256(th.Muted, "enter loads/unloads, d removes cached model, esc closes"))
+		lines = append(lines, th.FGColor(th.Muted, "enter loads/unloads, d removes cached model, esc closes"))
 	case llamaConfirmUnload:
 		lines = append(lines, "", "  Unload "+d.selected+"?")
 		for index, label := range []string{"Yes", "No"} {
@@ -534,7 +534,7 @@ func (d *llamaDialog) Render(th tui.Theme, width int) []string {
 			if index == d.cursor {
 				lines = append(lines, th.PadHighlight(line, width))
 			} else {
-				lines = append(lines, th.FG256(th.Muted, line))
+				lines = append(lines, th.FGColor(th.Muted, line))
 			}
 		}
 	case llamaConfirmRemove:
@@ -544,11 +544,11 @@ func (d *llamaDialog) Render(th tui.Theme, width int) []string {
 			if index == d.cursor {
 				lines = append(lines, th.PadHighlight(line, width))
 			} else {
-				lines = append(lines, th.FG256(th.Muted, line))
+				lines = append(lines, th.FGColor(th.Muted, line))
 			}
 		}
 	case llamaSearch:
-		lines = append(lines, "", th.FG256(th.Muted, "  Model name or owner/repository"), th.FG256(th.FG, "  "+d.query), "")
+		lines = append(lines, "", th.FGColor(th.Muted, "  Model name or owner/repository"), th.FGColor(th.FG, "  "+d.query), "")
 		start, end := dialogWindow(d.cursor, len(d.results), 10)
 		for index := start; index < end; index++ {
 			result := d.results[index]
@@ -556,20 +556,20 @@ func (d *llamaDialog) Render(th tui.Theme, width int) []string {
 			if index == d.cursor {
 				lines = append(lines, th.PadHighlight(line, width))
 			} else {
-				lines = append(lines, th.FG256(th.Muted, line))
+				lines = append(lines, th.FGColor(th.Muted, line))
 			}
 		}
-		lines = append(lines, th.FG256(th.Muted, "enter selects, esc goes back"))
+		lines = append(lines, th.FGColor(th.Muted, "enter selects, esc goes back"))
 	case llamaModelDetails:
 		lines = append(lines, "", "  "+d.details.ID)
 		if d.details.Gated != "" {
-			lines = append(lines, th.FG256(th.Error, "  access approval and HF_TOKEN may be required"))
+			lines = append(lines, th.FGColor(th.Error, "  access approval and HF_TOKEN may be required"))
 		}
-		lines = append(lines, th.FG256(th.Muted, "  enter downloads, esc goes back"))
+		lines = append(lines, th.FGColor(th.Muted, "  enter downloads, esc goes back"))
 	case llamaQuantizations:
 		lines = append(lines, "", "  Select quantization for "+d.details.ID)
 		if d.details.Gated != "" {
-			lines = append(lines, th.FG256(th.Error, "  gated model: approve access on huggingface.co and configure HF_TOKEN on the router"))
+			lines = append(lines, th.FGColor(th.Error, "  gated model: approve access on huggingface.co and configure HF_TOKEN on the router"))
 		}
 		start, end := dialogWindow(d.cursor, len(d.details.Quantizations), 10)
 		for index := start; index < end; index++ {
@@ -585,24 +585,24 @@ func (d *llamaDialog) Render(th tui.Theme, width int) []string {
 			if index == d.cursor {
 				lines = append(lines, th.PadHighlight(line, width))
 			} else {
-				lines = append(lines, th.FG256(th.Muted, line))
+				lines = append(lines, th.FGColor(th.Muted, line))
 			}
 		}
 	case llamaProgress:
-		lines = append(lines, "", "  "+d.selected, th.FG256(th.Muted, "  "+d.progress.Message))
+		lines = append(lines, "", "  "+d.selected, th.FGColor(th.Muted, "  "+d.progress.Message))
 		if d.progress.HasRatio {
 			const cells = 32
 			filled := int(d.progress.Ratio*float64(cells) + .5)
 			filled = max(0, min(cells, filled))
 			bar := strings.Repeat("#", filled) + strings.Repeat("-", cells-filled)
-			lines = append(lines, th.FG256(th.Accent, fmt.Sprintf("  %s %d%%", bar, int(d.progress.Ratio*100+.5))))
+			lines = append(lines, th.FGColor(th.Accent, fmt.Sprintf("  %s %d%%", bar, int(d.progress.Ratio*100+.5))))
 		}
 		if d.progress.Detail != "" {
-			lines = append(lines, th.FG256(th.Muted, "  "+d.progress.Detail))
+			lines = append(lines, th.FGColor(th.Muted, "  "+d.progress.Detail))
 		}
-		lines = append(lines, th.FG256(th.Muted, "  esc stops"))
+		lines = append(lines, th.FGColor(th.Muted, "  esc stops"))
 	case llamaError:
-		lines = append(lines, th.FG256(th.Error, "  "+d.message), th.FG256(th.Muted, "  esc closes"))
+		lines = append(lines, th.FGColor(th.Error, "  "+d.message), th.FGColor(th.Muted, "  esc closes"))
 	}
 	return append(lines, frameRule(th, width))
 }

@@ -342,13 +342,13 @@ func TestFormatZotfileConsentUsesThemeColors(t *testing.T) {
 
 	got := formatZotfileConsent(zf, perms, th, true)
 	for _, want := range []string{
-		th.FG256(th.Assistant, "Agent"),
-		th.FG256(th.Accent, "reviewer@1.2.3"),
-		th.FG256(th.Muted, "  fs read: "),
-		th.FG256(th.FG, "/workspace"),
-		th.FG256(th.Warning, "ask"),
-		th.FG256(th.Assistant, "Allow?"),
-		th.FG256(th.Muted, "[y/n]"),
+		th.FGColor(th.Assistant, "Agent"),
+		th.FGColor(th.Accent, "reviewer@1.2.3"),
+		th.FGColor(th.Muted, "  fs read: "),
+		th.FGColor(th.FG, "/workspace"),
+		th.FGColor(th.Warning, "ask"),
+		th.FGColor(th.Assistant, "Allow?"),
+		th.FGColor(th.Muted, "[y/n]"),
 	} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("themed consent missing %q:\n%s", want, got)

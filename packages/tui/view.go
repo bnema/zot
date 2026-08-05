@@ -325,7 +325,7 @@ func (v *View) renderErr(width int) []string {
 		if idx > 0 {
 			prefix = indent
 		}
-		out = append(out, v.Theme.FG256(v.Theme.Error, prefix+line))
+		out = append(out, v.Theme.FGColor(v.Theme.Error, prefix+line))
 	}
 	return out
 }
@@ -340,9 +340,9 @@ func (v *View) renderStartupResources(width int) []string {
 		if len(items) == 0 {
 			return
 		}
-		out = append(out, v.Theme.FG256(v.Theme.Accent, "["+label+"]"))
+		out = append(out, v.Theme.FGColor(v.Theme.Accent, "["+label+"]"))
 		for _, line := range wrapLine(strings.Join(items, ", "), bodyWidth, "") {
-			out = append(out, v.Theme.FG256(v.Theme.Muted, "  "+line))
+			out = append(out, v.Theme.FGColor(v.Theme.Muted, "  "+line))
 		}
 		out = append(out, "")
 	}
@@ -796,7 +796,7 @@ func (v *View) renderMessage(m provider.Message, width int, turnOpen bool) []str
 					}
 					lines = append(lines, toolHeaderLine(v.Theme, label, width, v.CompactMode))
 					if tr.IsError {
-						lines = append(lines, toolBodyLine(v.Theme, v.Theme.FG256(color, "  error"), width, v.CompactMode))
+						lines = append(lines, toolBodyLine(v.Theme, v.Theme.FGColor(color, "  error"), width, v.CompactMode))
 					}
 					for _, line := range v.renderToolResultContent(tr.Content, width, color, path, startLine) {
 						_, stripped := parseImageFootprint(line)
@@ -810,7 +810,7 @@ func (v *View) renderMessage(m provider.Message, width int, turnOpen bool) []str
 				lines = append(lines, toolBoxTop(v.Theme, label, width))
 				lines = append(lines, toolBoxSide(v.Theme, "", width))
 				if tr.IsError {
-					lines = append(lines, toolBoxSide(v.Theme, v.Theme.FG256(color, "  error"), width))
+					lines = append(lines, toolBoxSide(v.Theme, v.Theme.FGColor(color, "  error"), width))
 				}
 				for _, line := range v.renderToolResultContent(tr.Content, width, color, path, startLine) {
 					// Image-footprint rows (the escape row, the blank
@@ -1010,7 +1010,7 @@ func (v *View) renderLiveToolBody(tc ToolCallView, width int) []string {
 		// Header line hints which edit is streaming and, when more
 		// than one has landed, how many the model is doing.
 		hint := fmt.Sprintf("edit %d (streaming)", idx)
-		body := []string{"    " + v.Theme.FG256(v.Theme.Muted, hint), ""}
+		body := []string{"    " + v.Theme.FGColor(v.Theme.Muted, hint), ""}
 		body = append(body, v.renderRawFile(partial, tc.LivePath, 1)...)
 		return v.wrapLiveBody(body, width)
 	case "bash", "Bash":
@@ -1028,7 +1028,7 @@ func (v *View) renderLiveBashCommand(command string, width int) []string {
 	if v.FlatTools || v.CompactMode {
 		inner = flatToolBodyRenderWidth(width)
 	}
-	prompt := v.Theme.FG256(v.Theme.Muted, "$ ")
+	prompt := v.Theme.FGColor(v.Theme.Muted, "$ ")
 	var out []string
 	for i, line := range strings.Split(command, "\n") {
 		firstPrefix := "    "
@@ -1042,7 +1042,7 @@ func (v *View) renderLiveBashCommand(command string, width int) []string {
 		if wrapWidth < 10 {
 			wrapWidth = 10
 		}
-		for j, wrapped := range wrapANSILine(v.Theme.FG256(v.Theme.ToolOut, line), wrapWidth) {
+		for j, wrapped := range wrapANSILine(v.Theme.FGColor(v.Theme.ToolOut, line), wrapWidth) {
 			prefix := firstPrefix
 			if j > 0 {
 				prefix = contPrefix
@@ -1133,7 +1133,7 @@ func toolBoxTop(th Theme, label string, width int) string {
 	}
 	fillStr := strings.Repeat("─", fill)
 	name, rest := splitToolLabel(label)
-	return margin + th.FG256(th.Muted, prefix) + th.FG256(th.FG, name) + th.FG256(th.Muted, rest+suffix+fillStr+"┐") + margin
+	return margin + th.FGColor(th.Muted, prefix) + th.FGColor(th.FG, name) + th.FGColor(th.Muted, rest+suffix+fillStr+"┐") + margin
 }
 
 func oneLineToolLabel(label string) string {
@@ -1172,7 +1172,7 @@ func flatToolHeader(th Theme, label string, width int) string {
 	label = oneLineToolLabel(label)
 	name, rest := splitToolLabel(label)
 	margin := strings.Repeat(" ", toolBoxOuterMargin)
-	gutter := th.FG256(th.Assistant, "▌") + " "
+	gutter := th.FGColor(th.Assistant, "▌") + " "
 	// Budget the visible text to the content width so a very long
 	// argument summary doesn't run off the right edge; truncate with
 	// an ellipsis like the box header does.
@@ -1189,7 +1189,7 @@ func flatToolHeader(th Theme, label string, width int) string {
 			rest = ""
 		}
 	}
-	return margin + gutter + th.FG256(th.FG, name) + th.FG256(th.Muted, rest)
+	return margin + gutter + th.FGColor(th.FG, name) + th.FGColor(th.Muted, rest)
 }
 
 func compactToolBlank(th Theme, width int) string {
@@ -1266,7 +1266,7 @@ func toolBoxBottom(th Theme, width int) string {
 	}
 	margin := strings.Repeat(" ", toolBoxOuterMargin)
 	line := "└" + strings.Repeat("─", w-2) + "┘"
-	return margin + th.FG256(th.Muted, line) + margin
+	return margin + th.FGColor(th.Muted, line) + margin
 }
 
 // hasImageEscapeLine reports whether s contains a Kitty (\x1b_G) or
@@ -1503,7 +1503,7 @@ func (v *View) collapseToolBody(lines []string, hasImage bool) []string {
 	hidden := len(lines) - ToolCollapsePreview
 	total := len(lines)
 	footer := fmt.Sprintf("    ... (%d more lines, %d total, ctrl+o to expand)", hidden, total)
-	footer = v.Theme.FG256(v.Theme.Muted, footer)
+	footer = v.Theme.FGColor(v.Theme.Muted, footer)
 	out := append([]string(nil), kept...)
 	out = append(out, "")
 	return append(out, footer)
@@ -1560,7 +1560,7 @@ func (v *View) renderToolText(text string, width int, defaultColor TerminalColor
 		// Detect diff header: "--- name" followed somewhere by "+++ name".
 		if strings.HasPrefix(l, "--- ") || strings.HasPrefix(l, "+++ ") {
 			inDiff = true
-			out = append(out, "    "+v.Theme.FG256(v.Theme.Muted, l))
+			out = append(out, "    "+v.Theme.FGColor(v.Theme.Muted, l))
 			continue
 		}
 		// Hunk header "@@ -a,b +c,d @@" resets the counters so patches
@@ -1569,12 +1569,12 @@ func (v *View) renderToolText(text string, width int, defaultColor TerminalColor
 			if o, n, ok := parseHunkHeader(l); ok {
 				oldLine, newLine = o, n
 			}
-			out = append(out, "    "+v.Theme.FG256(v.Theme.Muted, l))
+			out = append(out, "    "+v.Theme.FGColor(v.Theme.Muted, l))
 			continue
 		}
 		if inDiff && strings.TrimSpace(l) == "..." {
 			out = append(out, "")
-			out = append(out, "    "+v.Theme.FG256(v.Theme.Muted, "..."))
+			out = append(out, "    "+v.Theme.FGColor(v.Theme.Muted, "..."))
 			continue
 		}
 		if inDiff && len(l) > 0 {
@@ -1596,7 +1596,7 @@ func (v *View) renderToolText(text string, width int, defaultColor TerminalColor
 		}
 		// Regular line.
 		for _, w := range wrapLine(l, width-4, "    ") {
-			out = append(out, "    "+v.Theme.FG256(defaultColor, w))
+			out = append(out, "    "+v.Theme.FGColor(defaultColor, w))
 		}
 	}
 	return out
@@ -1697,9 +1697,9 @@ func (v *View) renderDiffRow(line string, width int, color TerminalColor, lineNo
 			if mark == ' ' {
 				codeColor = v.Theme.Muted
 			}
-			codeRendered = v.Theme.FG256(codeColor, chunk)
+			codeRendered = v.Theme.FGColor(codeColor, chunk)
 		}
-		out = append(out, "    "+v.Theme.FG256(gutterColor, rowGutter)+codeRendered)
+		out = append(out, "    "+v.Theme.FGColor(gutterColor, rowGutter)+codeRendered)
 	}
 	return out
 }
@@ -1805,11 +1805,11 @@ func (v *View) renderImageBlock(b provider.ImageBlock, width int) []string {
 				out = append(out, imageFootprintSentinel)
 			}
 			out = append(out, imageFootprintSentinel)
-			out = append(out, v.Theme.FG256(v.Theme.Muted, info))
+			out = append(out, v.Theme.FGColor(v.Theme.Muted, info))
 			return out
 		}
 	}
-	return []string{v.Theme.FG256(v.Theme.Muted, info)}
+	return []string{v.Theme.FGColor(v.Theme.Muted, info)}
 }
 
 // looksLikeNumberedFile returns true when text matches the `read`
@@ -1877,17 +1877,17 @@ func (v *View) renderNumberedFile(text, sourcePath string) []string {
 		// code is visually distinct from the muted gutter.
 		highlighted = make([]string, len(codes))
 		for i, c := range codes {
-			highlighted[i] = v.Theme.FG256(v.Theme.ToolOut, c)
+			highlighted[i] = v.Theme.FGColor(v.Theme.ToolOut, c)
 		}
 	}
 	out := make([]string, 0, len(codes))
 	for i, code := range highlighted {
 		g := gutters[i]
 		if g == "" {
-			out = append(out, "    "+v.Theme.FG256(v.Theme.Muted, code))
+			out = append(out, "    "+v.Theme.FGColor(v.Theme.Muted, code))
 			continue
 		}
-		out = append(out, "    "+v.Theme.FG256(v.Theme.Muted, g)+code)
+		out = append(out, "    "+v.Theme.FGColor(v.Theme.Muted, g)+code)
 	}
 	return out
 }
@@ -1927,15 +1927,15 @@ func (v *View) renderBashResult(lines []string, width int, defaultColor Terminal
 			// further processing / wrapping so the shell-style
 			// prompt reads at a glance.
 			for _, w := range wrapLine(l, width-4, "    ") {
-				out = append(out, "    "+v.Theme.FG256(v.Theme.Accent, w))
+				out = append(out, "    "+v.Theme.FGColor(v.Theme.Accent, w))
 			}
 		case i == footerIdx:
 			for _, w := range wrapLine(l, width-4, "    ") {
-				out = append(out, "    "+v.Theme.FG256(v.Theme.Muted, w))
+				out = append(out, "    "+v.Theme.FGColor(v.Theme.Muted, w))
 			}
 		default:
 			for _, w := range wrapLine(l, width-4, "    ") {
-				out = append(out, "    "+v.Theme.FG256(defaultColor, w))
+				out = append(out, "    "+v.Theme.FGColor(defaultColor, w))
 			}
 		}
 	}
@@ -2097,7 +2097,7 @@ func (v *View) renderUnifiedDiff(text string, width int, sourcePath string) []st
 			continue
 		}
 		if l == "..." {
-			out = append(out, "    "+v.Theme.FG256(v.Theme.Muted, "..."))
+			out = append(out, "    "+v.Theme.FGColor(v.Theme.Muted, "..."))
 			continue
 		}
 		switch l[0] {
@@ -2113,7 +2113,7 @@ func (v *View) renderUnifiedDiff(text string, width int, sourcePath string) []st
 			newLine++
 		default:
 			for _, w := range wrapLine(l, width-4, "    ") {
-				out = append(out, "    "+v.Theme.FG256(v.Theme.Muted, w))
+				out = append(out, "    "+v.Theme.FGColor(v.Theme.Muted, w))
 			}
 		}
 	}
@@ -2176,17 +2176,17 @@ func (v *View) renderRawFile(text, sourcePath string, startLine int) []string {
 	} else {
 		highlighted = make([]string, len(code))
 		for i, c := range code {
-			highlighted[i] = v.Theme.FG256(v.Theme.ToolOut, c)
+			highlighted[i] = v.Theme.FGColor(v.Theme.ToolOut, c)
 		}
 	}
 
 	out := make([]string, 0, len(lines))
 	for i, c := range highlighted {
 		gutter := fmt.Sprintf("%4d ", startLine+i)
-		out = append(out, "    "+v.Theme.FG256(v.Theme.Muted, gutter)+c)
+		out = append(out, "    "+v.Theme.FGColor(v.Theme.Muted, gutter)+c)
 	}
 	for _, f := range footer {
-		out = append(out, "    "+v.Theme.FG256(v.Theme.Muted, f))
+		out = append(out, "    "+v.Theme.FGColor(v.Theme.Muted, f))
 	}
 	return out
 }
@@ -2327,7 +2327,7 @@ func (v *View) renderCompactionBlock(m provider.Message, width int) []string {
 
 	if v.ExpandAll {
 		var lines []string
-		header := th.FG256(th.Muted, fmt.Sprintf("compacted from ~%s tokens", tokens))
+		header := th.FGColor(th.Muted, fmt.Sprintf("compacted from ~%s tokens", tokens))
 		lines = append(lines, indent+header)
 		lines = append(lines, "")
 		for _, c := range m.Content {
@@ -2349,7 +2349,7 @@ func (v *View) renderCompactionBlock(m provider.Message, width int) []string {
 	}
 
 	// Collapsed: single line, no banner.
-	line := th.FG256(th.Muted, fmt.Sprintf("compacted from ~%s tokens (ctrl+o to expand)", tokens))
+	line := th.FGColor(th.Muted, fmt.Sprintf("compacted from ~%s tokens (ctrl+o to expand)", tokens))
 	return []string{indent + line}
 }
 
@@ -2447,7 +2447,7 @@ func StatusBar(p StatusBarParams) []string {
 		if p.AutoCompacting {
 			ctx += " (auto)"
 		}
-		stats = append(stats, th.FG256(ctxColor, ctx))
+		stats = append(stats, th.FGColor(ctxColor, ctx))
 	}
 
 	// Layout uses exactly 2 spaces of horizontal padding everywhere:
@@ -2497,11 +2497,11 @@ func StatusBar(p StatusBarParams) []string {
 		// prefix there's no trailing separator to double-pad.
 		leftBuilder.WriteString(pad)
 	}
-	leftBuilder.WriteString(th.FG256(th.Muted, left))
+	leftBuilder.WriteString(th.FGColor(th.Muted, left))
 	if middle != "" {
 		leftBuilder.WriteString(pad)
 		// Highlight the opt-in max tier; other status information stays muted.
-		leftBuilder.WriteString(th.FG256(reasoningStatusColor(th, reasoningText), middle))
+		leftBuilder.WriteString(th.FGColor(reasoningStatusColor(th, reasoningText), middle))
 	}
 
 	cwd := shortenHome(p.CWD)
@@ -2527,21 +2527,21 @@ func StatusBar(p StatusBarParams) []string {
 	// stats on their own rows. This mirrors the idle split below.
 	if p.Cols > 0 && p.BusyPrefix != "" && visibleWidth(primary) > p.Cols {
 		busyLine := pad + p.BusyPrefix
-		modelLine := pad + th.FG256(th.Muted, left)
+		modelLine := pad + th.FGColor(th.Muted, left)
 		lines := []string{busyLine}
-		if middle != "" && visibleWidth(modelLine+pad+th.FG256(th.Muted, middle)) > p.Cols {
+		if middle != "" && visibleWidth(modelLine+pad+th.FGColor(th.Muted, middle)) > p.Cols {
 			lines = appendWrappedStatusLines(lines, th, pad, left, fastText, reasoningText, statsText, p.Cols)
 		} else {
 			var infoBuilder strings.Builder
 			infoBuilder.WriteString(modelLine)
 			if middle != "" {
 				infoBuilder.WriteString(pad)
-				infoBuilder.WriteString(th.FG256(reasoningStatusColor(th, reasoningText), middle))
+				infoBuilder.WriteString(th.FGColor(reasoningStatusColor(th, reasoningText), middle))
 			}
 			lines = append(lines, infoBuilder.String())
 		}
 		if cwd != "" {
-			lines = append(lines, pad+th.FG256(th.Muted, cwd))
+			lines = append(lines, pad+th.FGColor(th.Muted, cwd))
 		}
 		return lines
 	}
@@ -2554,7 +2554,7 @@ func StatusBar(p StatusBarParams) []string {
 		var lines []string
 		lines = appendWrappedStatusLines(lines, th, pad, left, fastText, reasoningText, statsText, p.Cols)
 		if cwd != "" {
-			lines = append(lines, pad+th.FG256(th.Muted, cwd))
+			lines = append(lines, pad+th.FGColor(th.Muted, cwd))
 		}
 		return lines
 	}
@@ -2565,12 +2565,12 @@ func StatusBar(p StatusBarParams) []string {
 
 	// Second line: indent with the same 2-space pad so the cwd lines
 	// up under the "(provider)" column on line 1.
-	cwdRendered := pad + th.FG256(th.Muted, cwd)
+	cwdRendered := pad + th.FGColor(th.Muted, cwd)
 	return []string{primary, cwdRendered}
 }
 
 func appendWrappedStatusLines(lines []string, th Theme, pad, modelText, fastText, reasoningText, statsText string, cols int) []string {
-	modelLine := pad + th.FG256(th.Muted, modelText)
+	modelLine := pad + th.FGColor(th.Muted, modelText)
 	infoParts := make([]string, 0, 2)
 	if fastText != "" {
 		infoParts = append(infoParts, fastText)
@@ -2582,7 +2582,7 @@ func appendWrappedStatusLines(lines []string, th Theme, pad, modelText, fastText
 	if infoText == "" {
 		lines = append(lines, modelLine)
 		if statsText != "" {
-			lines = append(lines, pad+th.FG256(th.Muted, statsText))
+			lines = append(lines, pad+th.FGColor(th.Muted, statsText))
 		}
 		return lines
 	}
@@ -2593,18 +2593,18 @@ func appendWrappedStatusLines(lines []string, th Theme, pad, modelText, fastText
 		infoColor = reasoningStatusColor(th, reasoningText)
 	}
 	if cols <= 0 || visibleWidth(modelInfoPlain) <= cols {
-		lines = append(lines, pad+th.FG256(infoColor, modelText+pad+infoText))
+		lines = append(lines, pad+th.FGColor(infoColor, modelText+pad+infoText))
 	} else {
 		lines = append(lines, modelLine)
 		if fastText != "" {
-			lines = append(lines, pad+th.FG256(th.Muted, fastText))
+			lines = append(lines, pad+th.FGColor(th.Muted, fastText))
 		}
 		if reasoningText != "" {
-			lines = append(lines, pad+th.FG256(reasoningStatusColor(th, reasoningText), reasoningText))
+			lines = append(lines, pad+th.FGColor(reasoningStatusColor(th, reasoningText), reasoningText))
 		}
 	}
 	if statsText != "" {
-		lines = append(lines, pad+th.FG256(th.Muted, statsText))
+		lines = append(lines, pad+th.FGColor(th.Muted, statsText))
 	}
 	return lines
 }

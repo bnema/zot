@@ -82,16 +82,16 @@ func renderHelpBlock(th tui.Theme, width int, llamaConfigured bool) []string {
 			continue
 		}
 		out = append(out, fmt.Sprintf("  %s  %s",
-			th.FG256(th.Accent, pad(c.Name)),
-			th.FG256(th.Muted, c.Desc)))
+			th.FGColor(th.Accent, pad(c.Name)),
+			th.FGColor(th.Muted, c.Desc)))
 	}
 
 	// keys section
 	out = append(out, "", tui.Bold("keys:"))
 	for _, k := range helpKeyRows {
 		out = append(out, fmt.Sprintf("  %s  %s",
-			th.FG256(th.Accent, pad(k[0])),
-			th.FG256(th.Muted, k[1])))
+			th.FGColor(th.Accent, pad(k[0])),
+			th.FGColor(th.Muted, k[1])))
 	}
 
 	out = append(out, "", frameRule(th, width), "")

@@ -127,8 +127,8 @@ func TestRenderRightBarDimsChecklistMarkers(t *testing.T) {
 	}}, 24, 8)
 	rendered := strings.Join(lines, "\n")
 	for _, marker := range []string{"[x]", "[>]", "[ ]"} {
-		if !strings.Contains(rendered, Dark.FG256(Dark.Muted, marker)) &&
-			!strings.Contains(rendered, Dark.FG256(Dark.Muted, Dim(marker))) {
+		if !strings.Contains(rendered, Dark.FGColor(Dark.Muted, marker)) &&
+			!strings.Contains(rendered, Dark.FGColor(Dark.Muted, Dim(marker))) {
 			t.Fatalf("marker %q was not muted: %q", marker, rendered)
 		}
 	}
@@ -169,7 +169,7 @@ func TestRenderRightBarDimsInactiveChecklistSections(t *testing.T) {
 
 func TestJoinRightBarUsesOnlyMutedSeparator(t *testing.T) {
 	line := JoinRightBar(Dark, "main", "right", 8, 8)
-	if !strings.Contains(line, Dark.FG256(Dark.Muted, "│")) {
+	if !strings.Contains(line, Dark.FGColor(Dark.Muted, "│")) {
 		t.Fatalf("separator is not muted: %q", line)
 	}
 	if strings.ContainsAny(stripANSI(line), "┌┐└┘─") {

@@ -52,7 +52,7 @@ func RenderMarkdown(src string, th Theme, width int) string {
 			}
 		} else {
 			for _, l := range strings.Split(code, "\n") {
-				out.WriteString(th.FG256(th.Accent, l))
+				out.WriteString(th.FGColor(th.Accent, l))
 				out.WriteString("\n")
 			}
 		}
@@ -106,25 +106,25 @@ func RenderMarkdown(src string, th Theme, width int) string {
 			level := len(m[1])
 			body := strings.TrimSpace(m[2])
 			prefix := strings.Repeat("#", level) + " "
-			out.WriteString(Bold(th.FG256(th.Accent, prefix+body)) + "\n")
+			out.WriteString(Bold(th.FGColor(th.Accent, prefix+body)) + "\n")
 			continue
 		}
 		// Blockquote.
 		if strings.HasPrefix(trim, "> ") {
 			body := strings.TrimPrefix(trim, "> ")
-			out.WriteString(th.FG256(th.Muted, "┃ ") + renderInline(body, th) + "\n")
+			out.WriteString(th.FGColor(th.Muted, "┃ ") + renderInline(body, th) + "\n")
 			continue
 		}
 		// Bullet list.
 		if m := bulletRE.FindStringSubmatch(line); m != nil {
 			indent, body := m[1], m[2]
-			out.WriteString(indent + th.FG256(th.Accent, "• ") + renderInline(body, th) + "\n")
+			out.WriteString(indent + th.FGColor(th.Accent, "• ") + renderInline(body, th) + "\n")
 			continue
 		}
 		// Numbered list.
 		if m := numberRE.FindStringSubmatch(line); m != nil {
 			indent, num, body := m[1], m[2], m[3]
-			out.WriteString(indent + th.FG256(th.Accent, num+". ") + renderInline(body, th) + "\n")
+			out.WriteString(indent + th.FGColor(th.Accent, num+". ") + renderInline(body, th) + "\n")
 			continue
 		}
 		out.WriteString(renderInline(line, th) + "\n")
@@ -354,7 +354,7 @@ func renderTableRow(row []string, widths []int, aligns []tableAlign, th Theme, h
 	out := make([]string, 0, height)
 	for r := 0; r < height; r++ {
 		var b strings.Builder
-		b.WriteString(th.FG256(th.Muted, "|"))
+		b.WriteString(th.FGColor(th.Muted, "|"))
 		for c := range widths {
 			cell := ""
 			if r < len(wrapped[c]) {
@@ -363,7 +363,7 @@ func renderTableRow(row []string, widths []int, aligns []tableAlign, th Theme, h
 			b.WriteByte(' ')
 			b.WriteString(alignCell(cell, widths[c], aligns[c]))
 			b.WriteByte(' ')
-			b.WriteString(th.FG256(th.Muted, "|"))
+			b.WriteString(th.FGColor(th.Muted, "|"))
 		}
 		out = append(out, b.String())
 	}
@@ -372,7 +372,7 @@ func renderTableRow(row []string, widths []int, aligns []tableAlign, th Theme, h
 
 func renderTableSeparator(widths []int, aligns []tableAlign, th Theme) string {
 	var b strings.Builder
-	b.WriteString(th.FG256(th.Muted, "|"))
+	b.WriteString(th.FGColor(th.Muted, "|"))
 	for c, w := range widths {
 		dashes := strings.Repeat("-", w)
 		switch aligns[c] {
@@ -382,9 +382,9 @@ func renderTableSeparator(widths []int, aligns []tableAlign, th Theme) string {
 			dashes = strings.Repeat("-", maxInt(1, w-1)) + ":"
 		}
 		b.WriteByte(' ')
-		b.WriteString(th.FG256(th.Muted, dashes))
+		b.WriteString(th.FGColor(th.Muted, dashes))
 		b.WriteByte(' ')
-		b.WriteString(th.FG256(th.Muted, "|"))
+		b.WriteString(th.FGColor(th.Muted, "|"))
 	}
 	return b.String()
 }
@@ -416,7 +416,7 @@ func maxInt(a, b int) int {
 func renderInline(s string, th Theme) string {
 	s = codeRE.ReplaceAllStringFunc(s, func(m string) string {
 		inner := m[1 : len(m)-1]
-		return th.FG256(th.Accent, inner)
+		return th.FGColor(th.Accent, inner)
 	})
 	s = boldRE.ReplaceAllStringFunc(s, func(m string) string {
 		inner := m[2 : len(m)-2]

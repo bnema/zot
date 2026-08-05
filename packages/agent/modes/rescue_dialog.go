@@ -107,7 +107,7 @@ func (d *rescueDialog) Render(th tui.Theme, width int) []string {
 	lines = append(lines, frameHeader(th, header, width))
 
 	if d.reason != "" {
-		lines = append(lines, th.FG256(th.Warning, "  "+d.reason))
+		lines = append(lines, th.FGColor(th.Warning, "  "+d.reason))
 	}
 
 	hint := "retry this turn with another model (↑/↓, enter, esc to cancel)"
@@ -119,13 +119,13 @@ func (d *rescueDialog) Render(th tui.Theme, width int) []string {
 	} else {
 		hint += " - type to filter"
 	}
-	lines = append(lines, th.FG256(th.Muted, hint))
+	lines = append(lines, th.FGColor(th.Muted, hint))
 
 	if len(d.view) == 0 {
 		if len(d.all) == 0 {
-			lines = append(lines, th.FG256(th.Muted, "  no other models available — log in to another provider with /login"))
+			lines = append(lines, th.FGColor(th.Muted, "  no other models available — log in to another provider with /login"))
 		} else {
-			lines = append(lines, th.FG256(th.Muted, "  no models match "+fmt.Sprintf("%q", d.query)))
+			lines = append(lines, th.FGColor(th.Muted, "  no models match "+fmt.Sprintf("%q", d.query)))
 		}
 		lines = append(lines, frameRule(th, width))
 		return lines
@@ -161,14 +161,14 @@ func (d *rescueDialog) Render(th tui.Theme, width int) []string {
 		if i == d.cursor {
 			lines = append(lines, th.PadHighlight(plain, width))
 		} else {
-			lines = append(lines, th.FG256(th.Muted, plain))
+			lines = append(lines, th.FGColor(th.Muted, plain))
 		}
 	}
 	if start > 0 {
-		lines = append(lines, th.FG256(th.Muted, fmt.Sprintf("   ... %d more above", start)))
+		lines = append(lines, th.FGColor(th.Muted, fmt.Sprintf("   ... %d more above", start)))
 	}
 	if end < len(d.view) {
-		lines = append(lines, th.FG256(th.Muted, fmt.Sprintf("   ... %d more below", len(d.view)-end)))
+		lines = append(lines, th.FGColor(th.Muted, fmt.Sprintf("   ... %d more below", len(d.view)-end)))
 	}
 
 	lines = append(lines, frameRule(th, width))

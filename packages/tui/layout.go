@@ -47,7 +47,7 @@ func InputLines(th Theme, lines []string, width int) []string {
 	if width < 1 {
 		width = 1
 	}
-	rule := th.FG256(th.Muted, strings.Repeat("─", width))
+	rule := th.FGColor(th.Muted, strings.Repeat("─", width))
 	out := make([]string, 0, len(lines)+2)
 	out = append(out, rule)
 	out = append(out, lines...)
