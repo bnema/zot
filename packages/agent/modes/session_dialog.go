@@ -108,6 +108,15 @@ func (d *sessionDialog) Open(parent context.Context, root, cwd string) <-chan se
 	d.loadSlots = nil
 	d.active = true
 
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		cancel()
+		d.loadCancel = nil
+		d.loading = false
+		events := make(chan sessionLoadEvent)
+		close(events)
+		return events
+	}
+
 	events := make(chan sessionLoadEvent, 1)
 	send := func(event sessionLoadEvent) bool {
 		select {
@@ -124,7 +133,7 @@ func (d *sessionDialog) Open(parent context.Context, root, cwd string) <-chan se
 			return
 		default:
 		}
-		paths := core.ListSessions(root, cwd)
+		paths := core.ListSessionsContext(ctx, root, cwd)
 		if !send(sessionLoadEvent{
 			kind:       sessionLoadStarted,
 			generation: generation,

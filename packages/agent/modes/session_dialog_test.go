@@ -61,6 +61,20 @@ func TestSessionDialogLoadsEntriesWithoutBlockingOpen(t *testing.T) {
 	}
 }
 
+func TestSessionDialogCanceledParentDoesNotRemainLoading(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	d := newSessionDialog()
+	events := d.Open(ctx, t.TempDir(), t.TempDir())
+	if d.Loading() {
+		t.Fatal("dialog remained loading with an already-canceled parent")
+	}
+	if _, ok := <-events; ok {
+		t.Fatal("canceled dialog emitted a load event")
+	}
+}
+
 func TestSessionDialogAppliesLoadedEntriesInPathOrder(t *testing.T) {
 	d := newSessionDialog()
 	d.active = true

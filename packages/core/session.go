@@ -1075,6 +1075,16 @@ func sessionHasNoMessages(path string) bool {
 // Files with identical ModTime fall back to filename desc so the
 // order stays stable across calls.
 func ListSessions(root, cwd string) []string {
+	return ListSessionsContext(context.Background(), root, cwd)
+}
+
+// ListSessionsContext is the cancellation-aware form of ListSessions. It
+// checks cancellation while walking directory entries so a closed picker does
+// not continue preparing a large result set.
+func ListSessionsContext(ctx context.Context, root, cwd string) []string {
+	if err := contextErr(ctx); err != nil {
+		return nil
+	}
 	dir := SessionsDir(root, cwd)
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -1086,6 +1096,9 @@ func ListSessions(root, cwd string) []string {
 	}
 	var files []rec
 	for _, e := range entries {
+		if err := contextErr(ctx); err != nil {
+			return nil
+		}
 		if e.IsDir() || !strings.HasSuffix(e.Name(), ".jsonl") {
 			continue
 		}
@@ -1104,6 +1117,9 @@ func ListSessions(root, cwd string) []string {
 	})
 	out := make([]string, 0, len(files))
 	for _, r := range files {
+		if err := contextErr(ctx); err != nil {
+			return nil
+		}
 		out = append(out, r.path)
 	}
 	return out
