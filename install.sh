@@ -4,10 +4,10 @@
 #
 # Usage:
 #   curl -fsSL https://raw.githubusercontent.com/bnema/zut/main/install.sh | bash
-#   curl -fsSL https://raw.githubusercontent.com/bnema/zut/main/install.sh | bash -s -- v0.0.1 ~/bin
+#   curl -fsSL https://raw.githubusercontent.com/bnema/zut/main/install.sh | bash -s -- v0.1.0 ~/bin
 #
 # Positional arguments:
-#   $1  version    — release tag (e.g. v0.0.1). Defaults to "latest".
+#   $1  version    — release tag (e.g. v0.1.0). Defaults to "latest".
 #   $2  prefix     — install directory. Defaults to the first writable
 #                    directory in: /usr/local/bin, $HOME/.local/bin,
 #                    $HOME/bin. Created if missing. Add it to your PATH

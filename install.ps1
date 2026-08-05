@@ -4,7 +4,7 @@
 #   iwr -useb https://raw.githubusercontent.com/bnema/zut/main/install.ps1 | iex
 #
 # Or with arguments:
-#   $env:ZUT_VERSION = "v0.0.1"
+#   $env:ZUT_VERSION = "v0.1.0"
 #   $env:ZUT_PREFIX  = "$HOME\bin"
 #   iwr -useb https://raw.githubusercontent.com/bnema/zut/main/install.ps1 | iex
 #

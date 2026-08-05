@@ -559,10 +559,11 @@ func (e *Extension) Run() error {
 	// synchronously so extensions can use HostInfo while registering
 	// commands/tools before the ready frame.
 	if err := e.send(extproto.HelloFromExt{
-		Type:         "hello",
-		Name:         e.name,
-		Version:      e.version,
-		Capabilities: e.caps,
+		Type:            "hello",
+		ProtocolVersion: extproto.ProtocolVersion,
+		Name:            e.name,
+		Version:         e.version,
+		Capabilities:    e.caps,
 	}); err != nil {
 		return err
 	}
@@ -575,6 +576,9 @@ func (e *Extension) Run() error {
 	}
 	if ack.Type != "hello_ack" {
 		return fmt.Errorf("first host frame must be hello_ack (got %q)", ack.Type)
+	}
+	if ack.ProtocolVersion != extproto.ProtocolVersion {
+		return fmt.Errorf("unsupported host protocol version %d (want %d)", ack.ProtocolVersion, extproto.ProtocolVersion)
 	}
 	e.host = HostInfo{
 		ProtocolVersion: ack.ProtocolVersion,

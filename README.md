@@ -43,7 +43,7 @@ curl -fsSL https://raw.githubusercontent.com/bnema/zut/main/install.sh | bash
 Detects your OS and architecture, downloads the latest release from GitHub, verifies the SHA-256 against the release's `checksums.txt`, extracts the binary, and drops it in `/usr/local/bin`, `~/.local/bin`, or `~/bin`, whichever is writable first. Pass a version or prefix to pin:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/bnema/zut/main/install.sh | bash -s -- v0.0.1 ~/bin
+curl -fsSL https://raw.githubusercontent.com/bnema/zut/main/install.sh | bash -s -- v0.1.0 ~/bin
 ```
 
 ### One-liner (Windows, PowerShell)

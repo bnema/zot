@@ -92,17 +92,18 @@ their responses.
 The very first frame the extension sends is `hello`:
 
 ```json
-{"type":"hello","name":"weather","version":"1.0.0",
+{"type":"hello","protocol_version":2,"name":"weather","version":"1.0.0",
  "capabilities":["commands","tools"]}
 ```
 
 Capabilities are advisory; current values are `commands`, `tools`,
-`events`, `alerts`, and `panels`. Send all that apply.
+`events`, `alerts`, and `panels`. Send all that apply. `protocol_version`
+is the major wire version; it is currently `2` and must match the host.
 
 zut replies with `hello_ack`:
 
 ```json
-{"type":"hello_ack","protocol_version":1,"zut_version":"0.0.x",
+{"type":"hello_ack","protocol_version":2,"zut_version":"0.0.x",
  "provider":"anthropic","model":"claude-opus-4-7","cwd":"/path/to/project"}
 ```
 
@@ -275,13 +276,14 @@ import { stderr, stdin, stdout } from "node:process";
 function send(o: object) { stdout.write(JSON.stringify(o) + "\n"); }
 function log(s: string) { stderr.write(`[scratchpad] ${s}\n`); }
 
-send({ type: "hello", name: "scratchpad", version: "1.0.0",
+send({ type: "hello", protocol_version: 2, name: "scratchpad", version: "1.0.0",
        capabilities: ["commands", "tools"] });
 
 const rl = createInterface({ input: stdin, crlfDelay: Infinity });
 rl.on("line", (line) => {
   const f = JSON.parse(line);
   if (f.type === "hello_ack") {
+    if (f.protocol_version !== 2) throw new Error("unsupported extension protocol version");
     // f.cwd is the user's project directory.
     send({ type: "register_command", name: "note", description: "append a note" });
     send({ type: "register_tool", name: "read_notes",
@@ -317,11 +319,13 @@ import json, sys
 
 def emit(o): sys.stdout.write(json.dumps(o) + "\n"); sys.stdout.flush()
 
-emit({"type": "hello", "name": "hello-py", "version": "1.0.0", "capabilities": ["commands"]})
+emit({"type": "hello", "protocol_version": 2, "name": "hello-py", "version": "1.0.0", "capabilities": ["commands"]})
 
 for line in sys.stdin:
     msg = json.loads(line)
     if msg["type"] == "hello_ack":
+        if msg.get("protocol_version") != 2:
+            raise SystemExit("unsupported extension protocol version")
         # msg["cwd"] is the user's project directory.
         emit({"type": "register_command", "name": "hellopy", "description": "say hi (python)"})
         emit({"type": "ready"})
@@ -367,7 +371,7 @@ to see exactly what's happening on the wire:
 
 ```bash
 {
-  printf '%s\n' '{"type":"hello_ack","protocol_version":1,"zut_version":"x","provider":"a","model":"o","cwd":"/tmp"}'
+  printf '%s\n' '{"type":"hello_ack","protocol_version":2,"zut_version":"x","provider":"a","model":"o","cwd":"/tmp"}'
   sleep 0.2
   printf '%s\n' '{"type":"command_invoked","id":"1","name":"weather","args":"Berlin"}'
   sleep 0.5

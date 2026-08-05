@@ -52,6 +52,7 @@ function log(msg) {
 // 1. Hello first.
 send({
   type: "hello",
+  protocol_version: 2,
   name: NAME,
   version: VERSION,
   capabilities: ["commands"],
@@ -84,6 +85,12 @@ rl.on("line", (line) => {
 
   switch (frame.type) {
     case "hello_ack":
+      if (frame.protocol_version !== 2) {
+        log(`unsupported protocol version: ${frame.protocol_version}`);
+        process.exitCode = 1;
+        rl.close();
+        break;
+      }
       log(
         `connected to zut ${frame.zut_version} (${frame.provider}/${frame.model})`,
       );

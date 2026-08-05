@@ -707,6 +707,9 @@ func (m *Manager) spawn(ctx context.Context, ext *Extension) error {
 	if hello.Type != "hello" || hello.Name == "" {
 		return fmt.Errorf("first frame must be hello (got %q; stderr log: %s)", hello.Type, logPath)
 	}
+	if hello.ProtocolVersion != extproto.ProtocolVersion {
+		return fmt.Errorf("unsupported extension protocol version %d (want %d; stderr log: %s)", hello.ProtocolVersion, extproto.ProtocolVersion, logPath)
+	}
 	// Trust the manifest's name; ignore mismatch from the hello.
 	ext.helloAck = true
 

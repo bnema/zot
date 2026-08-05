@@ -23,7 +23,7 @@ func writeMockToolExtension(t *testing.T, root string) {
 	// Shell-script extension: hello, register one tool, ready, then
 	// loop on stdin echoing back tool_call args as tool_result text.
 	script := `#!/bin/sh
-printf '%s\n' '{"type":"hello","name":"tool-mock","version":"0.1","capabilities":["tools"]}'
+printf '%s\n' '{"type":"hello","protocol_version":2,"name":"tool-mock","version":"0.1","capabilities":["tools"]}'
 printf '%s\n' '{"type":"register_tool","name":"echo","description":"echo back the args","schema":{"type":"object","properties":{"msg":{"type":"string"}}}}'
 printf '%s\n' '{"type":"ready"}'
 while IFS= read -r line; do

@@ -21,7 +21,7 @@ import (
 // Wire protocol notes:
 //   - Endpoint: POST https://chatgpt.com/backend-api/codex/responses
 //   - Headers: Authorization: Bearer <access_token>, chatgpt-account-id: <id>,
-//     OpenAI-Beta: responses=experimental, originator: zut
+//     OpenAI-Beta: responses=experimental, originator: zot (required legacy value)
 //   - Body: OpenAI Responses API shape (not chat/completions).
 //     input: [{role, content: [{type: "input_text" | "input_image" | ... }]}]
 //     instructions: <system prompt>
@@ -410,8 +410,10 @@ func (c *codexClient) Stream(ctx context.Context, req Request) (<-chan Event, er
 			httpReq.Header.Set("session-id", codexCLISessionID)
 			httpReq.Header.Set("user-agent", "codex_cli_rs/0.0.0")
 		} else {
-			httpReq.Header.Set("originator", "zut")
-			httpReq.Header.Set("user-agent", fmt.Sprintf("zut (%s %s)", runtime.GOOS, runtime.GOARCH))
+			// ChatGPT's backend recognizes these established values. They are
+			// external provider metadata, not zut product identifiers.
+			httpReq.Header.Set("originator", "zot")
+			httpReq.Header.Set("user-agent", fmt.Sprintf("zot (%s %s)", runtime.GOOS, runtime.GOARCH))
 		}
 		return httpReq, nil
 	}

@@ -108,7 +108,9 @@ var (
 		ExtraAuthArgs: map[string]string{
 			"id_token_add_organizations": "true",
 			"codex_cli_simplified_flow":  "true",
-			"originator":                 "zut",
+			// OpenAI's registered Codex OAuth flow requires this legacy
+			// originator value; it is not a zut product identifier.
+			"originator": "zot",
 		},
 	}
 

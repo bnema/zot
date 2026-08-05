@@ -177,6 +177,7 @@ function renderNotes(): string {
 
 send({
   type: "hello",
+  protocol_version: 2,
   name: NAME,
   version: VERSION,
   capabilities: ["commands", "tools"],
@@ -251,6 +252,12 @@ rl.on("close", () => {
 });
 
 function handleHelloAck(ack: HelloAck): void {
+  if (ack.protocol_version !== 2) {
+    log(`unsupported protocol version: ${ack.protocol_version}`);
+    process.exitCode = 1;
+    rl.close();
+    return;
+  }
   log(
     `connected to zut ${ack.zut_version} ` +
       `(${ack.provider}/${ack.model}, cwd=${ack.cwd})`,

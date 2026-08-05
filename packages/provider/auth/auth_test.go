@@ -118,7 +118,7 @@ func TestOpenAIAuthorizeURL(t *testing.T) {
 	if state == p.Verifier {
 		t.Fatal("openai state should be random, not verifier")
 	}
-	if q.Get("originator") != "zut" {
+	if q.Get("originator") != "zot" {
 		t.Fatalf("originator=%q", q.Get("originator"))
 	}
 }

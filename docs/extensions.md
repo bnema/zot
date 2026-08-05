@@ -35,11 +35,13 @@ def emit(obj):
     sys.stdout.write(json.dumps(obj) + "\n")
     sys.stdout.flush()
 
-emit({"type":"hello","name":"hello-py","version":"1.0.0","capabilities":["commands"]})
+emit({"type":"hello","protocol_version":2,"name":"hello-py","version":"1.0.0","capabilities":["commands"]})
 
 for line in sys.stdin:
     msg = json.loads(line)
     if msg["type"] == "hello_ack":
+        if msg.get("protocol_version") != 2:
+            raise SystemExit("unsupported extension protocol version")
         emit({"type":"register_command","name":"hellopy","description":"say hi (python)"})
         emit({"type":"ready"})
     elif msg["type"] == "command_invoked":
@@ -156,9 +158,10 @@ manifest tells zut how to launch it:
    redirects to `$ZUT_HOME/logs/ext-<name>.log` (one file per
    extension, append-mode).
 3. **Hello handshake**: the extension's first stdout frame must be
-   `hello`; zut replies with `hello_ack` containing the protocol
-   version, the active provider/model/cwd, and the extension's own
-   data directory so it can persist files beside its manifest.
+   `hello` with `protocol_version: 2`; zut rejects a mismatched major
+   and replies with `hello_ack` containing the same protocol version,
+   the active provider/model/cwd, and the extension's own data directory
+   so it can persist files beside its manifest.
 4. **Registration**: after receiving `hello_ack`, the extension sends
    `register_command`, `register_tool`, and subscription frames, then
    sends `ready`. First-come-first-served: a name already taken by a
@@ -193,7 +196,7 @@ or any other stdout frame before `hello`.
 #### `hello` (required, first frame)
 
 ```json
-{"type":"hello","name":"weather","version":"1.0.0",
+{"type":"hello","protocol_version":2,"name":"weather","version":"1.0.0",
  "capabilities":["commands","tools","alerts","panels"]}
 ```
 
@@ -498,7 +501,7 @@ Sent in response to `shutdown`. Extension should exit promptly after.
 #### `hello_ack`
 
 ```json
-{"type":"hello_ack","protocol_version":1,
+{"type":"hello_ack","protocol_version":2,
  "zut_version":"0.0.7","provider":"anthropic",
  "model":"claude-opus-4-7","cwd":"/path/to/zut",
  "extension_dir":"/path/to/zut/.zut/extensions/todos",
@@ -508,8 +511,9 @@ Sent in response to `shutdown`. Extension should exit promptly after.
              "fork_point":4}}
 ```
 
-Sent immediately after `hello`. Wait for this frame before sending
-registrations if they depend on host metadata. The extension can use
+Sent immediately after a matching `hello`. The protocol version is a
+major and must match the version sent by the extension. Wait for this frame
+before sending registrations if they depend on host metadata. The extension can use
 these fields to decide which commands to register (e.g. only register
 a Python tool on macOS, only register a model-specific shortcut for
 opus, etc.). `cwd` is the user's project directory; the extension

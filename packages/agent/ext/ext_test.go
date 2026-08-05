@@ -140,6 +140,13 @@ func (h *extHarness) handshake(t *testing.T) {
 	if f.hdr.Type != "hello" {
 		t.Fatalf("expected hello, got %q", f.hdr.Type)
 	}
+	var hello extproto.HelloFromExt
+	if err := json.Unmarshal(f.raw, &hello); err != nil {
+		t.Fatalf("unmarshal hello: %v", err)
+	}
+	if hello.ProtocolVersion != extproto.ProtocolVersion {
+		t.Fatalf("hello protocol version = %d, want %d", hello.ProtocolVersion, extproto.ProtocolVersion)
+	}
 	h.sendToExt(t, extproto.HelloAckFromHost{
 		Type:            "hello_ack",
 		ProtocolVersion: extproto.ProtocolVersion,
@@ -156,6 +163,27 @@ func (h *extHarness) handshake(t *testing.T) {
 }
 
 // ---------- tests ----------
+
+func TestRunRejectsUnsupportedHostProtocolVersion(t *testing.T) {
+	h := newHarness("versioned-ext")
+	runDone := make(chan error, 1)
+	go func() { runDone <- h.ext.Run() }()
+	t.Cleanup(func() { _ = h.hostW.Close() })
+
+	if frame := h.next(t); frame.hdr.Type != "hello" {
+		t.Fatalf("expected hello, got %q", frame.hdr.Type)
+	}
+	h.sendToExt(t, extproto.HelloAckFromHost{Type: "hello_ack", ProtocolVersion: extproto.ProtocolVersion - 1})
+
+	select {
+	case err := <-runDone:
+		if err == nil || !strings.Contains(err.Error(), "unsupported host protocol version") {
+			t.Fatalf("Run error = %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Run did not reject an unsupported host protocol version")
+	}
+}
 
 // TestOnHelloCanRegisterUsingHostInfo checks that extensions can use
 // host metadata before announcing their initial registrations.

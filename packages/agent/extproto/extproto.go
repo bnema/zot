@@ -22,7 +22,9 @@ import (
 	"strings"
 )
 
-const ProtocolVersion = 1
+// ProtocolVersion is the extension protocol major. Version 2 introduces the
+// zut_version wire key and requires both sides to reject mismatched majors.
+const ProtocolVersion = 2
 
 type Frame struct {
 	Type string `json:"type"`
@@ -30,10 +32,11 @@ type Frame struct {
 }
 
 type HelloFromExt struct {
-	Type         string   `json:"type"`
-	Name         string   `json:"name"`
-	Version      string   `json:"version"`
-	Capabilities []string `json:"capabilities,omitempty"`
+	Type            string   `json:"type"`
+	ProtocolVersion int      `json:"protocol_version"`
+	Name            string   `json:"name"`
+	Version         string   `json:"version"`
+	Capabilities    []string `json:"capabilities,omitempty"`
 }
 
 type RegisterCommandFromExt struct {
