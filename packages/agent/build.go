@@ -726,7 +726,13 @@ func Resolve(args Args, requireCred bool) (Resolved, error) {
 	if selectedProfile == nil || selectedProfile.InheritProjectContext == nil || *selectedProfile.InheritProjectContext {
 		contextFiles = loadAgentsContext(args.CWD, ZotHome())
 	}
-	append_ := append([]string(nil), args.AppendSystemPrompt...)
+	append_ := []string(nil)
+	if cfg.PonytailModeEnabled() {
+		if ponytailAddendum := PonytailSystemAddendum(); ponytailAddendum != "" {
+			append_ = append(append_, ponytailAddendum)
+		}
+	}
+	append_ = append(append_, args.AppendSystemPrompt...)
 	if agentsAddendum := formatAgentsContext(contextFiles); agentsAddendum != "" {
 		append_ = append(append_, agentsAddendum)
 	}

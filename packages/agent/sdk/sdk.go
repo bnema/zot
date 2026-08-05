@@ -361,7 +361,7 @@ func (r *Runtime) Close() error {
 	ag := r.agent
 	r.mu.Unlock()
 	if ag != nil {
-		return agenttools.CloseLSPManagers(ag.Tools)
+		return agenttools.CloseLSPManagers(ag.ToolsSnapshot())
 	}
 	return nil
 }

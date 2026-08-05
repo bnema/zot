@@ -322,7 +322,7 @@ func newPersistModelCallback(persistMu *sync.Mutex, sess **core.Session, activeP
 
 func closeAgentLSP(ag *core.Agent) {
 	if ag != nil {
-		_ = tools.CloseLSPManagers(ag.Tools)
+		_ = tools.CloseLSPManagers(ag.ToolsSnapshot())
 	}
 }
 
@@ -903,7 +903,9 @@ func runPrintMode(ctx context.Context, args Args, version string) error {
 	if err := runZotfileStartupPre(ctx, args.StartupPre, r.CWD, r.Sandbox, ag, nil, os.Stderr); err != nil {
 		return err
 	}
-	reloadResourcesAfterStartupPre(ctx, args, extMgr, r.Sandbox, ag)
+	if err := reloadResourcesAfterStartupPre(ctx, args, extMgr, r.Sandbox, ag); err != nil {
+		return err
+	}
 	started := time.Now()
 	usage, err := modes.RunPrint(ctx, ag, prompt, nil, os.Stdout)
 	elapsed := time.Since(started)
@@ -969,7 +971,9 @@ func runStreamMode(ctx context.Context, args Args, version string) error {
 		return err
 	}
 	finishPre()
-	reloadResourcesAfterStartupPre(ctx, args, extMgr, r.Sandbox, ag)
+	if err := reloadResourcesAfterStartupPre(ctx, args, extMgr, r.Sandbox, ag); err != nil {
+		return err
+	}
 	err = modes.RunStream(ctx, ag, prompt, nil, os.Stdout)
 	WriteNewTranscript(ag, sess, start)
 	return err
@@ -1073,7 +1077,10 @@ func runJSONMode(ctx context.Context, args Args, version string) error {
 		_ = enc.Encode(map[string]any{"type": "error", "message": err.Error()})
 		return err
 	}
-	reloadResourcesAfterStartupPre(ctx, args, extMgr, r.Sandbox, ag)
+	if err := reloadResourcesAfterStartupPre(ctx, args, extMgr, r.Sandbox, ag); err != nil {
+		_ = enc.Encode(map[string]any{"type": "error", "message": err.Error()})
+		return err
+	}
 	err = modes.RunJSON(ctx, ag, prompt, nil, os.Stdout)
 	WriteNewTranscript(ag, sess, start)
 	return err
@@ -1137,18 +1144,21 @@ func runZotfileStartupPre(ctx context.Context, pre, cwd string, sandbox *tools.S
 	return ag.Prompt(ctx, pre, nil, sink)
 }
 
+var errInteractiveAgentChanged = errors.New("interactive agent changed during prompt refresh")
+
 // refreshAgentToolsAndPrompt re-resolves tools (including rediscovered
 // skills and currently loaded extension tools) and updates the live
 // agent's registry and system prompt. Used after /reload-ext and after
 // zotfile entry.pre installs new skills or extensions.
 // mutateRegistry, if non-nil, can inject session-specific tools (e.g. subagent_spawn).
-func refreshAgentToolsAndPrompt(args Args, sharedSandbox *tools.Sandbox, extToolAdapter ExtensionToolSource, ag *core.Agent, mutateRegistry func(core.Registry) core.Registry) {
+// interactive, when non-nil, serializes the final commit with agent replacement.
+func refreshAgentToolsAndPrompt(args Args, sharedSandbox *tools.Sandbox, extToolAdapter ExtensionToolSource, ag *core.Agent, mutateRegistry func(core.Registry) core.Registry, interactive *modes.Interactive) error {
 	if ag == nil {
-		return
+		return nil
 	}
 	resolved, err := Resolve(args, true)
 	if err != nil {
-		return
+		return fmt.Errorf("refresh agent prompt and tools: %w", err)
 	}
 	if sharedSandbox != nil {
 		resolved.UseSandbox(sharedSandbox)
@@ -1160,24 +1170,34 @@ func refreshAgentToolsAndPrompt(args Args, sharedSandbox *tools.Sandbox, extTool
 	if mutateRegistry != nil {
 		reg = mutateRegistry(reg)
 	}
-	oldTools := ag.Tools
-	ag.SetTools(reg)
-	ag.System = resolved.SystemPrompt
+	if interactive != nil {
+		oldTools, applied := interactive.ApplyAgentPromptConfig(ag, resolved.SystemPrompt, reg)
+		if !applied {
+			_ = tools.CloseLSPManagers(reg)
+			return errInteractiveAgentChanged
+		}
+		interactive.DeferUntilIdle(func() {
+			_ = tools.CloseLSPManagers(oldTools)
+		})
+		return nil
+	}
+	oldTools := ag.SetPromptConfig(resolved.SystemPrompt, reg)
 	_ = tools.CloseLSPManagers(oldTools)
+	return nil
 }
 
 // reloadResourcesAfterStartupPre reloads extensions (if any) and
 // refreshes the agent tool registry + system prompt so skills/extensions
 // installed by entry.pre are visible to the following turn.
-func reloadResourcesAfterStartupPre(ctx context.Context, args Args, extMgr *extensions.Manager, sharedSandbox *tools.Sandbox, ag *core.Agent) {
+func reloadResourcesAfterStartupPre(ctx context.Context, args Args, extMgr *extensions.Manager, sharedSandbox *tools.Sandbox, ag *core.Agent) error {
 	if strings.TrimSpace(args.StartupPre) == "" || ag == nil {
-		return
+		return nil
 	}
 	adapter := &extToolAdapter{mgr: extMgr}
 	if extMgr != nil {
 		_ = extMgr.Reload(ctx, 2*time.Second)
 	}
-	refreshAgentToolsAndPrompt(args, sharedSandbox, adapter, ag, nil)
+	return refreshAgentToolsAndPrompt(args, sharedSandbox, adapter, ag, nil, nil)
 }
 
 // ---- interactive mode: opens the TUI even without credentials ----
@@ -1416,7 +1436,8 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 			}
 			if confirmGate != nil {
 				var content strings.Builder
-				if tool, err := a.Tools.Get(call.Name); err == nil {
+				_, currentTools := a.PromptConfig()
+				if tool, err := currentTools.Get(call.Name); err == nil {
 					if previewer, ok := tool.(core.ToolPreviewer); ok {
 						preview, err := previewer.Preview(ctx, effectiveArgs)
 						if err != nil {
@@ -1544,7 +1565,9 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 		if current == nil {
 			return
 		}
-		refreshAgentToolsAndPrompt(args, sharedSandbox, extToolAdapter, current, injectSubagentSpawn)
+		if err := refreshAgentToolsAndPrompt(args, sharedSandbox, extToolAdapter, current, injectSubagentSpawn, iv); err != nil && iv != nil {
+			iv.ReportError(err)
+		}
 	})
 
 	var sess *core.Session
@@ -2059,6 +2082,7 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 		TerminalAlertsEnabled:       initialCfg.TerminalAlertsEnabled,
 		TerminalTitleEnabled:        initialCfg.TerminalTitleEnabled,
 		AutoSubagentsEnabled:        initialCfg.AutoSubagentsEnabled,
+		PonytailEnabled:             initialCfg.PonytailEnabled,
 		AutoSubagentsToolAllowed:    &autoSubagentsToolAllowedForSession,
 		FastMode:                    &fastMode,
 		LSPEnabled:                  initialCfg.LSPEnabled,
@@ -2117,12 +2141,18 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 				_ = extMgr.Reload(context.Background(), 2*time.Second)
 			}
 			if current != nil {
-				refreshAgentToolsAndPrompt(args, sharedSandbox, extToolAdapter, current, injectSubagentSpawn)
+				if err := refreshAgentToolsAndPrompt(args, sharedSandbox, extToolAdapter, current, injectSubagentSpawn, iv); err != nil {
+					iv.ReportError(err)
+				}
 			}
 		},
-		RefreshTools: func() {
+		RefreshTools: func() error {
 			current := liveInteractiveAgent(iv, ag)
-			refreshAgentToolsAndPrompt(args, sharedSandbox, extToolAdapter, current, injectSubagentSpawn)
+			return refreshAgentToolsAndPrompt(args, sharedSandbox, extToolAdapter, current, injectSubagentSpawn, iv)
+		},
+		RefreshPrompt: func() error {
+			current := liveInteractiveAgent(iv, ag)
+			return refreshAgentToolsAndPrompt(args, sharedSandbox, extToolAdapter, current, injectSubagentSpawn, iv)
 		},
 		AuthManager:                mgr,
 		LlamaCPPConfig:             ResolveLlamaCPPConfig,

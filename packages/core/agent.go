@@ -275,6 +275,18 @@ func (a *Agent) SetSystemPrompt(system string) {
 	a.mu.Unlock()
 }
 
+// SetPromptConfig atomically replaces the system prompt and tool registry.
+// It returns the previous registry so the caller can close resources that are
+// no longer owned by the agent.
+func (a *Agent) SetPromptConfig(system string, tools Registry) Registry {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	oldTools := a.Tools
+	a.System = system
+	a.Tools = tools
+	return oldTools
+}
+
 // PromptConfig returns a consistent snapshot of the system prompt and tools
 // used to construct a provider request.
 func (a *Agent) PromptConfig() (string, Registry) {

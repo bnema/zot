@@ -1,6 +1,8 @@
 package agent
 
 import (
+	"fmt"
+
 	"github.com/patriceckhart/zot/packages/provider"
 	"github.com/patriceckhart/zot/packages/tui"
 )
@@ -66,6 +68,18 @@ func (configSettingsStore) SetAutoSubagents(enabled bool) error {
 	}
 	cfg.AutoSubagentsEnabled = &enabled
 	return SaveConfig(cfg)
+}
+
+func (configSettingsStore) SetPonytailEnabled(enabled bool) error {
+	cfg, err := LoadConfig()
+	if err != nil {
+		return fmt.Errorf("load config for Ponytail setting: %w", err)
+	}
+	cfg.PonytailEnabled = &enabled
+	if err := SaveConfig(cfg); err != nil {
+		return fmt.Errorf("save Ponytail setting: %w", err)
+	}
+	return nil
 }
 
 func (configSettingsStore) SetFastMode(enabled bool) error {

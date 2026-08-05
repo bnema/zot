@@ -95,6 +95,10 @@ type Config struct {
 	// default; nil/missing means disabled. Toggle from /settings.
 	AutoSubagentsEnabled *bool `json:"auto_subagents_enabled,omitempty"`
 
+	// PonytailEnabled controls the compact coding-guidance addendum. On by
+	// default; nil/missing means enabled. Toggle from /settings.
+	PonytailEnabled *bool `json:"ponytail_enabled,omitempty"`
+
 	// LSPEnabled controls the built-in lsp tool and write-time diagnostics
 	// for the main session. nil/missing means enabled. Toggle from
 	// /settings.
@@ -244,6 +248,12 @@ func (c Config) LSPEnabledFor(subagent bool) bool {
 		value = c.SubagentLSPEnabled
 	}
 	return value == nil || *value
+}
+
+// PonytailModeEnabled reports the default-on coding-guidance preference
+// without requiring a generated config entry.
+func (c Config) PonytailModeEnabled() bool {
+	return c.PonytailEnabled == nil || *c.PonytailEnabled
 }
 
 // LSPDiagnosticsOnWriteEnabled reports the default-on write diagnostics

@@ -148,14 +148,18 @@ $ZOT_HOME/
 ├── sessions/           # jsonl transcripts, one dir per cwd
 ├── models-cache.json   # live /v1/models discovery cache (6h ttl)
 ├── AGENTS.md           # optional: global instructions appended to the prompt
-├── SYSTEM.md           # optional: replaces the default system prompt
+├── SYSTEM.md           # optional: replaces the built-in identity; addenda remain
 ├── skills/             # optional: user SKILL.md files
 ├── themes/             # optional: user theme JSON files
 ├── extensions/         # installed extensions, one dir per extension
 └── logs/               # app log files
 ```
 
-Drop a `SYSTEM.md` in `$ZOT_HOME` to replace the built-in identity and guidelines for every run. `--system-prompt` still wins per-invocation. Delete the file to revert to the default.
+Drop a `SYSTEM.md` in `$ZOT_HOME` to replace the built-in identity for every run. Existing append addenda, including `AGENTS.md`, skills, and enabled Ponytail coding mode, remain layered on top. `--system-prompt` wins per invocation unless a selected replace-mode subagent profile supplies the child's identity. Delete the file to revert to the default identity.
+
+Ponytail coding mode is enabled by default, including when an existing `config.json` does not contain a `ponytail_enabled` field. When disabled, its compact guidance is omitted from resolved system prompts; when enabled, the guidance tells the model to apply itself only to engineering work. The setting persists its explicit on/off choice in `$ZOT_HOME/config.json` and can be changed from `/settings`. It is advisory guidance only: it does not change tool permissions, confirmations, jail behavior, or sandboxing.
+
+A selected subagent profile with `systemPromptMode: replace` supplies the child's base identity even when `--system-prompt` was provided for the parent run. Global append addenda, including enabled Ponytail guidance, still follow their normal inclusion rules.
 
 ## Persistent instructions (AGENTS.md)
 
@@ -180,9 +184,9 @@ Treat questions and discussions as requests for explanation. Do not edit files o
 |---|---|---|
 | `$ZOT_HOME/AGENTS.md` | global, every run | appended to the default prompt |
 | `./AGENTS.md` (and parent dirs) | project | appended to the default prompt |
-| `$ZOT_HOME/SYSTEM.md` | global, every run | replaces the default prompt entirely |
+| `$ZOT_HOME/SYSTEM.md` | global, every run | replaces the built-in identity; append addenda remain |
 | `--append-system-prompt <text>` | single run | appends for one invocation (repeatable) |
-| `--system-prompt <text>` | single run | replaces the prompt for one invocation |
+| `--system-prompt <text>` | single run | replaces the built-in identity for one invocation; append addenda remain |
 
 > **Note:** zot does not read a `CLAUDE.md` instruction file. The only Claude-compatible thing it picks up is skills under `.claude/skills/`. If you are migrating from Claude Code, move that content into `AGENTS.md` (global or per-project) and zot will use it.
 
@@ -298,7 +302,7 @@ Slash command names are case-insensitive in the TUI and messaging backends; argu
 | `/unjail` | Allow tools to touch paths outside again. |
 | `/reload-ext` | Hot-reload all extensions (re-read manifests, respawn subprocesses, rebuild tool registry). |
 | `/telegram` | Connect, disconnect, or show status of the Telegram bridge (takes `connect` / `disconnect` / `status` as an optional argument; opens a picker without one). When connected, DMs from the paired user become prompts in the running session and the assistant's replies are mirrored back to Telegram. Alias: `/tg`. |
-| `/settings` | Change persistent settings, including inline images, terminal alerts, AI terminal titles, auto-subagents, fast mode, main/sub-agent LSP access, and the auto-compact threshold. Saved to `$ZOT_HOME/config.json`; setting changes apply without a restart, while AI title generation waits for the first real prompt. |
+| `/settings` | Change persistent settings, including inline images, terminal alerts, AI terminal titles, auto-subagents, Ponytail coding mode, fast mode, main/sub-agent LSP access, and the auto-compact threshold. Saved to `$ZOT_HOME/config.json`; setting changes apply without a restart, while AI title generation waits for the first real prompt. |
 | `/clear` | Clear the chat transcript. |
 | `/exit` | Exit zot. |
 
@@ -405,6 +409,7 @@ Opens a dialog with every persistent setting. `up`/`down` to navigate, `enter` o
 - **terminal alerts** — emit a terminal bell when the main session stops with work that may need attention, or when an extension raises a structured alert. Enabled by default; changes apply immediately and persist as `terminal_alerts_enabled`. Terminal emulators may render the bell audibly, visually, or not at all.
 - **AI terminal titles** — after the first real prompt of a fresh interactive session, make one small hidden request to the active model and set the terminal title to `zot: <title>`. The title is limited to 40 Unicode characters, persisted with the session, restored on resume, and never added to the conversation. Enabled by default; disable it to avoid the extra model request. The toggle applies immediately, but title generation still waits for the first real prompt and never starts from startup context, resumed history, or slash commands. Persists as `terminal_title_enabled`.
 - **auto-subagents** — let the main agent spawn background sub-agents in parallel via the canonical `subagent_spawn` tool. Off by default. The tool accepts named profiles, reasoning, timeout, turn limits, and shared/worktree isolation; lifecycle and result references are persisted. Completion updates still arrive through the auto-subagents watcher. See `/subagents` and [docs/subagents.md](docs/subagents.md) for details.
+- **Ponytail coding mode** — include compact engineering guidance in each resolved system prompt; the guidance tells the model to apply it to coding, debugging, and review work rather than ordinary conversation. It favors understanding the real flow, small validated changes, reuse, and preserving safety checks. Enabled by default; changes apply to the next model call and persist as `ponytail_enabled` in `$ZOT_HOME/config.json`. It is included by interactive, print, stream, JSON, RPC, subagent, bot, SDK, and Zotfile agents.
 - **fast mode** — request OpenAI's Fast service tier for OpenAI, OpenAI Responses, and OpenAI Codex models. Off by default; changes apply on the next model call and persist as `fast_mode`. Other providers return an unsupported-provider error. Fast mode may cost more and depends on the selected OpenAI model/account.
 - **lsp in main session** — enable the built-in `lsp` tool and code diagnostics for the main agent. Enabled by default; changes persist as `lsp_enabled`.
 - **lsp in sub-agents** — allow newly spawned background sub-agents to use the built-in `lsp` tool. Enabled by default; changes persist as `subagent_lsp_enabled` and apply when a child starts.

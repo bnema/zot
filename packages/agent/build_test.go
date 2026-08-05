@@ -62,6 +62,22 @@ func TestMergeExtensionToolsRespectsDisabledSkillDiscovery(t *testing.T) {
 	}
 }
 
+func TestMergeExtensionToolsRetainsPonytailPromptAddendum(t *testing.T) {
+	r := Resolved{
+		CWD:           t.TempDir(),
+		ToolRegistry:  make(core.Registry),
+		skillsEnabled: true,
+		systemAppend:  []string{PonytailSystemAddendum()},
+	}
+	bundled := &skills.Skill{Name: "bundled", Description: "bundled skill", Source: "extension tasked-phases"}
+
+	r.MergeExtensionTools(bundledSkillSource{bundled: []*skills.Skill{bundled}})
+
+	if !strings.Contains(r.SystemPrompt, PonytailSystemAddendum()) {
+		t.Fatalf("extension prompt rebuild lost Ponytail addendum:\n%s", r.SystemPrompt)
+	}
+}
+
 func TestBuildToolRegistryIncludesLSPAndWriteDiagnostics(t *testing.T) {
 	root := t.TempDir()
 	registry := buildToolRegistry(Args{}, root, tools.NewSandbox(root), true, true, false)
@@ -246,6 +262,9 @@ You are a read-only reviewer.
 	}
 	if !strings.Contains(r.SystemPrompt, "You are a read-only reviewer.") || strings.Contains(r.SystemPrompt, "global context") {
 		t.Fatalf("profile system prompt inheritance is wrong:\n%s", r.SystemPrompt)
+	}
+	if !strings.Contains(r.SystemPrompt, PonytailSystemAddendum()) {
+		t.Fatalf("replace-mode profile lost global Ponytail addendum:\n%s", r.SystemPrompt)
 	}
 }
 

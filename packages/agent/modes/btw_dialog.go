@@ -272,7 +272,7 @@ func (d *btwDialog) submit(invalidate func()) {
 }
 
 func newBtwAgent(main *core.Agent, system, model string) *core.Agent {
-	agent := core.NewAgent(main.Client, model, system, main.Tools)
+	agent := core.NewAgent(main.Client, model, system, main.ToolsSnapshot())
 	agent.MaxSteps = main.MaxSteps
 	agent.Reasoning = main.Reasoning
 	agent.Temperature = main.Temperature
