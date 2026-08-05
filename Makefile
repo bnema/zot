@@ -9,9 +9,11 @@ BIN_DIR ?= bin
 DEV_VERSION ?= 0.0.0-dev
 VERSION ?= $(DEV_VERSION)
 GO_INSTALL_VERSION ?= latest
+GOLANGCI_LINT ?= golangci-lint
+GOLANGCI_LINT_VERSION ?= v2.12.2
 LDFLAGS := -s -w -X main.version=$(VERSION)
 
-.PHONY: help build install go-install test test-fast vet lint fmt-check fmt check run clean release
+.PHONY: help build install go-install test test-fast vet lint lint-install fmt-check fmt check run clean release
 
 help:
 	@printf '%s\n' \
@@ -21,7 +23,8 @@ help:
 		'test        run all tests with the race detector' \
 		'test-fast   run all tests without the race detector' \
 		'vet         run go vet ./...' \
-		'lint        run vet and verify gofmt' \
+		'lint        run golangci-lint, vet, and verify gofmt' \
+		'lint-install install golangci-lint $(GOLANGCI_LINT_VERSION)' \
 		'fmt         format Go source files' \
 		'check       run test-fast and lint' \
 		'run         build and run ./bin/zot (pass ARGS="...")' \
@@ -54,6 +57,10 @@ fmt-check:
 	if [ -n "$$files" ]; then printf '%s\n' "$$files" >&2; echo "gofmt issues" >&2; exit 1; fi
 
 lint: vet fmt-check
+	$(GOLANGCI_LINT) run ./...
+
+lint-install:
+	$(GO) install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION)
 
 check: test-fast lint
 

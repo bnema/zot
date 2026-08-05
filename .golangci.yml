@@ -1,0 +1,19 @@
+version: "2"
+
+run:
+  timeout: 5m
+  relative-path-mode: gomod
+  modules-download-mode: readonly
+
+linters:
+  default: standard
+
+formatters:
+  enable:
+    - gofmt
+
+issues:
+  # Keep existing findings from blocking adoption while failing on new issues.
+  new: true
+  max-issues-per-linter: 0
+  max-same-issues: 0
