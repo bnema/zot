@@ -4,11 +4,13 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/patriceckhart/zot/packages/agent/subagents"
 	"github.com/patriceckhart/zot/packages/core"
+	"github.com/patriceckhart/zot/packages/provider"
 )
 
 func TestAutoSubagentsSystemPromptTogglesProfileManifestWithDelegationGuidance(t *testing.T) {
@@ -148,6 +150,89 @@ func TestCompleteSupervisorWatchReportsTurnOutcomeOnce(t *testing.T) {
 	iv.mu.Unlock()
 	if queued != 1 {
 		t.Fatalf("queued updates = %d; want exactly one", queued)
+	}
+}
+
+type autoSubagentsQueueClient struct {
+	requests chan provider.Request
+}
+
+func (c *autoSubagentsQueueClient) Name() string { return "auto-subagents-queue-test" }
+
+func (c *autoSubagentsQueueClient) Stream(_ context.Context, req provider.Request) (<-chan provider.Event, error) {
+	c.requests <- req
+	out := make(chan provider.Event, 1)
+	go func() {
+		defer close(out)
+		out <- provider.EventDone{
+			Stop: provider.StopEnd,
+			Message: provider.Message{
+				Role:    provider.RoleAssistant,
+				Content: []provider.Content{provider.TextBlock{Text: "done"}},
+			},
+		}
+	}()
+	return out, nil
+}
+
+func TestAutoSubagentsUpdateQueuedAtTurnEndStartsFollowUp(t *testing.T) {
+	client := &autoSubagentsQueueClient{requests: make(chan provider.Request, 2)}
+	agent := core.NewAgent(client, "test-model", "", nil)
+	interactive := NewInteractive(InteractiveConfig{Agent: agent})
+	interactive.runCtx = context.Background()
+
+	var once sync.Once
+	agent.OnEvent = func(ev core.AgentEvent) {
+		if _, ok := ev.(core.EvDone); !ok {
+			return
+		}
+		once.Do(func() {
+			interactive.flushSupervisorSummary([]*subagentWatchEntry{{
+				agent: &subagents.Agent{},
+				task:  "smoke test",
+			}})
+		})
+	}
+
+	interactive.startTurn(context.Background(), "initial")
+	select {
+	case <-client.requests:
+	case <-time.After(2 * time.Second):
+		t.Fatal("initial request did not start")
+	}
+
+	var followUp provider.Request
+	select {
+	case followUp = <-client.requests:
+	case <-time.After(2 * time.Second):
+		t.Fatal("queued auto-subagents update did not start a follow-up request")
+	}
+	foundUpdate := false
+	for _, message := range followUp.Messages {
+		for _, content := range message.Content {
+			if text, ok := content.(provider.TextBlock); ok && strings.Contains(text.Text, "[auto-subagents update]") {
+				foundUpdate = true
+			}
+		}
+	}
+	if !foundUpdate {
+		t.Fatalf("follow-up request did not contain the auto-subagents update: %#v", followUp.Messages)
+	}
+
+	deadline := time.NewTimer(2 * time.Second)
+	defer deadline.Stop()
+	for {
+		interactive.mu.Lock()
+		busy := interactive.busy
+		interactive.mu.Unlock()
+		if !busy && agent.QueuedMessageCount() == 0 {
+			return
+		}
+		select {
+		case <-deadline.C:
+			t.Fatal("interactive turn remained busy or retained a queued update")
+		case <-time.After(time.Millisecond):
+		}
 	}
 }
 
