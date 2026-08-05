@@ -194,10 +194,8 @@ func TestSubagentWorkerArgs(t *testing.T) {
 	}
 }
 
-func TestResolveSubagentExecutablePrefersCurrentExecutable(t *testing.T) {
-	var calls []string
-	got, err := resolveSubagentExecutable("/current/bin/zot", "/old/bin/zot", func(candidate string) (string, error) {
-		calls = append(calls, candidate)
+func TestResolveSubagentExecutableUsesCurrentWhenAvailable(t *testing.T) {
+	got, err := resolveSubagentExecutable(context.Background(), "/current/bin/zot", "/old/bin/zot", func(_ context.Context, candidate string) (string, error) {
 		if candidate == "/current/bin/zot" {
 			return candidate, nil
 		}
@@ -209,15 +207,10 @@ func TestResolveSubagentExecutablePrefersCurrentExecutable(t *testing.T) {
 	if got != "/current/bin/zot" {
 		t.Fatalf("executable = %q, want current executable", got)
 	}
-	if len(calls) != 1 || calls[0] != "/current/bin/zot" {
-		t.Fatalf("lookup calls = %v, want only the current executable", calls)
-	}
 }
 
 func TestResolveSubagentExecutableFallsBackToPath(t *testing.T) {
-	var calls []string
-	got, err := resolveSubagentExecutable("/removed/.local/bin/zot", "/removed/.local/bin/zot", func(candidate string) (string, error) {
-		calls = append(calls, candidate)
+	got, err := resolveSubagentExecutable(context.Background(), "/removed/.local/bin/zot", "/removed/.local/bin/zot", func(_ context.Context, candidate string) (string, error) {
 		if candidate == "zot" {
 			return "/active/go/bin/zot", nil
 		}
@@ -229,8 +222,35 @@ func TestResolveSubagentExecutableFallsBackToPath(t *testing.T) {
 	if got != "/active/go/bin/zot" {
 		t.Fatalf("executable = %q, want PATH fallback", got)
 	}
-	if len(calls) != 2 || calls[0] != "/removed/.local/bin/zot" || calls[1] != "zot" {
-		t.Fatalf("lookup calls = %v, want stale path followed by PATH lookup", calls)
+}
+
+func TestResolveSubagentExecutableCancelsOtherLookupsAfterFirstSuccess(t *testing.T) {
+	slowStarted := make(chan struct{})
+	slowCanceled := make(chan struct{})
+	got, err := resolveSubagentExecutable(context.Background(), "/current/bin/zot", "/old/bin/zot", func(ctx context.Context, candidate string) (string, error) {
+		switch candidate {
+		case "/current/bin/zot":
+			close(slowStarted)
+			<-ctx.Done()
+			close(slowCanceled)
+			return "", ctx.Err()
+		case "zot":
+			<-slowStarted
+			return "/active/go/bin/zot", nil
+		default:
+			return "", os.ErrNotExist
+		}
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "/active/go/bin/zot" {
+		t.Fatalf("executable = %q, want first successful lookup", got)
+	}
+	select {
+	case <-slowCanceled:
+	case <-time.After(time.Second):
+		t.Fatal("slower lookup was not canceled")
 	}
 }
 
