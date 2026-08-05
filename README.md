@@ -64,9 +64,15 @@ The installed binary reports the tagged module version and supports `zot update`
 ```bash
 git clone https://github.com/patriceckhart/zot
 cd zot
-make build        # produces ./bin/zot
-make install      # into $GOPATH/bin
+make help         # list the important developer commands
+make build        # produces ./bin/zot (0.0.0-dev by default)
+make install      # install the current checkout with go install
+make go-install   # install the latest published module version
 ```
+
+`make go-install GO_INSTALL_VERSION=v0.1.0` installs a specific published
+version. `make install` is different: it installs the current checkout as a
+development build.
 
 ### Prebuilt binaries
 
@@ -182,7 +188,7 @@ Treat questions and discussions as requests for explanation. Do not edit files o
 
 ## Changelog on update
 
-The first time you launch a newer zot binary, the TUI shows the GitHub release notes once in a dismissible overlay. Press any key to close. The version is recorded in `config.json`'s `last_changelog_shown` so the same release notes never reappear. Fresh installs don't see a changelog (no upgrade has happened yet). The fetch is best-effort: a network failure or a missing release page silently skips, with another attempt on the next launch.
+The first time you launch a newer zot binary, the TUI shows the GitHub release notes once in a dismissible overlay. Press any key to close. The version is recorded in `config.json`'s `last_changelog_shown` so the same release notes never reappear. Fresh installs don't see a changelog (no upgrade has happened yet). Development builds (`0.0.0-dev`) skip both the update and changelog requests and print `dev version detected; skipping update check`. For release builds, the fetch is best-effort: a network failure or a missing release page silently skips, with another attempt on the next launch.
 
 ## Usage
 
@@ -922,6 +928,7 @@ zot can be extended in any language via a subprocess + JSON-RPC protocol. Extens
 
 ```bash
 zot ext install <path|git-url>   # copy / clone into $ZOT_HOME/extensions/
+zot ext install --build=go <path> # explicitly build and install local Go source
 zot ext list                      # show installed extensions
 zot ext doctor                    # diagnose load, registration, and conflict issues
 zot ext logs <name> [-f]          # cat or tail the extension's stderr log
@@ -929,6 +936,13 @@ zot ext enable <name>             # re-enable a disabled extension
 zot ext disable <name>            # disable without removing
 zot ext remove <name>             # delete an extension directory
 ```
+
+For local installs, zot validates `extension.json` and any executable path
+relative to the extension directory before reporting success. It never runs a
+build implicitly. Use `zot ext install --build=go <path>` to explicitly build a
+local Go extension; other source-based extensions must provide their runtime
+artifact or launcher themselves. A failed validation or build leaves no
+partial installation behind.
 
 `zot ext doctor` keeps normal extension startup fail-soft, but gives
 you an explicit troubleshooting view: manifest errors, disabled or
@@ -946,7 +960,7 @@ For development, point `zot --ext <path>` at a working directory and skip the in
 - Extensions without a `.git/` directory (installed by `zot ext install ./local-path`) are skipped — there is no remote to pull from.
 - For the rest, zot stashes any dirty worktree state (including untracked runtime files like `todos.json` or `config.json`), runs `git pull --ff-only`, and pops the stash. If the pop produces conflicts, the conflict markers are left in place and you'll see a warning.
 - Diverged branches, offline pulls, or any other git failure are reported as `failed` and the next extension is processed. `zot update` itself never aborts because of an extension.
-- zot does **not** run any build step (`go build`, `npm install`, `make`) after the pull. Extension authors are expected to commit the runnable artifact (binary, transpiled JS, etc.). If you need a build, rebuild manually and use `/reload-ext`.
+- zot does **not** run any build step (`go build`, `npm install`, `make`) after the pull. Extension authors are expected to commit the runnable artifact (binary, transpiled JS, etc.). If you need a build, run it explicitly, reinstall the extension, or use `/reload-ext` for a working-tree copy.
 
 ### Theme-only extensions
 
@@ -1026,11 +1040,15 @@ This means additional messaging backends (Discord, Slack, Signal, and similar) c
 ## Development
 
 ```bash
-make build     # build ./bin/zot
+make help      # list the important developer commands
+make build     # build ./bin/zot as 0.0.0-dev
 make test      # go test -race ./...
+make test-fast # go test ./...
 make lint      # go vet + gofmt check
 make fmt       # gofmt -w .
-make release   # cross-compile linux/darwin/windows on amd64 and arm64
+make install   # install the current checkout with go install
+make go-install # install the latest published module version
+make release VERSION=0.1.0 # cross-compile release binaries
 ```
 
 Source layout (single Go module, four packages under `packages/`):

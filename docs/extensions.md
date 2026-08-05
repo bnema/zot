@@ -81,15 +81,24 @@ Restart `zot`, type `/hellopy`, the agent greets you. Done.
 The `examples/extensions/` directory in the repo is reference code, not a default install set. To use any of those:
 
 ```bash
-# go-based examples need a build first
-cd path/to/zot/examples/extensions/hello && go build -o hello .
-
-# install (copies to $ZOT_HOME/extensions/hello/)
-zot ext install path/to/zot/examples/extensions/hello
+# install a Go example and explicitly build it in the staged install
+zot ext install --build=go path/to/zot/examples/extensions/hello
 
 # or load straight from the repo for one zot session
 zot --ext path/to/zot/examples/extensions/hello
 ```
+
+`zot ext install` never builds source code implicitly. For local installs it
+validates `extension.json` and any executable path relative to the extension
+directory, then stages the copy so a missing or ignored runtime artifact fails
+with an explicit error instead of becoming a broken installed extension. For a
+local Go extension, opt into the fixed builder explicitly with
+`zot ext install --build=go <path>`. The builder runs `go build -trimpath` from
+the source directory, writes the manifest-declared relative executable into the
+staging directory, and validates it before installation. It may resolve Go
+modules and access the network according to the user's Go environment. Bare
+launchers such as `go`, `node`, and `npx` remain resolved from `PATH` when zot
+starts; they cannot be used as the output of `--build=go`.
 
 Nothing is auto-installed and nothing reaches out to the network without your explicit action.
 
@@ -593,10 +602,11 @@ Reply with `shutdown_ack` and then exit.
 ## Managing extensions from the CLI
 
 ```
-zot ext list                    list installed extensions and their state
-zot ext doctor                  diagnose load, registration, and conflict issues
-zot ext install <path|git-url>  copy / clone into $ZOT_HOME/extensions/
-zot ext remove <name>           delete an extension directory
+zot ext list                              list installed extensions and their state
+zot ext doctor                            diagnose load, registration, and conflict issues
+zot ext install [--build=go] <path|git-url>
+                                          copy / clone into $ZOT_HOME/extensions/
+zot ext remove <name>                     delete an extension directory
 zot ext enable <name>           re-enable a disabled extension
 zot ext disable <name>          disable without removing
 zot ext logs <name> [-f]        cat / tail the extension's stderr
@@ -610,7 +620,9 @@ warnings, and each extension's stderr log path.
 
 `zot ext install <path>` does a recursive copy; `<git-url>` does a
 shallow clone. Both validate that the destination contains an
-`extension.json` and roll back if not.
+`extension.json` and roll back if not. No build runs unless the local install
+is invoked with the explicit `--build=go` option. That option currently supports
+only local Go source paths; clone remote source locally before building it.
 
 ## Loading an extension for one run
 

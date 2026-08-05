@@ -3,11 +3,13 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"time"
@@ -62,8 +64,10 @@ usage:
   zot ext logs <name> [-f]        cat / tail an extension's stderr log
   zot ext enable <name>           re-enable a disabled extension
   zot ext disable <name>          disable without removing
-  zot ext remove <name>           delete an extension directory
-  zot ext install <path|git-url>  copy / clone an extension into $ZOT_HOME/extensions/
+  zot ext remove <name>                    delete an extension directory
+  zot ext install [--build=go] <path|git-url>
+                                         copy / clone and validate an extension
+                                         --build=go explicitly builds a local Go extension
 
 extensions live under:
   $ZOT_HOME/extensions/<name>/extension.json   (global)
@@ -464,37 +468,26 @@ func extRemove(args []string) error {
 }
 
 // extInstall copies a local directory or shallow-clones a git URL
-// into $ZOT_HOME/extensions/. Validates the destination contains an
-// extension.json before reporting success.
+// into $ZOT_HOME/extensions/. It stages the install and validates the
+// manifest plus any extension-local executable before reporting success.
+// Builds are never inferred or run implicitly; --build=go is an explicit
+// opt-in for local Go extensions.
 func extInstall(args []string) error {
-	if len(args) == 0 {
-		return fmt.Errorf("usage: zot ext install <path|git-url>")
+	opts, err := parseExtInstallArgs(args)
+	if err != nil {
+		return err
 	}
-	src := args[0]
+	src := opts.source
 	dest := filepath.Join(ZotHome(), "extensions")
 	if err := os.MkdirAll(dest, 0o755); err != nil {
 		return err
 	}
 
 	if strings.HasPrefix(src, "https://") || strings.HasPrefix(src, "git@") || strings.HasSuffix(src, ".git") {
-		// Git clone path. Pick the destination name from the repo basename.
-		name := strings.TrimSuffix(filepath.Base(src), ".git")
-		out := filepath.Join(dest, name)
-		if _, err := os.Stat(out); err == nil {
-			return fmt.Errorf("destination %s already exists; remove it first", out)
+		if opts.builder != "" {
+			return errors.New("--build=go is currently supported only for local extension paths; clone the extension locally and build it there")
 		}
-		cmd := exec.Command("git", "clone", "--depth", "1", src, out)
-		cmd.Stdout = os.Stderr
-		cmd.Stderr = os.Stderr
-		if err := cmd.Run(); err != nil {
-			return fmt.Errorf("git clone: %w", err)
-		}
-		if _, err := os.Stat(filepath.Join(out, "extension.json")); err != nil {
-			_ = os.RemoveAll(out)
-			return fmt.Errorf("installed dir lacks extension.json; aborted and rolled back")
-		}
-		fmt.Fprintf(os.Stderr, "installed %s\n", out)
-		return nil
+		return installGitExtension(src, dest)
 	}
 
 	// Local path: must be a directory containing extension.json.
@@ -505,30 +498,254 @@ func extInstall(args []string) error {
 	if !info.IsDir() {
 		return fmt.Errorf("not a directory: %s", src)
 	}
-	if _, err := os.Stat(filepath.Join(src, "extension.json")); err != nil {
-		return fmt.Errorf("source lacks extension.json")
-	}
-	// Resolve to an absolute, cleaned path before deriving the install
-	// name. Otherwise relative sources like "." or "./" collapse to a
-	// basename of ".", and the destination wrongly resolves to the
-	// extensions/ parent directory (which zot creates on first run),
-	// triggering a false "already exists" failure.
+	// Resolve to an absolute, cleaned path before reading the manifest.
+	// This also makes sources like "." safe to install.
 	absSrc, err := filepath.Abs(src)
 	if err != nil {
 		return err
 	}
-	name := filepath.Base(absSrc)
-	if name == "." || name == ".." || name == string(filepath.Separator) || name == "" {
-		return fmt.Errorf("cannot derive extension name from %q", src)
+	manifest, err := readExtensionManifest(absSrc)
+	if err != nil {
+		return fmt.Errorf("source extension: %w", err)
 	}
-	out := filepath.Join(dest, name)
+	out := filepath.Join(dest, manifest.Name)
 	if _, err := os.Stat(out); err == nil {
 		return fmt.Errorf("destination %s already exists; remove it first", out)
 	}
-	if err := copyDir(absSrc, out); err != nil {
+
+	stageRoot, err := os.MkdirTemp(dest, ".zot-extension-install-")
+	if err != nil {
+		return fmt.Errorf("create install staging directory: %w", err)
+	}
+	defer os.RemoveAll(stageRoot)
+	staged := filepath.Join(stageRoot, "extension")
+	if err := copyDirWithRequired(absSrc, staged, manifestRuntimeFiles(absSrc, manifest)); err != nil {
+		return fmt.Errorf("copy extension: %w", err)
+	}
+	if opts.builder != "" {
+		if err := buildLocalExtension(opts.builder, absSrc, staged, manifest); err != nil {
+			return err
+		}
+	}
+	if err := validateExtensionExecutable(staged, manifest); err != nil {
 		return err
 	}
+	if err := os.Rename(staged, out); err != nil {
+		return fmt.Errorf("finalize install: %w", err)
+	}
 	fmt.Fprintf(os.Stderr, "installed %s\n", out)
+	return nil
+}
+
+type extInstallOptions struct {
+	source  string
+	builder string
+}
+
+func parseExtInstallArgs(args []string) (extInstallOptions, error) {
+	if len(args) == 0 {
+		return extInstallOptions{}, errors.New("usage: zot ext install [--build=go] <path|git-url>")
+	}
+
+	var opts extInstallOptions
+	builderSet := false
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		switch {
+		case arg == "--build":
+			if i+1 >= len(args) {
+				return extInstallOptions{}, errors.New("--build requires a builder (currently: go)")
+			}
+			i++
+			if builderSet {
+				return extInstallOptions{}, errors.New("extension builder specified more than once")
+			}
+			builderSet = true
+			opts.builder = strings.ToLower(strings.TrimSpace(args[i]))
+			if opts.builder == "" {
+				return extInstallOptions{}, errors.New("--build requires a builder (currently: go)")
+			}
+		case strings.HasPrefix(arg, "--build="):
+			if builderSet {
+				return extInstallOptions{}, errors.New("extension builder specified more than once")
+			}
+			builderSet = true
+			opts.builder = strings.ToLower(strings.TrimSpace(strings.TrimPrefix(arg, "--build=")))
+			if opts.builder == "" {
+				return extInstallOptions{}, errors.New("--build requires a builder (currently: go)")
+			}
+		case strings.HasPrefix(arg, "-"):
+			return extInstallOptions{}, fmt.Errorf("unknown ext install option %q", arg)
+		case opts.source != "":
+			return extInstallOptions{}, errors.New("usage: zot ext install [--build=go] <path|git-url>")
+		default:
+			opts.source = arg
+		}
+	}
+	if opts.source == "" {
+		return extInstallOptions{}, errors.New("usage: zot ext install [--build=go] <path|git-url>")
+	}
+	if opts.builder != "" && opts.builder != "go" {
+		return extInstallOptions{}, fmt.Errorf("unsupported extension builder %q (currently supported: go)", opts.builder)
+	}
+	return opts, nil
+}
+
+func buildLocalExtension(builder, sourceDir, stagedDir string, manifest extensions.Manifest) error {
+	if manifest.Exec == "" {
+		return errors.New("cannot build a theme-only extension; it does not declare an executable")
+	}
+	if builder != "go" {
+		return fmt.Errorf("unsupported extension builder %q (currently supported: go)", builder)
+	}
+
+	execRel, err := extensionRelativeExecPath(sourceDir, manifest.Exec)
+	if err != nil {
+		return fmt.Errorf("%w: --build=go requires an extension-relative executable path", err)
+	}
+	stagedExec := filepath.Join(stagedDir, execRel)
+	if err := os.MkdirAll(filepath.Dir(stagedExec), 0o755); err != nil {
+		return fmt.Errorf("prepare Go build output: %w", err)
+	}
+
+	fmt.Fprintf(os.Stderr, "building %s with go\n", manifest.Name)
+	cmd := exec.Command("go", "build", "-trimpath", "-o", stagedExec, ".")
+	cmd.Dir = sourceDir
+	cmd.Stdout = os.Stderr
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("build extension with go: %w", err)
+	}
+	return nil
+}
+
+func extensionRelativeExecPath(dir, execName string) (string, error) {
+	normalized := filepath.FromSlash(execName)
+	if filepath.IsAbs(normalized) {
+		return "", fmt.Errorf("extension executable %q is absolute", execName)
+	}
+	resolved, local := extensions.ResolveExecPath(dir, execName)
+	if !local {
+		return "", fmt.Errorf("extension executable %q is a PATH command", execName)
+	}
+	rel, err := filepath.Rel(dir, resolved)
+	if err != nil {
+		return "", fmt.Errorf("resolve extension executable %q: %w", execName, err)
+	}
+	if rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", fmt.Errorf("extension executable %q escapes the extension directory", execName)
+	}
+	return rel, nil
+}
+
+func installGitExtension(src, dest string) error {
+	stageRoot, err := os.MkdirTemp(dest, ".zot-extension-clone-")
+	if err != nil {
+		return fmt.Errorf("create install staging directory: %w", err)
+	}
+	defer os.RemoveAll(stageRoot)
+
+	cloneDir := filepath.Join(stageRoot, "extension")
+	cmd := exec.Command("git", "clone", "--depth", "1", src, cloneDir)
+	cmd.Stdout = os.Stderr
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("git clone: %w", err)
+	}
+	manifest, err := readExtensionManifest(cloneDir)
+	if err != nil {
+		return fmt.Errorf("cloned extension: %w", err)
+	}
+	out := filepath.Join(dest, manifest.Name)
+	if _, err := os.Stat(out); err == nil {
+		return fmt.Errorf("destination %s already exists; remove it first", out)
+	}
+	if err := validateExtensionExecutable(cloneDir, manifest); err != nil {
+		return err
+	}
+	if err := os.Rename(cloneDir, out); err != nil {
+		return fmt.Errorf("finalize install: %w", err)
+	}
+	fmt.Fprintf(os.Stderr, "installed %s\n", out)
+	return nil
+}
+
+func readExtensionManifest(dir string) (extensions.Manifest, error) {
+	raw, err := os.ReadFile(filepath.Join(dir, "extension.json"))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return extensions.Manifest{}, errors.New("source lacks extension.json")
+		}
+		return extensions.Manifest{}, fmt.Errorf("read extension.json: %w", err)
+	}
+	var manifest extensions.Manifest
+	if err := json.Unmarshal(raw, &manifest); err != nil {
+		return extensions.Manifest{}, fmt.Errorf("parse extension.json: %w", err)
+	}
+	if strings.TrimSpace(manifest.Name) == "" {
+		return extensions.Manifest{}, errors.New("manifest: name is required")
+	}
+	if manifest.Name == "." || manifest.Name == ".." || strings.ContainsAny(manifest.Name, `/\\`) {
+		return extensions.Manifest{}, fmt.Errorf("manifest: invalid extension name %q", manifest.Name)
+	}
+	if manifest.Exec == "" && !extensions.HasExtensionTheme(dir) {
+		return extensions.Manifest{}, errors.New("manifest: exec is required")
+	}
+	if manifest.Exec != "" {
+		resolved, local := extensions.ResolveExecPath(dir, manifest.Exec)
+		if local && !filepath.IsAbs(filepath.FromSlash(manifest.Exec)) {
+			rel, err := filepath.Rel(dir, resolved)
+			if err != nil {
+				return extensions.Manifest{}, fmt.Errorf("manifest: resolve exec %q: %w", manifest.Exec, err)
+			}
+			if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+				return extensions.Manifest{}, fmt.Errorf("manifest: exec %q escapes the extension directory", manifest.Exec)
+			}
+		}
+	}
+	return manifest, nil
+}
+
+func manifestRuntimeFiles(dir string, manifest extensions.Manifest) map[string]bool {
+	required := map[string]bool{"extension.json": true}
+	if manifest.Exec == "" {
+		return required
+	}
+	resolved, local := extensions.ResolveExecPath(dir, manifest.Exec)
+	if !local || filepath.IsAbs(filepath.FromSlash(manifest.Exec)) {
+		return required
+	}
+	rel, err := filepath.Rel(dir, resolved)
+	if err == nil && rel != "." && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		required[filepath.ToSlash(rel)] = true
+	}
+	return required
+}
+
+func validateExtensionExecutable(dir string, manifest extensions.Manifest) error {
+	if manifest.Exec == "" {
+		return nil
+	}
+	path, local := extensions.ResolveExecPath(dir, manifest.Exec)
+	if !local {
+		// Bare commands such as "go", "node", and "npx" are resolved
+		// from PATH when zot starts. They may be intentionally installed
+		// before the runtime is present on the current machine.
+		return nil
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return fmt.Errorf("extension executable %q is missing; provide it before installing. Local Go extensions can opt in with `zot ext install --build=go <path>`", manifest.Exec)
+		}
+		return fmt.Errorf("stat extension executable %q: %w", manifest.Exec, err)
+	}
+	if info.IsDir() {
+		return fmt.Errorf("extension executable %q is a directory", manifest.Exec)
+	}
+	if runtime.GOOS != "windows" && info.Mode().Perm()&0o111 == 0 {
+		return fmt.Errorf("extension executable %q is not executable; run chmod +x %s before installing", manifest.Exec, filepath.Base(path))
+	}
 	return nil
 }
 
@@ -569,6 +786,10 @@ func dashIfEmpty(s string) string {
 // out of the installed copy so the extension stays functional at its new
 // location.
 func copyDir(src, dst string) error {
+	return copyDirWithRequired(src, dst, nil)
+}
+
+func copyDirWithRequired(src, dst string, required map[string]bool) error {
 	ig := loadGitignore(src)
 	return filepath.Walk(src, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
@@ -578,12 +799,13 @@ func copyDir(src, dst string) error {
 		if err != nil {
 			return err
 		}
+		relSlash := filepath.ToSlash(rel)
 		if rel != "." {
 			name := filepath.Base(rel)
 			if info.IsDir() && name == ".git" {
 				return filepath.SkipDir
 			}
-			if ig.Match(filepath.ToSlash(rel), info.IsDir()) {
+			if ig.Match(relSlash, info.IsDir()) && !requiredCopyPath(required, relSlash, info.IsDir()) {
 				if info.IsDir() {
 					return filepath.SkipDir
 				}
@@ -607,6 +829,22 @@ func copyDir(src, dst string) error {
 		_, err = io.Copy(out, in)
 		return err
 	})
+}
+
+func requiredCopyPath(required map[string]bool, rel string, isDir bool) bool {
+	if required[rel] {
+		return true
+	}
+	if !isDir {
+		return false
+	}
+	prefix := strings.TrimSuffix(rel, "/") + "/"
+	for path := range required {
+		if strings.HasPrefix(path, prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 // gitignore matching lives in packages/ignore so the @-file picker in

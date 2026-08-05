@@ -36,23 +36,16 @@ func semverOnly(v string) string {
 }
 
 func FetchChangelog(ctx context.Context, version string) (ChangelogInfo, error) {
-	version = semverOnly(version)
-	if version == "" || version == "dev" {
+	if isDevVersion(version) {
 		return ChangelogInfo{}, nil
 	}
+	version = semverOnly(version)
 
-	// For local dev builds (0.0.0), fetch the latest release instead
-	// of a tagged one so developers always see the newest changelog.
-	var url string
-	if version == "0.0.0" {
-		url = "https://api.github.com/repos/patriceckhart/zot/releases/latest"
-	} else {
-		tag := version
-		if !strings.HasPrefix(tag, "v") {
-			tag = "v" + tag
-		}
-		url = fmt.Sprintf("https://api.github.com/repos/patriceckhart/zot/releases/tags/%s", tag)
+	tag := version
+	if !strings.HasPrefix(tag, "v") {
+		tag = "v" + tag
 	}
+	url := fmt.Sprintf("https://api.github.com/repos/patriceckhart/zot/releases/tags/%s", tag)
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
 		return ChangelogInfo{}, err
@@ -159,19 +152,16 @@ func FetchChangelogAsync(version string) <-chan ChangelogInfo {
 
 // ShouldShowChangelog reports whether the running binary version
 // differs from the last version whose changelog the user dismissed.
-// Returns false on dev builds (version "" / "dev" / "0.0.0") and on
-// the first-ever launch (no LastChangelogShown stored — we don't
-// dump release notes at someone who just installed).
+// Returns false on development builds and on the first-ever launch (no
+// LastChangelogShown stored — we don't dump release notes at someone who
+// just installed).
 func ShouldShowChangelog(currentVersion string, cfg Config) bool {
-	currentVersion = semverOnly(currentVersion)
-	if currentVersion == "" || currentVersion == "dev" {
+	if isDevVersion(currentVersion) {
 		return false
 	}
+	currentVersion = semverOnly(currentVersion)
 	if cfg.LastChangelogShown == "" {
 		return false
-	}
-	if currentVersion == "0.0.0" {
-		return true
 	}
 	return semverOnly(cfg.LastChangelogShown) != currentVersion
 }
@@ -194,10 +184,10 @@ func MarkChangelogShown(version string) error {
 // correctly trigger the dialog while THIS launch (which is also
 // "first-ever") doesn't.
 func SeedChangelogVersion(version string) {
-	version = semverOnly(version)
-	if version == "" || version == "dev" {
+	if isDevVersion(version) {
 		return
 	}
+	version = semverOnly(version)
 	cfg, err := LoadConfig()
 	if err != nil {
 		return

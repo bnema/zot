@@ -339,6 +339,7 @@ for line in sys.stdin:
 
 ```bash
 zot ext install ./weather       # copy into $ZOT_HOME/extensions/
+zot ext install --build=go ./weather # explicitly build local Go source
 zot --ext ./weather             # run from disk for one zot session (no install)
 zot --ext .                     # cwd is the extension dir
 zot ext list                    # show installed extensions
@@ -352,9 +353,12 @@ zot ext remove weather
 For TS / Python extensions, no build step is needed — edit the source
 in place and relaunch zot.
 
-For Go, run `go build -o <name> .` in the extension directory after
-edits, then `zot ext install` (which copies the manifest + binary)
-or `zot --ext .` to test from the working tree.
+For Go, either run `zot ext install --build=go <path>` to explicitly build
+the local source into the staged install, or run `go build -o <name> .`
+first and then use `zot ext install <path>`. The default install never runs a
+build step; a missing local executable is rejected with an explicit builder
+hint instead of leaving a broken installed extension. The `--build=go` option
+is intentionally limited to local source paths and does not apply to git URLs.
 
 ## Manual debug
 
@@ -387,10 +391,10 @@ logged to `ext-<name>.log`.
    if they prefer JS-flavored ergonomics; **Python** for one-off
    scripts.
 4. Write the extension dir (manifest + source).
-5. For Go, build it. For TS / Python, mark the script executable.
-6. Suggest `zot --ext <path>` for testing without committing to an
-   install.
-7. When happy, `zot ext install <path>`.
+5. For Go, use `zot ext install --build=go <path>` or build it manually.
+   For TS / Python, mark the script executable.
+6. Suggest `zot --ext <path>` for testing without committing to an install.
+7. When happy, `zot ext install <path>` (or `--build=go` for local Go source).
 
 Don't try to write a full SDK or framework on top of the protocol
 unless the user asked for one — the wire format is small enough

@@ -27,6 +27,8 @@ const updateCheckFile = "update-check.json"
 // the HTML redirect) because the JSON response is stable and small.
 const githubReleasesAPI = "https://api.github.com/repos/patriceckhart/zot/releases/latest"
 
+const devVersionNotice = "dev version detected; skipping update check"
+
 // UpdateInfo describes the result of an update check. Zero-value means
 // "no update available, no error, don't show anything".
 type UpdateInfo struct {
@@ -34,6 +36,15 @@ type UpdateInfo struct {
 	Latest    string // e.g. "0.0.5"
 	Available bool   // true when latest > current
 	URL       string // release page url for the changelog link
+}
+
+func isDevVersion(version string) bool {
+	version = strings.TrimPrefix(strings.TrimSpace(version), "v")
+	if i := strings.IndexAny(version, " ("); i > 0 {
+		version = version[:i]
+	}
+	return version == "" || version == "dev" || version == "0.0.0" ||
+		version == "0.0.0-dev" || strings.HasPrefix(version, "0.0.0-dev+")
 }
 
 // updateCache is the on-disk structure written to $ZOT_HOME.
@@ -54,8 +65,9 @@ type updateCache struct {
 // banner renderer skips the display when Available is false, so a
 // network failure silently no-ops; we never block startup on this.
 func CheckForUpdate(ctx context.Context, zotHome, currentVersion string) UpdateInfo {
-	// Dev builds ("0.0.0") never have an update to offer. Skip.
-	if currentVersion == "" || currentVersion == "dev" || currentVersion == "0.0.0" {
+	// Development builds never have an update to offer. Skip without
+	// reading the cache or touching the network.
+	if isDevVersion(currentVersion) {
 		return UpdateInfo{}
 	}
 

@@ -15,10 +15,9 @@ import (
 // local builds. Defaults make `zot --version` print something sensible
 // when built without ldflags.
 var (
-	// 0.0.0 is the pre-release placeholder for local / untagged
-	// builds. The first published GitHub release will be tagged
-	// v0.0.1; everything before that ships as 0.0.0 from source.
-	version = "0.0.0"
+	// 0.0.0-dev is the placeholder for local / untagged builds.
+	// Release builds replace it with the Git tag through ldflags.
+	version = "0.0.0-dev"
 	commit  = ""
 	date    = ""
 )
@@ -44,18 +43,39 @@ func main() {
 
 // resolvedVersion falls back to the module version embedded by Go when zot is
 // installed with "go install ...@version". Release archives still use the
-// version injected by GoReleaser, and local source builds remain 0.0.0.
+// version injected by GoReleaser, and local source builds remain 0.0.0-dev.
 func resolvedVersion(linkedVersion string) string {
 	info, _ := debug.ReadBuildInfo()
 	return resolvedVersionFromBuildInfo(linkedVersion, info)
 }
 
 func resolvedVersionFromBuildInfo(linkedVersion string, info *debug.BuildInfo) string {
-	if linkedVersion != "" && linkedVersion != "0.0.0" {
+	if linkedVersion != "" && linkedVersion != "0.0.0" && linkedVersion != "0.0.0-dev" {
 		return linkedVersion
 	}
-	if info == nil || info.Main.Version == "" || info.Main.Version == "(devel)" {
+	if info == nil || info.Main.Version == "" || info.Main.Version == "(devel)" || isPseudoVersion(info.Main.Version) {
 		return linkedVersion
 	}
 	return strings.TrimPrefix(info.Main.Version, "v")
+}
+
+func isPseudoVersion(version string) bool {
+	version = strings.TrimPrefix(version, "v")
+	parts := strings.Split(version, "-")
+	if len(parts) < 3 {
+		return false
+	}
+	timestamp := parts[len(parts)-2]
+	if strings.HasPrefix(timestamp, "0.") {
+		timestamp = timestamp[2:]
+	}
+	if len(timestamp) != 14 {
+		return false
+	}
+	for _, ch := range timestamp {
+		if ch < '0' || ch > '9' {
+			return false
+		}
+	}
+	return true
 }

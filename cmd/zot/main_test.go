@@ -19,6 +19,18 @@ func TestResolvedVersionFromBuildInfo(t *testing.T) {
 			want:          "0.2.94",
 		},
 		{
+			name:          "go install release from dev placeholder",
+			linkedVersion: "0.0.0-dev",
+			moduleVersion: "v0.2.94",
+			want:          "0.2.94",
+		},
+		{
+			name:          "local pseudo-version keeps dev placeholder",
+			linkedVersion: "0.0.0-dev",
+			moduleVersion: "v0.2.94-0.20260804145622-bce908a66c9a",
+			want:          "0.0.0-dev",
+		},
+		{
 			name:          "release linker version wins",
 			linkedVersion: "0.2.95",
 			moduleVersion: "v0.2.94",
@@ -29,6 +41,12 @@ func TestResolvedVersionFromBuildInfo(t *testing.T) {
 			linkedVersion: "0.0.0",
 			moduleVersion: "(devel)",
 			want:          "0.0.0",
+		},
+		{
+			name:          "local dev build",
+			linkedVersion: "0.0.0-dev",
+			moduleVersion: "(devel)",
+			want:          "0.0.0-dev",
 		},
 		{
 			name:          "missing build info",

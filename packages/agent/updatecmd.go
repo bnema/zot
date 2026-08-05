@@ -34,9 +34,9 @@ import (
 //  5. Extracts the zot binary from the archive.
 //  6. Atomically replaces the running binary with the new one.
 //
-// Refuses to operate on dev builds (version == "0.0.0") because there
-// is no meaningful "is newer" comparison and we'd happily downgrade a
-// freshly-compiled local binary back to whatever's on GitHub.
+// Refuses to operate on development builds because there is no meaningful
+// "is newer" comparison and we'd happily downgrade a freshly-compiled local
+// binary back to whatever's on GitHub.
 func runUpdateCommand(rawArgs []string, version string) (handled bool, err error) {
 	if len(rawArgs) == 0 || rawArgs[0] != "update" {
 		return false, nil
@@ -68,9 +68,8 @@ usage:
 notes:
   * The binary must be writable by the current user. On a system-wide
     install (e.g. /usr/local/bin/zot owned by root) re-run with sudo.
-  * Dev builds (version 0.0.0) are refused. They typically come from
-    a local source build and shouldn't be silently replaced with a
-    release binary.
+  * Development builds are refused. They typically come from a local
+    source build and shouldn't be silently replaced with a release binary.
   * Honours $GITHUB_TOKEN if set, so private-repo releases work.
   * After the binary is installed, every extension under
     $ZOT_HOME/extensions/ that is a git checkout is fast-forward
@@ -87,8 +86,8 @@ notes:
 // download. Useful as a sanity probe and as something the user can
 // pipe into scripts.
 func runUpdateCheck(version string) error {
-	if version == "" || version == "dev" || version == "0.0.0" {
-		fmt.Println("zot: dev build (version 0.0.0) — `zot update` is disabled")
+	if isDevVersion(version) {
+		fmt.Println("zot:", devVersionNotice)
 		return nil
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -109,8 +108,8 @@ func runUpdateCheck(version string) error {
 
 // runUpdate is the meat of `zot update`.
 func runUpdate(version string) error {
-	if version == "" || version == "dev" || version == "0.0.0" {
-		return errors.New("dev build (version 0.0.0): `zot update` is disabled. Build a release tag or download from https://github.com/patriceckhart/zot/releases")
+	if isDevVersion(version) {
+		return errors.New(devVersionNotice + "; `zot update` is disabled. Build a release tag or download from https://github.com/patriceckhart/zot/releases")
 	}
 	current := versionOnly(version)
 

@@ -1834,55 +1834,58 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 		return nil
 	}
 
+	devBuild := isDevVersion(version)
+	if devBuild {
+		fmt.Fprintln(os.Stderr, "zot:", devVersionNotice)
+	}
 	term := tui.NewProcTerm()
 
-	// Kick off the async update check so the banner can appear when the
-	// http response eventually arrives (usually <1s on cached DNS). Map
-	// agent.UpdateInfo -> modes.UpdateInfo here to avoid a cyclic import.
-	updateCh := make(chan modes.UpdateInfo, 1)
-	go func() {
-		defer close(updateCh)
-		src := <-CheckForUpdateAsync(ZotHome(), version)
-		updateCh <- modes.UpdateInfo{
-			Current:   src.Current,
-			Latest:    src.Latest,
-			Available: src.Available,
-			URL:       src.URL,
-		}
-	}()
+	var updateCh chan modes.UpdateInfo
+	var changelogCh chan modes.ChangelogPayload
+	if !devBuild {
+		// Kick off the async update check so the banner can appear when the
+		// http response eventually arrives (usually <1s on cached DNS). Map
+		// agent.UpdateInfo -> modes.UpdateInfo here to avoid a cyclic import.
+		updateCh = make(chan modes.UpdateInfo, 1)
+		go func() {
+			defer close(updateCh)
+			src := <-CheckForUpdateAsync(ZotHome(), version)
+			updateCh <- modes.UpdateInfo{
+				Current:   src.Current,
+				Latest:    src.Latest,
+				Available: src.Available,
+				URL:       src.URL,
+			}
+		}()
 
-	// Changelog: when the running version differs from the last
-	// version whose release notes the user dismissed, fetch the
-	// release body from GitHub and have the TUI show it once. On
-	// first-ever launch (no prior LastChangelogShown), seed the
-	// stored version silently — don't dump release notes at someone
-	// who just installed.
-	changelogCh := make(chan modes.ChangelogPayload, 1)
-	go func() {
-		defer close(changelogCh)
-		cfg, _ := LoadConfig()
-		if cfg.LastChangelogShown == "" {
-			SeedChangelogVersion(version)
-			return
-		}
-		if !ShouldShowChangelog(version, cfg) {
-			return
-		}
-		info := <-FetchChangelogAsync(version)
-		if info.Body == "" {
-			return
-		}
-		// For dev builds (0.0.0), skip if the latest release was
-		// already shown (stored by the dismiss callback).
-		if version == "0.0.0" && info.Version == cfg.LastChangelogShown {
-			return
-		}
-		changelogCh <- modes.ChangelogPayload{
-			Version: info.Version,
-			Body:    info.Body,
-			URL:     info.URL,
-		}
-	}()
+		// Changelog: when the running version differs from the last
+		// version whose release notes the user dismissed, fetch the
+		// release body from GitHub and have the TUI show it once. On
+		// first-ever launch (no prior LastChangelogShown), seed the
+		// stored version silently — don't dump release notes at someone
+		// who just installed.
+		changelogCh = make(chan modes.ChangelogPayload, 1)
+		go func() {
+			defer close(changelogCh)
+			cfg, _ := LoadConfig()
+			if cfg.LastChangelogShown == "" {
+				SeedChangelogVersion(version)
+				return
+			}
+			if !ShouldShowChangelog(version, cfg) {
+				return
+			}
+			info := <-FetchChangelogAsync(version)
+			if info.Body == "" {
+				return
+			}
+			changelogCh <- modes.ChangelogPayload{
+				Version: info.Version,
+				Body:    info.Body,
+				URL:     info.URL,
+			}
+		}()
+	}
 
 	initialCfg, _ := LoadConfig()
 	fastMode := r.FastMode
@@ -2063,11 +2066,11 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 		ResolveSubagent: resolveSubagent,
 		ChangelogChan:   changelogCh,
 		OnChangelogDismiss: func() {
-			// For dev builds (0.0.0) store the actual release version
+			// For development builds, store the actual release version
 			// so the same changelog doesn't show again next launch.
 			// For real builds, store the binary version.
 			v := version
-			if v == "0.0.0" {
+			if devBuild {
 				if iv != nil && iv.ChangelogVersion() != "" {
 					v = iv.ChangelogVersion()
 				}
