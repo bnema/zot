@@ -53,10 +53,6 @@ func RequestKimiDeviceAuthorization(ctx context.Context) (KimiDeviceAuthorizatio
 
 // PollKimiDeviceToken polls until the browser/device-code login completes.
 func PollKimiDeviceToken(ctx context.Context, auth KimiDeviceAuthorization) (*OAuthToken, error) {
-	interval := time.Duration(auth.Interval) * time.Second
-	if interval <= 0 {
-		interval = 5 * time.Second
-	}
 	for {
 		tok, retry, err := pollKimiDeviceTokenOnce(ctx, auth.DeviceCode)
 		if err != nil {

@@ -623,7 +623,7 @@ func (c *anthropicClient) runStream(ctx context.Context, resp *http.Response, re
 		blockOrder []int // insertion order of indexes
 		activeIdx  = -1
 		usage      Usage
-		stop       StopReason = StopEnd
+		stop       = StopEnd
 		finalErr   error
 	)
 	_ = activeIdx // read-only indicator used for legacy parity

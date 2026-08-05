@@ -618,15 +618,11 @@ func (e *Editor) MoveVertical(dir int) bool {
 			var leadP string
 			body := w
 			if wi == 0 {
-				if strings.HasPrefix(body, prefix) {
-					body = body[len(prefix):]
-				}
+				body = strings.TrimPrefix(body, prefix)
 				leadW = promptLen
 				leadP = prefix
 			} else {
-				if strings.HasPrefix(body, indent) {
-					body = body[len(indent):]
-				}
+				body = strings.TrimPrefix(body, indent)
 				leadW = promptLen
 				leadP = indent
 			}
@@ -823,14 +819,10 @@ func locateCursor(wrapped []string, prefix, line string, targetRunes int, cont s
 		body := w
 		var leadW int
 		if row == 0 {
-			if strings.HasPrefix(body, prefix) {
-				body = body[len(prefix):]
-			}
+			body = strings.TrimPrefix(body, prefix)
 			leadW = prefixW
 		} else {
-			if strings.HasPrefix(body, cont) {
-				body = body[len(cont):]
-			}
+			body = strings.TrimPrefix(body, cont)
 			leadW = contW
 		}
 		bodyRunes := []rune(body)
@@ -897,14 +889,6 @@ func normalizeEditorText(s string) string {
 	}
 	s = strings.ReplaceAll(s, "\r\n", "\n")
 	return strings.ReplaceAll(s, "\r", "\n")
-}
-
-func visualColumn(s string, runeCol int) int {
-	r := []rune(s)
-	if runeCol > len(r) {
-		runeCol = len(r)
-	}
-	return runewidth.StringWidth(string(r[:runeCol]))
 }
 
 func visibleWidth(s string) int {
@@ -1150,7 +1134,7 @@ func wrapLine(s string, width int, cont string) []string {
 
 		// Token fits on a fresh continuation line; break first, then
 		// emit it whole.
-		if cur.Len() > 0 && !(firstLine && curW == 0) {
+		if cur.Len() > 0 && (!firstLine || curW != 0) {
 			trimmed := strings.TrimRight(cur.String(), " \t")
 			cur.Reset()
 			cur.WriteString(trimmed)

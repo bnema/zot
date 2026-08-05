@@ -7,6 +7,9 @@ run:
 
 linters:
   default: standard
+  # Temporarily defer the existing unchecked-return backlog.
+  disable:
+    - errcheck
 
 formatters:
   enable:

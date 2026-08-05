@@ -25,9 +25,6 @@ type Renderer struct {
 	cursorRow int
 	cursorCol int
 
-	// hideCursor when true prevents ShowCursor from being emitted.
-	hideCursor bool
-
 	// prevHadImage tracks whether the previous frame contained an
 	// inline-image escape so we can force a full clear+repaint whenever
 	// the image set changes. Only matters when inline images are
@@ -823,29 +820,4 @@ func sameLines(a, b []string) bool {
 		}
 	}
 	return true
-}
-
-func writeBlock(w *strings.Builder, lines []string) {
-	for i, line := range lines {
-		w.WriteString("\x1b[0m")
-		w.WriteString(SeqClearLine)
-		w.WriteString(line)
-		if i < len(lines)-1 {
-			w.WriteString("\r\n")
-		}
-	}
-}
-
-func tailTruncated(lines []string, maxRows, cols int) []string {
-	if maxRows <= 0 {
-		return nil
-	}
-	if len(lines) > maxRows {
-		lines = lines[len(lines)-maxRows:]
-	}
-	out := make([]string, len(lines))
-	for i, line := range lines {
-		out[i] = truncateToWidth(line, cols)
-	}
-	return out
 }

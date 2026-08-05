@@ -545,7 +545,7 @@ func (c *geminiClient) runStream(ctx context.Context, resp *http.Response, req R
 		currentText      *blockEntry
 		currentReasoning *blockEntry
 		usage            Usage
-		stop             StopReason = StopEnd
+		stop             = StopEnd
 		finalErr         error
 		toolCounter      int
 	)
