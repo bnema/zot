@@ -105,7 +105,7 @@ func TestStatusBarReasoningLevelBetweenModelAndStats(t *testing.T) {
 
 func TestStatusBarUsesReasoningMaxThemeColor(t *testing.T) {
 	th := Dark
-	th.ThinkingMax = 201
+	th.ThinkingMax = Color256(201)
 	lines := StatusBar(StatusBarParams{
 		Theme: th, Provider: "openai", Model: "gpt-5.6-sol", Reasoning: "max", Cols: 200,
 	})

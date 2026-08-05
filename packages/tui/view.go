@@ -691,10 +691,10 @@ func (v *View) renderMessage(m provider.Message, width int, turnOpen bool) []str
 		if innerWidth < 1 {
 			innerWidth = 1
 		}
+		bar := v.Theme.BG(v.Theme.UserBubbleBG, v.Theme.FGColor(v.Theme.Accent, "▌ "))
 		row := func(content string) string {
 			inner := strings.Repeat(" ", leftGutter) + content
 			padded := v.Theme.UserBubble(inner, width-2)
-			bar := v.Theme.BG(v.Theme.UserBubbleBG, v.Theme.FG256(v.Theme.Accent, "▌ "))
 			return bar + padded
 		}
 		if v.CompactUser || v.CompactMode {
@@ -708,9 +708,9 @@ func (v *View) renderMessage(m provider.Message, width int, turnOpen bool) []str
 			}
 			row = func(content string) string {
 				if v.CompactMode {
-					content = v.Theme.FG256(v.Theme.Muted, content)
+					content = v.Theme.FGColor(v.Theme.Muted, content)
 				}
-				return v.Theme.FG256(v.Theme.Accent, "▌ ") + content
+				return v.Theme.FGColor(v.Theme.Accent, "▌ ") + content
 			}
 		}
 		var bubble []string
@@ -978,7 +978,7 @@ func (v *View) renderToolCall(tc ToolCallView, width int) []string {
 // renderLiveToolResult uses the transcript's text renderer so every rich
 // confirmation preview immediately gets the same colors, numbered gutters,
 // and syntax highlighting as its final tool result.
-func (v *View) renderLiveToolResult(text string, width, color int, sourcePath string) []string {
+func (v *View) renderLiveToolResult(text string, width int, color TerminalColor, sourcePath string) []string {
 	return v.renderToolText(text, width, color, sourcePath, 1)
 }
 
@@ -1368,8 +1368,9 @@ func toolBoxSide(th Theme, line string, width int) string {
 		w = 12
 	}
 	margin := strings.Repeat(" ", toolBoxOuterMargin)
-	left := th.FG256(th.Muted, "│") + strings.Repeat(" ", toolBoxInnerPad)
-	right := strings.Repeat(" ", toolBoxInnerPad) + th.FG256(th.Muted, "│")
+	mutedEdge := th.FGColor(th.Muted, "│")
+	left := mutedEdge + strings.Repeat(" ", toolBoxInnerPad)
+	right := strings.Repeat(" ", toolBoxInnerPad) + mutedEdge
 	inner := w - 2 - 2*toolBoxInnerPad // available between the two pads
 	line = trimLeadingSpaces(line, toolBoxBodyTrimLeft)
 
@@ -1404,8 +1405,9 @@ func toolBoxSideWithImage(th Theme, line string, imgCells, width int) string {
 		w = 12
 	}
 	margin := strings.Repeat(" ", toolBoxOuterMargin)
-	left := th.FG256(th.Muted, "│") + strings.Repeat(" ", toolBoxInnerPad)
-	right := strings.Repeat(" ", toolBoxInnerPad) + th.FG256(th.Muted, "│")
+	mutedEdge := th.FGColor(th.Muted, "│")
+	left := mutedEdge + strings.Repeat(" ", toolBoxInnerPad)
+	right := strings.Repeat(" ", toolBoxInnerPad) + mutedEdge
 	inner := w - 2 - 2*toolBoxInnerPad
 
 	line = trimLeadingSpaces(line, toolBoxBodyTrimLeft)
@@ -1467,7 +1469,7 @@ func trimLeadingSpaces(s string, n int) string {
 // like a unified diff gets +/- coloring. Image blocks are rendered
 // inline when the terminal supports a protocol, else as a text
 // placeholder with dimensions.
-func (v *View) renderToolResultContent(blocks []provider.Content, width, color int, sourcePath string, startLine int) []string {
+func (v *View) renderToolResultContent(blocks []provider.Content, width int, color TerminalColor, sourcePath string, startLine int) []string {
 	var body []string
 	hasImage := false
 	for _, b := range blocks {
@@ -1511,7 +1513,7 @@ func (v *View) collapseToolBody(lines []string, hasImage bool) []string {
 // text contains a unified-diff section (lines starting with "--- " /
 // "+++ " / "+" / "-"/" "), those rows are styled with add/remove
 // colors matching git diff conventions.
-func (v *View) renderToolText(text string, width, defaultColor int, sourcePath string, startLine int) []string {
+func (v *View) renderToolText(text string, width int, defaultColor TerminalColor, sourcePath string, startLine int) []string {
 	// Legacy path: transcripts saved before we dropped line numbers
 	// from the read tool still carry "     1\t..." prefixes. Detect and
 	// strip them, then fall through to the highlighter.
@@ -1647,7 +1649,7 @@ func parseHunkHeader(l string) (oldStart, newStart int, ok bool) {
 // rows use a blank gutter so wrapped content cannot be mistaken for another
 // source line. Code is syntax-highlighted if sourcePath hints at a known
 // language and otherwise uses the diff color.
-func (v *View) renderDiffRow(line string, width, color int, lineNo int, mark byte, sourcePath string) []string {
+func (v *View) renderDiffRow(line string, width int, color TerminalColor, lineNo int, mark byte, sourcePath string) []string {
 	if len(line) == 0 {
 		return []string{""}
 	}
@@ -1901,7 +1903,7 @@ func (v *View) renderNumberedFile(text, sourcePath string) []string {
 // line in the accent color, the trailing "[exit N]  Took X.Ys" line
 // in muted type, everything else on the default tool-output color.
 // Called from renderToolText when the first line starts with "$ ".
-func (v *View) renderBashResult(lines []string, width, defaultColor int) []string {
+func (v *View) renderBashResult(lines []string, width int, defaultColor TerminalColor) []string {
 	lines = normalizeBashOutputLines(lines)
 	// Identify the footer line (exit + timing). The bash tool writes
 	// it as the last non-empty line of the result.
@@ -2607,7 +2609,7 @@ func appendWrappedStatusLines(lines []string, th Theme, pad, modelText, fastText
 	return lines
 }
 
-func reasoningStatusColor(th Theme, reasoningText string) int {
+func reasoningStatusColor(th Theme, reasoningText string) TerminalColor {
 	if strings.HasSuffix(reasoningText, ": max") {
 		return th.ThinkingMax
 	}
@@ -2631,7 +2633,7 @@ func reasoningLevelLabel(level string) string {
 
 // contextUsage renders the "N%/ctxMax" fragment, returning the
 // rendered string plus the colour to wrap it in.
-func contextUsage(th Theme, used, max int) (string, int) {
+func contextUsage(th Theme, used, max int) (string, TerminalColor) {
 	if max <= 0 {
 		if used <= 0 {
 			return "", th.Muted

@@ -11,7 +11,10 @@ import (
 
 func newNotesTestInteractive() *Interactive {
 	i := &Interactive{dirty: make(chan struct{}, 1)}
-	i.cfg.Theme = tui.Theme{Muted: 8, Warning: 3, Error: 1, Tool: 2, Accent: 4}
+	i.cfg.Theme = tui.Theme{
+		Muted: tui.Color256(8), Warning: tui.Color256(3), Error: tui.Color256(1),
+		Tool: tui.Color256(2), Accent: tui.Color256(4),
+	}
 	return i
 }
 

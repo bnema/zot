@@ -63,13 +63,13 @@ func InputBlock(th Theme, lines []string, width int) []string {
 	if bubbleW < 1 {
 		bubbleW = 1
 	}
+	bg := th.sgrBGColor(th.UserBubbleBG)
+	bar := bg + th.FGColor(th.Accent, "▌ ")
 	row := func(content string) string {
 		visible := visibleWidth(content)
 		if visible < bubbleW {
 			content += strings.Repeat(" ", bubbleW-visible)
 		}
-		bg := th.sgrBGColor(th.UserBubbleBG)
-		bar := bg + th.FG256(th.Accent, "▌ ")
 		body := bg + strings.ReplaceAll(content, reset, reset+bg) + reset
 		return bar + body
 	}

@@ -329,7 +329,10 @@ func TestLoadRemoteZotfileDownloadsTemporaryGitHubArchive(t *testing.T) {
 }
 
 func TestFormatZotfileConsentUsesThemeColors(t *testing.T) {
-	th := tui.Theme{FG: 1, Muted: 2, Accent: 3, Assistant: 4, Warning: 5}
+	th := tui.Theme{
+		FG: tui.Color256(1), Muted: tui.Color256(2), Accent: tui.Color256(3),
+		Assistant: tui.Color256(4), Warning: tui.Color256(5),
+	}
 	zf := zotfileLoaded{}
 	zf.Manifest.Name = "reviewer"
 	zf.Manifest.Version = "1.2.3"

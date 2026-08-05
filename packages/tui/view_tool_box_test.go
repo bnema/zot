@@ -8,7 +8,7 @@ import (
 func TestToolBoxSideTruncationPreservesANSIColor(t *testing.T) {
 	const width = 32
 	const contentColor = 196
-	line := "    " + Dark.FG256(contentColor, strings.Repeat("x", 80))
+	line := "    " + Dark.FG256(Color256(contentColor), strings.Repeat("x", 80))
 
 	got := toolBoxSide(Dark, line, width)
 	if !strings.Contains(got, sgrFG(contentColor)) {

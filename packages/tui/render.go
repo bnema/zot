@@ -73,7 +73,8 @@ type Renderer struct {
 	// row-writing boundary. In particular, Theme.Background is painted
 	// as a full-width row background without making every View renderer
 	// know about terminal padding and reset semantics.
-	theme Theme
+	theme           Theme
+	backgroundStyle string
 }
 
 // NewRenderer returns a renderer that writes to out.
@@ -94,6 +95,7 @@ func NewRenderer(out io.Writer) *Renderer {
 // background affects every row, so cached frame state is invalidated.
 func (r *Renderer) SetTheme(th Theme) {
 	r.theme = th
+	r.backgroundStyle = th.BackgroundStyle()
 	r.Invalidate()
 }
 
@@ -224,16 +226,15 @@ func imageFootprintBlank(s string) bool {
 // background reaches the right edge, and re-applies the background
 // after full SGR resets inside the row so local styling does not punch
 // transparent holes through the global tint.
-func paintBackgroundRow(line string, cols int, th Theme) string {
-	bg := th.BackgroundStyle()
-	if bg == "" || cols <= 0 || containsImageEscape(line) {
+func paintBackgroundRow(line string, cols int, background string) string {
+	if background == "" || cols <= 0 || containsImageEscape(line) {
 		return line
 	}
-	line = strings.ReplaceAll(line, reset, reset+bg)
+	line = strings.ReplaceAll(line, reset, reset+background)
 	if w := visibleWidth(line); w < cols {
 		line += strings.Repeat(" ", cols-w)
 	}
-	return bg + line + reset
+	return background + line + reset
 }
 
 // truncateToWidth clips s so its on-screen width doesn't exceed cols
@@ -322,11 +323,11 @@ func (r *Renderer) Draw(lines []string, cursorRow, cursorCol int) {
 		frame[i] = ""
 	}
 	for i, line := range visible {
-		frame[top+i] = paintBackgroundRow(truncateToWidth(line, r.cols), r.cols, r.theme)
+		frame[top+i] = paintBackgroundRow(truncateToWidth(line, r.cols), r.cols, r.backgroundStyle)
 	}
 	if r.theme.Background != nil {
 		for i := 0; i < top; i++ {
-			frame[i] = paintBackgroundRow("", r.cols, r.theme)
+			frame[i] = paintBackgroundRow("", r.cols, r.backgroundStyle)
 		}
 	}
 
@@ -371,7 +372,7 @@ func (r *Renderer) Draw(lines []string, cursorRow, cursorCol int) {
 	// overwrites, leaving ghost highlights behind.
 	hasSelection := false
 	if r.theme.Background == nil {
-		selectionBG := r.theme.bgPrefix(Color256(r.theme.SelectionBG))
+		selectionBG := r.theme.bgPrefix(r.theme.SelectionBG)
 		for _, l := range frame {
 			if selectionBG != "" && strings.Contains(l, selectionBG) {
 				hasSelection = true
@@ -431,11 +432,11 @@ func (r *Renderer) DrawLog(chat, bottom []string, cursorBottomRow, cursorCol int
 	}
 	chatFrame := make([]string, len(chat))
 	for i, line := range chat {
-		chatFrame[i] = paintBackgroundRow(truncateToWidth(line, r.cols), r.cols, r.theme)
+		chatFrame[i] = paintBackgroundRow(truncateToWidth(line, r.cols), r.cols, r.backgroundStyle)
 	}
 	bottomFrame := make([]string, len(bottom))
 	for i, line := range bottom {
-		bottomFrame[i] = paintBackgroundRow(truncateToWidth(line, r.cols), r.cols, r.theme)
+		bottomFrame[i] = paintBackgroundRow(truncateToWidth(line, r.cols), r.cols, r.backgroundStyle)
 	}
 
 	// Always reserve one real row below the editor/status band. This is
@@ -447,7 +448,7 @@ func (r *Renderer) DrawLog(chat, bottom []string, cursorBottomRow, cursorCol int
 	lines = append(lines, chatFrame...)
 	lines = append(lines, bottomFrame...)
 	for range bottomMarginRows {
-		lines = append(lines, paintBackgroundRow("", r.cols, r.theme))
+		lines = append(lines, paintBackgroundRow("", r.cols, r.backgroundStyle))
 	}
 	// In main-screen flow mode zot normally emits only its logical
 	// content rows and leaves the rest of the terminal viewport alone.
@@ -457,7 +458,7 @@ func (r *Renderer) DrawLog(chat, bottom []string, cursorBottomRow, cursorCol int
 	// default transparent case.
 	if r.theme.Background != nil {
 		for len(lines) < r.rows {
-			lines = append(lines, paintBackgroundRow("", r.cols, r.theme))
+			lines = append(lines, paintBackgroundRow("", r.cols, r.backgroundStyle))
 		}
 	}
 	if len(lines) == 0 {
