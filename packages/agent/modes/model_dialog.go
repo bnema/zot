@@ -153,13 +153,13 @@ func (d *modelDialog) Render(th tui.Theme, width int) []string {
 	} else {
 		hint += " - type to filter"
 	}
-	lines = append(lines, th.FG256(th.Muted, hint))
+	lines = append(lines, th.FGColor(th.Muted, hint))
 	if d.showReasoning {
 		reasoning := d.reasoning
 		if reasoning == "" {
 			reasoning = "off"
 		}
-		lines = append(lines, th.FG256(th.Muted, "✦ supports reasoning; current reasoning: "+reasoning+"; change with /reasoning"))
+		lines = append(lines, th.FGColor(th.Muted, "✦ supports reasoning; current reasoning: "+reasoning+"; change with /reasoning"))
 	}
 
 	if len(d.view) == 0 {
@@ -167,7 +167,7 @@ func (d *modelDialog) Render(th tui.Theme, width int) []string {
 		if len(d.all) == 0 {
 			msg = "  no credentials found - run /login to add an api key or subscription"
 		}
-		lines = append(lines, th.FG256(th.Muted, msg))
+		lines = append(lines, th.FGColor(th.Muted, msg))
 		lines = append(lines, frameRule(th, width))
 		return lines
 	}
@@ -217,18 +217,18 @@ func (d *modelDialog) Render(th tui.Theme, width int) []string {
 		if i == d.cursor {
 			lines = append(lines, th.PadHighlight(plain, width))
 		} else {
-			lines = append(lines, th.FG256(th.Muted, plain))
+			lines = append(lines, th.FGColor(th.Muted, plain))
 		}
 	}
 
 	if start > 0 {
-		lines = append(lines, th.FG256(th.Muted, fmt.Sprintf("   ... %d more above", start)))
+		lines = append(lines, th.FGColor(th.Muted, fmt.Sprintf("   ... %d more above", start)))
 	}
 	if end < len(d.view) {
-		lines = append(lines, th.FG256(th.Muted, fmt.Sprintf("   ... %d more below", len(d.view)-end)))
+		lines = append(lines, th.FGColor(th.Muted, fmt.Sprintf("   ... %d more below", len(d.view)-end)))
 	}
 	if len(d.view) > visible {
-		lines = append(lines, th.FG256(th.Muted, fmt.Sprintf("   (%d/%d)", d.cursor+1, len(d.view))))
+		lines = append(lines, th.FGColor(th.Muted, fmt.Sprintf("   (%d/%d)", d.cursor+1, len(d.view))))
 	}
 
 	lines = append(lines, frameRule(th, width))

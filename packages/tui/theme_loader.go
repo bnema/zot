@@ -79,23 +79,23 @@ func (m *ThemeFileColorModes) UnmarshalJSON(data []byte) error {
 // override only the colors it cares about and inherit the built-in
 // dark/light defaults for everything else.
 type ThemeOverrides struct {
-	FG                *int                 `json:"fg,omitempty"`
-	Muted             *int                 `json:"muted,omitempty"`
-	Accent            *int                 `json:"accent,omitempty"`
+	FG                *TerminalColorValue  `json:"fg,omitempty"`
+	Muted             *TerminalColorValue  `json:"muted,omitempty"`
+	Accent            *TerminalColorValue  `json:"accent,omitempty"`
 	Background        *TerminalColorValue  `json:"background,omitempty"`
-	User              *int                 `json:"user,omitempty"`
+	User              *TerminalColorValue  `json:"user,omitempty"`
 	UserBubbleBG      *TerminalColorValue  `json:"user_bubble_bg,omitempty"`
-	UserBubbleFG      *int                 `json:"user_bubble_fg,omitempty"`
-	Assistant         *int                 `json:"assistant,omitempty"`
-	Tool              *int                 `json:"tool,omitempty"`
-	ToolOut           *int                 `json:"tool_out,omitempty"`
-	Error             *int                 `json:"error,omitempty"`
-	Warning           *int                 `json:"warning,omitempty"`
-	Spinner           *int                 `json:"spinner,omitempty"`
-	ThinkingMax       *int                 `json:"thinking_max,omitempty"`
-	ThinkingMaxCamel  *int                 `json:"thinkingMax,omitempty"`
-	SelectionBG       *int                 `json:"selection_bg,omitempty"`
-	SelectionFG       *int                 `json:"selection_fg,omitempty"`
+	UserBubbleFG      *TerminalColorValue  `json:"user_bubble_fg,omitempty"`
+	Assistant         *TerminalColorValue  `json:"assistant,omitempty"`
+	Tool              *TerminalColorValue  `json:"tool,omitempty"`
+	ToolOut           *TerminalColorValue  `json:"tool_out,omitempty"`
+	Error             *TerminalColorValue  `json:"error,omitempty"`
+	Warning           *TerminalColorValue  `json:"warning,omitempty"`
+	Spinner           *TerminalColorValue  `json:"spinner,omitempty"`
+	ThinkingMax       *TerminalColorValue  `json:"thinking_max,omitempty"`
+	ThinkingMaxCamel  *TerminalColorValue  `json:"thinkingMax,omitempty"`
+	SelectionBG       *TerminalColorValue  `json:"selection_bg,omitempty"`
+	SelectionFG       *TerminalColorValue  `json:"selection_fg,omitempty"`
 	SpinnerFrames     []string             `json:"spinner_frames,omitempty"`
 	SpinnerMessages   []string             `json:"spinner_messages,omitempty"`
 	SpinnerIntervalMS *int                 `json:"spinner_interval_ms,omitempty"`
@@ -187,51 +187,34 @@ func InheritedTheme(detected Theme) Theme {
 	}
 	t := withTerminalProfile(base, detected)
 	t.Inherited = true
-	t.ColorMode = ColorMode256
-	if t.Terminal.TrueColor {
-		t.ColorMode = ColorModeTrueColor
-	}
 
 	if t.Terminal.HasForeground {
-		t.FG = terminalColorIndex(t.Terminal.Foreground)
+		t.FG = t.Terminal.Foreground
 	}
 
 	accentFallback := t.Accent
 	if IsLightTheme(t) {
 		accentFallback = Light.Accent
 	}
-	t.Accent = terminalPaletteIndex(t.Terminal, accentFallback, 12, 4, 14, 6, 13, 5)
+	t.Accent = terminalPaletteColor(t.Terminal, accentFallback,
+		ansiBrightBlue, ansiBlue, ansiBrightCyan, ansiCyan, ansiBrightMagenta, ansiMagenta)
 	t.Assistant = t.Accent
-	t.Tool = terminalPaletteIndex(t.Terminal, t.Tool, 10, 2)
-	t.Error = terminalPaletteIndex(t.Terminal, t.Error, 9, 1)
-	t.Warning = terminalPaletteIndex(t.Terminal, t.Warning, 11, 3)
-	t.Spinner = terminalPaletteIndex(t.Terminal, t.Spinner, 13, 5)
-	t.ThinkingMax = terminalPaletteIndex(t.Terminal, t.ThinkingMax, 13, 5)
-	t.User = terminalPaletteIndex(t.Terminal, t.User, 11, 3)
+	t.Tool = terminalPaletteColor(t.Terminal, t.Tool, ansiBrightGreen, ansiGreen)
+	t.Error = terminalPaletteColor(t.Terminal, t.Error, ansiBrightRed, ansiRed)
+	t.Warning = terminalPaletteColor(t.Terminal, t.Warning, ansiBrightYellow, ansiYellow)
+	t.Spinner = terminalPaletteColor(t.Terminal, t.Spinner, ansiBrightMagenta, ansiMagenta)
+	t.ThinkingMax = terminalPaletteColor(t.Terminal, t.ThinkingMax, ansiBrightMagenta, ansiMagenta)
+	t.User = terminalPaletteColor(t.Terminal, t.User, ansiBrightYellow, ansiYellow)
 
 	if t.Terminal.HasForeground && t.Terminal.HasBackground {
-		t.Muted = terminalColorIndex(t.DimColor(t.FG, 45))
+		t.Muted = t.DimColor(t.FG, 45)
 		t.ToolOut = t.Muted
 		background := t.Terminal.Background
 		foreground := t.Terminal.Foreground
 		t.UserBubbleBG = blendTerminalColors(background, foreground, 12)
-		t.SelectionBG = terminalColorIndex(blendTerminalColors(background, foreground, 25))
+		t.SelectionBG = blendTerminalColors(background, foreground, 25)
 	}
 
-	// FG256 receives an index rather than a semantic role. Keep the inherited
-	// foreground index distinct from accent/status roles so a terminal whose
-	// default foreground happens to be ANSI blue does not recolor every blue
-	// accent as the terminal default foreground.
-	if t.Terminal.HasForeground {
-		used := map[int]bool{
-			t.Muted: true, t.Accent: true, t.Assistant: true, t.Tool: true,
-			t.ToolOut: true, t.Error: true, t.Warning: true, t.Spinner: true,
-			t.ThinkingMax: true, t.User: true, t.SelectionBG: true,
-		}
-		if used[t.FG] {
-			t.FG = nearestXtermColorExcluding(t.Terminal.Foreground, used)
-		}
-	}
 	t.UserBubbleFG = t.FG
 	t.SelectionFG = t.FG
 
@@ -247,26 +230,33 @@ func withTerminalProfile(base, detected Theme) Theme {
 	return base
 }
 
-func terminalPaletteIndex(profile TerminalProfile, fallback int, preferred ...int) int {
+// Standard ANSI palette slots used as inherited role preferences.
+const (
+	ansiRed           = 1
+	ansiGreen         = 2
+	ansiYellow        = 3
+	ansiBlue          = 4
+	ansiMagenta       = 5
+	ansiCyan          = 6
+	ansiBrightRed     = 9
+	ansiBrightGreen   = 10
+	ansiBrightYellow  = 11
+	ansiBrightBlue    = 12
+	ansiBrightMagenta = 13
+	ansiBrightCyan    = 14
+)
+
+func terminalPaletteColor(profile TerminalProfile, fallback TerminalColor, preferred ...int) TerminalColor {
 	for _, index := range preferred {
 		if _, ok := profile.PaletteColor(index); ok {
-			return index
+			// Keep the palette slot as the semantic value. Truecolor
+			// resolution expands it back to the terminal-reported RGB;
+			// 256-color output preserves the slot rather than re-quantizing
+			// the reported RGB to a nearby cube entry.
+			return Color256(index)
 		}
 	}
 	return fallback
-}
-
-func terminalColorIndex(color TerminalColor) int {
-	if color.Mode == terminalColor256 {
-		return clampXtermIndex(color.Index)
-	}
-	if color.Mode == terminalColorANSI {
-		if index, ok := ansiSGRToXtermIndex(color.Index); ok {
-			return index
-		}
-		return 0
-	}
-	return nearestXtermColor(color.R, color.G, color.B)
 }
 
 func blendTerminalColors(from, to TerminalColor, percent int) TerminalColor {
@@ -278,27 +268,6 @@ func blendTerminalColors(from, to TerminalColor, percent int) TerminalColor {
 		blendChannel(fromRGB[1], toRGB[1], percent),
 		blendChannel(fromRGB[2], toRGB[2], percent),
 	)
-}
-
-func nearestXtermColorExcluding(color TerminalColor, excluded map[int]bool) int {
-	rgb, _ := rgbForTerminalColor(color)
-	best := 0
-	bestDistance := int(^uint(0) >> 1)
-	for index := 0; index < 256; index++ {
-		if excluded[index] {
-			continue
-		}
-		cr, cg, cb := xterm256RGB(index)
-		dr := rgb[0] - cr
-		dg := rgb[1] - cg
-		db := rgb[2] - cb
-		distance := dr*dr + dg*dg + db*db
-		if distance < bestDistance {
-			best = index
-			bestDistance = distance
-		}
-	}
-	return best
 }
 
 // LoadThemeFromHome applies a custom theme from $ZOT_HOME/themes/*.json
@@ -480,55 +449,55 @@ func themeFilesIn(dir string) ([]string, error) {
 
 func applyThemeOverrides(th Theme, o ThemeOverrides) Theme {
 	if o.FG != nil {
-		th.FG = *o.FG
+		th.FG = o.FG.TerminalColor
 	}
 	if o.Muted != nil {
-		th.Muted = *o.Muted
+		th.Muted = o.Muted.TerminalColor
 	}
 	if o.Accent != nil {
-		th.Accent = *o.Accent
+		th.Accent = o.Accent.TerminalColor
 	}
 	if o.Background != nil {
 		bg := o.Background.TerminalColor
 		th.Background = &bg
 	}
 	if o.User != nil {
-		th.User = *o.User
+		th.User = o.User.TerminalColor
 	}
 	if o.UserBubbleBG != nil {
 		th.UserBubbleBG = o.UserBubbleBG.TerminalColor
 	}
 	if o.UserBubbleFG != nil {
-		th.UserBubbleFG = *o.UserBubbleFG
+		th.UserBubbleFG = o.UserBubbleFG.TerminalColor
 	}
 	if o.Assistant != nil {
-		th.Assistant = *o.Assistant
+		th.Assistant = o.Assistant.TerminalColor
 	}
 	if o.Tool != nil {
-		th.Tool = *o.Tool
+		th.Tool = o.Tool.TerminalColor
 	}
 	if o.ToolOut != nil {
-		th.ToolOut = *o.ToolOut
+		th.ToolOut = o.ToolOut.TerminalColor
 	}
 	if o.Error != nil {
-		th.Error = *o.Error
+		th.Error = o.Error.TerminalColor
 	}
 	if o.Warning != nil {
-		th.Warning = *o.Warning
+		th.Warning = o.Warning.TerminalColor
 	}
 	if o.Spinner != nil {
-		th.Spinner = *o.Spinner
+		th.Spinner = o.Spinner.TerminalColor
 	}
 	if o.ThinkingMax != nil {
-		th.ThinkingMax = *o.ThinkingMax
+		th.ThinkingMax = o.ThinkingMax.TerminalColor
 	} else if o.ThinkingMaxCamel != nil {
-		th.ThinkingMax = *o.ThinkingMaxCamel
+		th.ThinkingMax = o.ThinkingMaxCamel.TerminalColor
 	}
 	if o.SelectionBG != nil {
-		th.SelectionBG = *o.SelectionBG
+		th.SelectionBG = o.SelectionBG.TerminalColor
 	}
 	if o.SelectionFG != nil {
-		th.SelectionFG = *o.SelectionFG
+		th.SelectionFG = o.SelectionFG.TerminalColor
 	}
 	if len(o.SpinnerFrames) > 0 {
 		th.SpinnerFrames = append([]string(nil), o.SpinnerFrames...)

@@ -33,12 +33,12 @@ func renderUpdateBanner(th tui.Theme, info UpdateInfo, width int) []string {
 	out = append(out, "")
 
 	title := fmt.Sprintf("zot %s is available (you're on %s).", info.Latest, info.Current)
-	out = append(out, "  "+th.FG256(color, tui.Bold(title)))
+	out = append(out, "  "+th.FGColor(color, tui.Bold(title)))
 	out = append(out, "")
-	out = append(out, "  "+th.FG256(th.Muted, "run: ")+th.FG256(color, "zot update"))
+	out = append(out, "  "+th.FGColor(th.Muted, "run: ")+th.FGColor(color, "zot update"))
 
 	if info.URL != "" {
-		out = append(out, "  "+th.FG256(th.Muted, "changelog: ")+th.FG256(color, info.URL))
+		out = append(out, "  "+th.FGColor(th.Muted, "changelog: ")+th.FGColor(color, info.URL))
 	}
 
 	out = append(out, "")

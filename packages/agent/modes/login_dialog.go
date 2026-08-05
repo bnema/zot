@@ -135,13 +135,13 @@ func (d *loginDialog) Render(th tui.Theme, width int) []string {
 		}
 		lines = append(lines, frameHeader(th, "login", width))
 		lines = append(lines, d.renderStatusLines(th)...)
-		lines = append(lines, th.FG256(th.Muted, "choose login method (↑/↓, enter, esc to cancel):"))
+		lines = append(lines, th.FGColor(th.Muted, "choose login method (↑/↓, enter, esc to cancel):"))
 		for i, o := range opts {
 			plain := "  " + o
 			if i == d.cursor {
 				lines = append(lines, th.PadHighlight(plain, width))
 			} else {
-				lines = append(lines, th.FG256(th.Muted, plain))
+				lines = append(lines, th.FGColor(th.Muted, plain))
 			}
 		}
 		lines = append(lines, frameRule(th, width))
@@ -156,7 +156,7 @@ func (d *loginDialog) Render(th tui.Theme, width int) []string {
 				hint = fmt.Sprintf("filter: %s (%d matches)", d.providerQuery, len(opts))
 			}
 		}
-		lines = append(lines, th.FG256(th.Muted, hint))
+		lines = append(lines, th.FGColor(th.Muted, hint))
 		start, end := d.providerPage(len(opts))
 		for i := start; i < end; i++ {
 			o := opts[i]
@@ -170,81 +170,81 @@ func (d *loginDialog) Render(th tui.Theme, width int) []string {
 			if i == d.cursor {
 				lines = append(lines, th.PadHighlight(plain, width))
 			} else {
-				lines = append(lines, th.FG256(th.Muted, label)+th.FG256(th.Accent, tag))
+				lines = append(lines, th.FGColor(th.Muted, label)+th.FGColor(th.Accent, tag))
 			}
 		}
 		if len(opts) == 0 {
-			lines = append(lines, th.FG256(th.Muted, "  no providers match "+fmt.Sprintf("%q", d.providerQuery)))
+			lines = append(lines, th.FGColor(th.Muted, "  no providers match "+fmt.Sprintf("%q", d.providerQuery)))
 		} else if len(opts) > loginProviderPageSize {
-			lines = append(lines, th.FG256(th.Muted, fmt.Sprintf("  (%d/%d)", d.cursor+1, len(opts))))
+			lines = append(lines, th.FGColor(th.Muted, fmt.Sprintf("  (%d/%d)", d.cursor+1, len(opts))))
 		}
 		lines = append(lines, frameRule(th, width))
 	case loginStepLlamaURL:
 		lines = append(lines, frameHeader(th, "login - api key - llama.cpp", width))
-		lines = append(lines, th.FG256(th.Muted, "llama.cpp router URL:"))
+		lines = append(lines, th.FGColor(th.Muted, "llama.cpp router URL:"))
 		if d.llamaEd == nil {
 			d.llamaEd = tui.NewEditor(th.AccentBar(th.Accent))
 		}
 		edLines, _, _ := d.llamaEd.Render(width - 2)
 		lines = append(lines, edLines...)
 		if d.message != "" {
-			lines = append(lines, th.FG256(th.Error, d.message))
+			lines = append(lines, th.FGColor(th.Error, d.message))
 		}
-		lines = append(lines, "", th.FG256(th.Muted, "enter continues - esc cancels"), frameRule(th, width))
+		lines = append(lines, "", th.FGColor(th.Muted, "enter continues - esc cancels"), frameRule(th, width))
 	case loginStepLlamaKey:
 		lines = append(lines, frameHeader(th, "login - api key - llama.cpp", width))
-		lines = append(lines, th.FG256(th.Muted, "router: "+d.llamaURL), "", th.FG256(th.Muted, "API key (optional):"))
+		lines = append(lines, th.FGColor(th.Muted, "router: "+d.llamaURL), "", th.FGColor(th.Muted, "API key (optional):"))
 		if d.llamaEd == nil {
 			d.llamaEd = tui.NewEditor(th.AccentBar(th.Accent))
 		}
 		d.llamaEd.Mask = true
 		edLines, _, _ := d.llamaEd.Render(width - 2)
 		lines = append(lines, edLines...)
-		lines = append(lines, "", th.FG256(th.Muted, "enter saves - esc cancels"), frameRule(th, width))
+		lines = append(lines, "", th.FGColor(th.Muted, "enter saves - esc cancels"), frameRule(th, width))
 	case loginStepWaiting:
 		lines = append(lines, frameHeader(th, "login - "+d.method+" - "+providerLabel(d.provider), width))
-		lines = append(lines, th.FG256(th.Muted, "open this URL in a browser:"))
+		lines = append(lines, th.FGColor(th.Muted, "open this URL in a browser:"))
 		wrapW := width - 2
 		if wrapW < 20 {
 			wrapW = 20
 		}
 		for _, seg := range tui.WrapANSILine(d.url, wrapW) {
-			lines = append(lines, th.FG256(th.Accent, seg))
+			lines = append(lines, th.FGColor(th.Accent, seg))
 		}
 		lines = append(lines, "")
 		if d.provider == "kimi" || d.provider == "xai" || d.provider == "github-copilot" {
-			lines = append(lines, th.FG256(th.Muted, "complete sign-in in the browser - esc cancels"))
+			lines = append(lines, th.FGColor(th.Muted, "complete sign-in in the browser - esc cancels"))
 			lines = append(lines, frameRule(th, width))
 			break
 		}
-		lines = append(lines, th.FG256(th.Muted, "paste the authorization code (or full redirect URL / code#state):"))
+		lines = append(lines, th.FGColor(th.Muted, "paste the authorization code (or full redirect URL / code#state):"))
 		if d.codeEd == nil {
 			d.codeEd = tui.NewEditor(th.AccentBar(th.Accent))
 		}
 		edLines, _, _ := d.codeEd.Render(width - 2)
 		lines = append(lines, edLines...)
 		lines = append(lines, "")
-		lines = append(lines, th.FG256(th.Muted, "enter submits - esc cancels - waiting for browser callback in background"))
+		lines = append(lines, th.FGColor(th.Muted, "enter submits - esc cancels - waiting for browser callback in background"))
 		lines = append(lines, frameRule(th, width))
 	case loginStepPasteCode:
 		lines = append(lines, frameHeader(th, "login - "+d.method+" - "+providerLabel(d.provider)+" - paste code", width))
-		lines = append(lines, th.FG256(th.Muted, "open this URL in any browser:"))
+		lines = append(lines, th.FGColor(th.Muted, "open this URL in any browser:"))
 		wrapW := width - 2
 		if wrapW < 20 {
 			wrapW = 20
 		}
 		for _, seg := range tui.WrapANSILine(d.url, wrapW) {
-			lines = append(lines, th.FG256(th.Accent, seg))
+			lines = append(lines, th.FGColor(th.Accent, seg))
 		}
 		lines = append(lines, "")
-		lines = append(lines, th.FG256(th.Muted, "paste the authorization code (or full redirect URL / code#state):"))
+		lines = append(lines, th.FGColor(th.Muted, "paste the authorization code (or full redirect URL / code#state):"))
 		if d.codeEd == nil {
 			d.codeEd = tui.NewEditor(th.AccentBar(th.Accent))
 		}
 		edLines, _, _ := d.codeEd.Render(width - 2)
 		lines = append(lines, edLines...)
 		lines = append(lines, "")
-		lines = append(lines, th.FG256(th.Muted, "enter submits - esc cancels"))
+		lines = append(lines, th.FGColor(th.Muted, "enter submits - esc cancels"))
 		lines = append(lines, frameRule(th, width))
 	case loginStepInfo:
 		title := d.infoTitle
@@ -254,18 +254,18 @@ func (d *loginDialog) Render(th tui.Theme, width int) []string {
 		lines = append(lines, frameHeader(th, title, width))
 		lines = append(lines, d.infoLines...)
 		lines = append(lines, "")
-		lines = append(lines, th.FG256(th.Muted, "press any key to close"))
+		lines = append(lines, th.FGColor(th.Muted, "press any key to close"))
 		lines = append(lines, frameRule(th, width))
 	case loginStepDone:
 		title := "login - failed"
-		body := th.FG256(th.Error, d.message)
+		body := th.FGColor(th.Error, d.message)
 		if d.success {
 			title = "login - success"
-			body = th.FG256(th.Tool, fmt.Sprintf("logged in to %s via %s", providerLabel(d.provider), d.method))
+			body = th.FGColor(th.Tool, fmt.Sprintf("logged in to %s via %s", providerLabel(d.provider), d.method))
 		}
 		lines = append(lines, frameHeader(th, title, width))
 		lines = append(lines, body)
-		lines = append(lines, th.FG256(th.Muted, "press any key to close"))
+		lines = append(lines, th.FGColor(th.Muted, "press any key to close"))
 		lines = append(lines, frameRule(th, width))
 	}
 	return lines
@@ -384,14 +384,14 @@ func (d *loginDialog) renderStatusLines(th tui.Theme) []string {
 		var mark, body string
 		switch method {
 		case "apikey":
-			mark = th.FG256(th.Tool, "✓")
-			body = th.FG256(th.Muted, label+": api key")
+			mark = th.FGColor(th.Tool, "✓")
+			body = th.FGColor(th.Muted, label+": api key")
 		case "oauth":
-			mark = th.FG256(th.Tool, "✓")
-			body = th.FG256(th.Muted, label+": subscription")
+			mark = th.FGColor(th.Tool, "✓")
+			body = th.FGColor(th.Muted, label+": subscription")
 		default:
-			mark = th.FG256(th.Muted, "–")
-			body = th.FG256(th.Muted, label+": not logged in")
+			mark = th.FGColor(th.Muted, "–")
+			body = th.FGColor(th.Muted, label+": not logged in")
 		}
 		return "  " + mark + " " + body
 	}

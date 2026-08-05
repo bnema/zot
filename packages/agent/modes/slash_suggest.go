@@ -492,7 +492,7 @@ func (s *slashSuggester) Render(input string, th tui.Theme, width int) []string 
 			if lw := runewidth.StringWidth(label); lw < width {
 				rule = label + strings.Repeat("─", width-lw)
 			}
-			lines = append(lines, th.FG256(th.Muted, rule))
+			lines = append(lines, th.FGColor(th.Muted, rule))
 			lines = append(lines, "")
 			continue
 		}
@@ -504,13 +504,13 @@ func (s *slashSuggester) Render(input string, th tui.Theme, width int) []string 
 		if i == s.cursor {
 			lines = append(lines, th.PadHighlight(plain, width))
 		} else {
-			lines = append(lines, th.FG256(th.Muted, plain))
+			lines = append(lines, th.FGColor(th.Muted, plain))
 		}
 	}
 	// Blank row before the hint visually detaches it from the
 	// command list and groups it with its trailing blank.
 	lines = append(lines, "")
-	lines = append(lines, th.FG256(th.Muted, "  ↑/↓ navigate - tab complete - enter run"))
+	lines = append(lines, th.FGColor(th.Muted, "  ↑/↓ navigate - tab complete - enter run"))
 	// Blank row after the hint separates the popup from the status
 	// bar / editor below it.
 	lines = append(lines, "")
