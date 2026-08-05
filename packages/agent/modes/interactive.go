@@ -1671,7 +1671,7 @@ func (i *Interactive) redraw() {
 	// in runSlash already handles the busy case per-command: safe
 	// ones run immediately, destructive ones cancel the turn first.
 	i.fileSuggest.SetCWD(i.cfg.CWD)
-	mainInputFocused := len(dialog) == 0 || (i.confirmDialog.Active() && !i.confirmDialog.Focused() && !i.confirmChildActive())
+	mainInputFocused := len(dialog) == 0 || (i.confirmDialog.Active() && !i.confirmDialog.Focused() && !i.confirmChildActiveLocked())
 	if mainInputFocused && i.suggest.Active(currentInput) {
 		suggest = i.suggest.Render(currentInput, i.cfg.Theme, cols)
 	} else if mainInputFocused && i.fileSuggest.Active(currentInput) {
@@ -2346,6 +2346,12 @@ func (i *Interactive) toggleBtwToolExpansion() {
 // confirmChildActive reports whether an interaction opened from slash input
 // currently owns the keyboard while a tool confirmation remains pending.
 func (i *Interactive) confirmChildActive() bool {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	return i.confirmChildActiveLocked()
+}
+
+func (i *Interactive) confirmChildActiveLocked() bool {
 	return len(i.helpBlock) > 0 ||
 		len(i.extNotes) > 0 ||
 		i.dialog.Active() ||

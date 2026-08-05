@@ -53,6 +53,7 @@ type sessionDialog struct {
 	loadingStartedAt time.Time
 	loadGeneration   uint64
 	loadCancel       context.CancelFunc
+	loadDone         chan struct{}
 	loadSlots        []sessionLoadSlot
 
 	// MaxRows is the maximum number of session rows the dialog
@@ -89,6 +90,7 @@ func (d *sessionDialog) Open(parent context.Context, root, cwd string) <-chan se
 	if d.loadCancel != nil {
 		d.loadCancel()
 	}
+	previousDone := d.loadDone
 	if parent == nil {
 		parent = context.Background()
 	}
@@ -96,6 +98,8 @@ func (d *sessionDialog) Open(parent context.Context, root, cwd string) <-chan se
 	d.loadCancel = cancel
 	d.loadGeneration++
 	generation := d.loadGeneration
+	done := make(chan struct{})
+	d.loadDone = done
 	d.sessions = nil
 	d.cursor = 0
 	d.viewTop = 0
@@ -114,6 +118,7 @@ func (d *sessionDialog) Open(parent context.Context, root, cwd string) <-chan se
 		d.loading = false
 		events := make(chan sessionLoadEvent)
 		close(events)
+		close(done)
 		return events
 	}
 
@@ -127,7 +132,11 @@ func (d *sessionDialog) Open(parent context.Context, root, cwd string) <-chan se
 		}
 	}
 	go func() {
+		defer close(done)
 		defer close(events)
+		if previousDone != nil {
+			<-previousDone
+		}
 		select {
 		case <-ctx.Done():
 			return
@@ -404,9 +413,11 @@ func formatSessionRowPlain(s core.SessionSummary, maxWidth int) string {
 	if summary == "" {
 		summary = "(empty)"
 	}
-	summary = strings.ReplaceAll(summary, "\n", " ")
+	provider := sanitizeSessionTreeText(s.Provider)
+	model := sanitizeSessionTreeText(s.Model)
+	summary = sanitizeSessionTreeText(summary)
 	left := fmt.Sprintf("%-14s  %s/%s  %d msgs  $%.4f  ",
-		when, s.Provider, s.Model, s.MessageCount, s.TotalCost)
+		when, provider, model, s.MessageCount, s.TotalCost)
 	room := maxWidth - len([]rune(left))
 	if room < 4 {
 		room = 4
@@ -449,7 +460,7 @@ func (d *sessionDialog) loadingMessage(th tui.Theme) string {
 	if d.loadingTotal > 0 {
 		progress = fmt.Sprintf("loading sessions (%d/%d)", d.loadingDone, d.loadingTotal)
 	}
-	return th.FG256(th.Spinner, frames[idx]) + " " + progress + " (esc cancel)"
+	return th.FG256(th.Spinner, frames[idx]) + " " + th.FG256(th.Muted, progress+" (esc cancel)")
 }
 
 func formatRelative(t time.Time) string {

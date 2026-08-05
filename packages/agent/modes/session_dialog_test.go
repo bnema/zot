@@ -4,11 +4,27 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"unicode"
 
 	"github.com/patriceckhart/zot/packages/core"
 	"github.com/patriceckhart/zot/packages/provider"
 	"github.com/patriceckhart/zot/packages/tui"
 )
+
+func TestFormatSessionRowPlainSanitizesControlBytes(t *testing.T) {
+	row := formatSessionRowPlain(core.SessionSummary{
+		Provider:      "test\x1b]0;bad\a",
+		Model:         "model\x1b[31m",
+		MessageCount:  1,
+		FirstUserText: "hello\x1b[2J\nworld",
+	}, 120)
+	if strings.IndexFunc(row, unicode.IsControl) >= 0 {
+		t.Fatalf("session row contains control characters: %q", row)
+	}
+	if !strings.Contains(row, "hello world") {
+		t.Fatalf("sanitized session text missing: %q", row)
+	}
+}
 
 func TestSessionDialogLoadsEntriesWithoutBlockingOpen(t *testing.T) {
 	root := t.TempDir()
