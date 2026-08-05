@@ -99,6 +99,7 @@ func (i *Interactive) runSwarm(ctx context.Context, args []string) {
 		// Anything that isn't a recognised flag terminates parsing and
 		// the rest becomes the task; only leading flags are consumed.
 		model, provider, reasoning, subagent, task := parseSpawnFlags(rest)
+		var fastModeOverride *bool
 		if task == "" {
 			i.swarmStatus("", "/swarm new: missing task (after any spawn flags)")
 			return
@@ -118,6 +119,7 @@ func (i *Interactive) runSwarm(ctx context.Context, args []string) {
 				return
 			}
 			subagent = profile.Name
+			fastModeOverride = profile.FastMode
 			if model == "" && provider == "" {
 				profileProvider, profileModel := profile.ModelSelection()
 				if profileProvider != "" && profileModel != "" {
@@ -140,7 +142,8 @@ func (i *Interactive) runSwarm(ctx context.Context, args []string) {
 			reasoning = normalizedReasoning
 		}
 		a, err := i.cfg.Swarm.SpawnReq(ctx, swarm.SpawnRequest{
-			Task: task, Model: model, Provider: provider, Reasoning: reasoning, Subagent: subagent,
+			Task: task, Model: model, Provider: provider, Reasoning: reasoning,
+			FastMode: fastModeOverride, Subagent: subagent,
 		})
 		if err != nil {
 			i.swarmStatus("", "spawn: "+err.Error())

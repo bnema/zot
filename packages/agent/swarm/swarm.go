@@ -217,13 +217,18 @@ func (f *Swarm) agentStateDir(id string) string {
 // chosen model regardless of the parent's current selection. A named
 // Subagent is passed to the child as --subagent, where it resolves the
 // markdown profile and applies its instructions. Reasoning is passed
-// as --reasoning when set.
+// as --reasoning when set. FastMode restricts the host setting when a
+// selected profile declares a fastMode preference.
 type SpawnRequest struct {
 	Task      string
 	Model     string // optional override; child resolves default if empty
 	Provider  string // optional override; usually paired with Model
 	Reasoning string // optional reasoning/thinking level override
-	Subagent  string // optional named markdown profile
+	// FastMode is an optional profile restriction. A non-nil false value
+	// disables fast mode for this child; true still cannot enable fast mode
+	// when Config.FastMode is false. Nil inherits Config.FastMode.
+	FastMode *bool
+	Subagent string // optional named markdown profile
 }
 
 // Spawn creates a new Agent for the given task, allocates its
@@ -258,6 +263,9 @@ func (f *Swarm) SpawnReq(ctx context.Context, req SpawnRequest) (*Agent, error) 
 	fastMode := f.cfg.FastMode
 	sessionID := f.activeSession
 	f.mu.Unlock()
+	if req.FastMode != nil {
+		fastMode = fastMode && *req.FastMode
+	}
 
 	stateDir := f.agentStateDir(id)
 	if err := os.MkdirAll(stateDir, 0o755); err != nil {

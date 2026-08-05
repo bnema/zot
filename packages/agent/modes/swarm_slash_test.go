@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/patriceckhart/zot/packages/agent/subagents"
 	"github.com/patriceckhart/zot/packages/agent/swarm"
 )
 
@@ -107,6 +108,37 @@ func TestRunSwarmNewSpawnsAgent(t *testing.T) {
 	}
 	if agents[0].Task != "do stuff" {
 		t.Fatalf("task = %q; want %q", agents[0].Task, "do stuff")
+	}
+}
+
+func TestRunSwarmNamedProfileAppliesFastModeRestriction(t *testing.T) {
+	root := t.TempDir()
+	profileFastMode := false
+	f := swarm.New(swarm.Config{
+		Root:     root,
+		RepoRoot: root,
+		FastMode: true,
+		NewRunner: func(*swarm.Agent) swarm.Runner {
+			return swarm.RunnerFunc(func(ctx context.Context, _ swarm.Sink) error {
+				<-ctx.Done()
+				return ctx.Err()
+			})
+		},
+	})
+	defer f.StopAll()
+	iv := &Interactive{swarmDialog: newSwarmDialog(), dirty: make(chan struct{}, 1)}
+	iv.cfg.Swarm = f
+	iv.cfg.ResolveSubagent = func(name string) (*subagents.Profile, error) {
+		if name != "reviewer" {
+			return nil, nil
+		}
+		return &subagents.Profile{Name: name, FastMode: &profileFastMode}, nil
+	}
+
+	iv.runSwarm(context.Background(), []string{"new", "--agent", "reviewer", "review", "auth"})
+	agents := f.List()
+	if len(agents) != 1 || agents[0].FastMode {
+		t.Fatalf("agent fast mode = %#v, want disabled by profile", agents)
 	}
 }
 

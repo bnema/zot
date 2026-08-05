@@ -29,6 +29,7 @@ thinking: max
 systemPromptMode: replace
 inheritProjectContext: false
 inheritSkills: false
+fastMode: false
 ---
 
 You are a review worker. Inspect the requested scope, report evidence-backed findings, and do not edit files.
@@ -47,6 +48,7 @@ Supported metadata:
 | `systemPromptMode` | `append` (default) or `replace`. |
 | `inheritProjectContext` | Set to `false` to omit `AGENTS.md` context from the child. |
 | `inheritSkills` | Set to `false` to omit skill discovery and the conditional `skill` loader from the child; `--no-skill` has the same effect for a run. |
+| `fastMode` | Optional fast-mode restriction. Omit it to inherit the host setting; `false` disables fast mode for this profile; `true` only permits fast mode when the host setting is enabled. |
 
 Other frontmatter from another agent host is ignored when zot does not have an equivalent setting. For example, `maxSubagentDepth` is currently not enforced by zot.
 
@@ -82,4 +84,4 @@ The interactive command also supports the same selection explicitly:
 /swarm new --agent implementer --reasoning high Implement the parser change
 ```
 
-All swarm children still share the host working directory. Named profiles change the child's instructions and configuration; they do not create a worktree, branch, or security sandbox. When the host has **fast mode** enabled, every child inherits it; non-OpenAI child providers return an unsupported-provider error instead of silently ignoring the setting.
+All swarm children still share the host working directory. Named profiles change the child's instructions and configuration; they do not create a worktree, branch, or security sandbox. Fast mode is inherited by default. A profile with `fastMode: false` opts out, while `fastMode: true` cannot enable fast mode when the host setting is off. Non-OpenAI child providers return an unsupported-provider error instead of silently ignoring an enabled setting.

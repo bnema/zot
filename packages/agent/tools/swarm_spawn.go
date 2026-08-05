@@ -69,7 +69,7 @@ const swarmSpawnSchema = `{
     },
     "agent": {
       "type": "string",
-      "description": "Optional named markdown profile from [subagents_list]. The child applies that profile's system prompt, model, thinking level, and tool limits. Omit for a generic child."
+      "description": "Optional named markdown profile from [subagents_list]. The child applies that profile's system prompt, model, thinking level, tool limits, and fast-mode preference. Omit for a generic child."
     },
     "model": {
       "type": "string",
@@ -95,7 +95,7 @@ const swarmSpawnSchema = `{
 
 func (t *SwarmSpawnTool) Name() string { return "swarm_spawn" }
 func (t *SwarmSpawnTool) Description() string {
-	return "Spawn a background sub-agent to work on a parallel sub-task. Optionally select a named markdown profile with agent and set its model/provider/reasoning. Returns the sub-agent id immediately; the sub-agent keeps running while this conversation continues. The sub-agent shares this working directory."
+	return "Spawn a background sub-agent to work on a parallel sub-task. Optionally select a named markdown profile with agent and set its model/provider/reasoning. Named profiles may restrict fast mode but cannot enable it when the host setting is off. Returns the sub-agent id immediately; the sub-agent keeps running while this conversation continues. The sub-agent shares this working directory."
 }
 func (t *SwarmSpawnTool) Schema() json.RawMessage { return json.RawMessage(swarmSpawnSchema) }
 
@@ -117,6 +117,7 @@ func (t *SwarmSpawnTool) Execute(ctx context.Context, raw json.RawMessage, progr
 
 	agentName := strings.TrimSpace(a.Agent)
 	var profile *subagents.Profile
+	var fastModeOverride *bool
 	if agentName != "" {
 		if t.ResolveSubagent == nil {
 			return protocolToolError("swarm_spawn: named subagent profiles are unavailable")
@@ -130,6 +131,7 @@ func (t *SwarmSpawnTool) Execute(ctx context.Context, raw json.RawMessage, progr
 			return protocolToolError("swarm_spawn: unknown subagent profile " + agentName)
 		}
 		agentName = profile.Name
+		fastModeOverride = profile.FastMode
 	}
 
 	model := strings.TrimSpace(a.Model)
@@ -178,6 +180,7 @@ func (t *SwarmSpawnTool) Execute(ctx context.Context, raw json.RawMessage, progr
 		Model:     model,
 		Provider:  providerID,
 		Reasoning: reasoning,
+		FastMode:  fastModeOverride,
 		Subagent:  agentName,
 	})
 	if err != nil {

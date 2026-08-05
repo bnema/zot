@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -245,6 +246,69 @@ You are a read-only reviewer.
 	}
 	if !strings.Contains(r.SystemPrompt, "You are a read-only reviewer.") || strings.Contains(r.SystemPrompt, "global context") {
 		t.Fatalf("profile system prompt inheritance is wrong:\n%s", r.SystemPrompt)
+	}
+}
+
+func TestResolveSubagentFastModeUsesHostSettingAsAnUpperBound(t *testing.T) {
+	cases := []struct {
+		name         string
+		hostFastMode bool
+		profileFast  *bool
+		argFastMode  bool
+		argFastSet   bool
+		wantFastMode bool
+	}{
+		{name: "unset inherits enabled host", hostFastMode: true, wantFastMode: true},
+		{name: "unset inherits disabled host", hostFastMode: false, wantFastMode: false},
+		{name: "false disables enabled host", hostFastMode: true, profileFast: boolPtr(false), wantFastMode: false},
+		{name: "true cannot enable disabled host", hostFastMode: false, profileFast: boolPtr(true), wantFastMode: false},
+		{name: "false stays disabled with disabled host", hostFastMode: false, profileFast: boolPtr(false), wantFastMode: false},
+		{name: "profile false cannot be bypassed", hostFastMode: true, profileFast: boolPtr(false), argFastMode: true, argFastSet: true, wantFastMode: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			home := filepath.Join(root, "home")
+			zotHome := filepath.Join(root, "zot-home")
+			project := filepath.Join(root, "repo")
+			profilesDir := filepath.Join(home, ".agents", "agents")
+			if err := os.MkdirAll(profilesDir, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.MkdirAll(project, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("HOME", home)
+			t.Setenv("ZOT_HOME", zotHome)
+			t.Setenv("ZOT_AGENT_PROFILES", profilesDir)
+
+			cfg := Config{Provider: "openai", Model: "gpt-5"}
+			cfg.FastMode = &tc.hostFastMode
+			if err := SaveConfig(cfg); err != nil {
+				t.Fatal(err)
+			}
+			profile := "---\nname: reviewer\n"
+			if tc.profileFast != nil {
+				profile += fmt.Sprintf("fastMode: %t\n", *tc.profileFast)
+			}
+			profile += "---\nReview the requested scope.\n"
+			if err := os.WriteFile(filepath.Join(profilesDir, "reviewer.md"), []byte(profile), 0o600); err != nil {
+				t.Fatal(err)
+			}
+
+			r, err := Resolve(Args{
+				CWD:         project,
+				Subagent:    "reviewer",
+				FastMode:    tc.argFastMode,
+				FastModeSet: tc.argFastSet,
+			}, false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if r.FastMode != tc.wantFastMode {
+				t.Fatalf("FastMode = %v, want %v", r.FastMode, tc.wantFastMode)
+			}
+		})
 	}
 }
 

@@ -109,6 +109,44 @@ func TestSwarmSpawnSelectsProfileAndReasoning(t *testing.T) {
 	}
 }
 
+func TestSwarmSpawnAppliesProfileFastModeRestriction(t *testing.T) {
+	root := t.TempDir()
+	profileFastMode := false
+	f := swarm.New(swarm.Config{
+		Root:     filepath.Join(root, "swarm"),
+		RepoRoot: root,
+		FastMode: true,
+		NewRunner: func(*swarm.Agent) swarm.Runner {
+			return noopSwarmRunner{}
+		},
+	})
+	tool := &SwarmSpawnTool{
+		Swarm:   f,
+		Enabled: func() bool { return true },
+		ResolveSubagent: func(name string) (*subagents.Profile, error) {
+			if name != "reviewer" {
+				return nil, nil
+			}
+			return &subagents.Profile{Name: name, FastMode: &profileFastMode}, nil
+		},
+	}
+
+	res, err := tool.Execute(context.Background(), json.RawMessage(`{"task":"review auth","agent":"reviewer"}`), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.IsError {
+		t.Fatalf("unexpected tool error: %s", textResult(res.Content))
+	}
+	agents := f.List()
+	if len(agents) != 1 || agents[0].FastMode {
+		t.Fatalf("agent fast mode = %#v, want disabled by profile", agents)
+	}
+	if got := res.Details.(map[string]any)["fast_mode"]; got != false {
+		t.Fatalf("fast_mode detail = %v, want false", got)
+	}
+}
+
 func TestSwarmSpawnUsesProfileReasoningWhenOmitted(t *testing.T) {
 	tool := &SwarmSpawnTool{
 		Swarm:   newTestSwarm(t),
