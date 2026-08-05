@@ -51,7 +51,7 @@ func TestRenderRightBarSortsWidgetsAndBoundsRows(t *testing.T) {
 	}
 }
 
-func TestRenderRightBarWrapsLongWidgetLines(t *testing.T) {
+func TestRenderRightBarClipsLongWidgetLinesWithEllipsis(t *testing.T) {
 	lines := RenderRightBar(Dark, []RightBarWidget{{
 		Extension: "plan",
 		Lines:     []string{"one two three four five six"},
@@ -61,17 +61,17 @@ func TestRenderRightBarWrapsLongWidgetLines(t *testing.T) {
 		t.Fatalf("right bar rows = %d, want 8", len(lines))
 	}
 	plain := stripANSI(strings.Join(lines, "\n"))
-	if !strings.Contains(plain, "one two three") || !strings.Contains(plain, "four five six") {
-		t.Fatalf("long widget line was not wrapped: %q", plain)
+	if !strings.Contains(plain, " one two thre...") || strings.Contains(plain, "four five six") {
+		t.Fatalf("long widget line was not clipped with an ellipsis: %q", plain)
 	}
 	for idx, line := range lines {
 		if width := visibleWidth(line); width != 16 {
-			t.Fatalf("wrapped right bar line %d width = %d, want 16: %q", idx, width, line)
+			t.Fatalf("clipped right bar line %d width = %d, want 16: %q", idx, width, line)
 		}
 	}
 }
 
-func TestRenderRightBarUsesChecklistIndentHangingWrapAndBoldPhases(t *testing.T) {
+func TestRenderRightBarUsesChecklistIndentEllipsisAndBoldPhases(t *testing.T) {
 	lines := RenderRightBar(Dark, []RightBarWidget{{
 		Extension: "tasked-phases",
 		Title:     "p 0/1 | t 0/1",
@@ -81,14 +81,16 @@ func TestRenderRightBarUsesChecklistIndentHangingWrapAndBoldPhases(t *testing.T)
 		},
 	}}, 36, 8)
 	plain := stripANSI(strings.Join(lines, "\n"))
-	for _, want := range []string{
-		" [>] Copper Lantern Setup  0/1",
-		"  [ ] Sort the leftover star",
-		"      stickers",
-	} {
-		if !strings.Contains(plain, want) {
-			t.Fatalf("right-bar checklist layout missing %q: %q", want, plain)
-		}
+	if !strings.Contains(plain, " [>] Copper Lantern Setup  0/1") {
+		t.Fatalf("phase row has the wrong indentation: %q", plain)
+	}
+	plainLines := strings.Split(plain, "\n")
+	if len(plainLines) < 4 {
+		t.Fatalf("checklist rows are missing: %q", plain)
+	}
+	expectedTask := truncateRightBarLine("  [ ] Sort the leftover star stickers", 36)
+	if got := strings.TrimRight(plainLines[3], " "); got != expectedTask {
+		t.Fatalf("task row = %q, want clipped row %q", got, expectedTask)
 	}
 	if !strings.Contains(strings.Join(lines, "\n"), Bold("Copper Lantern Setup")) {
 		t.Fatalf("phase name is not bold: %q", lines)
@@ -96,7 +98,6 @@ func TestRenderRightBarUsesChecklistIndentHangingWrapAndBoldPhases(t *testing.T)
 	if strings.Contains(strings.Join(lines, "\n"), Bold("Sort the leftover")) {
 		t.Fatalf("task text should not be bold: %q", lines)
 	}
-	plainLines := strings.Split(plain, "\n")
 	if len(plainLines) < 2 || !strings.HasPrefix(plainLines[0], "[tasked-phases] p 0/1 | t 0/1") || strings.TrimSpace(plainLines[1]) != "" {
 		t.Fatalf("widget title is not followed by an empty row: %q", plain)
 	}

@@ -60,8 +60,8 @@ func RightBarColumns(cols int) (mainWidth, rightBarWidth int, ok bool) {
 // RenderRightBar renders a bounded, full-height side rail without adding a
 // second frame around the host-owned separator. Widgets are sorted by
 // extension name and ID so output stays deterministic even when extension
-// frames arrive concurrently. Long content wraps to the rail width, and
-// content that does not fit is replaced by a compact marker.
+// frames arrive concurrently. Long lines are clipped to the rail width with
+// a three-dot ellipsis.
 func RenderRightBar(th Theme, widgets []RightBarWidget, width, height int) []string {
 	if width <= 0 || height <= 0 {
 		return nil
@@ -78,7 +78,7 @@ func RenderRightBar(th Theme, widgets []RightBarWidget, width, height int) []str
 	content := make([]string, 0, height)
 	truncated := false
 	padLine := func(text string) string {
-		text = truncateToWidth(text, width)
+		text = truncateRightBarLine(text, width)
 		if visible := visibleWidth(text); visible < width {
 			text += strings.Repeat(" ", width-visible)
 		}
@@ -116,18 +116,12 @@ func RenderRightBar(th Theme, widgets []RightBarWidget, width, height int) []str
 	}
 	appendContent := func(text string, color int, dim, phase bool) bool {
 		text = strings.ReplaceAll(text, "\r", "")
-		for _, physicalLine := range strings.Split(text, "\n") {
-			wrapped := rightBarWrapLine(physicalLine, width)
-			if len(wrapped) == 0 {
-				wrapped = []string{""}
+		for _, line := range strings.Split(text, "\n") {
+			if len(content) >= height {
+				truncated = true
+				return false
 			}
-			for _, line := range wrapped {
-				if len(content) >= height {
-					truncated = true
-					return false
-				}
-				content = append(content, paintLine(line, color, dim, phase))
-			}
+			content = append(content, paintLine(line, color, dim, phase))
 		}
 		return true
 	}
@@ -197,33 +191,14 @@ func rightBarChecklistMarker(text string) (start, end int, marker byte, ok bool)
 	}
 }
 
-func rightBarWrapLine(text string, width int) []string {
-	_, end, _, ok := rightBarChecklistMarker(text)
-	if !ok {
-		return WrapANSILine(text, width)
+func truncateRightBarLine(text string, width int) string {
+	if width <= 0 || visibleWidth(text) <= width {
+		return text
 	}
-
-	bodyStart := end
-	if bodyStart < len(text) && text[bodyStart] == ' ' {
-		bodyStart++
+	if width <= 3 {
+		return truncateToWidth("...", width)
 	}
-	prefix := text[:bodyStart]
-	prefixWidth := visibleWidth(prefix)
-	bodyWidth := width - prefixWidth
-	if bodyWidth < 1 {
-		return WrapANSILine(text, width)
-	}
-	bodyLines := WrapANSILine(text[bodyStart:], bodyWidth)
-	continuation := strings.Repeat(" ", prefixWidth)
-	wrapped := make([]string, len(bodyLines))
-	for i, bodyLine := range bodyLines {
-		if i == 0 {
-			wrapped[i] = prefix + bodyLine
-		} else {
-			wrapped[i] = continuation + bodyLine
-		}
-	}
-	return wrapped
+	return truncateToWidth(text, width-3) + "..."
 }
 
 func rightBarChecklistIndent(lines []string) int {
@@ -261,12 +236,12 @@ func rightBarChecklistPhaseName(text string) (start, end int, ok bool) {
 	suffix := text[start:trimmedEnd]
 	separator := strings.LastIndex(suffix, "  ")
 	if separator < 0 {
-		return 0, 0, false
+		return rightBarFallbackPhaseName(text, start, trimmedEnd)
 	}
 	nameEnd := start + separator
 	progress := strings.TrimSpace(text[nameEnd:trimmedEnd])
 	if !rightBarProgressToken(progress) {
-		return 0, 0, false
+		return rightBarFallbackPhaseName(text, start, trimmedEnd)
 	}
 	for nameEnd > start && text[nameEnd-1] == ' ' {
 		nameEnd--
@@ -275,6 +250,22 @@ func rightBarChecklistPhaseName(text string) (start, end int, ok bool) {
 		return 0, 0, false
 	}
 	return start, nameEnd, true
+}
+
+func rightBarFallbackPhaseName(text string, start, end int) (int, int, bool) {
+	for end > start && text[end-1] == ' ' {
+		end--
+	}
+	if end-start >= 3 && text[end-3:end] == "..." {
+		end -= 3
+	}
+	for end > start && text[end-1] == ' ' {
+		end--
+	}
+	if end <= start {
+		return 0, 0, false
+	}
+	return start, end, true
 }
 
 func rightBarProgressToken(value string) bool {
