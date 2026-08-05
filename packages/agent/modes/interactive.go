@@ -77,8 +77,12 @@ type InteractiveConfig struct {
 	PonytailEnabled *bool
 
 	// AutoSubagentsToolAllowed is nil for normal sessions and false when the
-	// launch-time --no-tools/--tools policy excludes delegation.
+	// launch-time --no-tools/--tools policy excludes subagent spawning.
 	AutoSubagentsToolAllowed *bool
+
+	// AutoSubagentsStatusToolAllowed is nil for normal sessions and false when
+	// the launch-time --no-tools/--tools policy excludes status queries.
+	AutoSubagentsStatusToolAllowed *bool
 
 	// FastMode mirrors the persisted OpenAI fast-mode flag at startup.
 	// nil/missing means disabled. Unsupported providers reject attempts
@@ -807,7 +811,7 @@ func NewInteractive(cfg InteractiveConfig) *Interactive {
 		baseURL, _, err := cfg.LlamaCPPConfig()
 		i.llamaConfigured = err == nil && baseURL != ""
 	}
-	if cfg.AutoSubagentsEnabled != nil && *cfg.AutoSubagentsEnabled && cfg.Supervisor != nil && (cfg.AutoSubagentsToolAllowed == nil || *cfg.AutoSubagentsToolAllowed) {
+	if cfg.AutoSubagentsEnabled != nil && *cfg.AutoSubagentsEnabled && cfg.Supervisor != nil && autoSubagentsAnyToolAllowedConfig(cfg) {
 		i.managedAutoSubagentsAddenda = autoSubagentsAddenda(cfg)
 	}
 	if cfg.Agent != nil {
@@ -4147,7 +4151,7 @@ func (i *Interactive) openSettingsDialog() {
 		{
 			key:      "auto_subagents_enabled",
 			label:    "auto-subagents",
-			desc:     "let the agent spawn background sub-agents in parallel via the subagent_spawn tool",
+			desc:     "let the agent spawn background sub-agents and query their live state",
 			value:    autoSubagents,
 			disabled: autoSubagentsDisabled,
 			hint:     autoSubagentsHint,
@@ -4643,13 +4647,13 @@ func (i *Interactive) applySettingToggle(key string, value bool) {
 				return
 			}
 		}
-		// Add/remove the subagent_spawn tool on the live agent so the
+		// Add/remove the auto-subagent tools on the live agent so the
 		// model's tools[] list reflects the toggle on the next turn.
-		// Without this the tool stays advertised after a disable and
-		// the model keeps trying to call it.
+		// Without this the tools stay advertised after a disable and
+		// the model keeps trying to call them.
 		i.applyAutoSubagentsTool(value)
 		// Also swap the system-prompt addendum in/out so the model
-		// knows to use the tool proactively (or stops referencing it
+		// knows to use the tools proactively (or stops referencing them
 		// after a disable).
 		i.applyAutoSubagentsSystemPrompt(value)
 		i.mu.Lock()
@@ -7704,12 +7708,12 @@ func (i *Interactive) applyAutoSubagentsSystemPrompt(active bool) {
 }
 
 // applyAutoSubagentsTool registers (active=true) or removes (active=false)
-// the subagent_spawn tool on the running agent so the model only sees it
+// the auto-subagent tools on the running agent so the model only sees them
 // when /settings -> auto-subagents is enabled. Mirrors applyTelegramTools'
 // snapshot+mutate pattern so extension tools and /reload-ext additions
 // survive a toggle.
 func (i *Interactive) autoSubagentsAvailable() bool {
-	return i.cfg.Supervisor != nil && (i.cfg.AutoSubagentsToolAllowed == nil || *i.cfg.AutoSubagentsToolAllowed)
+	return i.cfg.Supervisor != nil && (i.autoSubagentsToolAllowed() || i.autoSubagentsStatusToolAllowed())
 }
 
 func (i *Interactive) autoSubagentsUnavailableHint() string {
@@ -7717,14 +7721,35 @@ func (i *Interactive) autoSubagentsUnavailableHint() string {
 	if i.cfg.Supervisor == nil {
 		hints = append(hints, "subagent supervisor not available in this mode")
 	}
-	if !i.autoSubagentsToolAllowed() {
-		hints = append(hints, "launch-time tool policy excludes subagent_spawn")
+	if !i.autoSubagentsToolAllowed() && !i.autoSubagentsStatusToolAllowed() {
+		hints = append(hints, "launch-time tool policy excludes subagent_spawn and subagent_status")
 	}
 	return strings.Join(hints, "; ")
 }
 
+func autoSubagentsToolAllowedConfig(cfg InteractiveConfig) bool {
+	return cfg.AutoSubagentsToolAllowed == nil || *cfg.AutoSubagentsToolAllowed
+}
+
+func autoSubagentsStatusToolAllowedConfig(cfg InteractiveConfig) bool {
+	if cfg.AutoSubagentsStatusToolAllowed != nil {
+		return *cfg.AutoSubagentsStatusToolAllowed
+	}
+	// Preserve the old single-boolean embedding contract: when callers have
+	// not supplied the new field, status follows the existing delegation gate.
+	return autoSubagentsToolAllowedConfig(cfg)
+}
+
+func autoSubagentsAnyToolAllowedConfig(cfg InteractiveConfig) bool {
+	return autoSubagentsToolAllowedConfig(cfg) || autoSubagentsStatusToolAllowedConfig(cfg)
+}
+
 func (i *Interactive) autoSubagentsToolAllowed() bool {
-	return i.cfg.AutoSubagentsToolAllowed == nil || *i.cfg.AutoSubagentsToolAllowed
+	return autoSubagentsToolAllowedConfig(i.cfg)
+}
+
+func (i *Interactive) autoSubagentsStatusToolAllowed() bool {
+	return autoSubagentsStatusToolAllowedConfig(i.cfg)
 }
 
 func (i *Interactive) autoSubagentsEnabled() bool {
@@ -7748,22 +7773,31 @@ func (i *Interactive) applyAutoSubagentsTool(active bool) {
 	current := i.agent.ToolsSnapshot()
 	next := core.Registry{}
 	for name, t := range current {
-		if name == "subagent_spawn" {
+		if name == "subagent_spawn" || name == "subagent_status" {
 			continue
 		}
 		next[name] = t
 	}
 	if active && i.autoSubagentsAvailable() {
-		canonical := &tools.SubagentSpawnTool{
-			Supervisor:       i.cfg.Supervisor,
-			Enabled:          func() bool { return i.autoSubagentsEnabled() },
-			DefaultModel:     func() string { return i.cfg.Model },
-			DefaultProvider:  func() string { return i.cfg.Provider },
-			DefaultReasoning: func() string { return i.cfg.Reasoning },
-			ResolveSubagent:  i.cfg.ResolveSubagent,
-			OnSpawned:        i.trackSubagentWorker,
+		if i.autoSubagentsToolAllowed() {
+			canonical := &tools.SubagentSpawnTool{
+				Supervisor:       i.cfg.Supervisor,
+				Enabled:          func() bool { return i.autoSubagentsEnabled() },
+				DefaultModel:     func() string { return i.cfg.Model },
+				DefaultProvider:  func() string { return i.cfg.Provider },
+				DefaultReasoning: func() string { return i.cfg.Reasoning },
+				ResolveSubagent:  i.cfg.ResolveSubagent,
+				OnSpawned:        i.trackSubagentWorker,
+			}
+			next[canonical.Name()] = canonical
 		}
-		next[canonical.Name()] = canonical
+		if i.autoSubagentsStatusToolAllowed() {
+			statusTool := &tools.SubagentStatusTool{
+				Supervisor: i.cfg.Supervisor,
+				Enabled:    func() bool { return i.autoSubagentsEnabled() },
+			}
+			next[statusTool.Name()] = statusTool
+		}
 	}
 	i.agent.SetTools(next)
 }

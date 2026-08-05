@@ -106,6 +106,38 @@ func TestBuildToolRegistryIncludesLSPAndWriteDiagnostics(t *testing.T) {
 	}
 }
 
+func TestAutoSubagentsToolPoliciesTrackEachTool(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		tools      []string
+		wantSpawn  bool
+		wantStatus bool
+		wantAny    bool
+	}{
+		{name: "default", wantSpawn: true, wantStatus: true, wantAny: true},
+		{name: "spawn", tools: []string{"subagent_spawn"}, wantSpawn: true, wantAny: true},
+		{name: "status", tools: []string{"subagent_status"}, wantStatus: true, wantAny: true},
+		{name: "other", tools: []string{"read"}},
+		{name: "no tools", wantAny: false, tools: nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			args := Args{Tools: tc.tools}
+			if tc.name == "no tools" {
+				args.NoTools = true
+			}
+			if got := autoSubagentsToolAllowed(args); got != tc.wantSpawn {
+				t.Fatalf("spawn allowed = %v, want %v", got, tc.wantSpawn)
+			}
+			if got := autoSubagentsStatusToolAllowed(args); got != tc.wantStatus {
+				t.Fatalf("status allowed = %v, want %v", got, tc.wantStatus)
+			}
+			if got := autoSubagentsAnyToolAllowed(args); got != tc.wantAny {
+				t.Fatalf("any allowed = %v, want %v", got, tc.wantAny)
+			}
+		})
+	}
+}
+
 func TestReadAgentsContextLoadsGlobalAndAncestors(t *testing.T) {
 	root := t.TempDir()
 	zotHome := filepath.Join(root, "zot-home")

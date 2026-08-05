@@ -1396,40 +1396,49 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 		return findSubagentProfile(r.CWD, name)
 	}
 
-	// Inject the subagent_spawn auto-subagents tool only when /settings ->
-	// auto-subagents is currently enabled. Registering it unconditionally
-	// leaves the model trying to call it (and getting a polite error)
-	// even when the user has switched the feature off. The /settings
-	// toggle live-mutates the running agent's registry separately so
-	// flipping the flag mid-session takes effect on the next turn.
-	injectSubagentSpawn := func(reg core.Registry) core.Registry {
-		if reg == nil || subagentsMgr == nil || !autoSubagentsToolAllowed(args) {
+	// Inject the auto-subagent tools only when /settings -> auto-subagents
+	// is currently enabled. Registering them unconditionally leaves the model
+	// trying to call them (and getting a polite error) even when the user has
+	// switched the feature off. The /settings toggle live-mutates the running
+	// agent's registry separately so flipping the flag mid-session takes effect
+	// on the next turn.
+	injectSubagentTools := func(reg core.Registry) core.Registry {
+		if reg == nil || subagentsMgr == nil || !autoSubagentsAnyToolAllowed(args) {
 			return reg
 		}
 		if !AutoSubagentsEnabled() {
 			return reg
 		}
-		canonical := &tools.SubagentSpawnTool{
-			Supervisor: subagentsMgr,
-			Enabled:    AutoSubagentsEnabled,
-			DefaultModel: func() string {
-				persistMu.Lock()
-				defer persistMu.Unlock()
-				return activeModel
-			},
-			DefaultProvider: func() string {
-				persistMu.Lock()
-				defer persistMu.Unlock()
-				return activeProvider
-			},
-			DefaultReasoning: func() string { return r.Reasoning },
-			ResolveSubagent:  resolveSubagent,
-			OnSpawned:        onSpawnedSupervisor,
+		if autoSubagentsToolAllowed(args) {
+			canonical := &tools.SubagentSpawnTool{
+				Supervisor: subagentsMgr,
+				Enabled:    AutoSubagentsEnabled,
+				DefaultModel: func() string {
+					persistMu.Lock()
+					defer persistMu.Unlock()
+					return activeModel
+				},
+				DefaultProvider: func() string {
+					persistMu.Lock()
+					defer persistMu.Unlock()
+					return activeProvider
+				},
+				DefaultReasoning: func() string { return r.Reasoning },
+				ResolveSubagent:  resolveSubagent,
+				OnSpawned:        onSpawnedSupervisor,
+			}
+			reg[canonical.Name()] = canonical
 		}
-		reg[canonical.Name()] = canonical
+		if autoSubagentsStatusToolAllowed(args) {
+			statusTool := &tools.SubagentStatusTool{
+				Supervisor: subagentsMgr,
+				Enabled:    AutoSubagentsEnabled,
+			}
+			reg[statusTool.Name()] = statusTool
+		}
 		return reg
 	}
-	injectSubagentSpawn(r.ToolRegistry)
+	injectSubagentTools(r.ToolRegistry)
 
 	// Confirmation gate: when --no-yolo is on, the agent must ask
 	// the user before every tool call. In interactive mode the TUI
@@ -1517,7 +1526,7 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 			subagentsMgr.SetProviderSettings(resolved.BaseURL, resolved.InsecureTLS)
 		}
 		resolved.MergeExtensionTools(extToolAdapter)
-		injectSubagentSpawn(resolved.ToolRegistry)
+		injectSubagentTools(resolved.ToolRegistry)
 		return wireAgentExt(resolved.NewAgent()), resolved.Provider, resolved.Model, nil
 	}
 
@@ -1540,7 +1549,7 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 			subagentsMgr.SetProviderSettings(resolved.BaseURL, resolved.InsecureTLS)
 		}
 		resolved.MergeExtensionTools(extToolAdapter)
-		injectSubagentSpawn(resolved.ToolRegistry)
+		injectSubagentTools(resolved.ToolRegistry)
 		return wireAgentExt(resolved.NewAgent()), resolved.Provider, resolved.Model, nil
 	}
 
@@ -1571,7 +1580,7 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 			subagentsMgr.SetProviderSettings(resolved.BaseURL, resolved.InsecureTLS)
 		}
 		resolved.MergeExtensionTools(extToolAdapter)
-		injectSubagentSpawn(resolved.ToolRegistry)
+		injectSubagentTools(resolved.ToolRegistry)
 		return wireAgentExt(resolved.NewAgent()), resolved.Provider, resolved.Model, nil
 	}
 
@@ -1590,7 +1599,7 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 		if current == nil {
 			return
 		}
-		if err := refreshAgentToolsAndPrompt(args, sharedSandbox, extToolAdapter, current, injectSubagentSpawn, iv); err != nil && iv != nil {
+		if err := refreshAgentToolsAndPrompt(args, sharedSandbox, extToolAdapter, current, injectSubagentTools, iv); err != nil && iv != nil {
 			iv.ReportError(err)
 		}
 	})
@@ -2099,56 +2108,58 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 	discoveredSubagents, _ := subagents.Discover(r.CWD, homeDir)
 	subagentsAddendum := subagents.SystemPromptAddendum(discoveredSubagents)
 	autoSubagentsToolAllowedForSession := autoSubagentsToolAllowed(args)
+	autoSubagentsStatusToolAllowedForSession := autoSubagentsStatusToolAllowed(args)
 
 	iv = modes.NewInteractive(modes.InteractiveConfig{
-		Terminal:                    term,
-		Theme:                       theme,
-		InlineImagesEnabled:         initialCfg.InlineImagesEnabled,
-		TerminalAlertsEnabled:       initialCfg.TerminalAlertsEnabled,
-		TerminalTitleEnabled:        initialCfg.TerminalTitleEnabled,
-		AutoSubagentsEnabled:        initialCfg.AutoSubagentsEnabled,
-		PonytailEnabled:             initialCfg.PonytailEnabled,
-		AutoSubagentsToolAllowed:    &autoSubagentsToolAllowedForSession,
-		FastMode:                    &fastMode,
-		LSPEnabled:                  initialCfg.LSPEnabled,
-		SubagentLSPEnabled:          initialCfg.SubagentLSPEnabled,
-		AutoCompactThreshold:        initialCfg.AutoCompactThreshold,
-		JailByDefault:               initialCfg.JailByDefault,
-		QuickModelShortcuts:         quickModelShortcuts,
-		RecursiveFileSuggest:        initialCfg.RecursiveFileSuggest,
-		RespectGitignore:            initialCfg.RespectGitignore,
-		CompactMode:                 initialCfg.CompactMode,
-		TUIInputStyle:               initialCfg.TUIInputStyle,
-		TUIStatusPosition:           initialCfg.TUIStatusPosition,
-		TUIWorkingPosition:          initialCfg.TUIWorkingPosition,
-		ThemeName:                   initialCfg.Theme,
-		FlatTools:                   initialCfg.FlatToolRender(),
-		CompactUser:                 initialCfg.CompactUserInput(),
-		ExtensionThemes:             extMgr.ThemeOptions,
-		AutoSubagentsSystemAddendum: AutoSubagentsSystemAddendum,
-		SubagentsSystemAddendum:     subagentsAddendum,
-		SettingsStore:               configSettingsStore{},
-		Model:                       r.Model,
-		Provider:                    r.Provider,
-		AuthMethod:                  r.AuthMethod,
-		BaseURL:                     r.BaseURL,
-		Reasoning:                   r.Reasoning,
-		SystemPrompt:                r.SystemPrompt,
-		Tools:                       r.ToolRegistry,
-		MaxSteps:                    r.MaxSteps,
-		CWD:                         r.CWD,
-		StartupAgentName:            args.AgentName,
-		StartupContextPaths:         instructionContextPaths(r.ContextFiles),
-		StartupExtensionNames:       startupExtensionNames(extMgr.All()),
-		StartupExtensionErrors:      startupExtensionErrors,
-		StartupSkillNames:           startupSkillNames(startupSkills),
-		ShowInstructionsAtStartup:   initialCfg.ShowInstructionsAtStartup,
-		ZotHome:                     ZotHome(),
-		SessionsRoot:                agentSessionsRoot(ZotHome(), args),
-		Version:                     version,
-		UpdateInfoChan:              updateCh,
-		Sandbox:                     sharedSandbox,
-		Agent:                       ag,
+		Terminal:                       term,
+		Theme:                          theme,
+		InlineImagesEnabled:            initialCfg.InlineImagesEnabled,
+		TerminalAlertsEnabled:          initialCfg.TerminalAlertsEnabled,
+		TerminalTitleEnabled:           initialCfg.TerminalTitleEnabled,
+		AutoSubagentsEnabled:           initialCfg.AutoSubagentsEnabled,
+		PonytailEnabled:                initialCfg.PonytailEnabled,
+		AutoSubagentsToolAllowed:       &autoSubagentsToolAllowedForSession,
+		AutoSubagentsStatusToolAllowed: &autoSubagentsStatusToolAllowedForSession,
+		FastMode:                       &fastMode,
+		LSPEnabled:                     initialCfg.LSPEnabled,
+		SubagentLSPEnabled:             initialCfg.SubagentLSPEnabled,
+		AutoCompactThreshold:           initialCfg.AutoCompactThreshold,
+		JailByDefault:                  initialCfg.JailByDefault,
+		QuickModelShortcuts:            quickModelShortcuts,
+		RecursiveFileSuggest:           initialCfg.RecursiveFileSuggest,
+		RespectGitignore:               initialCfg.RespectGitignore,
+		CompactMode:                    initialCfg.CompactMode,
+		TUIInputStyle:                  initialCfg.TUIInputStyle,
+		TUIStatusPosition:              initialCfg.TUIStatusPosition,
+		TUIWorkingPosition:             initialCfg.TUIWorkingPosition,
+		ThemeName:                      initialCfg.Theme,
+		FlatTools:                      initialCfg.FlatToolRender(),
+		CompactUser:                    initialCfg.CompactUserInput(),
+		ExtensionThemes:                extMgr.ThemeOptions,
+		AutoSubagentsSystemAddendum:    AutoSubagentsSystemAddendum,
+		SubagentsSystemAddendum:        subagentsAddendum,
+		SettingsStore:                  configSettingsStore{},
+		Model:                          r.Model,
+		Provider:                       r.Provider,
+		AuthMethod:                     r.AuthMethod,
+		BaseURL:                        r.BaseURL,
+		Reasoning:                      r.Reasoning,
+		SystemPrompt:                   r.SystemPrompt,
+		Tools:                          r.ToolRegistry,
+		MaxSteps:                       r.MaxSteps,
+		CWD:                            r.CWD,
+		StartupAgentName:               args.AgentName,
+		StartupContextPaths:            instructionContextPaths(r.ContextFiles),
+		StartupExtensionNames:          startupExtensionNames(extMgr.All()),
+		StartupExtensionErrors:         startupExtensionErrors,
+		StartupSkillNames:              startupSkillNames(startupSkills),
+		ShowInstructionsAtStartup:      initialCfg.ShowInstructionsAtStartup,
+		ZotHome:                        ZotHome(),
+		SessionsRoot:                   agentSessionsRoot(ZotHome(), args),
+		Version:                        version,
+		UpdateInfoChan:                 updateCh,
+		Sandbox:                        sharedSandbox,
+		Agent:                          ag,
 		InitialSessionTitle: func() string {
 			if sess == nil || sessionTitlePending {
 				return ""
@@ -2166,18 +2177,18 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 				_ = extMgr.Reload(context.Background(), 2*time.Second)
 			}
 			if current != nil {
-				if err := refreshAgentToolsAndPrompt(args, sharedSandbox, extToolAdapter, current, injectSubagentSpawn, iv); err != nil {
+				if err := refreshAgentToolsAndPrompt(args, sharedSandbox, extToolAdapter, current, injectSubagentTools, iv); err != nil {
 					iv.ReportError(err)
 				}
 			}
 		},
 		RefreshTools: func() error {
 			current := liveInteractiveAgent(iv, ag)
-			return refreshAgentToolsAndPrompt(args, sharedSandbox, extToolAdapter, current, injectSubagentSpawn, iv)
+			return refreshAgentToolsAndPrompt(args, sharedSandbox, extToolAdapter, current, injectSubagentTools, iv)
 		},
 		RefreshPrompt: func() error {
 			current := liveInteractiveAgent(iv, ag)
-			return refreshAgentToolsAndPrompt(args, sharedSandbox, extToolAdapter, current, injectSubagentSpawn, iv)
+			return refreshAgentToolsAndPrompt(args, sharedSandbox, extToolAdapter, current, injectSubagentTools, iv)
 		},
 		AuthManager:                mgr,
 		LlamaCPPConfig:             ResolveLlamaCPPConfig,

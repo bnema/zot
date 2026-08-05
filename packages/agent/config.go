@@ -91,7 +91,7 @@ type Config struct {
 	Subagents SubagentsConfig `json:"subagents,omitempty"`
 
 	// AutoSubagentsEnabled lets the main agent spawn background sub-agents
-	// for parallel sub-tasks via a built-in subagent_spawn tool. Off by
+	// and query their live state via built-in auto-subagent tools. Off by
 	// default; nil/missing means disabled. Toggle from /settings.
 	AutoSubagentsEnabled *bool `json:"auto_subagents_enabled,omitempty"`
 
