@@ -228,8 +228,8 @@ func (configSettingsStore) SetTheme(name string) error {
 
 // AutoSubagentsEnabled reads the current auto-subagents flag from config.
 // The build/CLI startup path uses it when initially injecting
-// subagent_spawn into the tool registry; interactive mode mirrors the setting
-// into the live tool registry when its settings toggle changes.
+// the auto-subagent tools into the tool registry; interactive mode mirrors
+// the setting into the live tool registry when its settings toggle changes.
 func AutoSubagentsEnabled() bool {
 	cfg, err := LoadConfig()
 	if err != nil {
@@ -242,7 +242,7 @@ func AutoSubagentsEnabled() bool {
 // auto-subagents is enabled, so the model knows it may delegate to
 // background sub-agents without the user having to mention the tool
 // by name. Kept short so it doesn't bloat the cached prompt prefix.
-const AutoSubagentsSystemAddendum = `Auto-subagents are enabled. You have a subagent_spawn tool that starts background sub-agents in separate long-lived processes.
+const AutoSubagentsSystemAddendum = `Auto-subagents are enabled. When available, subagent_spawn starts background sub-agents in separate long-lived processes, and subagent_status reports their live state without waiting for completion.
 
 Use it proactively when the user's request naturally splits into independent sub-tasks that can run concurrently; prefer isolation:"worktree" for parallel coding (e.g. "refactor module A and module B", "write the implementation and the tests", "investigate three separate files"). Spawn one sub-agent per independent sub-task with a self-contained task description (sub-agents start with no context from this conversation). If [subagents_list] is present, choose the named profile whose description best matches the task and pass its name as the tool's agent field. Continue working on the remaining or coordinating work yourself in parallel; do not wait for sub-agents to finish before responding. Briefly tell the user which sub-agents you spawned and what each is doing. When workers finish, use the host update's agent ID, status, task, optional error, and final response or tail to summarize the outcome and decide any follow-up.
 

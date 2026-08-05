@@ -740,7 +740,7 @@ func Resolve(args Args, requireCred bool) (Resolved, error) {
 		append_ = append(append_, skillAddendum)
 	}
 	interactiveMode := args.Mode == "" || args.Mode == ModeInteractive
-	if selectedProfile == nil && interactiveMode && autoSubagentsToolAllowed(args) && cfg.AutoSubagentsEnabled != nil && *cfg.AutoSubagentsEnabled {
+	if selectedProfile == nil && interactiveMode && autoSubagentsAnyToolAllowed(args) && cfg.AutoSubagentsEnabled != nil && *cfg.AutoSubagentsEnabled {
 		homeDir, _ := os.UserHomeDir()
 		profiles, _ := subagents.Discover(args.CWD, homeDir)
 		if subagentsAddendum := subagents.SystemPromptAddendum(profiles); subagentsAddendum != "" {
@@ -1192,6 +1192,18 @@ func lspManagerNeeded(args Args, diagnosticsOnWrite, diagnosticsOnEdit bool) boo
 }
 
 func autoSubagentsToolAllowed(args Args) bool {
+	return autoSubagentsToolAllowedFor(args, "subagent_spawn")
+}
+
+func autoSubagentsStatusToolAllowed(args Args) bool {
+	return autoSubagentsToolAllowedFor(args, "subagent_status")
+}
+
+func autoSubagentsAnyToolAllowed(args Args) bool {
+	return autoSubagentsToolAllowed(args) || autoSubagentsStatusToolAllowed(args)
+}
+
+func autoSubagentsToolAllowedFor(args Args, toolName string) bool {
 	if args.NoTools || args.PermissionSet != nil {
 		return false
 	}
@@ -1199,7 +1211,7 @@ func autoSubagentsToolAllowed(args Args) bool {
 		return true
 	}
 	for _, name := range args.Tools {
-		if name == "subagent_spawn" {
+		if name == toolName {
 			return true
 		}
 	}
