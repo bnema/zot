@@ -164,6 +164,54 @@ func subagentWorkerArgs(opts subagentWorkerArgsOpts) []string {
 	return args
 }
 
+// resolveSubagentExecutable finds a runnable zot binary without assuming a
+// particular installation directory. A parent process can outlive the file
+// it was started from (for example after a reinstall), so the current
+// executable and argv[0] are tried first and PATH is used as the fallback.
+// Keeping the lookup on PATH is important: it covers GOBIN, user-local bin
+// directories, package-manager locations, and system installs without
+// hard-coding any of them.
+func resolveSubagentExecutable(self, argv0 string, lookPath func(string) (string, error)) (string, error) {
+	if lookPath == nil {
+		lookPath = exec.LookPath
+	}
+
+	candidates := make([]string, 0, 5)
+	addCandidate := func(candidate string) {
+		if candidate == "" || candidate == "." {
+			return
+		}
+		for _, existing := range candidates {
+			if existing == candidate {
+				return
+			}
+		}
+		candidates = append(candidates, candidate)
+	}
+	addCandidate(self)
+	addCandidate(argv0)
+	if self != "" {
+		addCandidate(filepath.Base(self))
+	}
+	if argv0 != "" {
+		addCandidate(filepath.Base(argv0))
+	}
+	addCandidate("zot")
+
+	var lookupErrors []string
+	for _, candidate := range candidates {
+		resolved, err := lookPath(candidate)
+		if err == nil {
+			return resolved, nil
+		}
+		lookupErrors = append(lookupErrors, fmt.Sprintf("%q: %v", candidate, err))
+	}
+	if len(lookupErrors) == 0 {
+		return "", fmt.Errorf("locate zot executable: no executable candidates")
+	}
+	return "", fmt.Errorf("locate zot executable: %s", strings.Join(lookupErrors, "; "))
+}
+
 func (r *execRunner) Run(ctx context.Context, sink Sink) error {
 	// SessionPath resolution order:
 	//   1. explicit r.SessionPath set by the test / caller
@@ -204,9 +252,17 @@ func (r *execRunner) Run(ctx context.Context, sink Sink) error {
 
 	args := r.Command
 	if len(args) == 0 {
-		exe, err := os.Executable()
+		self, selfErr := os.Executable()
+		argv0 := ""
+		if len(os.Args) > 0 {
+			argv0 = os.Args[0]
+		}
+		exe, err := resolveSubagentExecutable(self, argv0, exec.LookPath)
 		if err != nil {
-			return fmt.Errorf("locate self: %w", err)
+			if selfErr != nil {
+				return fmt.Errorf("locate zot executable (os.Executable: %v): %w", selfErr, err)
+			}
+			return err
 		}
 		args = defaultChildArgs(exe, r.agent, sessionPath, inboxPath)
 	}

@@ -194,6 +194,46 @@ func TestSubagentWorkerArgs(t *testing.T) {
 	}
 }
 
+func TestResolveSubagentExecutablePrefersCurrentExecutable(t *testing.T) {
+	var calls []string
+	got, err := resolveSubagentExecutable("/current/bin/zot", "/old/bin/zot", func(candidate string) (string, error) {
+		calls = append(calls, candidate)
+		if candidate == "/current/bin/zot" {
+			return candidate, nil
+		}
+		return "", os.ErrNotExist
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "/current/bin/zot" {
+		t.Fatalf("executable = %q, want current executable", got)
+	}
+	if len(calls) != 1 || calls[0] != "/current/bin/zot" {
+		t.Fatalf("lookup calls = %v, want only the current executable", calls)
+	}
+}
+
+func TestResolveSubagentExecutableFallsBackToPath(t *testing.T) {
+	var calls []string
+	got, err := resolveSubagentExecutable("/removed/.local/bin/zot", "/removed/.local/bin/zot", func(candidate string) (string, error) {
+		calls = append(calls, candidate)
+		if candidate == "zot" {
+			return "/active/go/bin/zot", nil
+		}
+		return "", os.ErrNotExist
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "/active/go/bin/zot" {
+		t.Fatalf("executable = %q, want PATH fallback", got)
+	}
+	if len(calls) != 2 || calls[0] != "/removed/.local/bin/zot" || calls[1] != "zot" {
+		t.Fatalf("lookup calls = %v, want stale path followed by PATH lookup", calls)
+	}
+}
+
 func TestSubagentWorkerArgsPropagatesProviderConnectionSettings(t *testing.T) {
 	args := subagentWorkerArgs(subagentWorkerArgsOpts{
 		Exe:         "/zot",
