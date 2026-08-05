@@ -57,6 +57,24 @@ func TestStatusBarNoCWD(t *testing.T) {
 	}
 }
 
+func TestStatusBarShowsFastMode(t *testing.T) {
+	lines := StatusBar(StatusBarParams{
+		Theme:    Dark,
+		Provider: "openai-codex",
+		Model:    "gpt-5.6-luna",
+		FastMode: true,
+		CWD:      "/tmp/x",
+		Cols:     200,
+	})
+	if len(lines) != 2 {
+		t.Fatalf("want 2 lines, got %d: %q", len(lines), lines)
+	}
+	plain := stripANSI(lines[0])
+	if !strings.Contains(plain, "fast mode") {
+		t.Fatalf("fast mode should be visible in status bar: %q", plain)
+	}
+}
+
 func TestStatusBarReasoningLevelBetweenModelAndStats(t *testing.T) {
 	lines := StatusBar(StatusBarParams{
 		Theme:     Dark,

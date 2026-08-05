@@ -42,7 +42,7 @@ Put behavior in the package that owns the concern:
 | `packages/agent/extproto` | Extension wire protocol |
 | `packages/agent/ext` | Public extension SDK |
 | `packages/agent/skills` | Skill discovery and loading |
-| `packages/agent/swarm` | Background-agent state, supervision, and persistence |
+| `packages/agent/subagents` | Background-agent state, supervision, and persistence |
 | `packages/agent/tools` | Built-in tools, permission checks, and jail behavior |
 | `packages/tui` | Terminal input, layout, rendering, markdown, themes, and images |
 | `packages/ignore` | Ignore-pattern matching |

@@ -22,6 +22,25 @@ type QuickModelShortcut struct {
 	Model    string `json:"model"`
 }
 
+// SubagentsConfig contains the persisted supervisor policy. Duration values
+// use Go strings such as "20m" so config files remain readable.
+type SubagentsConfig struct {
+	MaxConcurrent          int      `json:"max_concurrent,omitempty"`
+	MaxConcurrentPerParent int      `json:"max_concurrent_per_parent,omitempty"`
+	MaxTotalSpawned        int      `json:"max_total_spawned,omitempty"`
+	QueueTimeout           string   `json:"queue_timeout,omitempty"`
+	DefaultTimeout         string   `json:"default_timeout,omitempty"`
+	MaxTurns               int      `json:"max_turns,omitempty"`
+	MaxOutputBytes         int      `json:"max_output_bytes,omitempty"`
+	MaxOutputLines         int      `json:"max_output_lines,omitempty"`
+	AllowedTools           []string `json:"allowed_tools,omitempty"`
+	AllowedRoots           []string `json:"allowed_roots,omitempty"`
+	HeartbeatInterval      string   `json:"heartbeat_interval,omitempty"`
+	IdleTimeout            string   `json:"idle_timeout,omitempty"`
+	ReconnectTimeout       string   `json:"reconnect_timeout,omitempty"`
+	CancelGracePeriod      string   `json:"cancel_grace_period,omitempty"`
+}
+
 // Config is the persisted user configuration.
 type Config struct {
 	Provider    string   `json:"provider"`
@@ -68,17 +87,20 @@ type Config struct {
 	// both so no extra provider request is made. Toggle from /settings.
 	TerminalTitleEnabled *bool `json:"terminal_title_enabled,omitempty"`
 
-	// AutoSwarmEnabled lets the main agent spawn background sub-agents
-	// for parallel sub-tasks via a built-in swarm_spawn tool. Off by
+	// Subagents controls manager-owned child lifecycle and resource policy.
+	Subagents SubagentsConfig `json:"subagents,omitempty"`
+
+	// AutoSubagentsEnabled lets the main agent spawn background sub-agents
+	// for parallel sub-tasks via a built-in subagent_spawn tool. Off by
 	// default; nil/missing means disabled. Toggle from /settings.
-	AutoSwarmEnabled *bool `json:"auto_swarm_enabled,omitempty"`
+	AutoSubagentsEnabled *bool `json:"auto_subagents_enabled,omitempty"`
 
 	// LSPEnabled controls the built-in lsp tool and write-time diagnostics
 	// for the main session. nil/missing means enabled. Toggle from
 	// /settings.
 	LSPEnabled *bool `json:"lsp_enabled,omitempty"`
 
-	// SubagentLSPEnabled controls LSP availability in swarm sub-agent
+	// SubagentLSPEnabled controls LSP availability in subagent worker
 	// processes. nil/missing means enabled. Toggle from /settings.
 	SubagentLSPEnabled *bool `json:"subagent_lsp_enabled,omitempty"`
 
@@ -213,7 +235,7 @@ func (c Config) CompactUserInput() bool {
 	return c.CompactInput != nil && *c.CompactInput
 }
 
-// LSPEnabledFor reports whether LSP is enabled for a main or swarm
+// LSPEnabledFor reports whether LSP is enabled for a main or subagent
 // sub-agent session. Both settings default to true so new installations
 // get code intelligence without a migration or generated config file.
 func (c Config) LSPEnabledFor(subagent bool) bool {

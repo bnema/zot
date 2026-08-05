@@ -3,11 +3,11 @@ package agent
 import "testing"
 
 func TestParseArgsSubagentAndReasoning(t *testing.T) {
-	args, err := ParseArgs([]string{"--swarm-agent", "/tmp/in.sock", "--subagent", "reviewer", "--reasoning", "high", "task"})
+	args, err := ParseArgs([]string{"--subagent-worker", "/tmp/in.sock", "--subagent", "reviewer", "--reasoning", "high", "task"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if args.Mode != ModeSwarmAgent || args.Subagent != "reviewer" || args.Reasoning != "high" || args.Prompt != "task" {
+	if args.Mode != ModeSubagentWorker || args.Subagent != "reviewer" || args.Reasoning != "high" || args.Prompt != "task" {
 		t.Fatalf("parsed args = mode=%q subagent=%q reasoning=%q prompt=%q", args.Mode, args.Subagent, args.Reasoning, args.Prompt)
 	}
 }
@@ -19,6 +19,16 @@ func TestParseArgsNoLSP(t *testing.T) {
 	}
 	if !args.NoLSP {
 		t.Fatal("--no-lsp did not disable LSP")
+	}
+}
+
+func TestParseArgsAllowsLeadingDashPromptAfterTerminator(t *testing.T) {
+	args, err := ParseArgs([]string{"--subagent-worker", "/tmp/in.sock", "--", "--inspect", "auth flow"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if args.Prompt != "--inspect auth flow" {
+		t.Fatalf("prompt = %q, want leading-dash task preserved", args.Prompt)
 	}
 }
 

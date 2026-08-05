@@ -79,7 +79,7 @@ func (i *Interactive) sessionTreeEscapeBlocked() bool {
 		i.llamaDialog != nil && i.llamaDialog.Active() ||
 		i.rescueDialog != nil && i.rescueDialog.Active() ||
 		i.sessionDialog != nil && i.sessionDialog.Active() ||
-		i.swarmDialog != nil && i.swarmDialog.Active() ||
+		i.subagentsDialog != nil && i.subagentsDialog.Active() ||
 		i.jumpDialog != nil && i.jumpDialog.Active() ||
 		i.btwDialog != nil && i.btwDialog.Active() ||
 		i.skillsDialog != nil && i.skillsDialog.Active() ||

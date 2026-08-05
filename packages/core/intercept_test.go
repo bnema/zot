@@ -39,11 +39,12 @@ func TestBeforeToolExecuteModifiesArgs(t *testing.T) {
 	}
 
 	ctx := context.Background()
+	tools := a.ToolsSnapshot()
 	res := a.runOneTool(ctx, provider.ToolCallBlock{
 		ID:        "T1",
 		Name:      "echo",
 		Arguments: json.RawMessage(`{"command":"ls"}`),
-	}, func(AgentEvent) {})
+	}, tools, func(AgentEvent) {})
 	if res.IsError {
 		t.Fatalf("unexpected error result: %v", res.Content)
 	}
@@ -65,12 +66,13 @@ func TestBeforeToolExecuteInvalidJSONIgnored(t *testing.T) {
 	}
 
 	ctx := context.Background()
+	tools := a.ToolsSnapshot()
 	orig := json.RawMessage(`{"command":"ls"}`)
 	a.runOneTool(ctx, provider.ToolCallBlock{
 		ID:        "T1",
 		Name:      "echo",
 		Arguments: orig,
-	}, func(AgentEvent) {})
+	}, tools, func(AgentEvent) {})
 	if string(rec.lastArgs) != string(orig) {
 		t.Errorf("tool saw %s, want original %s", string(rec.lastArgs), string(orig))
 	}
@@ -88,11 +90,12 @@ func TestBeforeToolExecuteBlockSurfacesReason(t *testing.T) {
 	}
 
 	ctx := context.Background()
+	tools := a.ToolsSnapshot()
 	res := a.runOneTool(ctx, provider.ToolCallBlock{
 		ID:        "T1",
 		Name:      "echo",
 		Arguments: json.RawMessage(`{"command":"ls"}`),
-	}, func(AgentEvent) {})
+	}, tools, func(AgentEvent) {})
 	if !res.IsError {
 		t.Fatal("want error result, got success")
 	}

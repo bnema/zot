@@ -156,7 +156,7 @@ func TestFindSubagentProfileReportsDiscoveryFailure(t *testing.T) {
 	}
 }
 
-func TestResolveIncludesNamedSubagentsListWhenAutoSwarmIsEnabled(t *testing.T) {
+func TestResolveIncludesNamedSubagentsListWhenAutoSubagentsIsEnabled(t *testing.T) {
 	root := t.TempDir()
 	home := filepath.Join(root, "home")
 	zotHome := filepath.Join(root, "zot-home")
@@ -171,7 +171,7 @@ func TestResolveIncludesNamedSubagentsListWhenAutoSwarmIsEnabled(t *testing.T) {
 	t.Setenv("ZOT_HOME", zotHome)
 	t.Setenv("ZOT_AGENT_PROFILES", filepath.Join(home, ".agents", "agents"))
 	enabled := true
-	if err := SaveConfig(Config{Provider: "openai", Model: "gpt-5", AutoSwarmEnabled: &enabled}); err != nil {
+	if err := SaveConfig(Config{Provider: "openai", Model: "gpt-5", AutoSubagentsEnabled: &enabled}); err != nil {
 		t.Fatal(err)
 	}
 	profile := `---
@@ -510,7 +510,7 @@ func TestResolveOllamaUsesModelBaseURLBeforeDefault(t *testing.T) {
 	}
 }
 
-func TestResolveUsesInheritedSwarmCredential(t *testing.T) {
+func TestResolveUsesInheritedSupervisorCredential(t *testing.T) {
 	t.Setenv("ZOT_HOME", t.TempDir())
 	t.Setenv("OPENAI_API_KEY", "")
 

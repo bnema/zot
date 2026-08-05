@@ -62,7 +62,7 @@ var slashCatalog = []slashCommand{
 	{Name: "/jail", Desc: "confine tools to the current directory"},
 	{Name: "/unjail", Desc: "allow tools to touch paths outside this directory"},
 	{Name: "/skills", Desc: "list discovered skills (SKILL.md files)"},
-	{Name: "/swarm", Desc: "supervise background agents that share this working directory"},
+	{Name: "/subagents", Desc: "supervise background subagents with lifecycle, results, and optional worktrees"},
 	{Name: "/reload-ext", Desc: "hot-reload all extensions (re-read manifests and respawn)"},
 	{Name: "/telegram", Desc: "connect, disconnect, or show status of the telegram bridge"},
 	{Name: "/settings", Desc: "open settings"},

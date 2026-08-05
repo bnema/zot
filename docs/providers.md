@@ -123,7 +123,7 @@ off by default and is stored as `fast_mode` in `$ZOT_HOME/config.json`.
 
 Fast mode is currently limited to those OpenAI provider IDs. Enabling it while
 using another provider returns an error instead of silently changing that
-provider's request. Swarm children inherit the setting from their parent.
+provider's request. Subagent children inherit the setting from their parent.
 
 Example:
 

@@ -14,7 +14,7 @@ import (
 // used to always emit SeqHideCursor + cursor-position +
 // SeqShowCursor, which resets the terminal's blink timer. Faster
 // than the OS blink interval, so an idle dialog editor (e.g. a
-// re-opened swarm transcript whose agent isn't producing output)
+// re-opened subagent transcript whose agent isn't producing output)
 // rendered the caret as a solid non-blinking block.
 //
 // With the no-op fast path the renderer leaves the screen alone
