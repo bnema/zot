@@ -211,15 +211,51 @@ func (a *app) publishUnavailableChrome() {
 	}
 }
 
-func (a *app) publishChrome(state PlanState) {
-	if isPlanClosed(state) {
-		a.ext.SetStatus("progress", "closed: "+state.ClosedSummary)
-	} else if done, total := getPlanProgress(state); total > 0 {
-		a.ext.SetStatus("progress", fmt.Sprintf("%d/%d tasks checked", done, total))
-	} else {
-		a.ext.SetStatus("progress", "no active plan")
+type chromeContent struct {
+	status string
+	lines  []string
+}
+
+func buildChrome(state PlanState) (chromeContent, bool) {
+	// An empty state is the normal idle state, not useful persistent chrome.
+	if !hasStoredPlan(state) {
+		return chromeContent{}, false
 	}
-	a.ext.SetWidget("plan", "above_input", "Tasked phases", strings.Split(buildCompactSummary(state), "\n"))
+
+	status := ""
+	if isPlanClosed(state) {
+		status = "closed: " + state.ClosedSummary
+	} else if done, total := getPlanProgress(state); total > 0 {
+		status = fmt.Sprintf("%d/%d tasks checked", done, total)
+	} else {
+		status = "no active plan"
+	}
+	return chromeContent{
+		status: status,
+		lines:  strings.Split(buildCompactSummary(state), "\n"),
+	}, true
+}
+
+type chromeHost interface {
+	SetStatus(key, text string)
+	ClearStatus(key string)
+	SetWidget(id, position, title string, lines []string)
+	ClearWidget(id string)
+}
+
+func applyChrome(host chromeHost, state PlanState) {
+	chrome, ok := buildChrome(state)
+	if !ok {
+		host.ClearStatus("progress")
+		host.ClearWidget("plan")
+		return
+	}
+	host.SetStatus("progress", chrome.status)
+	host.SetWidget("plan", "above_input", "Tasked phases", chrome.lines)
+}
+
+func (a *app) publishChrome(state PlanState) {
+	applyChrome(a.ext, state)
 }
 
 func toolResult(action string, state PlanState, headline string, err error) ext.ToolResult {
