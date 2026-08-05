@@ -620,12 +620,22 @@ func fanoutAgentEvent(mgr *extensions.Manager, ev core.AgentEvent) {
 
 // Run is the top-level entrypoint for the zot binary.
 func Run(rawArgs []string, version string) error {
+	// Extension installs can invoke external build and clone processes.
+	// Give those processes a cancellation context without changing signal
+	// handling for the interactive modes below.
+	extCtx := context.Background()
+	stopExtContext := func() {}
+	if len(rawArgs) > 0 && rawArgs[0] == "ext" {
+		extCtx, stopExtContext = signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	}
+	defer stopExtContext()
+
 	// Subcommand router: `zot bot ...` is handled separately so the
 	// generic flag parser doesn't reject "bot" as a positional arg.
 	if handled, err := runBotCommand(rawArgs, version); handled {
 		return err
 	}
-	if handled, err := runExtCommand(rawArgs, version); handled {
+	if handled, err := runExtCommand(extCtx, rawArgs, version); handled {
 		return err
 	}
 	if handled, err := runUpdateCommand(rawArgs, version); handled {

@@ -50,7 +50,8 @@ vet:
 	$(GO) vet ./...
 
 fmt-check:
-	@test -z "$$(gofmt -l . | tee /dev/stderr)" || (echo "gofmt issues"; exit 1)
+	@files="$$(gofmt -l . 2>&1)" || { printf '%s\n' "$$files" >&2; echo "gofmt failed" >&2; exit 1; }; \
+	if [ -n "$$files" ]; then printf '%s\n' "$$files" >&2; echo "gofmt issues" >&2; exit 1; fi
 
 lint: vet fmt-check
 

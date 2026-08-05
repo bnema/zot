@@ -278,6 +278,23 @@ func TestExtInstallRejectsWhitespaceManifestName(t *testing.T) {
 	}
 }
 
+func TestExtInstallRejectsDotManifestName(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("ZOT_HOME", home)
+	src := filepath.Join(t.TempDir(), "dot-name")
+	if err := os.MkdirAll(src, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(src, "extension.json"), []byte(`{"name":".example","exec":"go"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	err := extInstall([]string{src})
+	if err == nil || !strings.Contains(err.Error(), "invalid extension name") {
+		t.Fatalf("error = %v, want invalid-name validation error", err)
+	}
+}
+
 func TestExtInstallRejectsBuildForPATHExecutable(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("ZOT_HOME", home)

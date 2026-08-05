@@ -23,7 +23,7 @@ import (
 // (handled=true, err) if rawArgs starts with "ext"; otherwise
 // (handled=false, nil) so the main router falls through to the
 // regular flag parser.
-func runExtCommand(rawArgs []string, version string) (handled bool, err error) {
+func runExtCommand(ctx context.Context, rawArgs []string, version string) (handled bool, err error) {
 	if len(rawArgs) == 0 || rawArgs[0] != "ext" {
 		return false, nil
 	}
@@ -45,7 +45,7 @@ func runExtCommand(rawArgs []string, version string) (handled bool, err error) {
 	case "remove", "rm":
 		return true, extRemove(rawArgs[2:])
 	case "install":
-		return true, extInstall(rawArgs[2:])
+		return true, extInstallContext(ctx, rawArgs[2:])
 	case "help", "-h", "--help":
 		printExtHelp()
 		return true, nil
@@ -473,6 +473,10 @@ func extRemove(args []string) error {
 // Builds are never inferred or run implicitly; --build=go is an explicit
 // opt-in for local Go extensions.
 func extInstall(args []string) error {
+	return extInstallContext(context.Background(), args)
+}
+
+func extInstallContext(ctx context.Context, args []string) error {
 	opts, err := parseExtInstallArgs(args)
 	if err != nil {
 		return err
@@ -487,7 +491,7 @@ func extInstall(args []string) error {
 		if opts.builder != "" {
 			return errors.New("--build=go is currently supported only for local extension paths; clone the extension locally and build it there")
 		}
-		return installGitExtension(src, dest)
+		return installGitExtension(ctx, src, dest)
 	}
 
 	// Local path: must be a directory containing extension.json.
@@ -523,7 +527,7 @@ func extInstall(args []string) error {
 		return fmt.Errorf("copy extension: %w", err)
 	}
 	if opts.builder != "" {
-		if err := buildLocalExtension(absSrc, staged, manifest); err != nil {
+		if err := buildLocalExtension(ctx, absSrc, staged, manifest); err != nil {
 			return err
 		}
 	}
@@ -591,7 +595,7 @@ func parseExtInstallArgs(args []string) (extInstallOptions, error) {
 	return opts, nil
 }
 
-func buildLocalExtension(sourceDir, stagedDir string, manifest extensions.Manifest) error {
+func buildLocalExtension(ctx context.Context, sourceDir, stagedDir string, manifest extensions.Manifest) error {
 	if manifest.Exec == "" {
 		return errors.New("cannot build a theme-only extension; it does not declare an executable")
 	}
@@ -605,7 +609,7 @@ func buildLocalExtension(sourceDir, stagedDir string, manifest extensions.Manife
 	}
 
 	fmt.Fprintf(os.Stderr, "building %s with go\n", manifest.Name)
-	cmd := exec.Command("go", "build", "-trimpath", "-o", stagedExec, ".")
+	cmd := exec.CommandContext(ctx, "go", "build", "-trimpath", "-o", stagedExec, ".")
 	cmd.Dir = sourceDir
 	cmd.Stdout = os.Stderr
 	cmd.Stderr = os.Stderr
@@ -634,7 +638,7 @@ func extensionRelativeExecPath(dir, execName string) (string, error) {
 	return rel, nil
 }
 
-func installGitExtension(src, dest string) error {
+func installGitExtension(ctx context.Context, src, dest string) error {
 	stageRoot, err := os.MkdirTemp(dest, ".zot-extension-clone-")
 	if err != nil {
 		return fmt.Errorf("create install staging directory: %w", err)
@@ -642,7 +646,8 @@ func installGitExtension(src, dest string) error {
 	defer os.RemoveAll(stageRoot)
 
 	cloneDir := filepath.Join(stageRoot, "extension")
-	cmd := exec.Command("git", "clone", "--depth", "1", src, cloneDir)
+	cmd := exec.CommandContext(ctx, "git", "clone", "--depth", "1", src, cloneDir)
+	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
 	cmd.Stdout = os.Stderr
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {
@@ -684,7 +689,7 @@ func readExtensionManifest(dir string) (extensions.Manifest, error) {
 	if manifest.Name != strings.TrimSpace(manifest.Name) {
 		return extensions.Manifest{}, fmt.Errorf("manifest: extension name %q has leading or trailing whitespace", manifest.Name)
 	}
-	if manifest.Name == "." || manifest.Name == ".." || strings.ContainsAny(manifest.Name, `/\\`) {
+	if strings.HasPrefix(manifest.Name, ".") || strings.ContainsAny(manifest.Name, `/\\`) {
 		return extensions.Manifest{}, fmt.Errorf("manifest: invalid extension name %q", manifest.Name)
 	}
 	if manifest.Exec == "" && !extensions.HasExtensionTheme(dir) {

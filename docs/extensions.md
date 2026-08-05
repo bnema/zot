@@ -85,8 +85,9 @@ The `examples/extensions/` directory in the repo is reference code, not a defaul
 zot ext install --build=go path/to/zot/examples/extensions/hello
 
 # or build it in the source tree for a one-run development load
-cd path/to/zot/examples/extensions/hello && go build -o hello .
-zot --ext path/to/zot/examples/extensions/hello
+cd path/to/zot/examples/extensions/hello
+go build -o hello .
+zot --ext .
 ```
 
 `zot ext install` never builds source code implicitly. For local installs it
@@ -605,8 +606,8 @@ Reply with `shutdown_ack` and then exit.
 ```
 zot ext list                              list installed extensions and their state
 zot ext doctor                            diagnose load, registration, and conflict issues
-zot ext install [--build=go] <path|git-url>
-                                          copy / clone into $ZOT_HOME/extensions/
+zot ext install <path|git-url>             copy / clone into $ZOT_HOME/extensions/
+zot ext install --build=go <local-path>   build local Go source, then install
 zot ext remove <name>                     delete an extension directory
 zot ext enable <name>           re-enable a disabled extension
 zot ext disable <name>          disable without removing
