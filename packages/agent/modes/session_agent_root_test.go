@@ -33,6 +33,10 @@ func TestSessionsSlashUsesAgentSessionRoot(t *testing.T) {
 		CWD:          cwd,
 	})
 	i.runSlash(context.Background(), "/sessions")
+	defer i.sessionDialog.Close()
+	for event := range i.sessionLoads {
+		i.sessionDialog.ApplyLoad(event)
+	}
 
 	if got := len(i.sessionDialog.sessions); got != 1 {
 		t.Fatalf("session picker entries = %d, want 1 from agent session root", got)

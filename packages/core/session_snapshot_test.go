@@ -1,6 +1,7 @@
 package core
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -376,6 +377,9 @@ func TestHiddenBranchesAreTreeVisibleButFlatListHidden(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if summary := DescribeSession(childPath); !summary.HideFromSessions {
+		t.Fatalf("DescribeSession hidden flag = %v, want true", summary.HideFromSessions)
+	}
 	if got := DescribeSessions(root, "/workspace"); len(got) != 1 || got[0].Path != parentPath {
 		t.Fatalf("DescribeSessions = %+v, want only parent", got)
 	}
@@ -385,6 +389,28 @@ func TestHiddenBranchesAreTreeVisibleButFlatListHidden(t *testing.T) {
 	}
 	if len(tree[0].Children) != 1 || tree[0].Children[0].Summary.Path != childPath {
 		t.Fatalf("tree children = %+v, want hidden child", tree[0].Children)
+	}
+}
+
+func TestDescribeSessionContextHonorsCancellation(t *testing.T) {
+	root := t.TempDir()
+	session, err := NewSession(root, "/workspace", "test", "model", "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := session.AppendMessage(textMessage(provider.RoleUser, "cancel me")); err != nil {
+		t.Fatal(err)
+	}
+	path := session.Path
+	if err := session.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	summary := DescribeSessionContext(ctx, path)
+	if summary.Path != path || summary.MessageCount != 0 {
+		t.Fatalf("canceled summary = %+v, want path only", summary)
 	}
 }
 

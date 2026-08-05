@@ -1,13 +1,43 @@
 package modes
 
 import (
+	"context"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/patriceckhart/zot/packages/core"
 	"github.com/patriceckhart/zot/packages/tui"
 )
+
+type sessionLoadEventKind uint8
+
+const (
+	sessionLoadStarted sessionLoadEventKind = iota
+	sessionLoadEntry
+	sessionLoadFinished
+)
+
+type sessionLoadEvent struct {
+	kind       sessionLoadEventKind
+	generation uint64
+	total      int
+	index      int
+	summary    core.SessionSummary
+}
+
+type sessionLoadSlot struct {
+	loaded  bool
+	summary core.SessionSummary
+}
+
+type sessionLoadJob struct {
+	index int
+	path  string
+}
+
+const maxSessionLoadWorkers = 8
 
 // sessionDialog is the inline picker shown when the user runs /sessions.
 type sessionDialog struct {
@@ -16,6 +46,14 @@ type sessionDialog struct {
 	cursor   int
 	renaming bool
 	rename   string
+
+	loading          bool
+	loadingDone      int
+	loadingTotal     int
+	loadingStartedAt time.Time
+	loadGeneration   uint64
+	loadCancel       context.CancelFunc
+	loadSlots        []sessionLoadSlot
 
 	// MaxRows is the maximum number of session rows the dialog
 	// will render in a single frame. Set by the host right before
@@ -44,24 +82,152 @@ type sessionDialogAction struct {
 
 func newSessionDialog() *sessionDialog { return &sessionDialog{} }
 
-// Open populates the dialog from root + cwd and shows it. Empty
-// sessions (zero messages) are filtered out so the currently-running
-// session, a freshly-opened one that hasn't received a prompt yet,
-// and any stale empties that haven't been pruned yet all stay out
-// of the picker. Resuming an empty session is a no-op anyway.
-func (d *sessionDialog) Open(root, cwd string) {
-	all := core.DescribeSessions(root, cwd)
-	filtered := make([]core.SessionSummary, 0, len(all))
-	for _, s := range all {
-		if s.MessageCount == 0 {
-			continue
-		}
-		filtered = append(filtered, s)
+// Open shows the dialog immediately and loads session entries on bounded
+// background workers. Results are delivered to the caller so the UI goroutine
+// remains responsible for mutating dialog state and rendering it.
+func (d *sessionDialog) Open(parent context.Context, root, cwd string) <-chan sessionLoadEvent {
+	if d.loadCancel != nil {
+		d.loadCancel()
 	}
-	d.sessions = filtered
+	if parent == nil {
+		parent = context.Background()
+	}
+	ctx, cancel := context.WithCancel(parent)
+	d.loadCancel = cancel
+	d.loadGeneration++
+	generation := d.loadGeneration
+	d.sessions = nil
 	d.cursor = 0
 	d.viewTop = 0
+	d.renaming = false
+	d.rename = ""
+	d.loading = true
+	d.loadingDone = 0
+	d.loadingTotal = 0
+	d.loadingStartedAt = time.Now()
+	d.loadSlots = nil
 	d.active = true
+
+	events := make(chan sessionLoadEvent, 1)
+	send := func(event sessionLoadEvent) bool {
+		select {
+		case events <- event:
+			return true
+		case <-ctx.Done():
+			return false
+		}
+	}
+	go func() {
+		defer close(events)
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
+		paths := core.ListSessions(root, cwd)
+		if !send(sessionLoadEvent{
+			kind:       sessionLoadStarted,
+			generation: generation,
+			total:      len(paths),
+		}) {
+			return
+		}
+
+		workerCount := len(paths)
+		if workerCount > maxSessionLoadWorkers {
+			workerCount = maxSessionLoadWorkers
+		}
+		jobs := make(chan sessionLoadJob)
+		var wg sync.WaitGroup
+		wg.Add(workerCount)
+		for worker := 0; worker < workerCount; worker++ {
+			go func() {
+				defer wg.Done()
+				for {
+					select {
+					case <-ctx.Done():
+						return
+					case job, ok := <-jobs:
+						if !ok {
+							return
+						}
+						summary := core.DescribeSessionContext(ctx, job.path)
+						select {
+						case <-ctx.Done():
+							return
+						default:
+						}
+						if !send(sessionLoadEvent{
+							kind:       sessionLoadEntry,
+							generation: generation,
+							index:      job.index,
+							summary:    summary,
+						}) {
+							return
+						}
+					}
+				}
+			}()
+		}
+	dispatch:
+		for index, path := range paths {
+			select {
+			case jobs <- sessionLoadJob{index: index, path: path}:
+			case <-ctx.Done():
+				break dispatch
+			}
+		}
+		close(jobs)
+		wg.Wait()
+		send(sessionLoadEvent{kind: sessionLoadFinished, generation: generation})
+	}()
+	return events
+}
+
+// ApplyLoad incorporates one result from Open. It must be called by the UI
+// goroutine so Render and HandleKey never race with background file reads.
+func (d *sessionDialog) ApplyLoad(event sessionLoadEvent) {
+	if !d.active || event.generation != d.loadGeneration {
+		return
+	}
+	switch event.kind {
+	case sessionLoadStarted:
+		d.loadingTotal = event.total
+		d.loadingDone = 0
+		d.loadSlots = make([]sessionLoadSlot, event.total)
+		d.sessions = nil
+	case sessionLoadEntry:
+		if event.index < 0 || event.index >= len(d.loadSlots) || d.loadSlots[event.index].loaded {
+			return
+		}
+		d.loadSlots[event.index] = sessionLoadSlot{loaded: true, summary: event.summary}
+		d.loadingDone++
+	case sessionLoadFinished:
+		d.rebuildLoadedSessions()
+		d.loading = false
+		d.loadSlots = nil
+		if d.loadCancel != nil {
+			d.loadCancel()
+			d.loadCancel = nil
+		}
+	}
+}
+
+func (d *sessionDialog) rebuildLoadedSessions() {
+	filtered := make([]core.SessionSummary, 0, len(d.loadSlots))
+	for _, slot := range d.loadSlots {
+		if !slot.loaded || slot.summary.HideFromSessions || slot.summary.MessageCount == 0 {
+			continue
+		}
+		filtered = append(filtered, slot.summary)
+	}
+	d.sessions = filtered
+	if d.cursor >= len(d.sessions) {
+		d.cursor = len(d.sessions) - 1
+	}
+	if d.cursor < 0 {
+		d.cursor = 0
+	}
 }
 
 // CursorPos returns the row/col for the terminal cursor when in
@@ -75,11 +241,22 @@ func (d *sessionDialog) CursorPos() (row, col int) {
 	return 3, 4 + len([]rune(d.rename))
 }
 
-// Close hides the dialog.
-func (d *sessionDialog) Close() { d.active = false }
+// Close hides the dialog and cancels any in-flight session reads.
+func (d *sessionDialog) Close() {
+	if d.loadCancel != nil {
+		d.loadCancel()
+		d.loadCancel = nil
+	}
+	d.loading = false
+	d.loadSlots = nil
+	d.active = false
+}
 
 // Active reports whether the dialog is visible and consumes input.
 func (d *sessionDialog) Active() bool { return d != nil && d.active }
+
+// Loading reports whether the dialog still has session entries in flight.
+func (d *sessionDialog) Loading() bool { return d != nil && d.active && d.loading }
 
 // Render returns the dialog lines.
 func (d *sessionDialog) Render(th tui.Theme, width int) []string {
@@ -88,7 +265,14 @@ func (d *sessionDialog) Render(th tui.Theme, width int) []string {
 	}
 	var lines []string
 	lines = append(lines, frameHeader(th, "sessions", width))
-	if len(d.sessions) == 0 {
+	if d.loading {
+		lines = append(lines, th.FG256(th.Muted, d.loadingMessage(th)))
+		if len(d.sessions) == 0 {
+			lines = append(lines, th.FG256(th.Muted, "session entries will appear when loading completes"))
+			lines = append(lines, frameRule(th, width))
+			return lines
+		}
+	} else if len(d.sessions) == 0 {
 		lines = append(lines, th.FG256(th.Muted, "no previous sessions for this directory"))
 		lines = append(lines, th.FG256(th.Muted, "press esc to close"))
 		lines = append(lines, frameRule(th, width))
@@ -106,7 +290,9 @@ func (d *sessionDialog) Render(th tui.Theme, width int) []string {
 		lines = append(lines, frameRule(th, width))
 		return lines
 	}
-	lines = append(lines, th.FG256(th.Muted, "pick a session (↑/↓, pgup/pgdn, enter resume, r rename, esc cancel)"))
+	if !d.loading {
+		lines = append(lines, th.FG256(th.Muted, "pick a session (↑/↓, pgup/pgdn, enter resume, r rename, esc cancel)"))
+	}
 
 	// Viewport: windowed slice of d.sessions around d.cursor so a
 	// list taller than the terminal still scrolls. Caller sets
@@ -216,6 +402,30 @@ func formatSessionRowPlain(s core.SessionSummary, maxWidth int) string {
 	return row
 }
 
+func (d *sessionDialog) loadingMessage(th tui.Theme) string {
+	frames := th.SpinnerFrames
+	if len(frames) == 0 {
+		frames = []string{"⠋", "⠙", "⠚", "⠞", "⠖", "⠦", "⠴", "⠲", "⠳", "⠓"}
+	}
+	interval := th.SpinnerIntervalMS
+	if interval <= 0 {
+		interval = 80
+	}
+	idx := 0
+	if !d.loadingStartedAt.IsZero() {
+		elapsed := time.Since(d.loadingStartedAt)
+		if elapsed < 0 {
+			elapsed = 0
+		}
+		idx = int(elapsed/(time.Duration(interval)*time.Millisecond)) % len(frames)
+	}
+	progress := "loading sessions"
+	if d.loadingTotal > 0 {
+		progress = fmt.Sprintf("loading sessions (%d/%d)", d.loadingDone, d.loadingTotal)
+	}
+	return th.FG256(th.Spinner, frames[idx]) + " " + progress + " (esc cancel)"
+}
+
 func formatRelative(t time.Time) string {
 	if t.IsZero() {
 		return "unknown"
@@ -275,6 +485,14 @@ func (d *sessionDialog) HandleKey(k tui.Key) sessionDialogAction {
 				d.rename += string(k.Rune)
 			}
 			return sessionDialogAction{}
+		}
+		return sessionDialogAction{}
+	}
+
+	if d.loading {
+		if k.Kind == tui.KeyEsc {
+			d.Close()
+			return sessionDialogAction{Close: true}
 		}
 		return sessionDialogAction{}
 	}

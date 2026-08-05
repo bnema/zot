@@ -3,6 +3,7 @@ package core
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -190,8 +191,15 @@ func newSessionAt(p, cwd, providerName, model, version string) (*Session, error)
 }
 
 func forEachJSONLLine(r io.Reader, fn func([]byte) error) error {
+	return forEachJSONLLineContext(context.Background(), r, fn)
+}
+
+func forEachJSONLLineContext(ctx context.Context, r io.Reader, fn func([]byte) error) error {
 	br := bufio.NewReader(r)
 	for {
+		if err := contextErr(ctx); err != nil {
+			return err
+		}
 		line, err := br.ReadBytes('\n')
 		if len(line) > 0 {
 			line = bytes.TrimRight(line, "\r\n")
@@ -207,6 +215,18 @@ func forEachJSONLLine(r io.Reader, fn func([]byte) error) error {
 		if err != nil {
 			return err
 		}
+	}
+}
+
+func contextErr(ctx context.Context) error {
+	if ctx == nil {
+		return nil
+	}
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+		return nil
 	}
 }
 
@@ -268,6 +288,10 @@ func nonNegDelta(cur, prev int) int {
 // listing helpers: a caller that is about to resume, render, or branch a
 // session must not receive a plausible-looking partial transcript.
 func ReadSessionSnapshot(path string) (SessionSnapshot, error) {
+	return readSessionSnapshot(context.Background(), path)
+}
+
+func readSessionSnapshot(ctx context.Context, path string) (SessionSnapshot, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return SessionSnapshot{}, fmt.Errorf("session snapshot: open %q: %w", path, err)
@@ -286,7 +310,7 @@ func ReadSessionSnapshot(path string) (SessionSnapshot, error) {
 	titleFromRename := false
 	extensionState := map[string]json.RawMessage{}
 
-	err = forEachStrictJSONLLine(f, func(line []byte, lineNo int) error {
+	err = forEachStrictJSONLLineContext(ctx, f, func(line []byte, lineNo int) error {
 		var head sessionLineHead
 		if err := json.Unmarshal(line, &head); err != nil {
 			return fmt.Errorf("line %d: invalid JSON: %w", lineNo, err)
@@ -538,9 +562,16 @@ func ReadSessionHistory(path string) (SessionHistory, error) {
 // forEachJSONLLine. It rejects malformed and blank rows and reports the
 // line number so callers cannot accidentally proceed with a partial file.
 func forEachStrictJSONLLine(r io.Reader, fn func([]byte, int) error) error {
+	return forEachStrictJSONLLineContext(context.Background(), r, fn)
+}
+
+func forEachStrictJSONLLineContext(ctx context.Context, r io.Reader, fn func([]byte, int) error) error {
 	br := bufio.NewReader(r)
 	lineNo := 0
 	for {
+		if err := contextErr(ctx); err != nil {
+			return err
+		}
 		line, err := br.ReadBytes('\n')
 		if len(line) > 0 {
 			lineNo++
@@ -785,6 +816,8 @@ type SessionSummary struct {
 	TotalCost     float64
 	Title         string
 	BranchDepth   int
+	// HideFromSessions marks internal branches omitted from the flat picker.
+	HideFromSessions bool
 }
 
 // RenameSession appends a sanitized rename line to the session file. This is
@@ -813,6 +846,22 @@ func DeleteSession(path string) error {
 		return fmt.Errorf("session path is empty")
 	}
 	return os.Remove(path)
+}
+
+// DescribeSession returns a lightweight summary for one on-disk session.
+// It uses the effective snapshot so message counts, metadata, and usage agree
+// with resume and branching behavior. The summary retains HideFromSessions so
+// callers that load entries independently can apply the same picker filter as
+// DescribeSessions.
+func DescribeSession(path string) SessionSummary {
+	return DescribeSessionContext(context.Background(), path)
+}
+
+// DescribeSessionContext is the cancellation-aware form of DescribeSession.
+// Cancellation is checked between JSONL records so a closed picker does not
+// keep parsing a large transcript unnecessarily.
+func DescribeSessionContext(ctx context.Context, path string) SessionSummary {
+	return describeSessionContext(ctx, path)
 }
 
 // DescribeSessions returns lightweight summaries for every session in
@@ -860,14 +909,19 @@ func sessionBranchDepth(path string, metas map[string]SessionMeta, idToPath map[
 }
 
 func describeSession(path string) SessionSummary {
+	return describeSessionContext(context.Background(), path)
+}
+
+func describeSessionContext(ctx context.Context, path string) SessionSummary {
 	s := SessionSummary{Path: path}
-	snapshot, err := ReadSessionSnapshot(path)
+	snapshot, err := readSessionSnapshot(ctx, path)
 	if err != nil {
 		return s
 	}
 	s.Started = snapshot.Meta.Started
 	s.Model = snapshot.Meta.Model
 	s.Provider = snapshot.Meta.Provider
+	s.HideFromSessions = snapshot.Meta.HideFromSessions
 	s.Title = NormalizeSessionTitle(snapshot.Title)
 	s.MessageCount = len(snapshot.Messages)
 	s.FirstUserText = firstUserTextFromMessages(snapshot.Messages)
@@ -892,7 +946,7 @@ func describeSession(path string) SessionSummary {
 			return err
 		}
 		defer f.Close()
-		return forEachJSONLLine(f, func(line []byte) error {
+		return forEachJSONLLineContext(ctx, f, func(line []byte) error {
 			var head sessionLineHead
 			if err := json.Unmarshal(line, &head); err != nil {
 				return nil
