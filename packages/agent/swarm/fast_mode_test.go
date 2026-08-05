@@ -58,6 +58,51 @@ func TestSwarmFastModePropagatesToChild(t *testing.T) {
 	}
 }
 
+func TestSpawnRequestFastModeIsBoundByHostSetting(t *testing.T) {
+	falseValue, trueValue := false, true
+	cases := []struct {
+		name        string
+		hostFast    bool
+		profileFast *bool
+		want        bool
+	}{
+		{name: "unset inherits enabled host", hostFast: true, want: true},
+		{name: "unset inherits disabled host", hostFast: false, want: false},
+		{name: "false disables enabled host", hostFast: true, profileFast: &falseValue, want: false},
+		{name: "true cannot enable disabled host", hostFast: false, profileFast: &trueValue, want: false},
+		{name: "true preserves enabled host", hostFast: true, profileFast: &trueValue, want: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			f := New(Config{
+				Root:     root,
+				RepoRoot: root,
+				FastMode: tc.hostFast,
+				NewRunner: func(*Agent) Runner {
+					return RunnerFunc(func(context.Context, Sink) error { return nil })
+				},
+			})
+			a, err := f.SpawnReq(context.Background(), SpawnRequest{Task: "x", FastMode: tc.profileFast})
+			if err != nil {
+				t.Fatalf("spawn: %v", err)
+			}
+			a.Wait()
+			if a.FastMode != tc.want {
+				t.Fatalf("FastMode = %v, want %v", a.FastMode, tc.want)
+			}
+			args := defaultChildArgs("/zot", a, "/session", "/inbox")
+			wantFlag := "--no-fast-mode"
+			if tc.want {
+				wantFlag = "--fast-mode"
+			}
+			if !containsArg(args, wantFlag) {
+				t.Fatalf("child args = %v, want %s", args, wantFlag)
+			}
+		})
+	}
+}
+
 func TestSwarmReloadPreservesExplicitFastModeOff(t *testing.T) {
 	root := t.TempDir()
 	newSwarm := func(fastMode bool) *Swarm {

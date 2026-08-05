@@ -30,6 +30,9 @@ type Profile struct {
 	Provider     string
 	Thinking     string
 
+	// Nil means the profile did not specify whether fast mode is enabled.
+	FastMode *bool
+
 	// SystemPromptMode is "append" (the default) or "replace".
 	SystemPromptMode string
 
@@ -125,7 +128,7 @@ func SystemPromptAddendum(profiles []*Profile) string {
 	}
 	var sb strings.Builder
 	sb.WriteString("[subagents_list]\n")
-	sb.WriteString("Named subagents available to swarm_spawn. Choose the profile whose description best matches the independent task and pass its name as the tool's agent field. The selected profile's instructions, model, thinking level, and tool limits are applied to the child.\n")
+	sb.WriteString("Named subagents available to swarm_spawn. Choose the profile whose description best matches the independent task and pass its name as the tool's agent field. The selected profile's instructions, model, thinking level, tool limits, and fast-mode preference are applied to the child.\n")
 	for _, profile := range profiles {
 		if profile == nil {
 			continue
@@ -135,7 +138,7 @@ func SystemPromptAddendum(profiles []*Profile) string {
 		if description == "" {
 			description = "(no description)"
 		}
-		metadata := make([]string, 0, 4)
+		metadata := make([]string, 0, 5)
 		if model := manifestValue(profile.Model); model != "" {
 			metadata = append(metadata, "model="+model)
 		}
@@ -147,6 +150,9 @@ func SystemPromptAddendum(profiles []*Profile) string {
 		}
 		if len(profile.Tools) > 0 {
 			metadata = append(metadata, "tools="+manifestValue(strings.Join(profile.Tools, ",")))
+		}
+		if profile.FastMode != nil {
+			metadata = append(metadata, "fastMode="+strconv.FormatBool(*profile.FastMode))
 		}
 		if len(metadata) > 0 {
 			fmt.Fprintf(&sb, "- %s [%s]: %s\n", name, strings.Join(metadata, " "), description)
@@ -262,6 +268,13 @@ func load(path, source string) (*Profile, error) {
 			return nil, fmt.Errorf("inheritSkills must be true or false")
 		}
 		profile.InheritSkills = &value
+	}
+	if raw, ok := values["fastmode"]; ok {
+		value, parsed := parseOptionalBool(raw)
+		if !parsed {
+			return nil, fmt.Errorf("fastMode must be true or false")
+		}
+		profile.FastMode = &value
 	}
 	return profile, nil
 }

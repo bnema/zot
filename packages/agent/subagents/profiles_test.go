@@ -27,6 +27,7 @@ thinking: max
 systemPromptMode: replace
 inheritProjectContext: false
 inheritSkills: false
+fastMode: false
 ---
 Review the requested scope without editing it.
 `)
@@ -65,6 +66,13 @@ Implement the requested change.
 	}
 	if reviewer.InheritSkills == nil || *reviewer.InheritSkills {
 		t.Fatalf("inherit skills = %#v, want false", reviewer.InheritSkills)
+	}
+	if reviewer.FastMode == nil || *reviewer.FastMode {
+		t.Fatalf("fast mode = %#v, want false", reviewer.FastMode)
+	}
+	implementer := Find(profiles, "implementer")
+	if implementer == nil || implementer.FastMode != nil {
+		t.Fatalf("unset fast mode = %#v, want nil", implementer)
 	}
 }
 
@@ -155,6 +163,7 @@ func TestLoadRejectsInvalidClosedSchemaMetadata(t *testing.T) {
 		{name: "invalid-prompt-mode", field: "systemPromptMode: merge"},
 		{name: "invalid-project-context", field: "inheritProjectContext: sometimes"},
 		{name: "invalid-skills", field: "inheritSkills: sometimes"},
+		{name: "invalid-fast-mode", field: "fastMode: sometimes"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -188,11 +197,12 @@ func TestSystemPromptAddendumIsCompactAndDoesNotExposeBodyOrPath(t *testing.T) {
 		SystemPrompt: "secret instructions that belong only to the child",
 		Model:        "openai-codex/gpt-5",
 		Thinking:     "max",
+		FastMode:     boolPtr(false),
 		Tools:        []string{"read", "bash"},
 		Path:         "/private/profile.md",
 	}}
 	got := SystemPromptAddendum(profiles)
-	for _, want := range []string{"[subagents_list]", "[/subagents_list]", "reviewer", "Read-only reviewer", "model=openai-codex/gpt-5", "thinking=max"} {
+	for _, want := range []string{"[subagents_list]", "[/subagents_list]", "reviewer", "Read-only reviewer", "model=openai-codex/gpt-5", "thinking=max", "fastMode=false"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("addendum missing %q:\n%s", want, got)
 		}
@@ -203,6 +213,8 @@ func TestSystemPromptAddendumIsCompactAndDoesNotExposeBodyOrPath(t *testing.T) {
 		}
 	}
 }
+
+func boolPtr(value bool) *bool { return &value }
 
 func writeProfile(t *testing.T, path, content string) {
 	t.Helper()

@@ -777,6 +777,13 @@ func Resolve(args Args, requireCred bool) (Resolved, error) {
 	if args.FastModeSet {
 		fastMode = args.FastMode
 	}
+	// A profile can opt out of the effective host/child fast-mode setting,
+	// but it does not enable fast mode by itself. Keep this as a
+	// restriction on the effective value rather than an override so an
+	// explicit child --fast-mode flag cannot bypass fastMode: false.
+	if selectedProfile != nil && selectedProfile.FastMode != nil {
+		fastMode = fastMode && *selectedProfile.FastMode
+	}
 
 	max := args.MaxSteps // 0 = unlimited
 
