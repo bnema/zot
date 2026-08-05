@@ -18,12 +18,9 @@ set_current_phase set_task_checked set_phase_checked
 clear
 ```
 
-Successful mutations return one concise line such as `Checked task task-4
-(p 1/2 | t 3/4)`. `get_status` and `replace_plan` remain detailed when the
-full state is useful. `set_task_checked` changes one task; `set_phase_checked`
-intentionally changes every task in the selected phase. Repeated individual
-checks in one model turn are sequential tool calls, not an automatic bulk
-update.
+Successful mutations return one progress line; use `get_status` or
+`replace_plan` for details. `set_task_checked` changes one task;
+`set_phase_checked` changes every task in a phase.
 
 ## Build and run
 
@@ -70,18 +67,7 @@ as it is completed, and advance the current phase when work moves forward.
 Completed phases and future phases are not repeated in every provider request;
 use `get_status` or `/phases` when the full checklist is needed.
 
-When a plan is stored, the extension automatically publishes a compact summary
-through the host's generic `right_bar` widget position. Both the right-bar title
-and the status bar use the short form `p done/total | t done/total`; active plans
-also show their phase and task checklist rows below the title, with one blank
-row after the title. Phase rows use one leading space and bold phase names;
-task rows use two leading spaces, and wrapped task text hangs under its task
-label. The summary and rows are refreshed after every plan mutation and session
-restore. Checklist markers use `[x]`, `[ ]`, and `[>]`; the host dims rows
-outside the current phase.
-Once every phase and task is complete, the persistent status and right-bar widget
-are cleared. Use `get_status` or `/phases` for the complete checklist and current
-task details. Spec text is deliberately excluded from persistent chrome. zot
-keeps the summary beside the transcript on wide
-terminals and automatically falls back to the normal above-input widget on
-narrow terminals. The extension does not implement any terminal layout code.
+Active plans publish `p done/total | t done/total` and checklist rows through
+`right_bar`. The host dims inactive phases, uses a bounded above-input fallback
+on narrow terminals or when `Ctrl+B` hides the rail, and clears the chrome when
+the plan is complete. Use `get_status` or `/phases` for full details.

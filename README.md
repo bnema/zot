@@ -888,7 +888,7 @@ Slash commands also work while the agent is busy. Non-destructive ones (`/help`,
 | `esc` | Cancel the current turn (while busy); clear input (while idle). Two parsed bare `Esc` presses within 500 ms open `/session tree` only when the editor is idle and empty; dialogs, busy/queued work, and modified keys keep their existing precedence. |
 | `ctrl+c` | Clear the input and queue (while idle) or arm the exit hint (while busy). Press again within 2s to exit. Use `esc` to cancel a running turn. |
 | `ctrl+d` | Exit on empty input. |
-| `ctrl+b` | Toggle the right sidebar; hidden/narrow right-bar widgets fall back above the input within a bounded area and show an ellipsis when truncated. |
+| `ctrl+b` | Toggle the right sidebar; hidden or narrow widgets use a bounded above-input fallback. |
 | `ctrl+l` | Redraw the screen. |
 | `ctrl+v` | Paste clipboard text into the focused chat, side chat, dialog, filter, or credential input. In the main chat, image clipboard content is attached to the next prompt when the platform exposes it (macOS pasteboard, Wayland `wl-paste`, or X11 `xclip`). On Linux, text uses `wl-paste`, `xclip`, or `xsel`; terminal-native bracketed paste remains available without those commands. |
 | `ctrl+o` | Expand or collapse long tool results (read, write, edit, bash, and lsp outputs over ~12 lines). |

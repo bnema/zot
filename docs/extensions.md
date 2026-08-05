@@ -426,14 +426,10 @@ hint with these interactive-zot values:
 - `"right_bar"` keeps the widget in a display-only side rail beside the
   transcript when the terminal is wide enough.
 
-The right bar is host-owned: it bounds width and height, orders widgets by
-extension and ID, and truncates content that does not fit. On narrow terminals
-it falls back automatically to `above_input`. In interactive zot, `Ctrl+B`
-toggles the sidebar; while hidden, right-bar widgets use the same bounded
-`above_input` fallback and show a truncation marker when the shared chrome
-budget is exceeded. Empty or unknown positions retain the historical
-`above_input` behavior so older extensions remain compatible. Use `open_panel`
-when a widget needs interaction or navigation.
+The host owns right-bar layout: it orders widgets, bounds width and height,
+and truncates content. Narrow terminals and `Ctrl+B` use a bounded
+`above_input` fallback. Empty or unknown positions keep the historical
+`above_input` behavior. Use `open_panel` for interaction or navigation.
 
 ```json
 {"type":"widget","id":"plan","position":"right_bar",
@@ -725,14 +721,6 @@ layout without extension-specific terminal code:
 e.SetWidget("plan", ext.WidgetPositionRightBar, "Tasked phases", lines)
 e.ClearWidget("plan")
 ```
-
-`right_bar` widgets are display-only in the first version. The host renders
-one muted separator beside the main pane, leaves one blank row below each
-widget title, and does not add a second widget frame or top/bottom rules. In
-interactive zot, `Ctrl+B` toggles the rail; hidden or narrow right-bar widgets
-use a bounded `above_input` fallback with a truncation marker. Open an
-extension panel for editing or keyboard navigation; clearing the last
-right-bar widget removes the rail.
 
 The SDK has four interceptor hooks, all optional:
 

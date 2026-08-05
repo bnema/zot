@@ -18,19 +18,9 @@ Use the `tasked_phases` tool as the source of truth for the spec, phases, curren
 7. Use `set_phase_checked` to complete or reopen every task in a phase. The phase must already contain at least one task.
 8. When every task is checked, treat the plan as closed. For unrelated work, call `clear` to discard the plan, or call `set_spec` immediately followed by `replace_plan` to record a new spec and a new set of phases.
 
-The right-bar summary and status bar are the persistent UI: both refresh after
-each successful mutation and session restore and use `p done/total | t done/total`.
-Active plans also publish their phase and task rows below the compact title; the
-host dims rows outside the current phase. Use `[x]`, `[ ]`, and `[>]` markers.
-Use `get_status` or `/phases` when the complete checklist is needed. Persistent
-chrome is cleared automatically once every phase and task is complete. Keep
-phase titles to 32 characters or fewer and task text to 64 characters or fewer
-in plans and detailed views. Routine successful mutations return one concise
-progress line; use `get_status` or `replace_plan` when detailed output is needed.
-`set_task_checked` changes one task. `set_phase_checked` intentionally checks
-or unchecks every task in one phase, so use it only for an intentional phase-wide
-update. Multiple individual checks in one turn are sequential calls, not an
-automatic bulk update.
+Successful mutations return one progress line; use `get_status` or
+`replace_plan` for details. `set_task_checked` changes one task;
+`set_phase_checked` changes every task in a phase.
 
 ## Planning rules
 
