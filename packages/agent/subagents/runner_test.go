@@ -194,6 +194,66 @@ func TestSubagentWorkerArgs(t *testing.T) {
 	}
 }
 
+func TestResolveSubagentExecutableUsesCurrentWhenAvailable(t *testing.T) {
+	got, err := resolveSubagentExecutable(context.Background(), "/current/bin/zot", "/old/bin/zot", func(_ context.Context, candidate string) (string, error) {
+		if candidate == "/current/bin/zot" {
+			return candidate, nil
+		}
+		return "", os.ErrNotExist
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "/current/bin/zot" {
+		t.Fatalf("executable = %q, want current executable", got)
+	}
+}
+
+func TestResolveSubagentExecutableFallsBackToPath(t *testing.T) {
+	got, err := resolveSubagentExecutable(context.Background(), "/removed/.local/bin/zot", "/removed/.local/bin/zot", func(_ context.Context, candidate string) (string, error) {
+		if candidate == "zot" {
+			return "/active/go/bin/zot", nil
+		}
+		return "", os.ErrNotExist
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "/active/go/bin/zot" {
+		t.Fatalf("executable = %q, want PATH fallback", got)
+	}
+}
+
+func TestResolveSubagentExecutableCancelsOtherLookupsAfterFirstSuccess(t *testing.T) {
+	slowStarted := make(chan struct{})
+	slowCanceled := make(chan struct{})
+	got, err := resolveSubagentExecutable(context.Background(), "/current/bin/zot", "/old/bin/zot", func(ctx context.Context, candidate string) (string, error) {
+		switch candidate {
+		case "/current/bin/zot":
+			close(slowStarted)
+			<-ctx.Done()
+			close(slowCanceled)
+			return "", ctx.Err()
+		case "zot":
+			<-slowStarted
+			return "/active/go/bin/zot", nil
+		default:
+			return "", os.ErrNotExist
+		}
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "/active/go/bin/zot" {
+		t.Fatalf("executable = %q, want first successful lookup", got)
+	}
+	select {
+	case <-slowCanceled:
+	case <-time.After(time.Second):
+		t.Fatal("slower lookup was not canceled")
+	}
+}
+
 func TestSubagentWorkerArgsPropagatesProviderConnectionSettings(t *testing.T) {
 	args := subagentWorkerArgs(subagentWorkerArgsOpts{
 		Exe:         "/zot",
