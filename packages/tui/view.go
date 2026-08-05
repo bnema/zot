@@ -1196,7 +1196,7 @@ func compactToolBlank(th Theme, width int) string {
 	if width < 1 {
 		width = 1
 	}
-	return sgrBGColor(th.UserBubbleBG) + strings.Repeat(" ", width) + reset
+	return th.sgrBGColor(th.UserBubbleBG) + strings.Repeat(" ", width) + reset
 }
 
 func compactToolHeader(th Theme, label string, width int) string {
@@ -1222,8 +1222,8 @@ func compactToolHeader(th Theme, label string, width int) string {
 	if visible < width {
 		fill = strings.Repeat(" ", width-visible)
 	}
-	bg := sgrBGColor(th.UserBubbleBG)
-	return bg + pad + sgrFG(th.FG) + name + bg + sgrFG(th.Muted) + rest + bg + fill + reset
+	bg := th.sgrBGColor(th.UserBubbleBG)
+	return bg + pad + th.fgPrefix(th.FG) + name + bg + th.fgPrefix(th.Muted) + rest + bg + fill + reset
 }
 
 func toolBodyLine(th Theme, line string, width int, compact bool) string {
@@ -1250,7 +1250,7 @@ func compactToolBody(th Theme, line string, width int) string {
 	if visible < width {
 		fill = strings.Repeat(" ", width-visible)
 	}
-	bg := sgrBGColor(th.UserBubbleBG)
+	bg := th.sgrBGColor(th.UserBubbleBG)
 	return bg + strings.ReplaceAll(line, reset, reset+bg) + bg + fill + reset
 }
 

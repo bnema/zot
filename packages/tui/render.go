@@ -370,7 +370,7 @@ func (r *Renderer) Draw(lines []string, cursorRow, cursorCol int) {
 	// overwrites, leaving ghost highlights behind.
 	hasSelection := false
 	if r.theme.Background == nil {
-		selectionBG := sgrBG(r.theme.SelectionBG)
+		selectionBG := r.theme.bgPrefix(Color256(r.theme.SelectionBG))
 		for _, l := range frame {
 			if selectionBG != "" && strings.Contains(l, selectionBG) {
 				hasSelection = true

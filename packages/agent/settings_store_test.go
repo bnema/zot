@@ -161,3 +161,21 @@ func TestConfigLSPEnabledForDefaultsToTrue(t *testing.T) {
 		t.Fatal("sub-agent diagnostics did not follow sub-agent LSP settings")
 	}
 }
+
+func TestConfigSettingsStorePersistsInheritedTheme(t *testing.T) {
+	t.Setenv("ZOT_HOME", t.TempDir())
+	if err := SaveConfig(Config{Theme: "dark"}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := (configSettingsStore{}).SetTheme("inherited"); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Theme != "inherited" {
+		t.Fatalf("theme = %q, want inherited", cfg.Theme)
+	}
+}
