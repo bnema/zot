@@ -57,6 +57,8 @@ available, the plan is also stored as extension-owned state on each session
 branch and restored when sessions are opened, switched, or forked.
 
 Before each model turn, the extension supplies only the active phase, its goal,
-and a bounded set of incomplete tasks as hidden context. Completed phases and
-future phases are not repeated in every provider request; use `get_status` or
-`/phases` when the full checklist is needed.
+and a bounded set of incomplete tasks as hidden context. The same context
+reminds the model to update the checklist continuously, mark each task as soon
+as it is completed, and advance the current phase when work moves forward.
+Completed phases and future phases are not repeated in every provider request;
+use `get_status` or `/phases` when the full checklist is needed.

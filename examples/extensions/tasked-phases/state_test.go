@@ -238,6 +238,22 @@ func TestTurnContextContainsOnlyCurrentFocus(t *testing.T) {
 	}
 }
 
+func TestTurnContextRemindsAgentToTrackProgressContinuously(t *testing.T) {
+	context := buildTurnContext(sampleState())
+	for _, want := range []string{
+		"[TASKED PHASES STATE - SOURCE OF TRUTH]",
+		"Update tasked_phases continuously while implementing, not only at the end.",
+		"After completing each checklist task, immediately call tasked_phases set_task_checked.",
+		"After moving to another phase, immediately call tasked_phases set_current_phase.",
+		"When a phase is shown as Title [id], pass phaseId as the raw id only, without brackets.",
+		"Do not rely on prose alone for completion state.",
+	} {
+		if !strings.Contains(context, want) {
+			t.Errorf("turn context missing continuous-tracking guidance %q: %s", want, context)
+		}
+	}
+}
+
 func TestTurnContextIsBoundedForUntrustedIdentifiers(t *testing.T) {
 	state := sampleState()
 	state.Phases[1].ID = strings.Repeat("phase-id-", 1000)
