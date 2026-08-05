@@ -1,19 +1,6 @@
-<div align="center">
-  <a href="https://github.com/bnema/zut">
-    <img src="packages/provider/auth/assets/zut-logo.png" alt="zut coding agent harness" width="130" height="130" />
-  </a>
-</div>
-<br>
-<p align="center">
-  <a href="LICENSE"><img alt="license" src="https://img.shields.io/badge/license-MIT-blue"></a>
-  <img alt="Go 1.25+" src="https://img.shields.io/badge/Go-1.25+-00ADD8?logo=go&logoColor=white">
-  <img alt="30+ providers" src="https://img.shields.io/badge/providers-30+-34E2EA">
-</p>
-<p align="center">
-  <a href="https://github.com/bnema/zut">github.com/bnema/zut</a>
-</p>
+# zut
 
-> [!INFO]
+> [!NOTE]
 > **Fork notice:** `zut` is an independently maintained fork of [zot](https://github.com/patriceckhart/zot). It retains the upstream MIT license and copyright notice; see [LICENSE](LICENSE).
 
 ## What is it?
