@@ -543,6 +543,7 @@ func (c *Client) Close() error {
 		_ = c.stdin.Close()
 		c.writeMu.Unlock()
 		killed := false
+		process := c.cmd.Process
 		exited := make(chan error, 1)
 		go func() { exited <- c.cmd.Wait() }()
 		timer := time.NewTimer(500 * time.Millisecond)
@@ -550,8 +551,8 @@ func (c *Client) Close() error {
 		case waitErr = <-exited:
 			timer.Stop()
 		case <-timer.C:
-			if c.cmd.Process != nil && c.cmd.ProcessState == nil {
-				killed = c.cmd.Process.Kill() == nil
+			if process != nil {
+				killed = process.Kill() == nil
 			}
 			waitErr = <-exited
 		}

@@ -68,9 +68,13 @@ make build
 Useful commands:
 
 ```sh
-make build       # compile ./bin/zot
+make help        # list the important developer commands
+make build       # compile ./bin/zot as 0.0.0-dev
 make run         # build and start the interactive application
+make install     # install the current checkout with go install
+make go-install  # install a published module version
 make test        # run all tests with the race detector
+make test-fast   # run all tests without the race detector
 make lint        # run go vet and verify gofmt
 ```
 

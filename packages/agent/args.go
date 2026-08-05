@@ -423,7 +423,8 @@ func PrintHelp(version string) {
 	)
 	section("extensions",
 		row{"zot ext list", "list installed extensions"},
-		row{"zot ext install <path|url>", "install into $ZOT_HOME/extensions/"},
+		row{"zot ext install <path|git-url>", "install from a local path or Git URL"},
+		row{"zot ext install --build=go <path>", "build local Go source, then install"},
 		row{"zot --ext ./path/to/ext", "load an extension for this run only"},
 		row{"zot ext help", "show all extension subcommands"},
 	)

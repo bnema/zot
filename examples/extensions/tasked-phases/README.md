@@ -32,8 +32,13 @@ zot --no-ext --ext /path/to/zot/examples/extensions/tasked-phases
 
 # Or install it globally (run this from the extension directory):
 cd /path/to/zot/examples/extensions/tasked-phases
-zot ext install .
+zot ext install --build=go .
 ```
+
+`--build=go` explicitly builds the manifest-declared executable in the staged
+installation. If an incomplete copy was installed already, remove it with
+`zot ext remove tasked-phases --yes` before reinstalling. You can also build
+manually with `go build -o tasked-phases .` and then use `zot ext install .`.
 
 Then use `/phases` or ask the model to create a spec and phased checklist with
 `tasked_phases`. The extension keys its durable state by the host-reported

@@ -279,7 +279,7 @@ func (m *Manager) Discover(ctx context.Context) []error {
 			continue // missing directory is fine
 		}
 		for _, e := range entries {
-			if !e.IsDir() {
+			if !e.IsDir() || strings.HasPrefix(e.Name(), ".") {
 				continue
 			}
 			if seenDirs[e.Name()] {
@@ -600,6 +600,23 @@ func (m *Manager) WaitForReady(grace time.Duration) {
 // after it closes stdout before completing the hello handshake.
 const extensionExitGrace = time.Second
 
+// ResolveExecPath applies the manifest exec resolution rules. The bool is
+// true when exec names an absolute or extension-relative path; false means
+// the value is a bare command resolved through PATH.
+func ResolveExecPath(extDir, execName string) (string, bool) {
+	normalized := filepath.FromSlash(execName)
+	if filepath.IsAbs(normalized) {
+		return normalized, true
+	}
+	if normalized == "." || normalized == ".." ||
+		strings.HasPrefix(normalized, "."+string(filepath.Separator)) ||
+		strings.HasPrefix(normalized, ".."+string(filepath.Separator)) ||
+		strings.ContainsRune(normalized, filepath.Separator) {
+		return filepath.Join(extDir, normalized), true
+	}
+	return normalized, false
+}
+
 // spawn launches the subprocess, hooks up pipes, logs stderr, and
 // runs the synchronous portion of the hello handshake. Asynchronous
 // frames are processed in a goroutine started here.
@@ -615,27 +632,9 @@ func (m *Manager) spawn(ctx context.Context, ext *Extension) error {
 	ext.logFile = logFile
 	fmt.Fprintf(logFile, "\n[zot] starting %s/%s at %s\n", ext.Manifest.Name, ext.Manifest.Version, time.Now().Format(time.RFC3339))
 
-	// Exec resolution rules:
-	//   - absolute path:                 used as-is.
-	//   - starts with "." (./ or ../):  resolved relative to ext.Dir.
-	//   - bare name (no path separator): looked up via $PATH so
-	//                                    "node", "npx", "python3",
-	//                                    "tsx" etc. work without
-	//                                    forcing absolute paths.
-	//   - other relative form (foo/bar): resolved relative to ext.Dir.
-	execPath := ext.Manifest.Exec
-	switch {
-	case filepath.IsAbs(execPath):
-		// keep
-	case strings.HasPrefix(execPath, "."+string(filepath.Separator)) ||
-		strings.HasPrefix(execPath, ".."+string(filepath.Separator)) ||
-		execPath == "." || execPath == "..":
-		execPath = filepath.Join(ext.Dir, execPath)
-	case strings.ContainsRune(execPath, filepath.Separator):
-		execPath = filepath.Join(ext.Dir, execPath)
-	default:
-		// bare name: leave as-is for exec.LookPath via exec.Command.
-	}
+	// Bare names (node, npx, python3, tsx, etc.) are looked up via PATH;
+	// absolute and extension-relative paths are resolved by the helper.
+	execPath, _ := ResolveExecPath(ext.Dir, ext.Manifest.Exec)
 	cmd := exec.CommandContext(ctx, execPath, ext.Manifest.Args...)
 	cmd.Dir = ext.Dir
 	cmd.Stderr = logFile

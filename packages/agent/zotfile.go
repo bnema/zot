@@ -749,7 +749,7 @@ func writeCanonicalTar(root string, w io.Writer, exclude ...string) error {
 
 func checkZotfileRequirements(zf zotfileLoaded, version string) error {
 	if min := strings.TrimSpace(zf.Manifest.Runtime.MinZot); min != "" {
-		if versionOnly(version) == "0.0.0" {
+		if isDevVersion(version) {
 			return fmt.Errorf("agent requires zot %s or newer; unversioned development builds cannot satisfy min_zot", min)
 		}
 		if versionLess(version, min) {

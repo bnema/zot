@@ -5,6 +5,29 @@ import (
 	"testing"
 )
 
+func TestIsPseudoVersion(t *testing.T) {
+	for _, version := range []string{
+		"v0.0.0-20260804145622-bce908a66c9a",
+		"v0.2.94-0.20260804145622-bce908a66c9a",
+		"v0.2.94-pre.0.20260804145622-bce908a66c9a",
+		"v0.2.94-0.20260804145622-bce908a66c9a+incompatible",
+	} {
+		if !isPseudoVersion(version) {
+			t.Errorf("isPseudoVersion(%q) = false, want true", version)
+		}
+	}
+	for _, version := range []string{
+		"v0.2.95-20260804145622-abcdef",
+		"v0.2.94-0.2026080414562-bce908a66c9a",
+		"v0.2.94-0.20260804145622",
+		"0.2.94-0.20260804145622-bce908a66c9a",
+	} {
+		if isPseudoVersion(version) {
+			t.Errorf("isPseudoVersion(%q) = true, want false", version)
+		}
+	}
+}
+
 func TestResolvedVersionFromBuildInfo(t *testing.T) {
 	tests := []struct {
 		name          string
@@ -19,6 +42,18 @@ func TestResolvedVersionFromBuildInfo(t *testing.T) {
 			want:          "0.2.94",
 		},
 		{
+			name:          "go install release from dev placeholder",
+			linkedVersion: "0.0.0-dev",
+			moduleVersion: "v0.2.94",
+			want:          "0.2.94",
+		},
+		{
+			name:          "local pseudo-version keeps dev placeholder",
+			linkedVersion: "0.0.0-dev",
+			moduleVersion: "v0.2.94-0.20260804145622-bce908a66c9a",
+			want:          "0.0.0-dev",
+		},
+		{
 			name:          "release linker version wins",
 			linkedVersion: "0.2.95",
 			moduleVersion: "v0.2.94",
@@ -29,6 +64,12 @@ func TestResolvedVersionFromBuildInfo(t *testing.T) {
 			linkedVersion: "0.0.0",
 			moduleVersion: "(devel)",
 			want:          "0.0.0",
+		},
+		{
+			name:          "local dev build",
+			linkedVersion: "0.0.0-dev",
+			moduleVersion: "(devel)",
+			want:          "0.0.0-dev",
 		},
 		{
 			name:          "missing build info",
