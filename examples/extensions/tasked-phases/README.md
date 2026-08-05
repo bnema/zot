@@ -62,3 +62,8 @@ reminds the model to update the checklist continuously, mark each task as soon
 as it is completed, and advance the current phase when work moves forward.
 Completed phases and future phases are not repeated in every provider request;
 use `get_status` or `/phases` when the full checklist is needed.
+
+When a plan is active, the extension publishes its compact checklist through the
+host's generic `right_bar` widget position. zot keeps it beside the transcript on
+wide terminals and automatically falls back to the normal above-input widget on
+narrow terminals. The extension does not implement any terminal layout code.

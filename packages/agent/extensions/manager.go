@@ -199,6 +199,13 @@ type AlertHostHooks interface {
 	Alert(extName string, alert extproto.AlertRequest)
 }
 
+// ExtensionChromeHooks is an optional lifecycle hook for hosts that retain
+// persistent extension-owned UI. The manager calls it when an extension exits
+// so a crash, disable, or reload cannot leave stale widgets or statuses.
+type ExtensionChromeHooks interface {
+	ClearExtensionChrome(extName string)
+}
+
 type commandRegistration struct {
 	ext  *Extension
 	name string
@@ -821,6 +828,9 @@ func (m *Manager) readLoop(ext *Extension, scanner *bufio.Scanner) {
 			}
 		}
 		m.mu.Unlock()
+		if hooks, ok := m.hooks.(ExtensionChromeHooks); ok {
+			hooks.ClearExtensionChrome(ext.Manifest.Name)
+		}
 		ext.stopLifecycleWriter()
 		ext.readyOnce.Do(func() { close(ext.readyCh) })
 		fmt.Fprintf(ext.logFile, "[zot] extension %s read loop exited at %s\n", ext.Manifest.Name, time.Now().Format(time.RFC3339))

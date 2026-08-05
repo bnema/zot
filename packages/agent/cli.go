@@ -217,6 +217,31 @@ func (h *interactiveExtHooks) ClearWidget(extName, id string) {
 	iv.ClearWidget(extName, id)
 }
 
+func (h *interactiveExtHooks) ClearExtensionChrome(extName string) {
+	if h == nil {
+		return
+	}
+	h.mu.Lock()
+	if h.interactive == nil {
+		prefix := extName + "\x00"
+		for key := range h.pendingStatuses {
+			if strings.HasPrefix(key, prefix) {
+				delete(h.pendingStatuses, key)
+			}
+		}
+		for key := range h.pendingWidgets {
+			if strings.HasPrefix(key, prefix) {
+				delete(h.pendingWidgets, key)
+			}
+		}
+		h.mu.Unlock()
+		return
+	}
+	iv := h.interactive
+	h.mu.Unlock()
+	iv.ClearExtensionChrome(extName)
+}
+
 // extToolAdapter bridges *extensions.Manager to the
 // ExtensionToolSource interface declared in build.go (kept narrow to
 // avoid a build->extensions import cycle). One adapter instance per

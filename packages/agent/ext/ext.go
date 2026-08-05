@@ -520,7 +520,17 @@ func (e *Extension) SetStatus(key, text string) {
 // ClearStatus removes one persistent status item owned by this extension.
 func (e *Extension) ClearStatus(key string) { e.SetStatus(key, "") }
 
-// SetWidget replaces one persistent widget owned by this extension.
+const (
+	// WidgetPositionAboveInput keeps a widget in the persistent chrome above
+	// the editor. It is the default for empty and unknown positions.
+	WidgetPositionAboveInput = extproto.WidgetPositionAboveInput
+	// WidgetPositionRightBar keeps a widget in the host-owned side rail when
+	// the terminal is wide enough; narrow terminals fall back above the input.
+	WidgetPositionRightBar = extproto.WidgetPositionRightBar
+)
+
+// SetWidget replaces one persistent widget owned by this extension. Use
+// WidgetPositionAboveInput or WidgetPositionRightBar for the position.
 func (e *Extension) SetWidget(id, position, title string, lines []string) {
 	_ = e.send(extproto.WidgetFromExt{Type: "widget", ID: id, Position: position, Title: title, Lines: lines})
 }

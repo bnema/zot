@@ -205,6 +205,9 @@ Stream notifications during a `prompt` or `compact`. None carry an `id`.
 | `error` | `message` | Non-fatal error message |
 | `compact_done` | `summary` | Compaction finished, summary text included |
 | `ext_alert` | `extension`, `kind`, optional `reason` | An extension requested a host alert; RPC clients can map it to their own notification UI. |
+| `ext_widget` | `extension`, `id`, `position`, `title`, `lines` | Persistent extension widget update. `position` may be `above_input` or `right_bar`; clients choose their own layout. |
+| `ext_widget_clear` | `extension`, `id` | Remove one persistent extension widget. |
+| `ext_chrome_clear` | `extension` | The extension exited; discard all persistent status/widget chrome owned by it. |
 
 ## Message shape
 

@@ -175,7 +175,8 @@ done
 		t.Fatal(err)
 	}
 
-	m := New(t.TempDir(), "", "0.0.0-test", "anthropic", "claude-test", nil)
+	hooks := &stubHooks{}
+	m := New(t.TempDir(), "", "0.0.0-test", "anthropic", "claude-test", hooks)
 	t.Cleanup(func() { m.Stop(2 * time.Second) })
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -201,6 +202,12 @@ done
 	}
 	if !reloadFired {
 		t.Error("onReload callback didn't fire")
+	}
+	hooks.mu.Lock()
+	clears := append([]string(nil), hooks.chromeClears...)
+	hooks.mu.Unlock()
+	if len(clears) == 0 || clears[0] != "rtest" {
+		t.Fatalf("extension chrome cleanup callbacks = %v", clears)
 	}
 
 	// Registered command should still be there after reload.

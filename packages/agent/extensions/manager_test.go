@@ -41,16 +41,17 @@ var _ io.WriteCloser = (*nopWriteCloser)(nil)
 
 // stubHooks records every callback so the test can assert on them.
 type stubHooks struct {
-	mu          sync.Mutex
-	notifies    []string
-	displays    []string
-	alerts      []extproto.AlertRequest
-	alertExts   []string
-	submits     []string
-	submitSlash []string
-	clearNotes  []string
-	panels      []extproto.PanelSpec
-	panelExts   []string
+	mu           sync.Mutex
+	notifies     []string
+	displays     []string
+	alerts       []extproto.AlertRequest
+	alertExts    []string
+	submits      []string
+	submitSlash  []string
+	clearNotes   []string
+	panels       []extproto.PanelSpec
+	panelExts    []string
+	chromeClears []string
 }
 
 func (s *stubHooks) Notify(name, level, message string) {
@@ -96,6 +97,11 @@ func (s *stubHooks) ClosePanel(string, string)                            {}
 func (s *stubHooks) SetStatus(string, string, string, string)             {}
 func (s *stubHooks) SetWidget(string, string, string, string, []string)   {}
 func (s *stubHooks) ClearWidget(string, string)                           {}
+func (s *stubHooks) ClearExtensionChrome(name string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.chromeClears = append(s.chromeClears, name)
+}
 
 // writeMockExtension creates a minimal extension on disk that uses a
 // shell script (or batch file on windows) to drive the protocol. The

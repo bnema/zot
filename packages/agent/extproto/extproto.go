@@ -17,7 +17,10 @@
 // correlate; events and notifications never carry an ID.
 package extproto
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"strings"
+)
 
 const ProtocolVersion = 1
 
@@ -136,9 +139,27 @@ type StatusFromExt struct {
 	Text  string `json:"text,omitempty"`
 }
 
+const (
+	WidgetPositionAboveInput = "above_input"
+	WidgetPositionRightBar   = "right_bar"
+)
+
+// NormalizeWidgetPosition returns the host's canonical widget placement.
+// Empty and unknown values intentionally retain the historical above-input
+// behavior so older extensions and future placement hints remain compatible.
+func NormalizeWidgetPosition(position string) string {
+	switch strings.ToLower(strings.TrimSpace(position)) {
+	case WidgetPositionRightBar:
+		return WidgetPositionRightBar
+	default:
+		return WidgetPositionAboveInput
+	}
+}
+
 // WidgetFromExt sets or replaces one persistent widget owned by an
-// extension. Position is a host-defined placement hint; interactive hosts
-// currently support "above_input" and treat unknown values as that default.
+// extension. Position is a host-defined placement hint. Interactive hosts
+// support "above_input" and "right_bar"; empty and unknown values retain
+// the historical "above_input" behavior.
 type WidgetFromExt struct {
 	Type     string   `json:"type"`
 	ID       string   `json:"id"`

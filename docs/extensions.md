@@ -418,11 +418,22 @@ Sets or replaces one status item owned by the extension. Sending an empty
 
 #### `widget` (one-way, persistent)
 
-Sets or replaces a compact widget. Interactive zot currently renders widgets
-above the input; other hosts may ignore the placement hint.
+Sets or replaces a compact widget. `position` is a host-defined placement
+hint with these interactive-zot values:
+
+- `"above_input"` keeps the widget in the existing persistent chrome above
+  the editor.
+- `"right_bar"` keeps the widget in a display-only side rail beside the
+  transcript when the terminal is wide enough.
+
+The right bar is host-owned: it bounds width and height, orders widgets by
+extension and ID, and truncates content that does not fit. On narrow terminals
+it falls back automatically to `above_input`. Empty or unknown positions retain
+the historical `above_input` behavior so older extensions remain compatible.
+Use `open_panel` when a widget needs interaction or navigation.
 
 ```json
-{"type":"widget","id":"plan","position":"above_input",
+{"type":"widget","id":"plan","position":"right_bar",
  "title":"Tasked phases","lines":["Current phase: parse","[ ] validate inputs"]}
 ```
 
@@ -703,6 +714,17 @@ latest persisted snapshot. A tool can return opaque state with
 `TurnStartDecision.Context` supplies hidden bounded context for the next model
 request. `SetStatus`, `SetWidget`, and their clear methods update persistent
 interactive chrome without entering the transcript.
+
+For Go extensions, use the SDK constants so the host can choose the responsive
+layout without extension-specific terminal code:
+
+```go
+e.SetWidget("plan", ext.WidgetPositionRightBar, "Tasked phases", lines)
+e.ClearWidget("plan")
+```
+
+`right_bar` widgets are display-only in the first version. Open an extension
+panel for editing or keyboard navigation.
 
 The SDK has four interceptor hooks, all optional:
 
