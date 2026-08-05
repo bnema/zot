@@ -118,7 +118,7 @@ func main() {
 	})
 
 	e.Tool(toolName,
-		"Persist and update a structured spec, phased plan, current phase, and checklist tasks. Use it for spec-driven planning and progress tracking.",
+		"Persist and update a structured spec, phased plan, current phase, and checklist tasks. Keep the plan current throughout implementation: update it continuously, call set_task_checked immediately after each completed checklist task, and call set_current_phase when moving to another phase.",
 		json.RawMessage(toolSchema), a.handleTool)
 	e.Command("phases", "Show the current spec, phases, and checklist state", a.handleCommand)
 	e.OnPanelKey(panelID, a.handlePanelKey, a.handlePanelClose)

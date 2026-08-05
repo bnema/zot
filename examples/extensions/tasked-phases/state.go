@@ -915,7 +915,14 @@ func buildTurnContext(state PlanState) string {
 		return ""
 	}
 	lines := []string{
+		"[TASKED PHASES STATE - SOURCE OF TRUTH]",
 		"Tasked phases focus:",
+		"Call tasked_phases get_status if the exact full checklist is needed.",
+		"Update tasked_phases continuously while implementing, not only at the end.",
+		"After completing each checklist task, immediately call tasked_phases set_task_checked.",
+		"After moving to another phase, immediately call tasked_phases set_current_phase.",
+		"When a phase is shown as Title [id], pass phaseId as the raw id only, without brackets.",
+		"Do not rely on prose alone for completion state.",
 		fmt.Sprintf("Current phase: %s [%s]", formatPhaseTitle(*phase), formatTurnContextID(phase.ID)),
 	}
 	if phase.Goal != "" {
