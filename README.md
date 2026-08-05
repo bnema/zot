@@ -985,6 +985,8 @@ By default zot loads built-in skills plus user-installed skills from:
 - `./.claude/skills/<name>/SKILL.md`, `~/.claude/skills/<name>/SKILL.md` (Claude-compatible layout)
 - `./.agents/skills/<name>/SKILL.md`, `~/.agents/skills/<name>/SKILL.md` (agent-compatible layout)
 
+User skill roots are scanned recursively. A nested skill keeps its frontmatter `name` and can also be loaded by its slash-separated path relative to the skill root, such as `systems-backend/subskills/golang-patterns`.
+
 See [docs/skills.md](docs/skills.md) for the frontmatter fields, authoring tips, and example skills under `examples/skills/`.
 
 ## Telegram bot (bridge)

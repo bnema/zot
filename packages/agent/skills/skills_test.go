@@ -164,6 +164,47 @@ func TestVisibleSkillsHidesBuiltins(t *testing.T) {
 	}
 }
 
+func TestDiscoverRecursesNestedAgentSkillsAndSupportsPathAlias(t *testing.T) {
+	t.Setenv("ZOT_AGENT_SKILLS", "")
+	tmp := t.TempDir()
+	home := filepath.Join(tmp, "home")
+	cwd := filepath.Join(tmp, "project")
+	root := filepath.Join(home, ".agents", "skills")
+	parentDir := filepath.Join(root, "systems-backend")
+	nestedDir := filepath.Join(parentDir, "subskills", "golang-patterns")
+	if err := os.MkdirAll(nestedDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(parentDir, "SKILL.md"), []byte("---\nname: systems-backend\ndescription: router\n---\nrouter body\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(nestedDir, "SKILL.md"), []byte("---\nname: golang-patterns\ndescription: Go patterns\ndisable-model-invocation: true\n---\nGo body\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	list, errs := Discover("", cwd, home, true)
+	if len(errs) != 0 {
+		t.Fatalf("Discover() errors = %v", errs)
+	}
+	if got := FindByName(list, "systems-backend"); got == nil || got.Source != "global (agents)" {
+		t.Fatalf("parent skill = %#v", got)
+	}
+	nested := FindByName(list, "golang-patterns")
+	if nested == nil {
+		t.Fatalf("nested skill was not discovered: %#v", list)
+	}
+	if nested.Source != "global (agents)" || nested.Path != filepath.Join(nestedDir, "SKILL.md") {
+		t.Fatalf("nested skill metadata = %#v", nested)
+	}
+	if nested.Body != "Go body" {
+		t.Fatalf("nested skill body = %q", nested.Body)
+	}
+	alias := "systems-backend/subskills/golang-patterns"
+	if got := FindByName(list, alias); got != nested {
+		t.Fatalf("FindByName(%q) = %#v, want nested skill %#v", alias, got, nested)
+	}
+}
+
 func TestSystemPromptAddendum(t *testing.T) {
 	skills := []*Skill{
 		{Name: "built-a", Description: "Do A.", Builtin: true},

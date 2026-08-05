@@ -64,7 +64,11 @@ first `SKILL.md` it finds for each unique name:
 The compat paths are deliberate: a `SKILL.md` written for an existing
 skill ecosystem works in zot unchanged. Drop your existing
 `.claude/skills/` or `.agents/skills/` directories into a project and
-zot will pick them up.
+zot will pick them up. User skill roots are scanned recursively, so
+nested files such as `~/.agents/skills/systems-backend/subskills/golang-patterns/SKILL.md`
+are discovered too. The frontmatter `name` is the canonical identifier;
+for nested user skills, the slash-separated directory path relative to the
+skill root is also accepted by the `skill` tool and `/skill:` commands.
 
 Enabled extensions may bundle skills by declaring relative directories in
 `extension.json`, for example `"skills": ["skills"]`, with files at
