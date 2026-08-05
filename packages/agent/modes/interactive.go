@@ -696,6 +696,11 @@ type Interactive struct {
 	// lets ctrl+c/exit remain responsive for very large JSONL sessions.
 	sessionLoading bool
 
+	// sessionLoads carries per-entry results for the /sessions picker. The
+	// picker owns the load lifecycle; the interactive loop applies results so
+	// rendering never races with background file reads.
+	sessionLoads <-chan sessionLoadEvent
+
 	// pendingRescuePrompt / pendingRescueImages stash the prompt and
 	// images that should be re-run after the user picks a model in
 	// the rescue dialog. Cleared once applyRescueSelection consumes
@@ -848,6 +853,7 @@ func (i *Interactive) Run(ctx context.Context) error {
 	defer restore()
 	i.markInteractiveStarted()
 	defer i.cancelSessionTitle()
+	defer i.sessionDialog.Close()
 	defer func() {
 		if i.telegramBridge != nil {
 			i.telegramBridge.Stop()
@@ -1071,6 +1077,18 @@ func (i *Interactive) Run(ctx context.Context) error {
 				i.invalidate()
 			}
 			changelog = nil // single-shot
+		case event, ok := <-i.sessionLoads:
+			i.mu.Lock()
+			if !ok {
+				i.sessionLoads = nil
+				i.sessionDialog.ApplyLoadClosed()
+				i.mu.Unlock()
+				i.invalidate()
+				break
+			}
+			i.sessionDialog.ApplyLoad(event)
+			i.mu.Unlock()
+			i.invalidate()
 		case <-i.dirty:
 			requestRedraw()
 		case <-tick.C:
@@ -1084,10 +1102,12 @@ func (i *Interactive) Run(ctx context.Context) error {
 			// Only force a periodic redraw when something is actually
 			// animating (the main spinner during a busy turn, or the
 			// btw side-chat spinner while it's awaiting a response).
-			// Static pickers (model, session, jump, etc.) don't need
-			// the tick and firing it cancels the terminal's cursor
+			// Static pickers (model, completed session, jump, etc.) don't
+			// need the tick and firing it cancels the terminal's cursor
 			// blink inside dialogs that host their own editor (btw),
 			// because each frame re-emits hide-cursor + show-cursor.
+			// A session picker that is still loading is an exception so
+			// its dialog-local spinner can advance.
 			//
 			// The subagent dashboard is also animated: its rows reflect
 			// background subprocesses whose activity / age change
@@ -1097,7 +1117,11 @@ func (i *Interactive) Run(ctx context.Context) error {
 			// of its inline editors (spawn task or prompt composer)
 			// is active so the cursor blink in those editors works
 			// the same way it does inside btw.
-			if i.busy || i.btwDialog.Loading() || i.subagentsDialog.NeedsTickRefresh() {
+			i.mu.Lock()
+			busy := i.busy
+			sessionLoading := i.sessionDialog.Loading()
+			i.mu.Unlock()
+			if busy || sessionLoading || i.btwDialog.Loading() || i.subagentsDialog.NeedsTickRefresh() {
 				requestRedraw()
 			}
 		}
@@ -1647,7 +1671,7 @@ func (i *Interactive) redraw() {
 	// in runSlash already handles the busy case per-command: safe
 	// ones run immediately, destructive ones cancel the turn first.
 	i.fileSuggest.SetCWD(i.cfg.CWD)
-	mainInputFocused := len(dialog) == 0 || (i.confirmDialog.Active() && !i.confirmDialog.Focused() && !i.confirmChildActive())
+	mainInputFocused := len(dialog) == 0 || (i.confirmDialog.Active() && !i.confirmDialog.Focused() && !i.confirmChildActiveLocked())
 	if mainInputFocused && i.suggest.Active(currentInput) {
 		suggest = i.suggest.Render(currentInput, i.cfg.Theme, cols)
 	} else if mainInputFocused && i.fileSuggest.Active(currentInput) {
@@ -2322,6 +2346,12 @@ func (i *Interactive) toggleBtwToolExpansion() {
 // confirmChildActive reports whether an interaction opened from slash input
 // currently owns the keyboard while a tool confirmation remains pending.
 func (i *Interactive) confirmChildActive() bool {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	return i.confirmChildActiveLocked()
+}
+
+func (i *Interactive) confirmChildActiveLocked() bool {
 	return len(i.helpBlock) > 0 ||
 		len(i.extNotes) > 0 ||
 		i.dialog.Active() ||
@@ -2501,20 +2531,34 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 		i.invalidate()
 		return false
 	}
-	if i.sessionDialog.Active() {
+	i.mu.Lock()
+	sessionDialogActive := i.sessionDialog.Active()
+	i.mu.Unlock()
+	if sessionDialogActive {
 		if k.Kind == tui.KeyCtrlC {
+			i.mu.Lock()
 			i.sessionDialog.Close()
+			i.sessionLoads = nil
+			i.mu.Unlock()
+			i.invalidate()
 			return false
 		}
-		manualRenameCurrent := false
+		manualRenamePath := ""
+		i.mu.Lock()
 		if k.Kind == tui.KeyEnter && i.sessionDialog.renaming && core.NormalizeSessionTitle(i.sessionDialog.rename) != "" && i.sessionDialog.cursor >= 0 && i.sessionDialog.cursor < len(i.sessionDialog.sessions) && i.cfg.CurrentSessionPath != nil {
-			path := i.sessionDialog.sessions[i.sessionDialog.cursor].Path
-			manualRenameCurrent = i.cfg.CurrentSessionPath() == path
-			if manualRenameCurrent {
-				i.markSessionTitleSwitching()
-			}
+			manualRenamePath = i.sessionDialog.sessions[i.sessionDialog.cursor].Path
 		}
+		i.mu.Unlock()
+		manualRenameCurrent := manualRenamePath != "" && i.cfg.CurrentSessionPath() == manualRenamePath
+		if manualRenameCurrent {
+			i.markSessionTitleSwitching()
+		}
+		i.mu.Lock()
 		act := i.sessionDialog.HandleKey(k)
+		if act.Select || act.Close {
+			i.sessionLoads = nil
+		}
+		i.mu.Unlock()
 		if act.Select {
 			i.applySessionSelection(act.Path)
 		}
@@ -5223,7 +5267,9 @@ func (i *Interactive) runSlash(ctx context.Context, cmd string) (done bool) {
 	case "/settings":
 		i.openSettingsDialog()
 	case "/sessions":
-		i.sessionDialog.Open(i.sessionsRoot(), i.cfg.CWD)
+		i.mu.Lock()
+		i.sessionLoads = i.sessionDialog.Open(ctx, i.sessionsRoot(), i.cfg.CWD)
+		i.mu.Unlock()
 	case "/fork":
 		i.doSessionFork()
 	case "/jump":
