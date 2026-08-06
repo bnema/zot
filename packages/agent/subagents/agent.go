@@ -223,6 +223,13 @@ func (a *Agent) LastActivity() time.Time {
 	return a.lastActivity
 }
 
+// UpdatedAt returns the last lifecycle-state update time.
+func (a *Agent) UpdatedAt() time.Time {
+	a.lifecycleMu.Lock()
+	defer a.lifecycleMu.Unlock()
+	return a.updatedAt
+}
+
 // Result returns a copy of the most recent structured turn result.
 func (a *Agent) Result() *TurnResult {
 	a.lifecycleMu.Lock()

@@ -1827,7 +1827,11 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 		if subagentsMgr != nil && candidate.session != nil {
 			// Keep the dashboard scope in the same commit as the session,
 			// agent, usage, and persistence baseline.
-			subagentsMgr.SetActiveSession(candidate.session.ID)
+			if iv != nil {
+				iv.SetSubagentSessionScope(candidate.session.ID)
+			} else {
+				subagentsMgr.SetActiveSession(candidate.session.ID)
+			}
 		}
 		committed = true
 		persistMu.Unlock()
@@ -2010,7 +2014,11 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 
 		// Re-scope the subagent dashboard to the new session.
 		if subagentsMgr != nil && newSess != nil {
-			subagentsMgr.SetActiveSession(newSess.ID)
+			if iv != nil {
+				iv.SetSubagentSessionScope(newSess.ID)
+			} else {
+				subagentsMgr.SetActiveSession(newSess.ID)
+			}
 		}
 		if newSess != nil {
 			extMgr.EmitSessionEvent("session_opened", sessionContext(newSess), newStates)
@@ -2132,6 +2140,7 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 		TUIInputStyle:                  initialCfg.TUIInputStyle,
 		TUIStatusPosition:              initialCfg.TUIStatusPosition,
 		TUIWorkingPosition:             initialCfg.TUIWorkingPosition,
+		TUISubagentPosition:            initialCfg.TUISubagentPosition,
 		ThemeName:                      initialCfg.Theme,
 		FlatTools:                      initialCfg.FlatToolRender(),
 		CompactUser:                    initialCfg.CompactUserInput(),

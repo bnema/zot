@@ -12,6 +12,9 @@ const (
 
 	WorkingPositionAboveInput = "above_input"
 	WorkingPositionBelowInput = "below_input"
+
+	SubagentPositionAboveInput = "above_input"
+	SubagentPositionBelowInput = "below_input"
 )
 
 func NormalizeInputStyle(v string) string {
@@ -40,6 +43,17 @@ func NormalizeWorkingPosition(v string) string {
 		return WorkingPositionBelowInput
 	default:
 		return WorkingPositionAboveInput
+	}
+}
+
+// NormalizeSubagentPosition returns the placement for live subagent activity.
+// A missing value keeps activity immediately below the input by default.
+func NormalizeSubagentPosition(v string) string {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case SubagentPositionAboveInput, "above", "top":
+		return SubagentPositionAboveInput
+	default:
+		return SubagentPositionBelowInput
 	}
 }
 

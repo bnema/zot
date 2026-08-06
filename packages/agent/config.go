@@ -163,6 +163,11 @@ type Config struct {
 	// (default) and "below_input".
 	TUIWorkingPosition string `json:"tui_working_position,omitempty"`
 
+	// TUISubagentPosition controls whether live subagent activity renders
+	// above or below the main input. Supported values: "above_input" and
+	// "below_input" (default).
+	TUISubagentPosition string `json:"tui_subagent_position,omitempty"`
+
 	// Insecure skips TLS verification for custom inference endpoints.
 	Insecure bool `json:"insecure,omitempty"`
 

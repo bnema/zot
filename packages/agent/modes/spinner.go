@@ -90,6 +90,24 @@ func (s *spinner) Frame() string {
 	return s.frames[idx]
 }
 
+// FrameAt returns a frame based on an absolute clock. Independent background
+// activity uses it so its animation does not need to reset or interfere with
+// the main turn's spinner lifecycle.
+func (s *spinner) FrameAt(now time.Time) string {
+	if len(s.frames) == 0 {
+		return ""
+	}
+	if now.IsZero() {
+		now = time.Now()
+	}
+	interval := s.interval
+	if interval <= 0 {
+		interval = 80 * time.Millisecond
+	}
+	idx := int((now.UnixNano() / int64(interval)) % int64(len(s.frames)))
+	return s.frames[idx]
+}
+
 // Message returns the spinner's status text. One random phrase
 // per Start call, pinned until the next turn. When the spinner
 // was started via StartFixed, the pinned message is returned
