@@ -41,7 +41,7 @@ Supported metadata:
 |---|---|
 | `name` | Name passed to `subagent_spawn`'s `agent` field. Falls back to the filename. |
 | `description` | Short description shown to the main agent. |
-| `tools` | Comma-separated or list-form tool names. zut enforces its built-in `read`, `write`, `edit`, `bash`, and `lsp` registry; the conditional `skill` tool is available when skills are enabled. Unknown names do not grant capabilities. |
+| `tools` | Comma-separated or list-form tool names. zut enforces its built-in `read`, `write`, `edit`, `bash`, `create_worktree`, and `lsp` registry; the conditional `skill` tool is available when skills are enabled. Unknown names do not grant capabilities. |
 | `model` | Optional model ID. A qualified value such as `openai-codex/gpt-5.6-luna` selects both provider and model. |
 | `provider` | Optional separate provider ID for a model without a provider prefix. |
 | `thinking` / `reasoning` | Optional reasoning level: `off`, `minimum`, `low`, `medium`, `high`, `xhigh`, or `max`. |

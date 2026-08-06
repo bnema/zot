@@ -80,7 +80,8 @@ func TestMergeExtensionToolsRetainsPonytailPromptAddendum(t *testing.T) {
 
 func TestBuildToolRegistryIncludesLSPAndWriteDiagnostics(t *testing.T) {
 	root := t.TempDir()
-	registry := buildToolRegistry(Args{}, root, tools.NewSandbox(root), true, true, false)
+	sandbox := tools.NewSandbox(root)
+	registry := buildToolRegistry(Args{}, root, sandbox, true, true, false)
 	lspTool, ok := registry["lsp"].(*tools.LSPTool)
 	if !ok || lspTool.Manager == nil {
 		t.Fatalf("lsp tool = %#v", registry["lsp"])
@@ -88,6 +89,10 @@ func TestBuildToolRegistryIncludesLSPAndWriteDiagnostics(t *testing.T) {
 	t.Cleanup(func() { _ = lspTool.Manager.Close() })
 	if _, ok := registry["lsp"]; !ok {
 		t.Fatal("default registry does not include lsp")
+	}
+	worktree, ok := registry["create_worktree"].(*tools.CreateWorktreeTool)
+	if !ok || worktree.CWD != root || worktree.Sandbox != sandbox {
+		t.Fatalf("default registry worktree tool = %#v", registry["create_worktree"])
 	}
 	write, ok := registry["write"].(*tools.WriteTool)
 	if !ok || write.LSP == nil || !write.LSPDiagnostics {
@@ -97,12 +102,52 @@ func TestBuildToolRegistryIncludesLSPAndWriteDiagnostics(t *testing.T) {
 	if !ok || edit.LSP == nil || edit.LSPDiagnostics {
 		t.Fatalf("edit tool LSP wiring = %#v", edit)
 	}
-	if disabled := buildToolRegistry(Args{}, root, tools.NewSandbox(root), false, true, true); len(disabled) != 4 {
-		t.Fatalf("LSP-disabled registry has %d tools, want 4", len(disabled))
+	if disabled := buildToolRegistry(Args{}, root, tools.NewSandbox(root), false, true, true); len(disabled) != 5 {
+		t.Fatalf("LSP-disabled registry has %d tools, want 5", len(disabled))
 	}
 	readOnly := buildToolRegistry(Args{Tools: []string{"read"}}, root, tools.NewSandbox(root), true, true, true)
 	if read, ok := readOnly["read"].(*tools.ReadTool); !ok || read == nil {
 		t.Fatalf("read-only registry = %#v", readOnly)
+	}
+	worktreeOnly := buildToolRegistry(Args{Tools: []string{"create_worktree"}}, root, tools.NewSandbox(root), true, true, true)
+	if worktree, ok := worktreeOnly["create_worktree"].(*tools.CreateWorktreeTool); !ok || worktree == nil || len(worktreeOnly) != 1 {
+		t.Fatalf("worktree-only registry = %#v", worktreeOnly)
+	}
+}
+
+func TestToolSummariesIncludeCreateWorktree(t *testing.T) {
+	root := t.TempDir()
+	registry := buildToolRegistry(Args{}, root, tools.NewSandbox(root), false, false, false)
+
+	summaries := toolSummaries(registry, Args{})
+	want := []string{"read", "write", "edit", "bash", "create_worktree"}
+	if len(summaries) != len(want) {
+		t.Fatalf("tool summaries = %#v, want %v", summaries, want)
+	}
+	for index, summary := range summaries {
+		if summary.Name != want[index] {
+			t.Fatalf("tool summaries[%d] = %q, want %q", index, summary.Name, want[index])
+		}
+	}
+}
+
+func TestResolvedUseSandboxUpdatesCreateWorktreeTool(t *testing.T) {
+	root := t.TempDir()
+	previous := tools.NewSandbox(root)
+	shared := tools.NewSandbox(root)
+	worktree := &tools.CreateWorktreeTool{CWD: root, Sandbox: previous}
+	resolved := &Resolved{
+		Sandbox:      previous,
+		ToolRegistry: core.NewRegistry(worktree),
+	}
+
+	resolved.UseSandbox(shared)
+
+	if resolved.Sandbox != shared {
+		t.Fatal("resolved sandbox was not replaced")
+	}
+	if worktree.Sandbox != shared {
+		t.Fatal("worktree tool sandbox was not replaced")
 	}
 }
 

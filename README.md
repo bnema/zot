@@ -9,7 +9,7 @@ Yet another coding agent harness, lightweight and written (vibe-slopped) in go.
 
 - one static binary.
 - built-in providers for Anthropic, OpenAI/Codex/Responses, Kimi, DeepSeek, Google Gemini/Vertex, GitHub Copilot, Bedrock, Azure OpenAI, OpenRouter, Groq, Cerebras, xAI, Together, Hugging Face, Mistral, Moonshot, Z.AI, Xiaomi, MiniMax, Fireworks, Vercel AI Gateway, OpenCode, Cloudflare AI, and Ollama/local models.
-- five core built-in tools (read, write, edit, bash, and lsp); the conditional `skill` tool is available when skills are enabled.
+- six core built-in tools (read, write, edit, bash, create_worktree, and lsp); the conditional `skill` tool is available when skills are enabled.
 - three run modes (interactive tui, print, json).
 - built-in telegram bot.
 - extensions in any language via subprocess + json-rpc. None installed by default; opt in with `zut ext install` or `zut --ext`. See [docs/extensions.md](docs/extensions.md).
@@ -233,9 +233,10 @@ Print-mode stats contain `provider`, `model`, `prompt_tokens`, `reasoning_tokens
 - `write`: create or overwrite files, making parent directories as needed.
 - `edit`: one or more exact-match replacements in an existing file.
 - `bash`: run a command in the session cwd with merged stdout/stderr and a timeout. On Unix, zut uses `/bin/bash -c` when available, then `bash -c` from `PATH`, and falls back to POSIX `/bin/sh -c` when Bash is unavailable. On Windows, it uses `cmd /C`. macOS ships Bash 3.2 by default, so newer Bash features may be unavailable.
+- `create_worktree`: create a new branch from the current `HEAD` and check it out persistently. A repository with no configured root and no `.worktrees` directory first returns bootstrap guidance without making changes; the agent asks whether to use the repository default or an external root, then retries with `bootstrap_root`. The choice is saved privately in local Git config. Choosing `.worktrees` creates `<repository-root>/.worktrees/<branch>` and adds `/.worktrees/` to the root `.gitignore`; an absolute external root leaves tracked repository files and the root `.gitignore` unchanged. The tool never copies uncommitted or ignored files, and it refuses an existing branch or worktree path.
 - `lsp`: query configured language servers and linters for diagnostics, definitions, references, hover information, symbols, renames, code actions, capabilities, and raw protocol requests. LSP servers use stdio JSON-RPC; project `lsp.json` files can add or override servers and CLI linters. Diagnostics are bounded, sorted, deduplicated by path/severity/code/start position, and repeated issues are grouped before they reach the model. See [docs/lsp.md](docs/lsp.md).
 
-When the sandbox is on (see `/jail`), filesystem tools and LSP workspace edits refuse paths outside the session cwd.
+When the sandbox is on (see `/jail`), filesystem tools and LSP workspace edits refuse paths outside the session cwd. `create_worktree` also requires its repository root, configured worktree destination, optional `.gitignore`, and Git metadata to remain inside the jail.
 
 ## Modes
 
@@ -425,7 +426,7 @@ zut also auto-compacts in the background: after any turn that reaches the config
 
 ### `/jail`
 
-Enforces a sandbox rooted at the cwd shown in the status bar. `read`, `write`, and `edit` resolve their target path (including through symlinks) and refuse anything outside the sandbox. `bash` refuses obvious escape patterns (`sudo`, `rm -rf /`, leading `cd /`, `cd ..`, `cd ~`, `chmod -R`, `dd of=/`, and similar) and rejects shell arguments or redirections that point outside the sandbox. The status bar shows `jailed, ~/your/cwd` while active. Enable **jail new sessions by default** in `/settings` to persist this behavior across launches; `/unjail` then unlocks only the current session.
+Enforces a sandbox rooted at the cwd shown in the status bar. `read`, `write`, and `edit` resolve their target path (including through symlinks) and refuse anything outside the sandbox. `create_worktree` also requires its repository root, Git metadata, optional `.gitignore`, and configured worktree destination to be inside the sandbox. `bash` refuses obvious escape patterns (`sudo`, `rm -rf /`, leading `cd /`, `cd ..`, `cd ~`, `chmod -R`, `dd of=/`, and similar) and rejects shell arguments or redirections that point outside the sandbox. The status bar shows `jailed, ~/your/cwd` while active. Enable **jail new sessions by default** in `/settings` to persist this behavior across launches; `/unjail` then unlocks only the current session.
 
 This is a guardrail against accidents, not a hard security boundary. If you need real isolation, run zut under docker or a proper sandbox.
 
@@ -793,7 +794,7 @@ Frames containing images are full-repainted (no differential diff) to prevent st
 
 ## Tool rendering
 
-By default each tool call (bash, read, write, edit) renders inside a bordered panel — a `┌─ header ─┐`, `│`-prefixed body rows, and a `└─┘` footer. On a screen with many calls the borders can read as busy, so zut also offers a **flat** mode: a single quiet header line per call (`▌ bash …`) with indented, border-free output. Same information — tool name, arg summary, streamed output, the `... (N more lines, ctrl+o to expand)` truncation — just no frame.
+By default each tool call (bash, read, write, edit, create_worktree, lsp) renders inside a bordered panel — a `┌─ header ─┐`, `│`-prefixed body rows, and a `└─┘` footer. On a screen with many calls the borders can read as busy, so zut also offers a **flat** mode: a single quiet header line per call (`▌ bash …`) with indented, border-free output. Same information — tool name, arg summary, streamed output, the `... (N more lines, ctrl+o to expand)` truncation — just no frame.
 
 Set the `tool_render` key in `$ZUT_HOME/config.json`:
 
@@ -882,7 +883,7 @@ Slash commands also work while the agent is busy. Non-destructive ones (`/help`,
 | `ctrl+b` | Toggle the right sidebar; hidden or narrow widgets use a bounded above-input fallback. |
 | `ctrl+l` | Redraw the screen. |
 | `ctrl+v` | Paste clipboard text into the focused chat, side chat, dialog, filter, or credential input. In the main chat, image clipboard content is attached to the next prompt when the platform exposes it (macOS pasteboard, Wayland `wl-paste`, or X11 `xclip`). On Linux, text uses `wl-paste`, `xclip`, or `xsel`; terminal-native bracketed paste remains available without those commands. |
-| `ctrl+o` | Expand or collapse long tool results (read, write, edit, bash, and lsp outputs over ~12 lines). |
+| `ctrl+o` | Expand or collapse long tool results (read, write, edit, bash, create_worktree, and lsp outputs over ~12 lines). |
 | `ctrl+1` ... `ctrl+9` | Switch to the model bound to that quick-model slot (configured in `/settings` -> model shortcuts). No-op while a turn is running. |
 | `@` | Open the file picker. Browse files and directories in the working directory. |
 
@@ -1065,7 +1066,7 @@ packages/agent/extproto/              extension wire-format types
 packages/agent/modes/                 interactive tui, print, json, dialogs
 packages/agent/modes/bot/             protocol-agnostic bot runner (BotAdapter interface)
 packages/agent/modes/telegram/        telegram adapter, api client, daemon
-packages/agent/tools/                 read, write, edit, bash, lsp, sandbox
+packages/agent/tools/                 read, write, edit, bash, create_worktree, lsp, sandbox
 packages/agent/skills/                skill discovery, frontmatter parser, skill tool
 packages/agent/subagents/             named profiles, supervisor, and background runtime
 packages/agent/sdk/                   public Go SDK for embedding zut in-process (package sdk)
