@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sync"
 	"time"
 )
@@ -343,16 +344,11 @@ func isLikelyDoubleWrite(ev, previous Event) bool {
 	return sameEventData(previous.Data, ev.Data)
 }
 
-// sameEventData deep-compares two event payloads. Cheap because the
-// payloads are small map[string]any trees built from JSON, and only
-// called for adjacent same-type pairs.
+// sameEventData deep-compares two event payloads without re-encoding them.
+// Reload invokes this for adjacent same-type events across every persisted
+// subagent log, so serializing large streamed payloads here delays startup.
 func sameEventData(a, b map[string]any) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	ab, _ := json.Marshal(a)
-	bb, _ := json.Marshal(b)
-	return string(ab) == string(bb)
+	return len(a) == len(b) && reflect.DeepEqual(a, b)
 }
 
 // EventFollower polls an events.jsonl file and emits new events as

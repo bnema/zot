@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -247,6 +248,13 @@ func TestReadEventLogDeduplicatesDoubleWrites(t *testing.T) {
 // by more than the dedup window (250ms) must both survive. The
 // agent legitimately can emit identical adjacent events (think: a
 // retry running the same tool seconds apart).
+func TestSameEventDataDoesNotConflateFailedEncodings(t *testing.T) {
+	payload := math.NaN()
+	if sameEventData(map[string]any{"value": payload}, map[string]any{"value": payload}) {
+		t.Fatal("payloads with non-equal values must not be treated as equal when encoding fails")
+	}
+}
+
 func TestReadEventLogKeepsLegitimateAdjacentEvents(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "events.jsonl")
 	log, err := OpenEventLog(path)

@@ -49,6 +49,9 @@ type subagentsDialog struct {
 	// session. Wired by Open(); when nil the inline 'R' shortcut is
 	// disabled.
 	resume func(id string) error
+	// loadTranscript hydrates a detached agent's durable event history when
+	// its transcript view is opened. Nil preserves snapshot-only behavior.
+	loadTranscript func(id string) error
 
 	rows    []subagents.AgentSnapshot
 	cursor  int
@@ -121,6 +124,11 @@ func (d *subagentsDialog) SetCompactMode(enabled bool) {
 
 func (d *subagentsDialog) SetLineInput(enabled bool) {
 	d.lineInput = enabled
+}
+
+// SetLoadTranscript supplies the optional on-demand durable transcript loader.
+func (d *subagentsDialog) SetLoadTranscript(fn func(id string) error) {
+	d.loadTranscript = fn
 }
 
 func (d *subagentsDialog) editorPrompt(th tui.Theme) string {
@@ -362,6 +370,9 @@ func (d *subagentsDialog) OpenViewing(
 	rows := d.snapshot()
 	for i, r := range rows {
 		if r.ID == agentID || strings.HasPrefix(r.ID, agentID) {
+			if d.loadTranscript != nil {
+				_ = d.loadTranscript(r.ID)
+			}
 			d.cursor = i
 			d.viewing = true
 			// Auto-open the inline editor for running agents so
@@ -514,6 +525,11 @@ func (d *subagentsDialog) HandleKey(k tui.Key) (closed bool, msg, errMsg string)
 		}
 	case tui.KeyEnter:
 		if len(d.rows) > 0 {
+			if a := d.selected(); a != nil && d.loadTranscript != nil {
+				if err := d.loadTranscript(a.ID); err != nil {
+					return false, "", "load transcript: " + err.Error()
+				}
+			}
 			d.viewing = true
 			// Auto-open the inline editor (à la /btw) so the user
 			// can start typing immediately. Skipped for non-running

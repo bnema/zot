@@ -3,19 +3,14 @@ package subagents
 // On-disk persistence for subagent agents.
 //
 // Every Spawn writes a meta.json next to the agent's events.jsonl and
-// session.json. The file captures the immutable identity bits (id,
-// task, branch, dir) plus the paths the runner needs to resume the
-// agent later. On a fresh zut launch, Supervisor.Reload() walks
-// <root>/agents/*/meta.json and re-registers every agent it finds in
-// StatusDetached so the user can see, view, resume, or remove them
-// from the dashboard.
+// session.json. The file captures identity, resumable lifecycle state, and
+// compact dashboard state. On a fresh zut launch, Supervisor.Reload() walks
+// <root>/agents/*/meta.json and re-registers every agent without replaying
+// its full history. The event log remains the durable transcript source and
+// is hydrated only when a caller requests that agent's transcript.
 //
-// We don't try to keep meta.json in sync with mutable state (status,
-// activity, transcript). Those live in the events log (durable) and
-// in-memory Agent fields (rebuilt by Reload from the log tail).
-// Keeping meta.json immutable means we never have to worry about
-// concurrent writers stomping on each other and the file matters
-// only on the spawn/reload boundary.
+// Metadata writes are atomic (tmp + rename). The supervisor is the sole
+// writer, so its lifecycle snapshots cannot race with another host process.
 
 import (
 	"context"
@@ -61,6 +56,10 @@ type agentMeta struct {
 	MaxTurns         int           `json:"max_turns,omitempty"`
 	Timeout          time.Duration `json:"timeout,omitempty"`
 	Tools            []string      `json:"tools,omitempty"`
+	Status           Status        `json:"status,omitempty"`
+	Activity         string        `json:"activity,omitempty"`
+	Finished         time.Time     `json:"finished,omitempty"`
+	Error            string        `json:"error,omitempty"`
 	ProcessState     ProcessState  `json:"process_state,omitempty"`
 	TurnState        TurnState     `json:"turn_state,omitempty"`
 	CurrentTurnID    string        `json:"current_turn_id,omitempty"`
@@ -92,6 +91,15 @@ func metaPath(stateDir string) string { return filepath.Join(stateDir, "meta.jso
 // half-parsable file that fails Reload.
 func writeAgentMeta(stateDir string, a *Agent) error {
 	fastMode := a.FastMode
+	a.mu.Lock()
+	status := a.status
+	activity := a.activity
+	finished := a.finished
+	errText := ""
+	if a.lastErr != nil {
+		errText = a.lastErr.Error()
+	}
+	a.mu.Unlock()
 	a.lifecycleMu.Lock()
 	processState := a.processState
 	turnState := a.turnState
@@ -128,6 +136,10 @@ func writeAgentMeta(stateDir string, a *Agent) error {
 		MaxTurns:         a.MaxTurns,
 		Timeout:          a.Timeout,
 		Tools:            append([]string(nil), a.Tools...),
+		Status:           status,
+		Activity:         activity,
+		Finished:         finished,
+		Error:            errText,
 		ProcessState:     processState,
 		TurnState:        turnState,
 		CurrentTurnID:    currentTurnID,
@@ -320,13 +332,12 @@ func (f *Supervisor) reloadRoot(root string) (loaded int, errs []error) {
 	return loaded, errs
 }
 
-// buildDetachedAgent constructs an Agent from a meta.json with no
-// running Runner. The agent's transcript is populated from the tail
-// of its event log so the dashboard immediately shows recent output;
-// activity is inferred from the last lifecycle event.
+// buildDetachedAgent constructs an Agent from compact metadata with no running
+// Runner. Its transcript stays unloaded until a caller requests it, while the
+// persisted lifecycle summary keeps the dashboard immediately useful.
 //
-// The returned Agent has a closed `done` channel because Wait should
-// return instantly: there is nothing to wait for.
+// The returned Agent has a closed `done` channel because Wait should return
+// instantly: there is nothing to wait for.
 func (f *Supervisor) buildDetachedAgent(m agentMeta) *Agent {
 	// Metadata without a repository identity uses the current RepoRoot;
 	// records with one retain their persisted repository so a restart from
@@ -352,11 +363,41 @@ func (f *Supervisor) buildDetachedAgent(m agentMeta) *Agent {
 	if lastActivity.IsZero() {
 		lastActivity = m.Started
 	}
-	processState := ProcessDetached
-	activity := "detached"
+	persistedStatus := m.Status
+	status := StatusDetached
+	activity := strings.TrimSpace(m.Activity)
+	processState := m.ProcessState
+	legacyEventState := persistedStatus == ""
+	if legacyEventState {
+		activity = "detached"
+		processState = ProcessDetached
+	}
+	if processState == "" {
+		processState = ProcessDetached
+	}
+	if activity == "" {
+		switch persistedStatus {
+		case StatusDone:
+			activity = "done"
+		case StatusFailed:
+			activity = "failed"
+		case StatusKilled:
+			activity = "cancelled"
+		default:
+			activity = "detached"
+		}
+	}
+	if persistedStatus == StatusRunning || persistedStatus == StatusPending {
+		activity = "detached (resume to continue)"
+		processState = ProcessDetached
+	}
 	if inboxLive(m.InboxPath) {
 		processState = ProcessAlive
 		activity = "live (detached)"
+	}
+	var lastErr error
+	if m.Error != "" {
+		lastErr = errors.New(m.Error)
 	}
 	agentStateDir := f.agentStateDir(m.ID)
 	if m.EventLogPath != "" {
@@ -397,8 +438,11 @@ func (f *Supervisor) buildDetachedAgent(m agentMeta) *Agent {
 		SessionPath:      m.SessionPath,
 		SessionID:        m.SessionID,
 		inbox:            NewInbox(m.InboxPath),
-		status:           StatusDetached,
+		status:           status,
 		activity:         activity,
+		finished:         m.Finished,
+		lastErr:          lastErr,
+		legacyEventState: legacyEventState,
 		processState:     processState,
 		turnState:        turnState,
 		currentTurnID:    m.CurrentTurnID,
@@ -418,14 +462,6 @@ func (f *Supervisor) buildDetachedAgent(m agentMeta) *Agent {
 	}
 	a.closeDone()
 
-	// Recover transcript + activity hints from the event log. Best
-	// effort: a missing or unreadable log just leaves the agent
-	// detached with an empty transcript.
-	if a.EventLogPath != "" {
-		if evs, err := ReadEventLog(a.EventLogPath); err == nil {
-			replayEventsIntoAgent(a, evs)
-		}
-	}
 	// The append-only log may contain a terminal event from an earlier
 	// attempt. A live socket is stronger evidence for the current process;
 	// keep the reloaded entry detached/live so Stop and Remove cannot treat a
@@ -445,6 +481,80 @@ func (f *Supervisor) buildDetachedAgent(m agentMeta) *Agent {
 		a.setResult(result.Bounded(f.cfg.Policy.MaxOutputBytes, f.cfg.Policy.MaxOutputLines))
 	}
 	return a
+}
+
+// LoadTranscript hydrates one reloaded agent's durable event history. Reload
+// deliberately skips this work so startup stays bounded by metadata size;
+// callers request it only when opening the transcript or otherwise reading it.
+func (f *Supervisor) LoadTranscript(id string) error {
+	a := f.Get(id)
+	if a == nil {
+		return fmt.Errorf("subagent: no such agent %q", id)
+	}
+	return a.loadTranscript()
+}
+
+func (a *Agent) loadTranscript() error {
+	if a == nil {
+		return nil
+	}
+	a.transcriptMu.Lock()
+	defer a.transcriptMu.Unlock()
+
+	a.mu.Lock()
+	if a.transcriptLoaded {
+		a.mu.Unlock()
+		return nil
+	}
+	path := a.EventLogPath
+	legacyEventState := a.legacyEventState
+	a.mu.Unlock()
+	var summaryUpdatedAt, summaryLastActivity time.Time
+	if !legacyEventState {
+		a.lifecycleMu.Lock()
+		summaryUpdatedAt = a.updatedAt
+		summaryLastActivity = a.lastActivity
+		a.lifecycleMu.Unlock()
+	}
+	if path == "" {
+		a.mu.Lock()
+		a.transcriptLoaded = true
+		a.mu.Unlock()
+		return nil
+	}
+
+	events, err := ReadEventLog(path)
+	if err != nil {
+		return fmt.Errorf("read subagent transcript: %w", err)
+	}
+	a.mu.Lock()
+	if a.transcriptLoaded {
+		a.mu.Unlock()
+		return nil
+	}
+	a.transcript = nil
+	a.lastAssistant = ""
+	a.outputBytes = 0
+	a.outputLines = 0
+	a.outputTruncated = false
+	a.mu.Unlock()
+
+	if legacyEventState {
+		// Metadata written before the dashboard summary existed has no
+		// terminal status to trust. Preserve its historical event-derived
+		// behavior once the user explicitly opens its transcript.
+		replayEventsIntoAgent(a, events)
+	} else {
+		replayTranscriptIntoAgent(a, events)
+		a.lifecycleMu.Lock()
+		a.updatedAt = summaryUpdatedAt
+		a.lastActivity = summaryLastActivity
+		a.lifecycleMu.Unlock()
+	}
+	a.mu.Lock()
+	a.transcriptLoaded = true
+	a.mu.Unlock()
+	return nil
 }
 
 // replayEventsIntoAgent re-derives an agent's transcript and last
@@ -487,36 +597,8 @@ func replayEventsIntoAgent(a *Agent, evs []Event) {
 			a.status = StatusDone
 			a.activity = "done (offline)"
 			a.mu.Unlock()
-		case "assistant_message", "user_message":
-			var text []string
-			if c, ok := ev.Data["content"].([]any); ok {
-				for _, blk := range c {
-					m, _ := blk.(map[string]any)
-					if t, _ := m["type"].(string); t == "text" {
-						if txt, _ := m["text"].(string); txt != "" {
-							text = append(text, txt)
-						}
-					}
-				}
-			}
-			message := strings.Join(text, "\n")
-			if ev.Type == "assistant_message" {
-				a.appendAssistantMessage(message)
-			} else {
-				a.appendUserMessage(message)
-			}
-		case "stdout":
-			if txt, _ := ev.Data["text"].(string); txt != "" {
-				a.appendTranscript(txt)
-			}
-		case "stderr":
-			if txt, _ := ev.Data["text"].(string); txt != "" {
-				a.appendTranscript("stderr: " + txt)
-			}
-		case "error":
-			if msg, _ := ev.Data["message"].(string); msg != "" {
-				a.appendTranscript("error: " + msg)
-			}
+		case "assistant_message", "user_message", "stdout", "stderr", "error":
+			replayEventTranscript(a, ev)
 		case "agent_stopped":
 			terminal = true
 			reason, _ := ev.Data["reason"].(string)
@@ -552,6 +634,50 @@ func replayEventsIntoAgent(a *Agent, evs []Event) {
 			a.activity = "detached (resume to continue)"
 		}
 		a.mu.Unlock()
+	}
+}
+
+// replayTranscriptIntoAgent rebuilds only the visible transcript. Newer
+// metadata already contains the authoritative dashboard lifecycle summary,
+// so opening history must not overwrite it with an earlier event attempt.
+func replayTranscriptIntoAgent(a *Agent, evs []Event) {
+	for _, ev := range evs {
+		replayEventTranscript(a, ev)
+	}
+}
+
+func replayEventTranscript(a *Agent, ev Event) {
+	switch ev.Type {
+	case "assistant_message", "user_message":
+		var text []string
+		if c, ok := ev.Data["content"].([]any); ok {
+			for _, blk := range c {
+				m, _ := blk.(map[string]any)
+				if t, _ := m["type"].(string); t == "text" {
+					if txt, _ := m["text"].(string); txt != "" {
+						text = append(text, txt)
+					}
+				}
+			}
+		}
+		message := strings.Join(text, "\n")
+		if ev.Type == "assistant_message" {
+			a.appendAssistantMessage(message)
+		} else {
+			a.appendUserMessage(message)
+		}
+	case "stdout":
+		if txt, _ := ev.Data["text"].(string); txt != "" {
+			a.appendTranscript(txt)
+		}
+	case "stderr":
+		if txt, _ := ev.Data["text"].(string); txt != "" {
+			a.appendTranscript("stderr: " + txt)
+		}
+	case "error":
+		if msg, _ := ev.Data["message"].(string); msg != "" {
+			a.appendTranscript("error: " + msg)
+		}
 	}
 }
 
@@ -739,6 +865,7 @@ func (f *Supervisor) resume(ctx context.Context, id string, resuming bool) (*Age
 		inbox:             NewInbox(m.InboxPath),
 		status:            StatusPending,
 		activity:          "resuming",
+		transcriptLoaded:  true,
 		processState:      ProcessPending,
 		turnState:         TurnQueued,
 		updatedAt:         now,

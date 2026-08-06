@@ -110,13 +110,16 @@ type Agent struct {
 	// Supervisor.Spawn so callers do not need to manage the socket directly.
 	inbox *Inbox
 
-	mu            sync.Mutex
-	status        Status
-	activity      string
-	transcript    []string
-	lastAssistant string
-	finished      time.Time
-	lastErr       error
+	mu               sync.Mutex
+	status           Status
+	activity         string
+	transcript       []string
+	lastAssistant    string
+	finished         time.Time
+	lastErr          error
+	transcriptLoaded bool
+	legacyEventState bool
+	transcriptMu     sync.Mutex
 
 	lifecycleMu      sync.Mutex
 	processState     ProcessState
@@ -310,8 +313,10 @@ func (a *Agent) setResult(result *TurnResult) {
 	a.lifecycleMu.Unlock()
 }
 
-// Transcript returns a copy of the running transcript.
+// Transcript returns a copy of the running transcript. Detached agents
+// hydrate their durable event history the first time it is requested.
 func (a *Agent) Transcript() []string {
+	_ = a.loadTranscript()
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	out := make([]string, len(a.transcript))
