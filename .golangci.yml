@@ -16,7 +16,6 @@ formatters:
     - gofmt
 
 issues:
-  # Keep existing findings from blocking adoption while failing on new issues.
-  new: true
+  # Run the same complete analysis locally and in CI, regardless of Git history depth.
   max-issues-per-linter: 0
   max-same-issues: 0
