@@ -47,22 +47,14 @@ jobs:
       - name: go test
         run: go test -race ./...
 
-  lint:
-    name: lint
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
+      # Keep Linux-only quality checks in the Ubuntu test job so CI needs
+      # only the three platform runners.
       - name: release-version policy
+        if: matrix.os == 'ubuntu-latest'
         run: bash .github/scripts/next-release-tag_test.sh
 
-      - name: set up go
-        uses: actions/setup-go@v7
-        with:
-          go-version: "1.26"
-          cache: true
-
       - name: golangci-lint
+        if: matrix.os == 'ubuntu-latest'
         uses: golangci/golangci-lint-action@v9.3.0
         with:
           version: v2.12.2
