@@ -259,3 +259,23 @@ func TestRendererDrawRightBarUpdatesClearsAndResizes(t *testing.T) {
 		t.Fatalf("resized column budget = %d", main+RightBarSeparatorWidth+rail)
 	}
 }
+
+func TestRendererDrawRightBarDimmedDimsSeparator(t *testing.T) {
+	var out bytes.Buffer
+	r := NewRenderer(&out)
+	r.SetTheme(Dark)
+	r.Resize(80, 5)
+
+	r.DrawRightBarDimmed(
+		DimLines([]string{"chat"}),
+		DimLines([]string{"input"}),
+		DimLines(RenderRightBar(Dark, []RightBarWidget{{Extension: "plan", Lines: []string{"task"}}}, 26, 5)),
+		0,
+		0,
+	)
+
+	separator := Dim(Dark.FGColor(Dark.Muted, "│"))
+	if !strings.Contains(out.String(), separator) {
+		t.Fatalf("dimmed right bar left its separator bright; missing %q in %q", separator, out.String())
+	}
+}

@@ -408,8 +408,23 @@ func (t Theme) UserBubbleRow(content string, width int) string {
 // Bold wraps s in bold SGR.
 func Bold(s string) string { return "\x1b[1m" + s + "\x1b[22m" }
 
-// Dim wraps s in dim SGR.
-func Dim(s string) string { return "\x1b[2m" + s + "\x1b[22m" }
+// Dim wraps s in dim SGR. Re-apply dim after each full SGR reset so
+// independently styled segments remain dimmed too.
+func Dim(s string) string {
+	const dim = "\x1b[2m"
+	return dim + strings.ReplaceAll(s, reset, reset+dim) + reset
+}
+
+// DimLines returns a dimmed copy of lines. It is suitable for content behind
+// a modal layer: the foreground layer can retain its normal styling while
+// every styled segment in the background stays dimmed.
+func DimLines(lines []string) []string {
+	out := make([]string, len(lines))
+	for idx, line := range lines {
+		out[idx] = Dim(line)
+	}
+	return out
+}
 
 // Italic wraps s in italic SGR.
 func Italic(s string) string { return "\x1b[3m" + s + "\x1b[23m" }

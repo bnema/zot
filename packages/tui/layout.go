@@ -82,10 +82,18 @@ func InputBlock(th Theme, lines []string, width int) []string {
 	return out
 }
 
-func CursorColor256(index int) string {
-	r, g, b := xterm256RGB(index)
-	return "\x1b]12;rgb:" + hexByte(r) + "/" + hexByte(g) + "/" + hexByte(b) + "\x07"
+// CursorColor returns OSC 12 to set the terminal cursor color. Unlike SGR
+// styling, the cursor is terminal-owned, so modal backdrops must set this
+// separately from their dimmed text rows.
+func CursorColor(color TerminalColor) string {
+	rgb, ok := rgbForTerminalColor(color)
+	if !ok {
+		return ""
+	}
+	return "\x1b]12;rgb:" + hexByte(rgb[0]) + "/" + hexByte(rgb[1]) + "/" + hexByte(rgb[2]) + "\x07"
 }
+
+func CursorColor256(index int) string { return CursorColor(Color256(index)) }
 
 func ResetCursorColor() string { return "\x1b]112\x07" }
 

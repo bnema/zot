@@ -336,6 +336,10 @@ func rightBarChecklistLineDim(text string, activePhaseIndent int, activePhase *b
 // allowing either side to soft-wrap. The returned row occupies exactly
 // mainWidth + RightBarSeparatorWidth + rightBarWidth display cells.
 func JoinRightBar(th Theme, main, rightBar string, mainWidth, rightBarWidth int) string {
+	return joinRightBar(th, main, rightBar, mainWidth, rightBarWidth, false)
+}
+
+func joinRightBar(th Theme, main, rightBar string, mainWidth, rightBarWidth int, dimSeparator bool) string {
 	if mainWidth < 1 {
 		mainWidth = 1
 	}
@@ -350,7 +354,11 @@ func JoinRightBar(th Theme, main, rightBar string, mainWidth, rightBarWidth int)
 	if visible := visibleWidth(rightBar); visible < rightBarWidth {
 		rightBar += strings.Repeat(" ", rightBarWidth-visible)
 	}
-	return main + th.FGColor(th.Muted, "│") + rightBar
+	separator := th.FGColor(th.Muted, "│")
+	if dimSeparator {
+		separator = Dim(separator)
+	}
+	return main + separator + rightBar
 }
 
 // DrawRightBar renders an already-laid-out visible chat slice and sticky
@@ -360,6 +368,16 @@ func JoinRightBar(th Theme, main, rightBar string, mainWidth, rightBarWidth int)
 // stale rows behind. Interactive mode still owns chat scrolling and passes
 // the selected visible slice here.
 func (r *Renderer) DrawRightBar(chat, bottom, rightBar []string, cursorBottomRow, cursorCol int) {
+	r.drawRightBar(chat, bottom, rightBar, cursorBottomRow, cursorCol, false)
+}
+
+// DrawRightBarDimmed renders a right-bar frame whose separator is part of a
+// dimmed backdrop. Callers must pass already-dimmed main and right-bar rows.
+func (r *Renderer) DrawRightBarDimmed(chat, bottom, rightBar []string, cursorBottomRow, cursorCol int) {
+	r.drawRightBar(chat, bottom, rightBar, cursorBottomRow, cursorCol, true)
+}
+
+func (r *Renderer) drawRightBar(chat, bottom, rightBar []string, cursorBottomRow, cursorCol int, dimSeparator bool) {
 	if r.cols == 0 || r.rows == 0 {
 		return
 	}
@@ -396,7 +414,7 @@ func (r *Renderer) DrawRightBar(chat, bottom, rightBar []string, cursorBottomRow
 
 	frame := make([]string, r.rows)
 	for row := range frame {
-		frame[row] = JoinRightBar(r.theme, main[row], rightBar[row], mainWidth, rightBarWidth)
+		frame[row] = joinRightBar(r.theme, main[row], rightBar[row], mainWidth, rightBarWidth, dimSeparator)
 	}
 
 	// Draw() owns the fixed-frame cache. Reset the flow-mode cache so a
