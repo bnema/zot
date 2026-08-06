@@ -2,9 +2,9 @@ package subagents
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -32,7 +32,7 @@ func TestSchedulerBoundsConcurrencyAndReleasesCapacity(t *testing.T) {
 	var active, maxActive int32
 	f := New(Config{
 		Root: root, RepoRoot: root,
-		Policy: SubagentPolicy{MaxConcurrent: 1, MaxConcurrentPerParent: 4, MaxTotalSpawned: 3, QueueTimeout: time.Minute, DefaultTimeout: 0, IdleTimeout: time.Hour},
+		Policy: SubagentPolicy{MaxConcurrent: 1, MaxConcurrentPerParent: 4, QueueTimeout: time.Minute, DefaultTimeout: 0, IdleTimeout: time.Hour},
 		NewRunner: func(a *Agent) Runner {
 			return RunnerFunc(func(ctx context.Context, _ Sink) error {
 				current := atomic.AddInt32(&active, 1)
@@ -95,20 +95,31 @@ func TestSchedulerBoundsConcurrencyAndReleasesCapacity(t *testing.T) {
 	}
 }
 
-func TestSchedulerRejectsChildSpawningAndTotalBudget(t *testing.T) {
-	f := New(Config{Root: t.TempDir(), RepoRoot: t.TempDir(), Policy: SubagentPolicy{MaxTotalSpawned: 1}, NewRunner: func(*Agent) Runner {
+func TestSchedulerRejectsChildSpawning(t *testing.T) {
+	f := New(Config{Root: t.TempDir(), RepoRoot: t.TempDir(), NewRunner: func(*Agent) Runner {
 		return RunnerFunc(func(context.Context, Sink) error { return nil })
 	}})
 	if _, err := f.SpawnReq(context.Background(), SpawnRequest{Task: "child", RequesterAgentID: "worker-1"}); err == nil {
 		t.Fatal("child-originated spawn was accepted")
 	}
-	first, err := f.Spawn(context.Background(), "one")
-	if err != nil {
-		t.Fatal(err)
-	}
-	first.Wait()
-	if _, err := f.Spawn(context.Background(), "two"); err == nil || !strings.Contains(err.Error(), "budget") {
-		t.Fatalf("second spawn error = %v, want budget rejection", err)
+}
+
+func TestSchedulerAllowsWorkersAfterManyCompletions(t *testing.T) {
+	f := New(Config{Root: t.TempDir(), RepoRoot: t.TempDir(), Policy: SubagentPolicy{MaxConcurrent: 1}, NewRunner: func(*Agent) Runner {
+		return RunnerFunc(func(context.Context, Sink) error { return nil })
+	}})
+	t.Cleanup(f.StopAll)
+
+	const workersBeyondFormerLifetimeLimit = 33
+	for worker := 0; worker < workersBeyondFormerLifetimeLimit; worker++ {
+		a, err := f.Spawn(context.Background(), fmt.Sprintf("worker-%d", worker))
+		if err != nil {
+			t.Fatalf("Spawn(worker-%d): %v", worker, err)
+		}
+		a.Wait()
+		if got := a.Status(); got != StatusDone {
+			t.Fatalf("worker-%d status = %s, want %s", worker, got, StatusDone)
+		}
 	}
 }
 
@@ -117,7 +128,7 @@ func TestStopQueuedAgentBeforeRunnerAdmission(t *testing.T) {
 	started := make(chan string, 2)
 	f := New(Config{
 		Root: root, RepoRoot: root,
-		Policy: SubagentPolicy{MaxConcurrent: 1, MaxTotalSpawned: 3, IdleTimeout: time.Hour},
+		Policy: SubagentPolicy{MaxConcurrent: 1, IdleTimeout: time.Hour},
 		NewRunner: func(a *Agent) Runner {
 			return RunnerFunc(func(ctx context.Context, _ Sink) error {
 				started <- a.ID
@@ -165,7 +176,7 @@ func TestCanceledQueuedAgentIsRemovedAndGetsResult(t *testing.T) {
 	started := make(chan struct{})
 	f := New(Config{
 		Root: root, RepoRoot: root,
-		Policy: SubagentPolicy{MaxConcurrent: 1, MaxTotalSpawned: 4, IdleTimeout: time.Hour},
+		Policy: SubagentPolicy{MaxConcurrent: 1, IdleTimeout: time.Hour},
 		NewRunner: func(*Agent) Runner {
 			return RunnerFunc(func(ctx context.Context, _ Sink) error {
 				select {

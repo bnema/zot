@@ -3,6 +3,7 @@ package subagents
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -13,7 +14,7 @@ func TestBatchIDsRemainUniqueWithFixedClock(t *testing.T) {
 	now := time.Unix(123, 0)
 	f := New(Config{
 		Root: t.TempDir(), RepoRoot: t.TempDir(), Now: func() time.Time { return now },
-		Policy: SubagentPolicy{MaxConcurrent: 2, MaxTotalSpawned: 4},
+		Policy: SubagentPolicy{MaxConcurrent: 2},
 		NewRunner: func(*Agent) Runner {
 			return RunnerFunc(func(context.Context, Sink) error { return nil })
 		},
@@ -104,7 +105,7 @@ func TestBatchSpawnWaitAndCollect(t *testing.T) {
 	root := t.TempDir()
 	f := New(Config{
 		Root: root, RepoRoot: root,
-		Policy: SubagentPolicy{MaxConcurrent: 2, MaxConcurrentPerParent: 2, MaxTotalSpawned: 4, DefaultTimeout: 0, IdleTimeout: 0},
+		Policy: SubagentPolicy{MaxConcurrent: 2, MaxConcurrentPerParent: 2, DefaultTimeout: 0, IdleTimeout: 0},
 		NewRunner: func(*Agent) Runner {
 			return RunnerFunc(func(context.Context, Sink) error { return nil })
 		},
@@ -123,5 +124,33 @@ func TestBatchSpawnWaitAndCollect(t *testing.T) {
 	}
 	if batch.Status() != BatchSucceeded {
 		t.Fatalf("batch status = %s", batch.Status())
+	}
+}
+
+func TestBatchAllowsMoreThanFormerLifetimeLimit(t *testing.T) {
+	const workersBeyondFormerLifetimeLimit = 33
+	tasks := make([]string, workersBeyondFormerLifetimeLimit)
+	for i := range tasks {
+		tasks[i] = fmt.Sprintf("worker-%d", i)
+	}
+	f := New(Config{
+		Root: t.TempDir(), RepoRoot: t.TempDir(),
+		Policy: SubagentPolicy{MaxConcurrent: 1, MaxConcurrentPerParent: 1},
+		NewRunner: func(*Agent) Runner {
+			return RunnerFunc(func(context.Context, Sink) error { return nil })
+		},
+	})
+	t.Cleanup(f.StopAll)
+
+	batch, err := f.SpawnBatch(context.Background(), BatchRequest{Tasks: tasks, MaxConcurrent: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := f.WaitBatch(batch.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != BatchSucceeded || len(result.ChildIDs) != len(tasks) || len(result.Results) != len(tasks) {
+		t.Fatalf("batch result = %#v", result)
 	}
 }

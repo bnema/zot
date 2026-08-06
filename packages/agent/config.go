@@ -27,7 +27,6 @@ type QuickModelShortcut struct {
 type SubagentsConfig struct {
 	MaxConcurrent          int      `json:"max_concurrent,omitempty"`
 	MaxConcurrentPerParent int      `json:"max_concurrent_per_parent,omitempty"`
-	MaxTotalSpawned        int      `json:"max_total_spawned,omitempty"`
 	QueueTimeout           string   `json:"queue_timeout,omitempty"`
 	DefaultTimeout         string   `json:"default_timeout,omitempty"`
 	MaxTurns               int      `json:"max_turns,omitempty"`
@@ -39,6 +38,10 @@ type SubagentsConfig struct {
 	IdleTimeout            string   `json:"idle_timeout,omitempty"`
 	ReconnectTimeout       string   `json:"reconnect_timeout,omitempty"`
 	CancelGracePeriod      string   `json:"cancel_grace_period,omitempty"`
+
+	// MaxTotalSpawned is retained only to accept existing configuration.
+	// Lifetime total-spawn budgets are no longer enforced.
+	MaxTotalSpawned int `json:"max_total_spawned,omitempty"`
 }
 
 // Config is the persisted user configuration.
