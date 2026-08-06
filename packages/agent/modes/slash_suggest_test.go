@@ -44,6 +44,16 @@ func TestSlashSuggesterHasSupervisor(t *testing.T) {
 	}
 }
 
+func TestSlashSuggesterHasFastModeToggle(t *testing.T) {
+	s := newSlashSuggester()
+	if got := commandNames(s.matches("/fa")); !contains(got, "/fast") {
+		t.Fatalf("/fast missing from suggestions, got %v", got)
+	}
+	if !isKnownSlashCommand("/FAST") {
+		t.Fatal("/FAST was not recognized as a built-in command")
+	}
+}
+
 func TestSlashCommandsAreCaseInsensitive(t *testing.T) {
 	s := newSlashSuggester()
 	if got := commandNames(s.matches("/EX")); !contains(got, "/exit") {

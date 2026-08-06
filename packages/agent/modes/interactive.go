@@ -4317,7 +4317,7 @@ func (i *Interactive) openSettingsDialog() {
 		{
 			key:   "fast_mode",
 			label: "fast mode",
-			desc:  "request OpenAI's fast service tier; unsupported providers return an error",
+			desc:  "request the provider's fast tier where supported; unsupported providers return an error",
 			value: fastMode,
 			hint:  fastModeHint,
 		},
@@ -5544,6 +5544,9 @@ func (i *Interactive) runSlash(ctx context.Context, cmd string) (done bool) {
 		}
 	case "/reasoning":
 		i.openReasoningDialog()
+	case "/fast":
+		enabled := i.cfg.FastMode == nil || !*i.cfg.FastMode
+		i.applySettingToggle("fast_mode", enabled)
 	case "/settings":
 		i.openSettingsDialog()
 	case "/sessions":

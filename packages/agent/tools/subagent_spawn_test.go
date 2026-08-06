@@ -299,6 +299,47 @@ func TestSubagentSpawnAppliesProfileFastModeRestriction(t *testing.T) {
 	}
 }
 
+func TestSubagentSpawnProfileFastModeOverridesGlobalOffWithWarning(t *testing.T) {
+	root := t.TempDir()
+	profileFastMode := true
+	f := subagents.New(subagents.Config{
+		Root:     filepath.Join(root, "subagents"),
+		RepoRoot: root,
+		NewRunner: func(*subagents.Agent) subagents.Runner {
+			return noopSupervisorRunner{}
+		},
+	})
+	t.Cleanup(f.StopAll)
+	tool := &SubagentSpawnTool{
+		Supervisor: f,
+		Enabled:    func() bool { return true },
+		ResolveSubagent: func(name string) (*subagents.Profile, error) {
+			if name != "fast-worker" {
+				return nil, nil
+			}
+			return &subagents.Profile{Name: name, FastMode: &profileFastMode}, nil
+		},
+	}
+
+	res, err := tool.Execute(context.Background(), json.RawMessage(`{"task":"review auth","agent":"fast-worker"}`), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.IsError {
+		t.Fatalf("unexpected tool error: %s", textResult(res.Content))
+	}
+	agents := f.List()
+	if len(agents) != 1 || !agents[0].FastMode {
+		t.Fatalf("agent fast mode = %#v, want enabled by profile", agents)
+	}
+	if got := res.Details.(map[string]any)["fast_mode"]; got != true {
+		t.Fatalf("fast_mode detail = %v, want true", got)
+	}
+	if text := textResult(res.Content); !strings.Contains(text, "warning: subagent profile has fast mode enabled, overriding global fast mode off") {
+		t.Fatalf("spawn result missing profile override warning:\n%s", text)
+	}
+}
+
 func TestSubagentSpawnUsesProfileReasoningWhenOmitted(t *testing.T) {
 	tool := &SubagentSpawnTool{
 		Supervisor: newTestSupervisor(t),
