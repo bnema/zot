@@ -9,7 +9,7 @@ Yet another coding agent harness, lightweight and written (vibe-slopped) in go.
 
 - one static binary.
 - built-in providers for Anthropic, OpenAI/Codex/Responses, Kimi, DeepSeek, Google Gemini/Vertex, GitHub Copilot, Bedrock, Azure OpenAI, OpenRouter, Groq, Cerebras, xAI, Together, Hugging Face, Mistral, Moonshot, Z.AI, Xiaomi, MiniMax, Fireworks, Vercel AI Gateway, OpenCode, Cloudflare AI, and Ollama/local models.
-- five core built-in tools (read, write, edit, bash, and lsp); the conditional `skill` tool is available when skills are enabled.
+- six core built-in tools (read, write, edit, bash, lsp, and web_search); the conditional `skill` tool is available when skills are enabled. See [docs/web-search.md](docs/web-search.md) for web-search egress and availability boundaries.
 - three run modes (interactive tui, print, json).
 - built-in telegram bot.
 - extensions in any language via subprocess + json-rpc. None installed by default; opt in with `zut ext install` or `zut --ext`. See [docs/extensions.md](docs/extensions.md).
@@ -220,7 +220,7 @@ Print-mode stats contain `provider`, `model`, `prompt_tokens`, `reasoning_tokens
 | `--cwd <path>` | Use `<path>` as the working directory. |
 | `--no-tools` | Disable all tools. |
 | `--no-lsp` | Disable the built-in LSP/linter tool for this run. |
-| `--tools <csv>` | Only enable the listed tools. Include `lsp` to select it explicitly. |
+| `--tools <csv>` | Only enable the listed tools. Include `lsp` to select it explicitly. An explicit list must include `web_search` to retain or opt into web search for that invocation; explicitly including it overrides the persisted web-search setting for that invocation. |
 | `--max-steps <n>` | Cap agent loop iterations (default 50). |
 | `-e`, `--ext <path>` | Load an extension from `<path>` for this run (repeatable; wins against installed extensions of the same name). |
 | `--no-ext` | Skip extension discovery for this run. `--ext` still works on top, so `--no-ext --ext ./x` runs only `x`. |
@@ -234,8 +234,9 @@ Print-mode stats contain `provider`, `model`, `prompt_tokens`, `reasoning_tokens
 - `edit`: one or more exact-match replacements in an existing file.
 - `bash`: run a command in the session cwd with merged stdout/stderr and a timeout. On Unix, zut uses `/bin/bash -c` when available, then `bash -c` from `PATH`, and falls back to POSIX `/bin/sh -c` when Bash is unavailable. On Windows, it uses `cmd /C`. macOS ships Bash 3.2 by default, so newer Bash features may be unavailable.
 - `lsp`: query configured language servers and linters for diagnostics, definitions, references, hover information, symbols, renames, code actions, capabilities, and raw protocol requests. LSP servers use stdio JSON-RPC; project `lsp.json` files can add or override servers and CLI linters. Diagnostics are bounded, sorted, deduplicated by path/severity/code/start position, and repeated issues are grouped before they reach the model. See [docs/lsp.md](docs/lsp.md).
+- `web_search`: search the public web through DuckDuckGo HTML and return bounded source titles, URLs, and snippets. Enabled by default for normal CLI sessions; it is unavailable to bot, default SDK, and packaged-agent runs. See [docs/web-search.md](docs/web-search.md).
 
-When the sandbox is on (see `/jail`), filesystem tools and LSP workspace edits refuse paths outside the session cwd.
+When the sandbox is on (see `/jail`), filesystem tools and LSP workspace edits refuse paths outside the session cwd. Jail does not sandbox web-search network egress.
 
 ## Modes
 
@@ -292,7 +293,7 @@ Slash command names are case-insensitive in the TUI and messaging backends; argu
 | `/unjail` | Allow tools to touch paths outside again. |
 | `/reload-ext` | Hot-reload all extensions (re-read manifests, respawn subprocesses, rebuild tool registry). |
 | `/telegram` | Connect, disconnect, or show status of the Telegram bridge (takes `connect` / `disconnect` / `status` as an optional argument; opens a picker without one). When connected, DMs from the paired user become prompts in the running session and the assistant's replies are mirrored back to Telegram. Alias: `/tg`. |
-| `/settings` | Change persistent settings, including inline images, terminal alerts, AI terminal titles, auto-subagents, Ponytail coding mode, fast mode, main/sub-agent LSP access, and the auto-compact threshold. Saved to `$ZUT_HOME/config.json`; setting changes apply without a restart, while AI title generation waits for the first real prompt. |
+| `/settings` | Change persistent settings, including web search, inline images, terminal alerts, AI terminal titles, auto-subagents, Ponytail coding mode, fast mode, main/sub-agent LSP access, and the auto-compact threshold. Saved to `$ZUT_HOME/config.json`; setting changes apply without a restart, while AI title generation waits for the first real prompt. |
 | `/clear` | Clear the chat transcript. |
 | `/exit` | Exit zut. |
 
@@ -395,6 +396,7 @@ zut discovers the common markdown/frontmatter profile layout from `~/.agents/age
 
 Opens a dialog with every persistent setting. `up`/`down` to navigate, `enter` or `space` to change the selected row, `esc` to close (rows that open a sub-view, like model shortcuts, use `esc` to go back one level first). Changes are written to `$ZUT_HOME/config.json` without a restart; individual settings document whether they affect the current turn, the next model call, or a later session event. Current settings:
 
+- **web search** — allow the normal CLI agent to send search queries to DuckDuckGo HTML and return bounded public-web sources. Enabled by default; disabling it removes `web_search` from the current interactive session and future normal CLI runs when no invocation-level tool override applies. If the current command explicitly included `--tools web_search` (alone or in its CSV list), that higher-precedence opt-in keeps web search enabled for this session and the settings row is read-only with an explanation; run zut without that explicit override to change the persisted default. The setting persists as `web_search_enabled`. Bot, default SDK, and packaged-agent runs remain unavailable regardless of this setting. See [docs/web-search.md](docs/web-search.md).
 - **render images when supported** — draw screenshots / `read`-returned images inline using the terminal's image protocol, or fall back to a text placeholder. Auto-detected from `TERM_PROGRAM`; the toggle overrides the detection. The row is greyed out and forced off on terminals that don't speak any image protocol.
 - **terminal alerts** — emit a terminal bell when the main session stops with work that may need attention, or when an extension raises a structured alert. Enabled by default; changes apply immediately and persist as `terminal_alerts_enabled`. Terminal emulators may render the bell audibly, visually, or not at all.
 - **AI terminal titles** — after the first real prompt of a fresh interactive session, make one small hidden request to the active model and set the terminal title to `zut: <title>`. The title is limited to 40 Unicode characters, persisted with the session, restored on resume, and never added to the conversation. Enabled by default; disable it to avoid the extra model request. The toggle applies immediately, but title generation still waits for the first real prompt and never starts from startup context, resumed history, or slash commands. Persists as `terminal_title_enabled`.
@@ -881,7 +883,7 @@ Slash commands also work while the agent is busy. Non-destructive ones (`/help`,
 | `ctrl+b` | Toggle the right sidebar; hidden or narrow widgets use a bounded above-input fallback. |
 | `ctrl+l` | Redraw the screen. |
 | `ctrl+v` | Paste clipboard text into the focused chat, side chat, dialog, filter, or credential input. In the main chat, image clipboard content is attached to the next prompt when the platform exposes it (macOS pasteboard, Wayland `wl-paste`, or X11 `xclip`). On Linux, text uses `wl-paste`, `xclip`, or `xsel`; terminal-native bracketed paste remains available without those commands. |
-| `ctrl+o` | Expand or collapse long tool results (read, write, edit, bash, and lsp outputs over ~12 lines). |
+| `ctrl+o` | Expand or collapse long tool results (outputs over ~12 lines, including `web_search`). |
 | `ctrl+1` ... `ctrl+9` | Switch to the model bound to that quick-model slot (configured in `/settings` -> model shortcuts). No-op while a turn is running. |
 | `@` | Open the file picker. Browse files and directories in the working directory. |
 
@@ -1064,7 +1066,7 @@ packages/agent/extproto/              extension wire-format types
 packages/agent/modes/                 interactive tui, print, json, dialogs
 packages/agent/modes/bot/             protocol-agnostic bot runner (BotAdapter interface)
 packages/agent/modes/telegram/        telegram adapter, api client, daemon
-packages/agent/tools/                 read, write, edit, bash, lsp, sandbox
+packages/agent/tools/                 read, write, edit, bash, lsp, web search, sandbox
 packages/agent/skills/                skill discovery, frontmatter parser, skill tool
 packages/agent/subagents/             named profiles, supervisor, and background runtime
 packages/agent/sdk/                   public Go SDK for embedding zut in-process (package sdk)

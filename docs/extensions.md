@@ -225,8 +225,9 @@ describing the tool's args (the same shape Anthropic and OpenAI accept).
 ```
 
 Tool names live in the same namespace as built-in tools (`read`,
-`write`, `edit`, `bash`, `skill`). Conflicts are silently shadowed by
-the built-in.
+`write`, `edit`, `bash`, `lsp`, `web_search`, `skill`). Conflicts with active
+built-ins are ignored. The native `web_search` name is reserved even when the
+setting disables that built-in, so an extension cannot claim or replace it.
 
 Set `"deferred": true` to register a tool without advertising its definition initially. A loader tool can activate registered deferred tools by returning their names in `activate_tools`:
 

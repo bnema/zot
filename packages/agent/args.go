@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/bnema/zut/packages/agent/subagents"
 	"github.com/bnema/zut/packages/agent/tools"
 	"github.com/bnema/zut/packages/tui"
 	"golang.org/x/term"
@@ -61,11 +62,21 @@ type Args struct {
 	Session  string
 	NoSess   bool
 
-	CWD      string
-	NoTools  bool
-	NoLSP    bool
-	Tools    []string
-	MaxSteps int
+	CWD     string
+	NoTools bool
+	NoLSP   bool
+	Tools   []string
+	// ToolsSet distinguishes an omitted --tools flag from an explicitly
+	// supplied empty list. Other built-in tools intentionally retain their
+	// historical empty-list behavior; web search uses this provenance as a
+	// capability allowlist.
+	ToolsSet bool
+
+	// WebSearchPolicy is an internal capability override. Normal CLI args
+	// leave it at Inherit so Resolve applies config and --tools provenance;
+	// SDK, bot, and subagent-worker callers set it explicitly.
+	WebSearchPolicy subagents.WebSearchPolicy
+	MaxSteps        int
 
 	// Exts is a list of directory paths the user passed via --ext.
 	// Each must contain an extension.json. Loaded for one session
@@ -149,6 +160,7 @@ type Args struct {
 func ParseArgs(in []string) (Args, error) {
 	a := Args{Mode: ModeInteractive, MaxSteps: 0, WithSkills: true}
 	positional := []string{}
+	webSearchPolicySet := false
 
 	want := func(i *int, flag string) (string, error) {
 		*i++
@@ -311,11 +323,28 @@ func ParseArgs(in []string) (Args, error) {
 				return a, err
 			}
 			a.Subagent = v
+		case "--web-search-policy":
+			v, err := want(&i, arg)
+			if err != nil {
+				return a, err
+			}
+			webSearchPolicySet = true
+			switch strings.ToLower(strings.TrimSpace(v)) {
+			case "inherit":
+				a.WebSearchPolicy = subagents.WebSearchInherit
+			case "deny", "off":
+				a.WebSearchPolicy = subagents.WebSearchDeny
+			case "allow", "on":
+				a.WebSearchPolicy = subagents.WebSearchAllow
+			default:
+				return a, fmt.Errorf("--web-search-policy must be inherit|allow|deny")
+			}
 		case "--tools":
 			v, err := want(&i, arg)
 			if err != nil {
 				return a, err
 			}
+			a.ToolsSet = true
 			for _, t := range strings.Split(v, ",") {
 				t = strings.TrimSpace(t)
 				if t != "" {
@@ -354,6 +383,9 @@ func ParseArgs(in []string) (Args, error) {
 		a.Prompt = strings.Join(positional, " ")
 	}
 
+	if webSearchPolicySet && a.Mode != ModeSubagentWorker {
+		return a, fmt.Errorf("--web-search-policy requires --subagent-worker")
+	}
 	if a.StatsPath != "" && a.Mode != ModePrint {
 		return a, fmt.Errorf("--stats requires -p or --print")
 	}
@@ -486,7 +518,7 @@ func PrintHelp(version string) {
 		row{"--cwd PATH", "treat PATH as the working directory"},
 		row{"--no-tools", "disable all tools"},
 		row{"--no-lsp", "disable the built-in LSP/linter tool"},
-		row{"--tools csv", "only enable the listed tools (include lsp explicitly)"},
+		row{"--tools csv", "only enable listed tools (include lsp and web_search explicitly)"},
 		row{"--no-yolo", "ask before running every tool call"},
 		row{"-y, --yes", "accept zut run consent without prompting"},
 		row{"--no-ext", "skip extension discovery for this run"},

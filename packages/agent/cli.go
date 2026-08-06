@@ -1169,7 +1169,7 @@ func runZutfileStartupPre(ctx context.Context, pre, cwd string, sandbox *tools.S
 	return ag.Prompt(ctx, pre, nil, sink)
 }
 
-var errInteractiveAgentChanged = errors.New("interactive agent changed during prompt refresh")
+var errInteractiveAgentChanged = errors.New("interactive agent or web-search policy changed during prompt refresh")
 
 // refreshAgentToolsAndPrompt re-resolves tools (including rediscovered
 // skills and currently loaded extension tools) and updates the live
@@ -1177,13 +1177,20 @@ var errInteractiveAgentChanged = errors.New("interactive agent changed during pr
 // zutfile entry.pre installs new skills or extensions.
 // mutateRegistry, if non-nil, can inject session-specific tools (e.g. subagent_spawn).
 // interactive, when non-nil, serializes the final commit with agent replacement.
-func refreshAgentToolsAndPrompt(args Args, sharedSandbox *tools.Sandbox, extToolAdapter ExtensionToolSource, ag *core.Agent, mutateRegistry func(core.Registry) core.Registry, interactive *modes.Interactive) error {
+func refreshAgentToolsAndPrompt(args Args, sharedSandbox *tools.Sandbox, extToolAdapter ExtensionToolSource, ag *core.Agent, mutateRegistry func(core.Registry) core.Registry, interactive *modes.Interactive) (subagents.WebSearchPolicy, error) {
 	if ag == nil {
-		return nil
+		return subagents.WebSearchDeny, nil
+	}
+	var webSearchPolicyGeneration uint64
+	if interactive != nil {
+		// Capture before Resolve: the final commit must fail if settings,
+		// Telegram attachment, or a newer registry commit changes policy while
+		// filesystem/config/extension discovery is in flight.
+		webSearchPolicyGeneration = interactive.WebSearchPolicyGeneration()
 	}
 	resolved, err := Resolve(args, true)
 	if err != nil {
-		return fmt.Errorf("refresh agent prompt and tools: %w", err)
+		return subagents.WebSearchDeny, fmt.Errorf("refresh agent prompt and tools: %w", err)
 	}
 	if sharedSandbox != nil {
 		resolved.UseSandbox(sharedSandbox)
@@ -1192,23 +1199,49 @@ func refreshAgentToolsAndPrompt(args Args, sharedSandbox *tools.Sandbox, extTool
 		resolved.MergeExtensionTools(extToolAdapter)
 	}
 	reg := resolved.ToolRegistry
+	if resolved.WebSearchPolicy != subagents.WebSearchAllow {
+		delete(reg, "web_search")
+	}
 	if mutateRegistry != nil {
 		reg = mutateRegistry(reg)
 	}
 	if interactive != nil {
-		oldTools, applied := interactive.ApplyAgentPromptConfig(ag, resolved.SystemPrompt, reg)
+		oldTools, applied := interactive.ApplyAgentPromptConfigAtWebSearchGeneration(ag, resolved.SystemPrompt, reg, webSearchPolicyGeneration)
 		if !applied {
 			_ = tools.CloseLSPManagers(reg)
-			return errInteractiveAgentChanged
+			return subagents.WebSearchDeny, errInteractiveAgentChanged
 		}
 		interactive.DeferUntilIdle(func() {
 			_ = tools.CloseLSPManagers(oldTools)
 		})
-		return nil
+		return webSearchPolicyForRegistry(resolved.WebSearchPolicy, ag.ToolsSnapshot()), nil
 	}
 	oldTools := ag.SetPromptConfig(resolved.SystemPrompt, reg)
 	_ = tools.CloseLSPManagers(oldTools)
-	return nil
+	return webSearchPolicyForRegistry(resolved.WebSearchPolicy, reg), nil
+}
+
+func webSearchPolicyForRegistry(policy subagents.WebSearchPolicy, reg core.Registry) subagents.WebSearchPolicy {
+	if policy == subagents.WebSearchAllow {
+		if _, ok := reg["web_search"]; ok {
+			return subagents.WebSearchAllow
+		}
+	}
+	return subagents.WebSearchDeny
+}
+
+func webSearchToolAllowedForSession(args Args) bool {
+	if args.NoTools || args.PermissionSet != nil {
+		return false
+	}
+	if args.ToolsSet || len(args.Tools) > 0 {
+		return toolListContains(args.Tools, "web_search")
+	}
+	return true
+}
+
+func webSearchExplicitlyEnabledForSession(args Args) bool {
+	return !args.NoTools && args.PermissionSet == nil && (args.ToolsSet || len(args.Tools) > 0) && toolListContains(args.Tools, "web_search")
 }
 
 // reloadResourcesAfterStartupPre reloads extensions (if any) and
@@ -1222,7 +1255,8 @@ func reloadResourcesAfterStartupPre(ctx context.Context, args Args, extMgr *exte
 	if extMgr != nil {
 		_ = extMgr.Reload(ctx, 2*time.Second)
 	}
-	return refreshAgentToolsAndPrompt(args, sharedSandbox, adapter, ag, nil, nil)
+	_, err := refreshAgentToolsAndPrompt(args, sharedSandbox, adapter, ag, nil, nil)
+	return err
 }
 
 // ---- interactive mode: opens the TUI even without credentials ----
@@ -1318,6 +1352,7 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 
 	extToolAdapter := &extToolAdapter{mgr: extMgr}
 	r.MergeExtensionTools(extToolAdapter)
+	webSearchGuard := &webSearchSessionGuard{}
 
 	// Build the subagent supervisor BEFORE the agent so the auto-subagents
 	// tool can reference it during tool-registry construction. State
@@ -1330,14 +1365,15 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 	// in this outer scope rather than scoping it tighter.
 	var subagentsMgr *subagents.Supervisor
 	subagentsMgr = subagents.New(subagents.Config{
-		Context:     ctx,
-		Root:        filepath.Join(ZutHome(), "subagents"),
-		RepoRoot:    r.CWD,
-		Provider:    r.Provider,
-		FastMode:    r.FastMode,
-		BaseURL:     r.BaseURL,
-		InsecureTLS: r.InsecureTLS,
-		Policy:      subagentPolicyFromConfig(initialCfg.Subagents),
+		Context:         ctx,
+		Root:            filepath.Join(ZutHome(), "subagents"),
+		RepoRoot:        r.CWD,
+		Provider:        r.Provider,
+		FastMode:        r.FastMode,
+		WebSearchPolicy: webSearchPolicyForRegistry(r.WebSearchPolicy, r.ToolRegistry),
+		BaseURL:         r.BaseURL,
+		InsecureTLS:     r.InsecureTLS,
+		Policy:          subagentPolicyFromConfig(initialCfg.Subagents),
 		// Keep an explicit launch key in this callback only. Supervisor persists
 		// connection settings, but never stores credentials in Agent metadata
 		// or puts them in the worker's argv/environment.
@@ -1438,7 +1474,25 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 		}
 		return reg
 	}
-	injectSubagentTools(r.ToolRegistry)
+	prepareInteractiveRegistry := func(reg core.Registry) core.Registry {
+		injectSubagentTools(reg)
+		return webSearchGuard.wrapRegistry(reg)
+	}
+	prepareResolvedInteractiveRegistry := func(reg core.Registry, policy subagents.WebSearchPolicy) core.Registry {
+		// The resolved policy is a ceiling. In particular, an extension named
+		// web_search must not reintroduce the capability when --no-tools,
+		// --tools, a packaged PermissionSet, or persisted settings deny it.
+		if policy != subagents.WebSearchAllow {
+			delete(reg, "web_search")
+		}
+		return prepareInteractiveRegistry(reg)
+	}
+	prepareResolvedInteractiveRegistry(r.ToolRegistry, r.WebSearchPolicy)
+	initialWebSearchPolicy := webSearchPolicyForRegistry(r.WebSearchPolicy, r.ToolRegistry)
+	webSearchGuard.setAvailable(initialWebSearchPolicy == subagents.WebSearchAllow)
+	if subagentsMgr != nil {
+		subagentsMgr.SetWebSearchPolicy(initialWebSearchPolicy)
+	}
 
 	// Confirmation gate: when --no-yolo is on, the agent must ask
 	// the user before every tool call. In interactive mode the TUI
@@ -1527,7 +1581,7 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 			subagentsMgr.SetProviderSettings(resolved.BaseURL, resolved.InsecureTLS)
 		}
 		resolved.MergeExtensionTools(extToolAdapter)
-		injectSubagentTools(resolved.ToolRegistry)
+		prepareResolvedInteractiveRegistry(resolved.ToolRegistry, resolved.WebSearchPolicy)
 		return wireAgentExt(resolved.NewAgent()), resolved.Provider, resolved.Model, nil
 	}
 
@@ -1550,7 +1604,7 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 			subagentsMgr.SetProviderSettings(resolved.BaseURL, resolved.InsecureTLS)
 		}
 		resolved.MergeExtensionTools(extToolAdapter)
-		injectSubagentTools(resolved.ToolRegistry)
+		prepareResolvedInteractiveRegistry(resolved.ToolRegistry, resolved.WebSearchPolicy)
 		return wireAgentExt(resolved.NewAgent()), resolved.Provider, resolved.Model, nil
 	}
 
@@ -1581,7 +1635,7 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 			subagentsMgr.SetProviderSettings(resolved.BaseURL, resolved.InsecureTLS)
 		}
 		resolved.MergeExtensionTools(extToolAdapter)
-		injectSubagentTools(resolved.ToolRegistry)
+		prepareResolvedInteractiveRegistry(resolved.ToolRegistry, resolved.WebSearchPolicy)
 		return wireAgentExt(resolved.NewAgent()), resolved.Provider, resolved.Model, nil
 	}
 
@@ -1600,7 +1654,7 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 		if current == nil {
 			return
 		}
-		if err := refreshAgentToolsAndPrompt(args, sharedSandbox, extToolAdapter, current, injectSubagentTools, iv); err != nil && iv != nil {
+		if _, err := refreshAgentToolsAndPrompt(args, sharedSandbox, extToolAdapter, current, prepareInteractiveRegistry, iv); err != nil && iv != nil {
 			iv.ReportError(err)
 		}
 	})
@@ -2118,6 +2172,19 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 	subagentsAddendum := subagents.SystemPromptAddendum(discoveredSubagents)
 	autoSubagentsToolAllowedForSession := autoSubagentsToolAllowed(args)
 	autoSubagentsStatusToolAllowedForSession := autoSubagentsStatusToolAllowed(args)
+	webSearchToolAllowedForInvocation := webSearchToolAllowedForSession(args)
+	webSearchInvocationOverride := webSearchExplicitlyEnabledForSession(args)
+	setWebSearchAvailable := func(available bool) {
+		webSearchGuard.setAvailable(available)
+		if subagentsMgr == nil {
+			return
+		}
+		policy := subagents.WebSearchDeny
+		if available {
+			policy = subagents.WebSearchAllow
+		}
+		subagentsMgr.SetWebSearchPolicy(policy)
+	}
 
 	iv = modes.NewInteractive(modes.InteractiveConfig{
 		Terminal:                       term,
@@ -2127,6 +2194,9 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 		TerminalTitleEnabled:           initialCfg.TerminalTitleEnabled,
 		AutoSubagentsEnabled:           initialCfg.AutoSubagentsEnabled,
 		PonytailEnabled:                initialCfg.PonytailEnabled,
+		WebSearchEnabled:               initialCfg.WebSearchEnabled,
+		WebSearchToolAllowed:           &webSearchToolAllowedForInvocation,
+		WebSearchInvocationOverride:    webSearchInvocationOverride,
 		AutoSubagentsToolAllowed:       &autoSubagentsToolAllowedForSession,
 		AutoSubagentsStatusToolAllowed: &autoSubagentsStatusToolAllowedForSession,
 		FastMode:                       &fastMode,
@@ -2187,18 +2257,26 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 				_ = extMgr.Reload(context.Background(), 2*time.Second)
 			}
 			if current != nil {
-				if err := refreshAgentToolsAndPrompt(args, sharedSandbox, extToolAdapter, current, injectSubagentTools, iv); err != nil {
+				if _, err := refreshAgentToolsAndPrompt(args, sharedSandbox, extToolAdapter, current, prepareInteractiveRegistry, iv); err != nil {
 					iv.ReportError(err)
 				}
 			}
 		},
 		RefreshTools: func() error {
 			current := liveInteractiveAgent(iv, ag)
-			return refreshAgentToolsAndPrompt(args, sharedSandbox, extToolAdapter, current, injectSubagentTools, iv)
+			webSearchPolicy, err := refreshAgentToolsAndPrompt(args, sharedSandbox, extToolAdapter, current, prepareInteractiveRegistry, iv)
+			if err != nil {
+				setWebSearchAvailable(false)
+				return err
+			}
+			setWebSearchAvailable(webSearchPolicy == subagents.WebSearchAllow)
+			return nil
 		},
+		SetWebSearchAvailable: setWebSearchAvailable,
 		RefreshPrompt: func() error {
 			current := liveInteractiveAgent(iv, ag)
-			return refreshAgentToolsAndPrompt(args, sharedSandbox, extToolAdapter, current, injectSubagentTools, iv)
+			_, err := refreshAgentToolsAndPrompt(args, sharedSandbox, extToolAdapter, current, prepareInteractiveRegistry, iv)
+			return err
 		},
 		AuthManager:                mgr,
 		LlamaCPPConfig:             ResolveLlamaCPPConfig,

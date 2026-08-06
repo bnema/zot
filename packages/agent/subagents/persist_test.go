@@ -21,8 +21,9 @@ import (
 func TestSpawnWritesMetaJSON(t *testing.T) {
 	root := t.TempDir()
 	f := New(Config{
-		Root:     root,
-		RepoRoot: root,
+		Root:            root,
+		RepoRoot:        root,
+		WebSearchPolicy: WebSearchAllow,
 		NewRunner: func(a *Agent) Runner {
 			return RunnerFunc(func(ctx context.Context, _ Sink) error {
 				<-ctx.Done()
@@ -60,6 +61,9 @@ func TestSpawnWritesMetaJSON(t *testing.T) {
 	}
 	if got.Started.IsZero() {
 		t.Error("meta.Started is zero")
+	}
+	if got.WebSearchPolicy != WebSearchAllow || a.WebSearchPolicy != WebSearchAllow {
+		t.Fatalf("web search policy persisted as meta=%v agent=%v, want allow", got.WebSearchPolicy, a.WebSearchPolicy)
 	}
 }
 
@@ -1162,6 +1166,68 @@ func TestEmptySessionIDIsVisibleFromAnyScope(t *testing.T) {
 
 	_ = f.Stop(a.ID)
 	a.Wait()
+}
+
+func TestWebSearchPolicyPersistsThroughReloadResumeAndChildArgv(t *testing.T) {
+	root := t.TempDir()
+	newSupervisor := func(policy WebSearchPolicy) *Supervisor {
+		return New(Config{
+			Root:            root,
+			RepoRoot:        root,
+			WebSearchPolicy: policy,
+			NewRunner: func(*Agent) Runner {
+				return RunnerFunc(func(context.Context, Sink) error { return nil })
+			},
+		})
+	}
+
+	first := newSupervisor(WebSearchAllow)
+	spawned, err := first.Spawn(context.Background(), "web policy")
+	if err != nil {
+		t.Fatalf("spawn: %v", err)
+	}
+	spawned.Wait()
+	if spawned.WebSearchPolicy != WebSearchAllow {
+		t.Fatalf("spawned policy = %v, want allow", spawned.WebSearchPolicy)
+	}
+
+	metaBytes, err := os.ReadFile(filepath.Join(root, "agents", spawned.ID, "meta.json"))
+	if err != nil {
+		t.Fatalf("read metadata: %v", err)
+	}
+	var meta agentMeta
+	if err := json.Unmarshal(metaBytes, &meta); err != nil {
+		t.Fatalf("decode metadata: %v", err)
+	}
+	if meta.WebSearchPolicy != WebSearchAllow {
+		t.Fatalf("metadata policy = %v, want allow", meta.WebSearchPolicy)
+	}
+
+	second := newSupervisor(WebSearchDeny)
+	if loaded, errs := second.Reload(); loaded != 1 || len(errs) != 0 {
+		t.Fatalf("reload loaded=%d errs=%v; want one clean load", loaded, errs)
+	}
+	reloaded := second.Get(spawned.ID)
+	if reloaded == nil {
+		t.Fatal("reloaded agent missing")
+	}
+	if reloaded.WebSearchPolicy != WebSearchAllow {
+		t.Fatalf("reloaded policy = %v, want allow", reloaded.WebSearchPolicy)
+	}
+
+	resumed, err := second.ResumeSession(context.Background(), spawned.ID)
+	if err != nil {
+		t.Fatalf("resume: %v", err)
+	}
+	if resumed.WebSearchPolicy != WebSearchAllow {
+		t.Fatalf("resumed policy = %v, want allow", resumed.WebSearchPolicy)
+	}
+	args := defaultChildArgs("/zut", resumed, "/state/session.json", "/state/inbox.sock")
+	idx := indexOf(args, "--web-search-policy")
+	if idx < 0 || safeAt(args, idx+1) != "allow" {
+		t.Fatalf("resumed child argv = %v, want explicit allow", args)
+	}
+	resumed.Wait()
 }
 
 func snapshotIDs(ss []AgentSnapshot) []string {

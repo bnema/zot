@@ -2,7 +2,7 @@
 
 A zutfile packages an agent's behavior into one portable `.zut` file. It can contain the agent's instructions, reusable skills, static assets, and metadata describing the runtime, model, operating-system, binary, and tool permissions it needs.
 
-The current implementation supports creating, inspecting, verifying, and running local directories and `.zut` archives. It can also run an agent repository or directory directly from any public GitHub repository without keeping a clone. zut has no built-in owner or official collection. Indexed registry distribution, installation, signatures, bundled executable extensions, network permissions, and environment permissions are not implemented yet.
+The current implementation supports creating, inspecting, verifying, and running local directories and `.zut` archives. It can also run an agent repository or directory directly from any public GitHub repository without keeping a clone. zut has no built-in owner or official collection. Indexed registry distribution, installation, signatures, bundled executable extensions, network permissions, and environment permissions are not implemented yet. Native `web_search` is unavailable to packaged agents until network permissions are enforceable.
 
 ## Quick start
 
@@ -202,7 +202,7 @@ The current manifest shape is:
 | `license` | no | Package metadata. Not otherwise interpreted by the local runtime. |
 | `runtime.min_zut` | no | Minimum zut version. Older binaries refuse to run the agent. Unversioned development builds cannot satisfy a non-empty minimum. |
 | `model` | no | Model capabilities, minimum context, and preferences. |
-| `permissions` | no | Filesystem and bash permission ceiling. Omitted scopes deny access. |
+| `permissions` | no | Filesystem and bash permission ceiling. Omitted scopes deny access. Native web search remains unavailable because network permissions are not enforced. |
 | `requirements` | no | Required operating systems and executables. |
 | `entry` | no | Initial presentation and prompt metadata. |
 | `replace_system_prompt` | no | Replaces the built-in identity rather than appending the agent body when `true`; global append addenda retain their normal inclusion rules. Defaults to `false`. |
@@ -422,7 +422,7 @@ Only declare commands the agent genuinely needs. `requirements.bin` checks that 
 
 ## Network and environment permissions
 
-The manifest shape includes `permissions.net.allow` and `permissions.env.read`, but the local runtime does not enforce them yet. To avoid presenting unenforced declarations as security controls, it rejects manifests containing any network host or environment variable.
+The manifest shape includes `permissions.net.allow` and `permissions.env.read`, but the local runtime does not enforce them yet. To avoid presenting unenforced declarations as security controls, it rejects manifests containing any network host or environment variable. `permissions.net` is rejected rather than ignored; it does not authorize the built-in `web_search` tool. Packaged agents receive no native web search until a future enforced network-permission design exists.
 
 Use empty arrays or omit these sections:
 

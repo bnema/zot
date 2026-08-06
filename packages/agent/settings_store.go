@@ -82,6 +82,18 @@ func (configSettingsStore) SetPonytailEnabled(enabled bool) error {
 	return nil
 }
 
+func (configSettingsStore) SetWebSearchEnabled(enabled bool) error {
+	cfg, err := LoadConfig()
+	if err != nil {
+		return fmt.Errorf("load config for web search setting: %w", err)
+	}
+	cfg.WebSearchEnabled = &enabled
+	if err := SaveConfig(cfg); err != nil {
+		return fmt.Errorf("save web search setting: %w", err)
+	}
+	return nil
+}
+
 func (configSettingsStore) SetFastMode(enabled bool) error {
 	cfg, err := LoadConfig()
 	if err != nil {

@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 
 	zutdocs "github.com/bnema/zut"
@@ -25,17 +26,18 @@ type ContextFile struct {
 
 // Resolved is the effective configuration after merging CLI, config, defaults.
 type Resolved struct {
-	Provider    string
-	Model       string
-	Credential  string // api key or oauth access token
-	AuthMethod  string // "apikey" | "oauth" | "" (no credential yet)
-	AccountID   string // ChatGPT account id (for openai oauth), "" otherwise
-	BaseURL     string
-	InsecureTLS bool
-	CWD         string
-	Reasoning   string
-	Temperature *float32
-	FastMode    bool
+	Provider        string
+	Model           string
+	Credential      string // api key or oauth access token
+	AuthMethod      string // "apikey" | "oauth" | "" (no credential yet)
+	AccountID       string // ChatGPT account id (for openai oauth), "" otherwise
+	BaseURL         string
+	InsecureTLS     bool
+	CWD             string
+	Reasoning       string
+	Temperature     *float32
+	FastMode        bool
+	WebSearchPolicy subagents.WebSearchPolicy
 
 	ToolRegistry core.Registry
 	ToolSummary  []ToolSummary
@@ -90,6 +92,13 @@ func (r *Resolved) MergeExtensionTools(mgr ExtensionToolSource) {
 	}
 	changed := false
 	for _, info := range mgr.Tools() {
+		// web_search remains a reserved native-tool name even when its
+		// capability policy excludes the current session. An extension must
+		// not turn a normal CLI opt-out into a differently implemented search
+		// capability with the same model-visible name.
+		if info.Name == "web_search" {
+			continue
+		}
 		if _, exists := r.ToolRegistry[info.Name]; exists {
 			continue
 		}
@@ -204,15 +213,34 @@ type ExtensionToolInfo struct {
 // the human-readable summary text.
 func toolSummariesFromRegistry(reg core.Registry, cached map[string]string) []ToolSummary {
 	out := make([]ToolSummary, 0, len(reg))
-	for name, t := range reg {
+	seen := make(map[string]bool, len(nativeToolSummaryOrder))
+	appendSummary := func(name string) {
+		t, ok := reg[name]
+		if !ok {
+			return
+		}
+		seen[name] = true
 		if d, ok := t.(interface{ Deferred() bool }); ok && d.Deferred() {
-			continue
+			return
 		}
 		desc := t.Description()
 		if d, ok := cached[name]; ok && d != "" {
 			desc = d
 		}
 		out = append(out, ToolSummary{Name: name, Description: desc})
+	}
+	for _, name := range nativeToolSummaryOrder {
+		appendSummary(name)
+	}
+	remaining := make([]string, 0, len(reg)-len(seen))
+	for name := range reg {
+		if !seen[name] {
+			remaining = append(remaining, name)
+		}
+	}
+	sort.Strings(remaining)
+	for _, name := range remaining {
+		appendSummary(name)
 	}
 	return out
 }
@@ -407,11 +435,85 @@ func applySubagentProfile(args *Args, profile *subagents.Profile) {
 		// persisted global reasoning setting when the child resolves.
 		args.Reasoning = strings.TrimSpace(profile.Thinking)
 	}
-	if !args.NoTools && len(args.Tools) == 0 && len(profile.Tools) > 0 {
+	if !args.NoTools && !args.ToolsSet && len(args.Tools) == 0 && len(profile.Tools) > 0 {
 		args.Tools = append([]string(nil), profile.Tools...)
 	}
 	if profile.InheritSkills != nil && !*profile.InheritSkills {
 		args.NoSkill = true
+	}
+}
+
+// resolveWebSearchPolicy applies capability precedence at the owning resolver
+// boundary. Permission, tool-list, and named-profile restrictions are ceilings
+// on every caller-provided policy. Workers additionally require an explicit,
+// valid propagated decision rather than falling back to their local config.
+func resolveWebSearchPolicy(args Args, cfg Config, cfgErr error, profile *subagents.Profile) subagents.WebSearchPolicy {
+	if args.NoTools || args.PermissionSet != nil {
+		return subagents.WebSearchDeny
+	}
+	if args.ToolsSet && !toolListContains(args.Tools, "web_search") {
+		return subagents.WebSearchDeny
+	}
+	if profile != nil && subagents.NamedWebSearchPolicy(profile.Tools) != subagents.WebSearchAllow {
+		return subagents.WebSearchDeny
+	}
+
+	switch args.WebSearchPolicy {
+	case subagents.WebSearchDeny:
+		return subagents.WebSearchDeny
+	case subagents.WebSearchAllow:
+		return subagents.WebSearchAllow
+	case subagents.WebSearchInherit:
+		// Continue through normal-mode defaults below. Inherit is not a valid
+		// propagated worker decision.
+	default:
+		return subagents.WebSearchDeny
+	}
+	if args.Mode == ModeSubagentWorker {
+		return subagents.WebSearchDeny
+	}
+	if args.ToolsSet {
+		return subagents.WebSearchAllow
+	}
+	if cfgErr != nil {
+		return subagents.WebSearchDeny
+	}
+	if profile != nil {
+		return subagents.WebSearchAllow
+	}
+	if cfg.WebSearchEnabledForCLI() {
+		return subagents.WebSearchAllow
+	}
+	return subagents.WebSearchDeny
+}
+
+func toolListContains(names []string, target string) bool {
+	for _, name := range names {
+		if name == target {
+			return true
+		}
+	}
+	return false
+}
+
+// webSearchAllowedForRegistry is kept separate from the resolver so direct
+// registry tests and callers that build a registry without persisted config
+// still get the normal default-on behavior. Worker registries fail closed if
+// they have not first received a resolved allow decision.
+func webSearchAllowedForRegistry(args Args) bool {
+	if args.NoTools || args.PermissionSet != nil {
+		return false
+	}
+	if args.ToolsSet && !toolListContains(args.Tools, "web_search") {
+		return false
+	}
+	switch args.WebSearchPolicy {
+	case subagents.WebSearchAllow:
+		return true
+	case subagents.WebSearchDeny:
+		return false
+	default:
+		return args.Mode != ModeSubagentWorker
 	}
 }
 
@@ -422,7 +524,13 @@ func applySubagentProfile(args *Args, profile *subagents.Profile) {
 // login flow. requireCred controls whether missing credentials are a
 // hard error (used by print/json modes).
 func Resolve(args Args, requireCred bool) (Resolved, error) {
-	cfg, _ := LoadConfig()
+	cfg, cfgErr := LoadConfig()
+	// Programmatic callers historically supplied Tools without the parser's
+	// provenance bit. Treat a non-empty list as explicit before a named profile
+	// can contribute its defaults.
+	if len(args.Tools) > 0 {
+		args.ToolsSet = true
+	}
 	var selectedProfile *subagents.Profile
 	if strings.TrimSpace(args.Subagent) != "" {
 		var err error
@@ -432,6 +540,8 @@ func Resolve(args Args, requireCred bool) (Resolved, error) {
 		}
 		applySubagentProfile(&args, selectedProfile)
 	}
+	webSearchPolicy := resolveWebSearchPolicy(args, cfg, cfgErr, selectedProfile)
+	args.WebSearchPolicy = webSearchPolicy
 
 	// User-requested provider (explicit > config > default).
 	// Normalise common aliases (e.g. "bedrock" -> "amazon-bedrock")
@@ -802,6 +912,7 @@ func Resolve(args Args, requireCred bool) (Resolved, error) {
 		Reasoning:        reasoning,
 		Temperature:      temperature,
 		FastMode:         fastMode,
+		WebSearchPolicy:  webSearchPolicy,
 		ToolRegistry:     reg,
 		ToolSummary:      summaries,
 		SystemPrompt:     sys,
@@ -1150,6 +1261,9 @@ func buildToolRegistry(args Args, cwd string, sandbox *tools.Sandbox, lspEnabled
 		"edit":  &tools.EditTool{CWD: cwd, Sandbox: sandbox, LSP: manager, LSPDiagnostics: diagnosticsOnEdit},
 		"bash":  &tools.BashTool{CWD: cwd, Sandbox: sandbox},
 	}
+	if webSearchAllowedForRegistry(args) {
+		all["web_search"] = tools.NewWebSearchTool()
+	}
 	if manager != nil {
 		lspTool := tools.NewLSPTool(cwd, manager)
 		lspTool.Sandbox = sandbox
@@ -1218,10 +1332,11 @@ func autoSubagentsToolAllowedFor(args Args, toolName string) bool {
 	return false
 }
 
+var nativeToolSummaryOrder = []string{"read", "write", "edit", "bash", "lsp", "web_search"}
+
 func toolSummaries(reg core.Registry, args Args) []ToolSummary {
-	order := []string{"read", "write", "edit", "bash", "lsp"}
 	var out []ToolSummary
-	for _, name := range order {
+	for _, name := range nativeToolSummaryOrder {
 		if t, ok := reg[name]; ok {
 			out = append(out, ToolSummary{Name: t.Name(), Description: t.Description()})
 		}

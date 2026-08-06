@@ -99,6 +99,11 @@ type Config struct {
 	// default; nil/missing means enabled. Toggle from /settings.
 	PonytailEnabled *bool `json:"ponytail_enabled,omitempty"`
 
+	// WebSearchEnabled controls the built-in web_search capability for
+	// normal CLI sessions. nil/missing means enabled so existing config
+	// files retain the default-on behavior.
+	WebSearchEnabled *bool `json:"web_search_enabled,omitempty"`
+
 	// LSPEnabled controls the built-in lsp tool and write-time diagnostics
 	// for the main session. nil/missing means enabled. Toggle from
 	// /settings.
@@ -259,6 +264,12 @@ func (c Config) LSPEnabledFor(subagent bool) bool {
 // without requiring a generated config entry.
 func (c Config) PonytailModeEnabled() bool {
 	return c.PonytailEnabled == nil || *c.PonytailEnabled
+}
+
+// WebSearchEnabledForCLI reports the default-on web-search preference
+// without requiring a generated config entry.
+func (c Config) WebSearchEnabledForCLI() bool {
+	return c.WebSearchEnabled == nil || *c.WebSearchEnabled
 }
 
 // LSPDiagnosticsOnWriteEnabled reports the default-on write diagnostics
