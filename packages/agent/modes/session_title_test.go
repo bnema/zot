@@ -239,11 +239,12 @@ func TestFreshBranchTitleIgnoresCopiedPrefix(t *testing.T) {
 
 	i.Submit("new branch work")
 	waitInteractiveIdle(t, i)
-
+	// The hidden title request is deliberately asynchronous, so wait for its
+	// visible result rather than assuming it finishes before the main turn.
+	waitInteractiveTitle(t, i, "new branch title")
 	if got := client.requestCount(); got != 2 {
 		t.Fatalf("provider request count = %d, want main + hidden title", got)
 	}
-	waitInteractiveTitle(t, i, "new branch title")
 	i.mu.Lock()
 	seen := i.titleRealPromptSeen
 	i.mu.Unlock()

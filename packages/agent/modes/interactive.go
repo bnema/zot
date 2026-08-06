@@ -545,6 +545,7 @@ type Interactive struct {
 	prevChatCols    int
 	prevChatRows    int
 	prevOverlayOpen bool
+	cursorDimmed    bool
 
 	// chatCache stores the built transcript/status-note rows for idle
 	// frames. Editor typing changes only the bottom input region, so
@@ -1687,6 +1688,7 @@ func (i *Interactive) redraw() {
 	if len(dialog) > 0 {
 		dialog = padDialogFrame(dialog)
 	}
+	modalBackdrop := len(dialog) > 0
 
 	// Slash-command autocomplete: popup above the status line, only
 	// when the editor starts with "/" and no dialog is already open.
@@ -2067,6 +2069,17 @@ func (i *Interactive) redraw() {
 		}
 	}
 
+	// A dialog is the foreground layer. Dim every other visible surface,
+	// including the main input beneath it, without changing the dialog's
+	// own styling. Keep the source slices untouched because chat is cached.
+	if modalBackdrop {
+		chat = tui.DimLines(chat)
+		visibleChat = tui.DimLines(visibleChat)
+		dimmedBottom := tui.DimLines(bottom)
+		copy(dimmedBottom[1:1+len(dialog)], dialog)
+		bottom = dimmedBottom
+	}
+
 	// Default: the real terminal cursor sits on the main editor's
 	// input position. In main-screen log mode cursor rows are relative
 	// to the fixed bottom band, not the chat transcript.
@@ -2079,22 +2092,26 @@ func (i *Interactive) redraw() {
 	}
 	cursorRow := inputStartRow + inputCursorOffset + curR
 	cursorCol := curC + inputCursorColOffset
+	cursorInDialog := false
 	if i.btwDialog.Active() {
 		if r, c := i.btwDialog.CursorPos(mainCols); r >= 0 {
 			cursorRow = dialogLead + r
 			cursorCol = c
+			cursorInDialog = true
 		}
 	}
 	if i.dialog.Active() {
 		if r, c := i.dialog.CursorPos(mainCols); r >= 0 {
 			cursorRow = dialogLead + r
 			cursorCol = c
+			cursorInDialog = true
 		}
 	}
 	if i.llamaDialog.Active() {
 		if r, c := i.llamaDialog.CursorPos(); r >= 0 {
 			cursorRow = dialogLead + r
 			cursorCol = c
+			cursorInDialog = true
 		} else {
 			cursorRow = -1
 			cursorCol = 0
@@ -2104,18 +2121,21 @@ func (i *Interactive) redraw() {
 		if r, c := i.sessionDialog.CursorPos(); r >= 0 {
 			cursorRow = dialogLead + r
 			cursorCol = c
+			cursorInDialog = true
 		}
 	}
 	if i.sessionTreeDialog.Active() {
 		if r, c := i.sessionTreeDialog.CursorPos(); r >= 0 {
 			cursorRow = dialogLead + r
 			cursorCol = c
+			cursorInDialog = true
 		}
 	}
 	if i.subagentsDialog.Active() {
 		if r, c := i.subagentsDialog.CursorPos(mainCols); r >= 0 {
 			cursorRow = dialogLead + r
 			cursorCol = c
+			cursorInDialog = true
 		} else {
 			// Dashboard list / transcript view has no caret. Without
 			// this branch the default cursorRow points at the
@@ -2129,9 +2149,14 @@ func (i *Interactive) redraw() {
 		cursorRow = -1
 		cursorCol = 0
 	}
+	i.setInputCursorDimmed(modalBackdrop && !cursorInDialog)
 	if rightBarActive {
 		rightBar := tui.RenderRightBar(i.cfg.Theme, rightBarWidgets, rightBarWidth, rows)
-		i.rend.DrawRightBar(visibleChat, bottom, rightBar, cursorRow, cursorCol)
+		if modalBackdrop {
+			i.rend.DrawRightBarDimmed(visibleChat, bottom, tui.DimLines(rightBar), cursorRow, cursorCol)
+		} else {
+			i.rend.DrawRightBar(visibleChat, bottom, rightBar, cursorRow, cursorCol)
+		}
 	} else {
 		_ = visibleChat // maintained for legacy scroll state/indicators; DrawLog owns chat viewport.
 		i.rend.DrawLog(chat, bottom, cursorRow, cursorCol)
@@ -3951,11 +3976,28 @@ func onOff(v bool) string {
 	return "disabled"
 }
 
+const modalBackdropDimPercent = 50
+
 func (i *Interactive) applyInputCursorColor() {
 	if i == nil || i.cfg.Terminal == nil {
 		return
 	}
-	_, _ = i.cfg.Terminal.Write([]byte(tui.CursorColor256(15) + tui.CursorShapeBlock()))
+	color := tui.Color256(15)
+	if i.cursorDimmed {
+		color = i.cfg.Theme.DimColor(color, modalBackdropDimPercent)
+	}
+	_, _ = i.cfg.Terminal.Write([]byte(tui.CursorColor(color) + tui.CursorShapeBlock()))
+}
+
+// setInputCursorDimmed updates the terminal-owned cursor only when its layer
+// changes. Reapplying cursor controls on every redraw can reset its blink
+// timing before the terminal completes a normal blink cycle.
+func (i *Interactive) setInputCursorDimmed(dimmed bool) {
+	if i == nil || i.cursorDimmed == dimmed {
+		return
+	}
+	i.cursorDimmed = dimmed
+	i.applyInputCursorColor()
 }
 
 func reasoningSettingOptions(levels []string) []settingsOption {
