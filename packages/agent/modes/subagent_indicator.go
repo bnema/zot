@@ -158,7 +158,7 @@ func compactSubagentActivity(snapshot subagents.AgentSnapshot) string {
 	// Heartbeats report "idle" even while a delegated turn is still running.
 	// Keep the row meaningful in that interval instead of contradicting its
 	// spinner and turn state.
-	if activity != "" && !(activity == "idle" && snapshot.TurnState == subagents.TurnRunning) {
+	if activity != "" && (activity != "idle" || snapshot.TurnState != subagents.TurnRunning) {
 		return activity
 	}
 	switch snapshot.TurnState {

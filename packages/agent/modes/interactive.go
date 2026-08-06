@@ -1951,7 +1951,7 @@ func (i *Interactive) redraw() {
 		if len(belowInput) > 0 {
 			// Running subagents sit immediately under the prompt by default.
 			// Other below-input chrome keeps the existing breathing room.
-			if !lineInput && !(subagentBelow && len(subagentLines) > 0) {
+			if !lineInput && (!subagentBelow || len(subagentLines) == 0) {
 				bottom = append(bottom, "")
 			}
 			bottom = append(bottom, belowInput...)
