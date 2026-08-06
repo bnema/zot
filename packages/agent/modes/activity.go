@@ -111,24 +111,24 @@ func (a *agentActivity) apply(ev core.AgentEvent) {
 	}
 	switch e := ev.(type) {
 	case core.EvTurnStart:
-		a.activity.kind = activityPreparingRequest
+		a.kind = activityPreparingRequest
 		a.pendingToolCalls = nil
 		a.toolOrder = nil
 	case core.EvRequestStarted:
-		a.activity.kind = activitySendingRequest
+		a.kind = activitySendingRequest
 		if e.Provider != "" {
-			a.activity.provider = e.Provider
+			a.provider = e.Provider
 		}
 		if e.Model != "" {
-			a.activity.model = e.Model
+			a.model = e.Model
 		}
 	case core.EvAssistantStart:
-		a.activity.kind = activityWaitingForResponse
+		a.kind = activityWaitingForResponse
 	case core.EvTextDelta:
-		a.activity.kind = activityReceivingResponse
+		a.kind = activityReceivingResponse
 	case core.EvToolUseStart:
-		a.activity.kind = activityPreparingTool
-		a.activity.tool = e.Name
+		a.kind = activityPreparingTool
+		a.tool = e.Name
 	case core.EvToolCall:
 		if a.pendingToolCalls == nil {
 			a.pendingToolCalls = make(map[string]string)
@@ -137,25 +137,25 @@ func (a *agentActivity) apply(ev core.AgentEvent) {
 			a.toolOrder = append(a.toolOrder, e.ID)
 		}
 		a.pendingToolCalls[e.ID] = e.Name
-		a.activity.kind = activityPreparingTool
-		a.activity.tool = e.Name
+		a.kind = activityPreparingTool
+		a.tool = e.Name
 	case core.EvToolExecutionStarted:
-		a.activity.kind = activityRunningTool
-		a.activity.tool = e.Name
+		a.kind = activityRunningTool
+		a.tool = e.Name
 	case core.EvToolResult:
 		if _, exists := a.pendingToolCalls[e.ID]; !exists {
 			return
 		}
 		delete(a.pendingToolCalls, e.ID)
 		if len(a.pendingToolCalls) == 0 {
-			a.activity.kind = activitySendingToolResults
-			a.activity.tool = ""
+			a.kind = activitySendingToolResults
+			a.tool = ""
 			return
 		}
 		for _, id := range a.toolOrder {
 			if name, ok := a.pendingToolCalls[id]; ok {
-				a.activity.kind = activityPreparingTool
-				a.activity.tool = name
+				a.kind = activityPreparingTool
+				a.tool = name
 				return
 			}
 		}
@@ -167,9 +167,9 @@ func (a *agentActivity) apply(ev core.AgentEvent) {
 			a.pendingToolCalls = nil
 			a.toolOrder = nil
 		}
-		a.activity.kind = activityRetryingRequest
-		a.activity.attempt = e.Attempt
-		a.activity.maxTries = e.MaxAttempts
-		a.activity.retryIn = e.Delay
+		a.kind = activityRetryingRequest
+		a.attempt = e.Attempt
+		a.maxTries = e.MaxAttempts
+		a.retryIn = e.Delay
 	}
 }

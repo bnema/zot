@@ -808,6 +808,9 @@ func NewInteractive(cfg InteractiveConfig) *Interactive {
 		clock:             time.Now,
 		reloadErrors:      append([]string(nil), cfg.StartupExtensionErrors...),
 	}
+	i.btwDialog.setCloseHook(func() {
+		i.confirmDialog.CancelChildConfirmations("side chat closed")
+	})
 	i.fileSuggest.SetRecursive(cfg.RecursiveFileSuggest != nil && *cfg.RecursiveFileSuggest)
 	i.fileSuggest.SetRespectGitignore(cfg.RespectGitignore == nil || *cfg.RespectGitignore)
 	if cfg.LlamaCPPConfig != nil {
@@ -7385,12 +7388,22 @@ func (i *Interactive) Confirm(toolName string, preview string) core.ConfirmDecis
 // tool panel, then blocks until the user approves or refuses the call.
 func (i *Interactive) ConfirmToolCall(call core.ToolCallConfirmation) core.ConfirmDecision {
 	resp := make(chan core.ConfirmDecision, 1)
-	returnToChild := false
-	if call.ID != "" && call.Origin == "btw" {
-		if i.btwDialog != nil && i.btwDialog.Active() {
-			returnToChild = i.btwDialog.SetToolPreview(call.ID, call.Summary, call.Content)
+	if isBtwOrigin(call.Origin) {
+		req := &confirmRequest{
+			toolName:      call.Name,
+			preview:       call.Summary,
+			resp:          resp,
+			returnToChild: true,
 		}
-	} else if call.ID != "" {
+		if call.ID == "" || i.btwDialog == nil || !i.btwDialog.enqueueToolConfirmation(call.Origin, call.ID, call.Summary, call.Content, func() {
+			i.confirmDialog.Enqueue(req)
+		}) {
+			return core.ConfirmDecision{Allow: false, Reason: "side-chat tool call canceled"}
+		}
+		i.invalidate()
+		return <-resp
+	}
+	if call.ID != "" {
 		i.mu.Lock()
 		if tc, ok := i.toolCalls[call.ID]; ok {
 			tc.Args = call.Summary
@@ -7400,10 +7413,9 @@ func (i *Interactive) ConfirmToolCall(call core.ToolCallConfirmation) core.Confi
 		i.mu.Unlock()
 	}
 	i.confirmDialog.Enqueue(&confirmRequest{
-		toolName:      call.Name,
-		preview:       call.Summary,
-		resp:          resp,
-		returnToChild: returnToChild,
+		toolName: call.Name,
+		preview:  call.Summary,
+		resp:     resp,
 	})
 	i.invalidate()
 	return <-resp

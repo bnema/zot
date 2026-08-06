@@ -39,7 +39,7 @@ func TestConfirmToolCallAttachesDiffBeforeDecision(t *testing.T) {
 			Name:    "edit",
 			Summary: "sample.go",
 			Content: "-old\n+new\n",
-			Origin:  "btw",
+			Origin:  btwOrigin(0),
 		})
 	}()
 
@@ -77,6 +77,67 @@ func TestConfirmToolCallAttachesDiffBeforeDecision(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("confirmation did not return")
+	}
+}
+
+func TestConfirmToolCallRejectsClosedSideChatGeneration(t *testing.T) {
+	i := newConfirmationInputInteractive()
+	i.btwDialog.Open(tui.Dark, i.agent, i.agent.System, i.agent.Model, t.TempDir(), "", false, false, true, nil)
+	i.btwDialog.mu.Lock()
+	origin := btwOrigin(i.btwDialog.generation)
+	i.btwDialog.mu.Unlock()
+	i.btwDialog.Close()
+
+	decision := i.ConfirmToolCall(core.ToolCallConfirmation{
+		ID:     "call-1",
+		Name:   "edit",
+		Origin: origin,
+	})
+	if decision.Allow || decision.Reason != "side-chat tool call canceled" {
+		t.Fatalf("stale side-chat decision = %+v", decision)
+	}
+	if i.confirmDialog.Active() {
+		t.Fatal("stale side-chat confirmation activated the main dialog")
+	}
+}
+
+func TestBtwCloseCancelsSideChatConfirmation(t *testing.T) {
+	i := newConfirmationInputInteractive()
+	d := i.btwDialog
+	d.mu.Lock()
+	d.active = true
+	d.generation = 1
+	d.turns = []btwTurn{{Tools: []tui.ToolCallView{{ID: "call-1", Name: "edit"}}}}
+	d.mu.Unlock()
+
+	decision := make(chan core.ConfirmDecision, 1)
+	go func() {
+		decision <- i.ConfirmToolCall(core.ToolCallConfirmation{
+			ID:     "call-1",
+			Name:   "edit",
+			Origin: btwOrigin(1),
+		})
+	}()
+
+	deadline := time.Now().Add(time.Second)
+	for !i.confirmDialog.Active() && time.Now().Before(deadline) {
+		runtime.Gosched()
+	}
+	if !i.confirmDialog.Active() {
+		t.Fatal("side-chat confirmation did not enter the queue")
+	}
+	d.Close()
+
+	select {
+	case got := <-decision:
+		if got.Allow || got.Reason != "side chat closed" {
+			t.Fatalf("close decision = %+v", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("closing /btw did not unblock its confirmation")
+	}
+	if i.confirmDialog.Active() {
+		t.Fatal("side-chat confirmation remained active after /btw closed")
 	}
 }
 

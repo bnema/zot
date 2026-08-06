@@ -157,8 +157,8 @@ func TestBtwDialogRunsToolsWithMainAgentPolicyInIsolatedTranscript(t *testing.T)
 	if got := policyCalls.Load(); got != 1 {
 		t.Fatalf("main agent tool-policy calls = %d, want 1", got)
 	}
-	if policyOrigin != "btw" {
-		t.Fatalf("side-chat tool policy origin = %q, want btw", policyOrigin)
+	if policyOrigin != btwOrigin(1) {
+		t.Fatalf("side-chat tool policy origin = %q, want %q", policyOrigin, btwOrigin(1))
 	}
 
 	client.mu.Lock()

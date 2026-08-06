@@ -40,6 +40,7 @@ type btwDialog struct {
 	lineInput   bool
 	cancel      context.CancelFunc
 	generation  uint64
+	closeHook   func()
 
 	// spin drives the same braille animation as the main status bar. Its
 	// activity label is owned by this dialog under d.mu.
@@ -68,6 +69,23 @@ func newBtwDialog() *btwDialog {
 	return &btwDialog{}
 }
 
+func btwOrigin(generation uint64) string {
+	return fmt.Sprintf("btw:%d", generation)
+}
+
+func isBtwOrigin(origin string) bool {
+	return strings.HasPrefix(origin, "btw:")
+}
+
+func (d *btwDialog) setCloseHook(hook func()) {
+	if d == nil {
+		return
+	}
+	d.mu.Lock()
+	d.closeHook = hook
+	d.mu.Unlock()
+}
+
 // Active reports whether the dialog is visible and consuming keys.
 func (d *btwDialog) Active() bool {
 	if d == nil {
@@ -92,19 +110,25 @@ func (d *btwDialog) Loading() bool {
 	return d.active && d.loading
 }
 
-// SetToolPreview attaches the side-effect-free confirmation preview to the
-// matching side-chat tool box before execution begins.
-func (d *btwDialog) SetToolPreview(id, summary, content string) bool {
-	if d == nil || id == "" {
+// enqueueToolConfirmation attaches the side-effect-free confirmation preview
+// to the matching side-chat tool box and queues its prompt while d.mu is
+// held. Keeping both actions together prevents Close from advancing the
+// generation between the ownership check and the confirmation enqueue.
+func (d *btwDialog) enqueueToolConfirmation(origin, id, summary, content string, enqueue func()) bool {
+	if d == nil || id == "" || enqueue == nil {
 		return false
 	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	if !d.active || origin != btwOrigin(d.generation) {
+		return false
+	}
 	for turnIdx := range d.turns {
 		if tool := findBtwTool(&d.turns[turnIdx], id); tool != nil {
 			tool.Args = summary
 			tool.Preview = content
 			d.activity.activity = activity{kind: activityAwaitingConfirmation, tool: tool.Name}
+			enqueue()
 			return true
 		}
 	}
@@ -146,7 +170,7 @@ func (d *btwDialog) Open(th tui.Theme, agent *core.Agent, system, model, cwd, se
 		prompt = ""
 	}
 	d.editor = tui.NewEditor(prompt)
-	d.sideAgent = newBtwAgent(agent, system, model)
+	d.sideAgent = newBtwAgent(agent, system, model, btwOrigin(d.generation))
 	d.cwd = cwd
 	d.mu.Unlock()
 
@@ -169,9 +193,13 @@ func (d *btwDialog) Close() {
 	d.cancel = nil
 	d.sideAgent = nil
 	d.toolView = nil
+	closeHook := d.closeHook
 	d.mu.Unlock()
 	if cancel != nil {
 		cancel()
+	}
+	if closeHook != nil {
+		closeHook()
 	}
 }
 
@@ -286,7 +314,7 @@ func (d *btwDialog) submit(invalidate func()) {
 	}()
 }
 
-func newBtwAgent(main *core.Agent, system, model string) *core.Agent {
+func newBtwAgent(main *core.Agent, system, model, origin string) *core.Agent {
 	agent := core.NewAgent(main.Client, model, system, main.ToolsSnapshot())
 	agent.MaxSteps = main.MaxSteps
 	agent.Reasoning = main.Reasoning
@@ -295,7 +323,7 @@ func newBtwAgent(main *core.Agent, system, model string) *core.Agent {
 	agent.MaxTokens = main.MaxTokens
 	if beforeToolExecute := main.BeforeToolExecute; beforeToolExecute != nil {
 		agent.BeforeToolExecute = func(call provider.ToolCallBlock) (bool, string, json.RawMessage) {
-			call.Origin = "btw"
+			call.Origin = origin
 			return beforeToolExecute(call)
 		}
 	}
