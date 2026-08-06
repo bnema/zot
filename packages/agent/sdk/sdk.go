@@ -76,7 +76,7 @@ type Config struct {
 	BaseURL string
 
 	// Tools is the list of tools to enable. Nil/empty = all built-in
-	// tools (read, write, edit, bash, lsp). Pass an empty-but-non-nil slice
+	// tools (read, write, edit, bash, create_worktree, lsp). Pass an empty-but-non-nil slice
 	// (e.g. []string{}) plus NoTools=true to disable everything.
 	Tools []string
 

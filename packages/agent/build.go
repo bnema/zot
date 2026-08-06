@@ -1114,6 +1114,8 @@ func (r *Resolved) UseSandbox(s *tools.Sandbox) {
 			v.Sandbox = s
 		case *tools.BashTool:
 			v.Sandbox = s
+		case *tools.CreateWorktreeTool:
+			v.Sandbox = s
 		case *tools.LSPTool:
 			v.Sandbox = s
 		}
@@ -1145,10 +1147,11 @@ func buildToolRegistry(args Args, cwd string, sandbox *tools.Sandbox, lspEnabled
 		manager = lsp.NewManagerWithOptions(options)
 	}
 	all := map[string]core.Tool{
-		"read":  &tools.ReadTool{CWD: cwd, Sandbox: sandbox},
-		"write": &tools.WriteTool{CWD: cwd, Sandbox: sandbox, LSP: manager, LSPDiagnostics: diagnosticsOnWrite},
-		"edit":  &tools.EditTool{CWD: cwd, Sandbox: sandbox, LSP: manager, LSPDiagnostics: diagnosticsOnEdit},
-		"bash":  &tools.BashTool{CWD: cwd, Sandbox: sandbox},
+		"read":            &tools.ReadTool{CWD: cwd, Sandbox: sandbox},
+		"write":           &tools.WriteTool{CWD: cwd, Sandbox: sandbox, LSP: manager, LSPDiagnostics: diagnosticsOnWrite},
+		"edit":            &tools.EditTool{CWD: cwd, Sandbox: sandbox, LSP: manager, LSPDiagnostics: diagnosticsOnEdit},
+		"bash":            &tools.BashTool{CWD: cwd, Sandbox: sandbox},
+		"create_worktree": &tools.CreateWorktreeTool{CWD: cwd, Sandbox: sandbox},
 	}
 	if manager != nil {
 		lspTool := tools.NewLSPTool(cwd, manager)
@@ -1219,7 +1222,7 @@ func autoSubagentsToolAllowedFor(args Args, toolName string) bool {
 }
 
 func toolSummaries(reg core.Registry, args Args) []ToolSummary {
-	order := []string{"read", "write", "edit", "bash", "lsp"}
+	order := []string{"read", "write", "edit", "bash", "create_worktree", "lsp"}
 	var out []ToolSummary
 	for _, name := range order {
 		if t, ok := reg[name]; ok {

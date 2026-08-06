@@ -29,7 +29,7 @@ Three things an extension can do (any combination):
 2. **Tools** — register tools the LLM itself calls. Schema is
    JSON Schema; zut routes the model's `tool_call` to the
    extension's `tool_result`. Same lifecycle as built-in tools
-   (read/write/edit/bash/lsp/skill).
+   (read/write/edit/bash/create_worktree/lsp/skill).
 
 3. **Lifecycle hooks** — subscribe to events
    (session_start, turn_start, tool_call, turn_end,

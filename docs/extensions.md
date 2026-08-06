@@ -225,7 +225,7 @@ describing the tool's args (the same shape Anthropic and OpenAI accept).
 ```
 
 Tool names live in the same namespace as built-in tools (`read`,
-`write`, `edit`, `bash`, `skill`). Conflicts are silently shadowed by
+`write`, `edit`, `bash`, `create_worktree`, `lsp`, `skill`). Conflicts are silently shadowed by
 the built-in.
 
 Set `"deferred": true` to register a tool without advertising its definition initially. A loader tool can activate registered deferred tools by returning their names in `activate_tools`:
