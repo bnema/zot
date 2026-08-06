@@ -44,6 +44,9 @@ type ToolCallConfirmation struct {
 	Name    string
 	Summary string
 	Content string
+	// Origin routes a confirmation to its owning host view. It is opaque to
+	// the confirmation gate and never shown to the model.
+	Origin string
 }
 
 // ToolCallConfirmer is optionally implemented by confirmation UIs that can

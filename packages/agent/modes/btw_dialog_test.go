@@ -128,8 +128,10 @@ func TestBtwDialogRunsToolsWithMainAgentPolicyInIsolatedTranscript(t *testing.T)
 		Content: []provider.Content{provider.TextBlock{Text: "frozen context"}},
 	}})
 	var policyCalls atomic.Int32
-	main.BeforeToolExecute = func(provider.ToolCallBlock) (bool, string, json.RawMessage) {
+	var policyOrigin string
+	main.BeforeToolExecute = func(call provider.ToolCallBlock) (bool, string, json.RawMessage) {
 		policyCalls.Add(1)
+		policyOrigin = call.Origin
 		return true, "", nil
 	}
 
@@ -154,6 +156,9 @@ func TestBtwDialogRunsToolsWithMainAgentPolicyInIsolatedTranscript(t *testing.T)
 	}
 	if got := policyCalls.Load(); got != 1 {
 		t.Fatalf("main agent tool-policy calls = %d, want 1", got)
+	}
+	if policyOrigin != btwOrigin(1) {
+		t.Fatalf("side-chat tool policy origin = %q, want %q", policyOrigin, btwOrigin(1))
 	}
 
 	client.mu.Lock()
@@ -199,5 +204,123 @@ func TestBtwDialogRunsToolsWithMainAgentPolicyInIsolatedTranscript(t *testing.T)
 	}
 	if cursorRow, _ := d.CursorPos(80); cursorRow != len(rows)-3 {
 		t.Fatalf("cursor row = %d, want editor row %d after tool spacing change", cursorRow, len(rows)-3)
+	}
+}
+
+func TestBtwActivityRendersFactDrivenLabel(t *testing.T) {
+	d := &btwDialog{
+		active:   true,
+		loading:  true,
+		theme:    tui.Dark,
+		toolView: &tui.View{Theme: tui.Dark},
+		spin:     newSpinner(tui.Dark),
+		activity: newAgentActivity("anthropic", "claude-test"),
+	}
+	d.spin.Start()
+	d.activity.apply(core.EvRequestStarted{Provider: "anthropic", Model: "claude-test", Scope: core.RetryScopeProvider, Attempt: 1, MaxAttempts: 3})
+
+	rendered := strings.Join(d.Render(tui.Dark, 80), "\n")
+	if !strings.Contains(rendered, "Sending request to anthropic") {
+		t.Fatalf("/btw activity = %q, want factual request label", rendered)
+	}
+	if strings.Contains(rendered, "reticulating splines") || strings.Contains(rendered, "thinking") {
+		t.Fatalf("/btw activity retained random spinner wording: %q", rendered)
+	}
+}
+
+func TestBtwDialogIgnoresCallbacksFromPreviousGeneration(t *testing.T) {
+	d := &btwDialog{
+		active:     true,
+		loading:    true,
+		generation: 2,
+		turns:      []btwTurn{{User: "new question"}},
+		activity:   newAgentActivity("provider", "model"),
+	}
+
+	d.handleAgentEvent(0, 1, core.EvTextDelta{Delta: "stale response"})
+	d.completeTurn(0, 1, "stale error")
+
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.turns[0].Assistant != "" || d.turns[0].Err != "" {
+		t.Fatalf("stale callback changed reopened turn: %#v", d.turns[0])
+	}
+	if !d.loading {
+		t.Fatal("stale completion cleared the reopened dialog loading state")
+	}
+}
+
+func TestBtwToolConfirmationRoutesThroughSideAgent(t *testing.T) {
+	client := &btwToolTestClient{done: make(chan struct{})}
+	tool := &btwEchoTool{}
+	main := core.NewAgent(client, "main-model", "main-system", core.Registry{"echo": tool})
+	d := newBtwDialog()
+	i := &Interactive{
+		btwDialog:     d,
+		confirmDialog: newConfirmDialog(),
+		dirty:         make(chan struct{}, 1),
+	}
+	gate := core.NewConfirmGate(i)
+	mainResp := make(chan core.ConfirmDecision, 1)
+	i.confirmDialog.Enqueue(&confirmRequest{toolName: "main", resp: mainResp})
+	i.confirmDialog.Blur()
+	main.BeforeToolExecute = func(call provider.ToolCallBlock) (bool, string, json.RawMessage) {
+		return gate.CheckToolCall(core.ToolCallConfirmation{
+			ID:      call.ID,
+			Name:    call.Name,
+			Summary: "hello",
+			Origin:  call.Origin,
+		})
+	}
+
+	d.Open(tui.Dark, main, main.System, main.Model, t.TempDir(), "use the echo tool", false, false, true, nil)
+	sideConfirmationFirst := func() bool {
+		i.confirmDialog.mu.Lock()
+		defer i.confirmDialog.mu.Unlock()
+		return len(i.confirmDialog.pending) > 0 && i.confirmDialog.pending[0].toolName == "echo"
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for !sideConfirmationFirst() && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if !sideConfirmationFirst() {
+		t.Fatal("side-agent tool confirmation did not reach the front of the interactive confirmation queue")
+	}
+	if !i.confirmDialog.Focused() {
+		t.Fatal("side-agent confirmation did not focus the prioritized dialog")
+	}
+
+	d.mu.Lock()
+	if len(d.turns) != 1 || len(d.turns[0].Tools) != 1 {
+		d.mu.Unlock()
+		t.Fatalf("side-agent tool state = %#v, want one live tool", d.turns)
+	}
+	if got, want := d.turns[0].Tools[0].Args, "hello"; got != want {
+		d.mu.Unlock()
+		t.Fatalf("side-agent confirmation summary = %q, want %q", got, want)
+	}
+	if got, want := d.activity.label(), "Waiting for approval: echo"; got != want {
+		d.mu.Unlock()
+		t.Fatalf("side-agent activity = %q, want %q", got, want)
+	}
+	d.mu.Unlock()
+
+	i.confirmDialog.HandleKey(tui.Key{Kind: tui.KeyEnter})
+	select {
+	case <-client.done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("side-agent did not continue after confirmation")
+	}
+	if got := tool.runs.Load(); got != 1 {
+		t.Fatalf("tool executions = %d, want 1 after confirmation", got)
+	}
+	if i.confirmDialog.Focused() {
+		t.Fatal("main confirmation regained focus instead of returning input to /btw")
+	}
+	i.confirmDialog.CancelAll("test complete")
+	select {
+	case <-mainResp:
+	default:
+		t.Fatal("main confirmation was not retained after resolving the side-chat call")
 	}
 }

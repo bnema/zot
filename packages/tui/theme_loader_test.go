@@ -36,8 +36,8 @@ func TestLoadThemeAllowsPartialColorOverrides(t *testing.T) {
 	if th.FG != Dark.FG {
 		t.Fatalf("fg = %#v, want inherited %#v", th.FG, Dark.FG)
 	}
-	if len(th.SpinnerFrames) == 0 || len(th.SpinnerMessages) == 0 {
-		t.Fatal("spinner defaults should be inherited")
+	if len(th.SpinnerFrames) == 0 {
+		t.Fatal("spinner frames should be inherited")
 	}
 }
 
@@ -53,7 +53,7 @@ func TestLoadThemeAllowsThinkingMaxOverride(t *testing.T) {
 	}
 }
 
-func TestLoadThemeAllowsSpinnerOnlyTopLevelOverrides(t *testing.T) {
+func TestLoadThemeAllowsSpinnerAppearanceOverrides(t *testing.T) {
 	home := writeThemeFile(t, "spinner", `{"spinner_frames":[".","o"],"spinner_messages":["working"],"spinner_interval_ms":200}`)
 
 	th, _, err := LoadThemeFromHome(home, "spinner", Dark)
@@ -63,8 +63,8 @@ func TestLoadThemeAllowsSpinnerOnlyTopLevelOverrides(t *testing.T) {
 	if got := len(th.SpinnerFrames); got != 2 {
 		t.Fatalf("spinner frame count = %d, want 2", got)
 	}
-	if th.SpinnerFrames[1] != "o" || th.SpinnerMessages[0] != "working" || th.SpinnerIntervalMS != 200 {
-		t.Fatalf("spinner overrides not applied: %#v %#v %d", th.SpinnerFrames, th.SpinnerMessages, th.SpinnerIntervalMS)
+	if th.SpinnerFrames[1] != "o" || th.SpinnerIntervalMS != 200 {
+		t.Fatalf("spinner appearance overrides not applied: %#v %d", th.SpinnerFrames, th.SpinnerIntervalMS)
 	}
 	if th.Accent != Dark.Accent {
 		t.Fatalf("accent = %#v, want inherited %#v", th.Accent, Dark.Accent)
@@ -81,9 +81,6 @@ func TestLoadThemeFallsBackToDarkWhenLightModeMissing(t *testing.T) {
 	if len(th.SpinnerFrames) != 4 || th.SpinnerFrames[0] != "◢" {
 		t.Fatalf("spinner frames = %#v, want dark fallback frames", th.SpinnerFrames)
 	}
-	if len(th.SpinnerMessages) != 1 || th.SpinnerMessages[0] != "working" {
-		t.Fatalf("spinner messages = %#v, want dark fallback message", th.SpinnerMessages)
-	}
 	if th.SpinnerIntervalMS != 120 {
 		t.Fatalf("spinner interval = %d, want 120", th.SpinnerIntervalMS)
 	}
@@ -92,7 +89,7 @@ func TestLoadThemeFallsBackToDarkWhenLightModeMissing(t *testing.T) {
 	}
 }
 
-func TestLoadThemeAllowsSharedColorsOverrides(t *testing.T) {
+func TestLoadThemeIgnoresLegacySpinnerMessages(t *testing.T) {
 	home := writeThemeFile(t, "shared", `{"colors":{"accent":204,"spinner_messages":["ship"]}}`)
 
 	th, _, err := LoadThemeFromHome(home, "shared", Light)
@@ -102,8 +99,8 @@ func TestLoadThemeAllowsSharedColorsOverrides(t *testing.T) {
 	if th.Accent != Color256(204) {
 		t.Fatalf("accent = %#v, want 204", th.Accent)
 	}
-	if len(th.SpinnerMessages) != 1 || th.SpinnerMessages[0] != "ship" {
-		t.Fatalf("spinner messages = %#v, want ship", th.SpinnerMessages)
+	if len(th.SpinnerFrames) != len(Light.SpinnerFrames) || th.SpinnerIntervalMS != Light.SpinnerIntervalMS {
+		t.Fatalf("legacy spinner_messages changed spinner appearance: %#v %d", th.SpinnerFrames, th.SpinnerIntervalMS)
 	}
 	if th.FG != Light.FG {
 		t.Fatalf("fg = %#v, want inherited %#v", th.FG, Light.FG)

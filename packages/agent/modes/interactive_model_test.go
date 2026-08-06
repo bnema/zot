@@ -105,7 +105,7 @@ func TestModelPickerSkipsLlamaRefreshWhenRouterIsNotConfigured(t *testing.T) {
 	if !i.modelDialog.Active() {
 		t.Fatal("model picker did not open immediately")
 	}
-	if i.statusOK == "refreshing models" {
+	if i.statusOK == "Refreshing models" {
 		t.Fatal("refresh status shown without llama.cpp router configuration")
 	}
 }

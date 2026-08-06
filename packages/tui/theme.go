@@ -73,7 +73,7 @@ type Theme struct {
 	ToolOut      TerminalColor
 	Error        TerminalColor
 	Warning      TerminalColor
-	Spinner      TerminalColor // spinner + funny working line
+	Spinner      TerminalColor // spinner frame and activity label
 	ThinkingMax  TerminalColor // status color for the opt-in max reasoning level
 	SelectionBG  TerminalColor // background for highlighted rows
 	SelectionFG  TerminalColor // foreground for highlighted rows
@@ -86,7 +86,6 @@ type Theme struct {
 	Terminal  TerminalProfile
 
 	SpinnerFrames     []string
-	SpinnerMessages   []string
 	SpinnerIntervalMS int
 
 	SyntaxBaseStyle string
@@ -151,34 +150,6 @@ var defaultSpinnerFrames = []string{
 	"⠓",
 }
 
-var defaultSpinnerMessages = []string{
-	"thinking",
-	"reticulating splines",
-	"bribing the tokenizer",
-	"asking the rubber duck",
-	"summoning daemons",
-	"consulting the oracle",
-	"herding tokens",
-	"compiling excuses",
-	"poking the model",
-	"negotiating with rate limits",
-	"picking a fight with syntax",
-	"reading between the bits",
-	"tasting the semicolons",
-	"pretending to understand the code",
-	"petting the cache",
-	"drafting clever replies",
-	"warming up the GPU choir",
-	"arguing with a stack trace",
-	"googling the answer (not really)",
-	"rewriting history",
-	"every draft is a stone in the work",
-	"bringing order to the unhewn",
-	"finding the load-bearing measure",
-	"where clarity grows, work grows lighter",
-	"every correction serves the work",
-}
-
 var Dark = Theme{
 	FG:                Color256(253),
 	Muted:             Color256(244),
@@ -196,7 +167,6 @@ var Dark = Theme{
 	SelectionBG:       Color256(24),  // deep blue background
 	SelectionFG:       Color256(231), // near-white foreground
 	SpinnerFrames:     defaultSpinnerFrames,
-	SpinnerMessages:   defaultSpinnerMessages,
 	SpinnerIntervalMS: 80,
 	SyntaxBaseStyle:   "monokai",
 	Syntax:            nordSyntax,
@@ -219,7 +189,6 @@ var Light = Theme{
 	SelectionBG:       Color256(153), // light blue
 	SelectionFG:       Color256(232), // near-black
 	SpinnerFrames:     defaultSpinnerFrames,
-	SpinnerMessages:   defaultSpinnerMessages,
 	SpinnerIntervalMS: 80,
 	SyntaxBaseStyle:   "monokai",
 	Syntax:            nordSyntax,

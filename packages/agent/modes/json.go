@@ -41,6 +41,17 @@ func EventToJSON(ev core.AgentEvent) map[string]any {
 	switch e := ev.(type) {
 	case core.EvTurnStart:
 		m["step"] = e.Step
+	case core.EvRequestStarted:
+		m["provider"] = e.Provider
+		m["model"] = e.Model
+		m["scope"] = string(e.Scope)
+		m["attempt"] = e.Attempt
+		m["max_attempts"] = e.MaxAttempts
+	case core.EvRetryScheduled:
+		m["scope"] = string(e.Scope)
+		m["attempt"] = e.Attempt
+		m["max_attempts"] = e.MaxAttempts
+		m["delay_ms"] = e.Delay.Milliseconds()
 	case core.EvUserMessage:
 		m["content"] = ContentToJSON(e.Message.Content)
 		m["time"] = e.Message.Time
@@ -63,6 +74,9 @@ func EventToJSON(ev core.AgentEvent) map[string]any {
 		var args any
 		_ = json.Unmarshal(e.Args, &args)
 		m["args"] = args
+	case core.EvToolExecutionStarted:
+		m["id"] = e.ID
+		m["name"] = e.Name
 	case core.EvToolProgress:
 		m["id"] = e.ID
 		m["text"] = e.Text

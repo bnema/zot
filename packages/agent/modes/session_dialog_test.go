@@ -52,7 +52,7 @@ func TestSessionDialogLoadsEntriesWithoutBlockingOpen(t *testing.T) {
 		t.Fatalf("dialog state after Open = active %v, loading %v; want active and loading", d.Active(), d.Loading())
 	}
 	loadingText := strings.Join(d.Render(tui.Dark, 100), "\n")
-	if !strings.Contains(loadingText, "loading sessions") {
+	if !strings.Contains(loadingText, "Loading sessions") {
 		t.Fatalf("loading render = %q, want spinner status", loadingText)
 	}
 	act := d.HandleKey(tui.Key{Kind: tui.KeyEnter})
@@ -71,7 +71,7 @@ func TestSessionDialogLoadsEntriesWithoutBlockingOpen(t *testing.T) {
 		t.Fatalf("loaded sessions = %+v, want %q", d.sessions, session.Path)
 	}
 	loadedText := strings.Join(d.Render(tui.Dark, 100), "\n")
-	if strings.Contains(loadedText, "loading sessions") {
+	if strings.Contains(loadedText, "Loading sessions") {
 		t.Fatalf("completed render still shows loading spinner: %q", loadedText)
 	}
 	if !strings.Contains(loadedText, "load this session") {

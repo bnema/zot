@@ -233,7 +233,7 @@ func classifyRescueError(err error) (bool, string) {
 
 	// Don't trigger on context overflow; that path already has its own
 	// auto-compact handling.
-	if isContextOverflowError(err) {
+	if provider.IsContextOverflowError(err) {
 		return false, ""
 	}
 

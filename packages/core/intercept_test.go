@@ -78,6 +78,26 @@ func TestBeforeToolExecuteInvalidJSONIgnored(t *testing.T) {
 	}
 }
 
+func TestRunOneToolEmitsExecutionStartedAfterApproval(t *testing.T) {
+	rec := &recordingTool{}
+	a := NewAgent(nil, "test", "", Registry{"echo": rec})
+
+	var started []EvToolExecutionStarted
+	res := a.runOneTool(context.Background(), provider.ToolCallBlock{
+		ID: "T1", Name: "echo", Arguments: json.RawMessage(`{"command":"echo ok"}`),
+	}, a.ToolsSnapshot(), func(ev AgentEvent) {
+		if e, ok := ev.(EvToolExecutionStarted); ok {
+			started = append(started, e)
+		}
+	})
+	if res.IsError {
+		t.Fatalf("runOneTool error = %#v", res)
+	}
+	if len(started) != 1 || started[0].ID != "T1" || started[0].Name != "echo" {
+		t.Fatalf("execution events = %#v", started)
+	}
+}
+
 // TestBeforeToolExecuteBlockSurfacesReason verifies a refusal from
 // the interceptor returns an error ToolResult with the reason text.
 func TestBeforeToolExecuteBlockSurfacesReason(t *testing.T) {

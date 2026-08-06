@@ -38,7 +38,7 @@ func (tf *ThemeFile) UnmarshalJSON(data []byte) error {
 		return err
 	}
 	// Allow a tiny theme file with overrides at the top level, e.g.
-	// {"spinner_frames":[".","o"],"spinner_messages":["working"]}.
+	// {"spinner_frames":[".","o"],"spinner_interval_ms":120}.
 	// Metadata fields are ignored by ThemeOverrides because they do not
 	// have matching json tags.
 	_ = json.Unmarshal(data, &a.Overrides)
@@ -97,7 +97,6 @@ type ThemeOverrides struct {
 	SelectionBG       *TerminalColorValue  `json:"selection_bg,omitempty"`
 	SelectionFG       *TerminalColorValue  `json:"selection_fg,omitempty"`
 	SpinnerFrames     []string             `json:"spinner_frames,omitempty"`
-	SpinnerMessages   []string             `json:"spinner_messages,omitempty"`
 	SpinnerIntervalMS *int                 `json:"spinner_interval_ms,omitempty"`
 	SyntaxBaseStyle   *string              `json:"syntax_base_style,omitempty"`
 	Syntax            SyntaxThemeOverrides `json:"syntax,omitempty"`
@@ -501,9 +500,6 @@ func applyThemeOverrides(th Theme, o ThemeOverrides) Theme {
 	}
 	if len(o.SpinnerFrames) > 0 {
 		th.SpinnerFrames = append([]string(nil), o.SpinnerFrames...)
-	}
-	if len(o.SpinnerMessages) > 0 {
-		th.SpinnerMessages = append([]string(nil), o.SpinnerMessages...)
 	}
 	if o.SpinnerIntervalMS != nil && *o.SpinnerIntervalMS > 0 {
 		th.SpinnerIntervalMS = *o.SpinnerIntervalMS

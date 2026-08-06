@@ -1,26 +1,18 @@
 package modes
 
 import (
-	"math/rand"
 	"time"
 
 	"github.com/bnema/zut/packages/tui"
 )
 
-// spinner drives the busy animation shown in the status bar while a
-// turn is streaming. It rotates through a list of playful status
-// messages and a small frame animation.
+// spinner drives the busy animation shown while an operation is active. The
+// operation label is owned by the caller's activity state; the spinner owns
+// only the visual frame and elapsed time.
 type spinner struct {
 	frames    []string
-	messages  []string
 	interval  time.Duration
 	startedAt time.Time
-	msgIdx    int
-
-	// fixedMsg overrides the rotating funnyWorkingLines message when
-	// set. Used for auto-compaction so the spinner clearly says what's
-	// happening instead of cycling jokes.
-	fixedMsg string
 }
 
 // newSpinner constructs a fresh spinner.
@@ -35,42 +27,16 @@ func (s *spinner) Configure(th tui.Theme) {
 	if len(s.frames) == 0 {
 		s.frames = []string{"⠋", "⠙", "⠚", "⠞", "⠖", "⠦", "⠴", "⠲", "⠳", "⠓"}
 	}
-	s.messages = append([]string(nil), th.SpinnerMessages...)
-	if len(s.messages) == 0 {
-		s.messages = []string{"thinking"}
-	}
 	interval := th.SpinnerIntervalMS
 	if interval <= 0 {
 		interval = 80
 	}
 	s.interval = time.Duration(interval) * time.Millisecond
-	if s.msgIdx >= len(s.messages) {
-		s.msgIdx = 0
-	}
 }
 
-// Start resets the spinner to the beginning of its animation and
-// picks a random message that stays fixed for the whole run. A
-// rotating rollodex of quips during a single turn felt noisy in
-// practice — you'd see five different phrases for one
-// long-running response, which implies progress that isn't
-// actually happening. One stable phrase per turn reads calmer
-// and the variety across turns (next Start picks another index)
-// still keeps the set fresh over a session.
+// Start resets the animation clock for a new operation.
 func (s *spinner) Start() {
 	s.startedAt = time.Now()
-	if len(s.messages) == 0 {
-		s.messages = []string{"thinking"}
-	}
-	s.msgIdx = rand.Intn(len(s.messages))
-	s.fixedMsg = ""
-}
-
-// StartFixed is like Start but pins the status text to msg for the
-// duration of this spinner run. Cleared by the next Start() call.
-func (s *spinner) StartFixed(msg string) {
-	s.startedAt = time.Now()
-	s.fixedMsg = msg
 }
 
 // Frame returns the current spinner glyph for the running animation.
@@ -110,23 +76,6 @@ func (s *spinner) FrameAt(now time.Time) string {
 		idx += len(s.frames)
 	}
 	return s.frames[idx]
-}
-
-// Message returns the spinner's status text. One random phrase
-// per Start call, pinned until the next turn. When the spinner
-// was started via StartFixed, the pinned message is returned
-// unchanged.
-func (s *spinner) Message() string {
-	if s.fixedMsg != "" {
-		return s.fixedMsg
-	}
-	if len(s.messages) == 0 {
-		return "thinking"
-	}
-	if s.msgIdx < 0 || s.msgIdx >= len(s.messages) {
-		s.msgIdx = 0
-	}
-	return s.messages[s.msgIdx]
 }
 
 // Elapsed returns the wall-clock duration the spinner has been running.

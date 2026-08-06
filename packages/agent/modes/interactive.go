@@ -529,6 +529,7 @@ type Interactive struct {
 	cumUsage               provider.Usage
 	lastCtxInput           int // input_tokens of the most recent turn — approximates current context size
 	busy                   bool
+	activity               agentActivity
 	subagentActivityActive bool
 	pendingIdleWork        []func()
 	dirty                  chan struct{}
@@ -813,6 +814,9 @@ func NewInteractive(cfg InteractiveConfig) *Interactive {
 		clock:             time.Now,
 		reloadErrors:      append([]string(nil), cfg.StartupExtensionErrors...),
 	}
+	i.btwDialog.setCloseHook(func() {
+		i.confirmDialog.CancelChildConfirmations("side chat closed")
+	})
 	i.fileSuggest.SetRecursive(cfg.RecursiveFileSuggest != nil && *cfg.RecursiveFileSuggest)
 	i.fileSuggest.SetRespectGitignore(cfg.RespectGitignore == nil || *cfg.RespectGitignore)
 	if cfg.LlamaCPPConfig != nil {
@@ -1773,16 +1777,17 @@ func (i *Interactive) redraw() {
 		suggest = append([]string{""}, suggest...)
 	}
 
-	// Busy prefix shown at the far left of the status bar. The
-	// spinner glyph and its funny-line message share the `zut`
-	// label colour (Theme.Assistant) so the whole "who's working"
-	// band reads at a glance. Elapsed time stays muted because it
-	// drifts every second and shouldn't grab focus.
+	// Busy prefix shown at the far left of the status bar. The spinner owns
+	// only its frame; the activity label reports the operation in progress.
 	var busyPrefix string
 	if i.busy {
+		label := i.activity.label()
+		if label == "" {
+			label = "Preparing request"
+		}
 		busyPrefix = fmt.Sprintf("%s %s %s %s",
 			i.cfg.Theme.FGColor(i.cfg.Theme.Assistant, i.spin.Frame()),
-			i.cfg.Theme.FGColor(i.cfg.Theme.Assistant, i.spin.Message()),
+			i.cfg.Theme.FGColor(i.cfg.Theme.Assistant, label),
 			i.cfg.Theme.FGColor(i.cfg.Theme.Muted, "-"),
 			i.cfg.Theme.FGColor(i.cfg.Theme.Muted, i.spin.Elapsed().String()),
 		)
@@ -5508,7 +5513,7 @@ func (i *Interactive) runSlash(ctx context.Context, cmd string) (done bool) {
 		} else if i.llamaConfigured && i.cfg.RefreshLlamaCPPModels != nil {
 			i.mu.Lock()
 			i.modelRefreshing = true
-			i.statusOK = "refreshing models"
+			i.statusOK = "Refreshing models"
 			i.statusErr = ""
 			i.mu.Unlock()
 			go func() {
@@ -5707,7 +5712,7 @@ func (i *Interactive) openModelPickerAfterRefresh(refreshErr error) {
 	if refreshErr != nil {
 		i.statusErr = "llama.cpp model refresh: " + refreshErr.Error()
 		i.statusOK = ""
-	} else if i.statusOK == "refreshing models" {
+	} else if i.statusOK == "Refreshing models" {
 		i.statusOK = ""
 	}
 	i.mu.Unlock()
@@ -6533,11 +6538,13 @@ func (i *Interactive) runCompact(parent context.Context, auto bool) {
 	i.mu.Lock()
 	i.busy = true
 	i.compacting = true
+	i.spin.Start()
+	i.activity = newAgentActivity(i.cfg.Provider, i.cfg.Model)
 	if auto {
-		i.spin.StartFixed("condensing history")
+		i.activity.kind = activityCondensingHistory
 		i.autoCompacting = true
 	} else {
-		i.spin.StartFixed("compacting")
+		i.activity.kind = activityCompactingHistory
 	}
 	i.cancelTurn = cancel
 	i.statusErr = ""
@@ -6733,7 +6740,8 @@ func (i *Interactive) startShellEscape(parent context.Context, cmd string) {
 	i.cancelTurn = cancel
 	i.statusErr = ""
 	i.statusOK = ""
-	i.spin.StartFixed("running shell command")
+	i.spin.Start()
+	i.activity = agentActivity{activity: activity{kind: activityRunningShellCommand}}
 	// Clear stale extension notes the same way a new turn would so the
 	// screen doesn't accumulate transient state.
 	i.extNotes = nil
@@ -6866,6 +6874,7 @@ func (i *Interactive) startTurnRequest(parent context.Context, prompt string, im
 	i.mu.Lock()
 	i.busy = true
 	i.spin.Start()
+	i.activity = newAgentActivity(i.cfg.Provider, i.cfg.Model)
 	i.cancelTurn = cancel
 	i.statusErr = ""
 	i.statusOK = ""
@@ -6974,7 +6983,7 @@ func (i *Interactive) startTurnRequest(parent context.Context, prompt string, im
 		// based auto-compact can miss both when metadata is stale or the
 		// limit is measured in raw bytes. Compact once, then continue the
 		// user message already present in the transcript.
-		contextOverflow := err != nil && ctx.Err() == nil && isContextOverflowError(err)
+		contextOverflow := err != nil && ctx.Err() == nil && provider.IsContextOverflowError(err)
 		recoverContextOverflow := contextOverflow && !overflowRecoveryAttempted
 		if recoverContextOverflow {
 			i.statusErr = ""
@@ -7148,27 +7157,6 @@ func autoCompactNoteLine(th tui.Theme, msg string) string {
 	return "  " + th.FGColor(th.Warning, "⚠ "+msg)
 }
 
-// isContextOverflowError matches provider responses that reject the
-// current request because its raw payload or tokenized input is too
-// large. Providers surface this as either HTTP 413 or semantic context
-// errors with differing codes and messages.
-func isContextOverflowError(err error) bool {
-	if err == nil {
-		return false
-	}
-	msg := strings.ToLower(err.Error())
-	return strings.Contains(msg, "http 413") ||
-		strings.Contains(msg, " 413") ||
-		strings.HasPrefix(msg, "413 ") ||
-		strings.Contains(msg, "payload too large") ||
-		strings.Contains(msg, "request entity too large") ||
-		strings.Contains(msg, "input exceeds the context window") ||
-		strings.Contains(msg, "context window exceeded") ||
-		strings.Contains(msg, "maximum context length") ||
-		strings.Contains(msg, "context_length_exceeded") ||
-		(strings.Contains(msg, "input") && strings.Contains(msg, "exceeds the maximum number of tokens"))
-}
-
 const defaultAutoCompactThreshold = 85
 
 func normalizeAutoCompactThreshold(threshold *int) int {
@@ -7241,6 +7229,7 @@ func (i *Interactive) shouldAutoCompactLocked() bool {
 func (i *Interactive) handleEvent(ev core.AgentEvent) {
 	i.mu.Lock()
 	defer i.mu.Unlock()
+	i.activity.apply(ev)
 	switch e := ev.(type) {
 	case core.EvAssistantStart:
 		// Fires at the top of every oneTurn, including follow-up
@@ -7463,7 +7452,7 @@ func (i *Interactive) runReloadExt(ctx context.Context) {
 		return
 	}
 	i.mu.Lock()
-	i.statusOK = "reloading extensions..."
+	i.statusOK = "Reloading extensions..."
 	i.statusErr = ""
 	i.mu.Unlock()
 	i.invalidate()
@@ -7493,23 +7482,34 @@ func (i *Interactive) Confirm(toolName string, preview string) core.ConfirmDecis
 // tool panel, then blocks until the user approves or refuses the call.
 func (i *Interactive) ConfirmToolCall(call core.ToolCallConfirmation) core.ConfirmDecision {
 	resp := make(chan core.ConfirmDecision, 1)
-	returnToChild := false
+	if isBtwOrigin(call.Origin) {
+		req := &confirmRequest{
+			toolName:      call.Name,
+			preview:       call.Summary,
+			resp:          resp,
+			returnToChild: true,
+		}
+		if call.ID == "" || i.btwDialog == nil || !i.btwDialog.enqueueToolConfirmation(call.Origin, call.ID, call.Summary, call.Content, func() {
+			i.confirmDialog.Enqueue(req)
+		}) {
+			return core.ConfirmDecision{Allow: false, Reason: "side-chat tool call canceled"}
+		}
+		i.invalidate()
+		return <-resp
+	}
 	if call.ID != "" {
 		i.mu.Lock()
 		if tc, ok := i.toolCalls[call.ID]; ok {
 			tc.Args = call.Summary
 			tc.Preview = call.Content
+			i.activity.activity = activity{kind: activityAwaitingConfirmation, tool: call.Name, provider: i.cfg.Provider, model: i.cfg.Model}
 		}
 		i.mu.Unlock()
-		if i.btwDialog != nil && i.btwDialog.Active() {
-			returnToChild = i.btwDialog.SetToolPreview(call.ID, call.Summary, call.Content)
-		}
 	}
 	i.confirmDialog.Enqueue(&confirmRequest{
-		toolName:      call.Name,
-		preview:       call.Summary,
-		resp:          resp,
-		returnToChild: returnToChild,
+		toolName: call.Name,
+		preview:  call.Summary,
+		resp:     resp,
 	})
 	i.invalidate()
 	return <-resp

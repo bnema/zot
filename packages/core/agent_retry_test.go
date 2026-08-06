@@ -20,6 +20,9 @@ type retryFakeClient struct {
 func (c *retryFakeClient) Name() string { return "retry-fake" }
 
 func (c *retryFakeClient) Stream(ctx context.Context, req provider.Request) (<-chan provider.Event, error) {
+	if req.Lifecycle != nil {
+		req.Lifecycle.RequestAttempt(1, 1)
+	}
 	call := atomic.AddInt32(&c.calls, 1)
 	out := make(chan provider.Event, 4)
 	go func() {
@@ -64,6 +67,35 @@ func TestAgentRetriesOverloadedStreamError(t *testing.T) {
 	}
 	if got := extractText(msgs[1]); got != "ok" {
 		t.Fatalf("final assistant text = %q; want ok", got)
+	}
+}
+
+func TestAgentEmitsRetryLifecycleEvents(t *testing.T) {
+	client := &retryFakeClient{}
+	a := NewAgent(client, "fake-model", "system", Registry{})
+	a.RetryBaseDelay = time.Millisecond
+
+	var lifecycle []string
+	if err := a.Prompt(context.Background(), "hello", nil, func(ev AgentEvent) {
+		switch e := ev.(type) {
+		case EvRequestStarted:
+			lifecycle = append(lifecycle, fmt.Sprintf("request:%s:%d/%d", e.Scope, e.Attempt, e.MaxAttempts))
+		case EvRetryScheduled:
+			lifecycle = append(lifecycle, fmt.Sprintf("retry:%s:%d/%d", e.Scope, e.Attempt, e.MaxAttempts))
+		}
+	}); err != nil {
+		t.Fatalf("Prompt returned %v", err)
+	}
+
+	want := []string{
+		"request:agent:1/4",
+		"request:provider:1/1",
+		"retry:agent:2/4",
+		"request:agent:2/4",
+		"request:provider:1/1",
+	}
+	if strings.Join(lifecycle, ",") != strings.Join(want, ",") {
+		t.Fatalf("lifecycle = %v, want %v", lifecycle, want)
 	}
 }
 
@@ -286,5 +318,39 @@ func TestAgentPropagatesTemperature(t *testing.T) {
 	}
 	if client.lastReq.Temperature == nil || *client.lastReq.Temperature != temp {
 		t.Fatalf("request Temperature = %v; want %v", client.lastReq.Temperature, temp)
+	}
+}
+
+type cancelledRetryClient struct {
+	cancel context.CancelFunc
+}
+
+func (c *cancelledRetryClient) Name() string { return "cancelled-retry" }
+
+func (c *cancelledRetryClient) Stream(_ context.Context, _ provider.Request) (<-chan provider.Event, error) {
+	out := make(chan provider.Event, 1)
+	c.cancel()
+	out <- provider.EventDone{Stop: provider.StopError, Err: errors.New("provider overloaded")}
+	close(out)
+	return out, nil
+}
+
+func TestAgentDoesNotReportRetryAfterCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	client := &cancelledRetryClient{cancel: cancel}
+	agent := NewAgent(client, "fake-model", "system", Registry{})
+	agent.MaxRetries = 1
+
+	var retries []EvRetryScheduled
+	err := agent.Prompt(ctx, "hello", nil, func(event AgentEvent) {
+		if retry, ok := event.(EvRetryScheduled); ok {
+			retries = append(retries, retry)
+		}
+	})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Prompt error = %v, want context.Canceled", err)
+	}
+	if len(retries) != 0 {
+		t.Fatalf("retry events = %#v, want none after cancellation", retries)
 	}
 }

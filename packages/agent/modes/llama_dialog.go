@@ -178,7 +178,7 @@ func (d *llamaDialog) load(model string) {
 	d.mu.Lock()
 	client := d.client
 	d.mu.Unlock()
-	d.beginProgress("Loading model", model, func(ctx context.Context, update func(provider.LlamaCPPProgress)) error {
+	d.beginProgress("Loading local model", model, func(ctx context.Context, update func(provider.LlamaCPPProgress)) error {
 		_, err := client.LoadAndWait(ctx, model, update)
 		return err
 	})

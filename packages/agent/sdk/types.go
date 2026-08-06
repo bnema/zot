@@ -18,6 +18,15 @@ type Event struct {
 	Step int    `json:"step,omitempty"`
 	Time string `json:"time,omitempty"`
 
+	// request_started / retry_scheduled
+	Provider    string `json:"provider,omitempty"`
+	Model       string `json:"model,omitempty"`
+	Scope       string `json:"scope,omitempty"`
+	Attempt     int    `json:"attempt,omitempty"`
+	MaxAttempts int    `json:"max_attempts,omitempty"`
+	// DelayMS is set for retry_scheduled, including a valid zero delay.
+	DelayMS *int64 `json:"delay_ms,omitempty"`
+
 	// text_delta
 	Delta string `json:"delta,omitempty"`
 
@@ -131,16 +140,39 @@ func toEvent(ev core.AgentEvent) Event {
 	switch e := ev.(type) {
 	case core.EvTurnStart:
 		out.Step = e.Step
+	case core.EvRequestStarted:
+		out.Provider = e.Provider
+		out.Model = e.Model
+		out.Scope = string(e.Scope)
+		out.Attempt = e.Attempt
+		out.MaxAttempts = e.MaxAttempts
+	case core.EvRetryScheduled:
+		out.Scope = string(e.Scope)
+		out.Attempt = e.Attempt
+		out.MaxAttempts = e.MaxAttempts
+		delayMS := e.Delay.Milliseconds()
+		out.DelayMS = &delayMS
 	case core.EvUserMessage:
 		out.Message = &Message{Role: string(e.Message.Role), Content: convertContent(e.Message.Content)}
 	case core.EvAssistantMessage:
 		out.Message = &Message{Role: string(e.Message.Role), Content: convertContent(e.Message.Content)}
 	case core.EvTextDelta:
 		out.Delta = e.Delta
+	case core.EvToolUseStart:
+		out.ID = e.ID
+		out.Name = e.Name
+	case core.EvToolUseArgs:
+		out.ID = e.ID
+		out.Delta = e.Delta
+	case core.EvToolUseEnd:
+		out.ID = e.ID
 	case core.EvToolCall:
 		out.ID = e.ID
 		out.Name = e.Name
 		out.Args = e.Args
+	case core.EvToolExecutionStarted:
+		out.ID = e.ID
+		out.Name = e.Name
 	case core.EvToolProgress:
 		out.ID = e.ID
 		out.Text = e.Text

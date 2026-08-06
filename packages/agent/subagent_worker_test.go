@@ -2,14 +2,19 @@ package agent
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/bnema/zut/packages/agent/subagents"
+	"github.com/bnema/zut/packages/core"
+	"github.com/bnema/zut/packages/provider"
 )
 
 // TestWorkerOutputLimitsUseSupervisorPolicy verifies that the child reads
@@ -27,6 +32,341 @@ func TestWorkerOutputLimitsUseSupervisorPolicy(t *testing.T) {
 	bytesLimit, linesLimit = workerOutputLimits()
 	if bytesLimit != 500_000 || linesLimit != 5_000 {
 		t.Fatalf("invalid worker output limits = (%d, %d), want defaults", bytesLimit, linesLimit)
+	}
+}
+
+type subagentContextRecoveryClient struct {
+	mu            sync.Mutex
+	calls         int
+	requests      []provider.Request
+	retried       chan provider.Request
+	compactionErr error
+	retryOverflow bool
+}
+
+func (c *subagentContextRecoveryClient) Name() string { return "subagent-context-recovery-test" }
+
+func (c *subagentContextRecoveryClient) Stream(_ context.Context, req provider.Request) (<-chan provider.Event, error) {
+	c.mu.Lock()
+	c.calls++
+	call := c.calls
+	c.requests = append(c.requests, req)
+	c.mu.Unlock()
+
+	events := make(chan provider.Event, 2)
+	go func() {
+		defer close(events)
+		switch call {
+		case 1:
+			events <- provider.EventDone{Stop: provider.StopError, Err: errors.New("provider error: input exceeds the context window")}
+		case 2:
+			if c.compactionErr != nil {
+				events <- provider.EventDone{Stop: provider.StopError, Err: c.compactionErr}
+				return
+			}
+			events <- provider.EventTextDelta{Delta: "summary"}
+			events <- provider.EventDone{Stop: provider.StopEnd}
+		default:
+			c.retried <- req
+			if c.retryOverflow {
+				events <- provider.EventDone{Stop: provider.StopError, Err: errors.New("context window exceeded after compaction")}
+				return
+			}
+			events <- provider.EventDone{Stop: provider.StopEnd, Message: provider.Message{
+				Role:    provider.RoleAssistant,
+				Content: []provider.Content{provider.TextBlock{Text: "recovered"}},
+			}}
+		}
+	}()
+	return events, nil
+}
+
+func TestPromptWithContextRecoveryCompactsAndContinues(t *testing.T) {
+	client := &subagentContextRecoveryClient{retried: make(chan provider.Request, 1)}
+	agent := core.NewAgent(client, "test-model", "", nil)
+	agent.SetMessages([]provider.Message{
+		{Role: provider.RoleUser, Content: []provider.Content{provider.TextBlock{Text: "one"}}},
+		{Role: provider.RoleAssistant, Content: []provider.Content{provider.TextBlock{Text: "two"}}},
+		{Role: provider.RoleUser, Content: []provider.Content{provider.TextBlock{Text: "three"}}},
+		{Role: provider.RoleAssistant, Content: []provider.Content{provider.TextBlock{Text: "four"}}},
+	})
+
+	outputStart, err := promptWithContextRecovery(context.Background(), agent, "finish the task", nil, nil)
+	if err != nil {
+		t.Fatalf("promptWithContextRecovery returned %v", err)
+	}
+	if got := finalAssistantText(agent.Messages()[outputStart:]); got != "recovered" {
+		t.Fatalf("final assistant text = %q, want recovered", got)
+	}
+
+	request := <-client.retried
+	if got := workerRequestUserTextCount(request, "finish the task"); got != 1 {
+		t.Fatalf("retried request contains prompt %d times, want 1: %#v", got, request.Messages)
+	}
+	client.mu.Lock()
+	calls := client.calls
+	requests := append([]provider.Request(nil), client.requests...)
+	client.mu.Unlock()
+	if calls != 3 || len(requests) != 3 {
+		t.Fatalf("provider calls/requests = %d/%d, want 3/3", calls, len(requests))
+	}
+	if !workerRequestContainsText(requests[1], "<conversation>") || !workerRequestContainsText(requests[1], "one") {
+		t.Fatalf("compaction request does not include the older transcript: %#v", requests[1].Messages)
+	}
+}
+
+func TestPromptWithContextRecoveryStopsAfterOneRetry(t *testing.T) {
+	client := &subagentContextRecoveryClient{
+		retried:       make(chan provider.Request, 1),
+		retryOverflow: true,
+	}
+	agent := core.NewAgent(client, "test-model", "", nil)
+	agent.SetMessages([]provider.Message{{Role: provider.RoleUser, Content: []provider.Content{provider.TextBlock{Text: "prior context"}}}})
+
+	_, err := promptWithContextRecovery(context.Background(), agent, "finish the task", nil, nil)
+	if !provider.IsContextOverflowError(err) {
+		t.Fatalf("promptWithContextRecovery error = %v, want context overflow", err)
+	}
+	<-client.retried
+	client.mu.Lock()
+	calls := client.calls
+	client.mu.Unlock()
+	if calls != 3 {
+		t.Fatalf("provider calls = %d, want one initial prompt, compaction, and one continuation", calls)
+	}
+}
+
+func TestPromptWithContextRecoveryDoesNotCompactAfterCancellation(t *testing.T) {
+	client := &subagentContextRecoveryClient{retried: make(chan provider.Request, 1)}
+	agent := core.NewAgent(client, "test-model", "", nil)
+	agent.SetMessages([]provider.Message{{Role: provider.RoleUser, Content: []provider.Content{provider.TextBlock{Text: "prior context"}}}})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	_, err := promptWithContextRecovery(ctx, agent, "finish the task", func(event core.AgentEvent) {
+		if turnEnd, ok := event.(core.EvTurnEnd); ok && provider.IsContextOverflowError(turnEnd.Err) {
+			cancel()
+		}
+	}, nil)
+	if !provider.IsContextOverflowError(err) {
+		t.Fatalf("promptWithContextRecovery error = %v, want context overflow", err)
+	}
+	if err := ctx.Err(); !errors.Is(err, context.Canceled) {
+		t.Fatalf("context error = %v, want %v", err, context.Canceled)
+	}
+	client.mu.Lock()
+	calls := client.calls
+	client.mu.Unlock()
+	if calls != 1 {
+		t.Fatalf("provider calls = %d, want only the initial prompt after cancellation", calls)
+	}
+}
+
+func TestPromptWithContextRecoveryPropagatesCompactionFailure(t *testing.T) {
+	client := &subagentContextRecoveryClient{
+		retried:       make(chan provider.Request, 1),
+		compactionErr: errors.New("compaction provider unavailable"),
+	}
+	agent := core.NewAgent(client, "test-model", "", nil)
+	agent.SetMessages([]provider.Message{{Role: provider.RoleUser, Content: []provider.Content{provider.TextBlock{Text: "prior context"}}}})
+
+	_, err := promptWithContextRecovery(context.Background(), agent, "finish the task", nil, nil)
+	if err == nil || !strings.Contains(err.Error(), "compact transcript after initial overflow") {
+		t.Fatalf("promptWithContextRecovery error = %v, want compaction failure", err)
+	}
+	payload := resultErrorPayload(err)
+	if payload["code"] != "turn_failed" {
+		t.Fatalf("result error payload = %#v, want turn_failed", payload)
+	}
+}
+
+func TestPromptWithContextRecoveryKeepsSinglePromptIntact(t *testing.T) {
+	client := &subagentContextRecoveryClient{retried: make(chan provider.Request, 1)}
+	agent := core.NewAgent(client, "test-model", "", nil)
+
+	_, err := promptWithContextRecovery(context.Background(), agent, "finish the task", nil, nil)
+	if !provider.IsContextOverflowError(err) {
+		t.Fatalf("promptWithContextRecovery error = %v, want context overflow", err)
+	}
+	client.mu.Lock()
+	calls := client.calls
+	requests := append([]provider.Request(nil), client.requests...)
+	client.mu.Unlock()
+	if len(requests) != 1 || workerRequestUserTextCount(requests[0], "finish the task") != 1 {
+		t.Fatalf("initial request does not retain the prompt: %#v", requests)
+	}
+	if len(agent.Messages()) != 1 || workerRequestMessageTextCount(agent.Messages(), "finish the task") != 1 {
+		t.Fatalf("single prompt was not retained: %#v", agent.Messages())
+	}
+	if calls != 1 {
+		t.Fatalf("provider calls = %d, want 1 without compaction", calls)
+	}
+}
+
+func TestPromptWithContextRecoveryRetainsPromptWhenPersistenceFails(t *testing.T) {
+	client := &subagentContextRecoveryClient{retried: make(chan provider.Request, 1)}
+	history := []provider.Message{{Role: provider.RoleUser, Content: []provider.Content{provider.TextBlock{Text: "prior context"}}}}
+	session, err := core.NewSession(t.TempDir(), "cwd", "provider", "model", "test")
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	if err := session.AppendMessage(history[0]); err != nil {
+		t.Fatalf("append history: %v", err)
+	}
+	agent := core.NewAgent(client, "test-model", "", nil)
+	agent.SetMessages(history)
+
+	outputStart, err := promptWithContextRecovery(context.Background(), agent, "finish the task", nil, func([]provider.Message) error {
+		return errors.New("persist failed")
+	})
+	if err == nil || !strings.Contains(err.Error(), "persist compacted transcript") {
+		t.Fatalf("promptWithContextRecovery error = %v, want persistence failure", err)
+	}
+	if got := workerRequestMessageTextCount(agent.Messages(), "prior context"); got != 1 || workerRequestMessageTextCount(agent.Messages(), "finish the task") != 1 {
+		t.Fatalf("agent transcript lost the pending task after persistence failure: %#v", agent.Messages())
+	}
+	WriteNewTranscript(agent, session, outputStart)
+	if err := session.Close(); err != nil {
+		t.Fatalf("close session: %v", err)
+	}
+	reopened, messages, err := core.OpenSession(session.Path)
+	if err != nil {
+		t.Fatalf("reopen session: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := reopened.Close(); err != nil {
+			t.Errorf("close reopened session: %v", err)
+		}
+	})
+	if got := workerRequestMessageTextCount(messages, "finish the task"); got != 1 {
+		t.Fatalf("persisted prompt count = %d, want 1: %#v", got, messages)
+	}
+	client.mu.Lock()
+	calls := client.calls
+	client.mu.Unlock()
+	if calls != 2 {
+		t.Fatalf("provider calls = %d, want initial prompt and compaction only", calls)
+	}
+}
+
+func TestPromptWithContextRecoveryPersistsCompaction(t *testing.T) {
+	client := &subagentContextRecoveryClient{retried: make(chan provider.Request, 1)}
+	history := []provider.Message{
+		{Role: provider.RoleUser, Content: []provider.Content{provider.TextBlock{Text: "one"}}},
+		{Role: provider.RoleAssistant, Content: []provider.Content{provider.TextBlock{Text: "two"}}},
+		{Role: provider.RoleUser, Content: []provider.Content{provider.TextBlock{Text: "three"}}},
+		{Role: provider.RoleAssistant, Content: []provider.Content{provider.TextBlock{Text: "four"}}},
+	}
+	session, err := core.NewSession(t.TempDir(), "cwd", "provider", "model", "test")
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	for _, message := range history {
+		if err := session.AppendMessage(message); err != nil {
+			t.Fatalf("append history: %v", err)
+		}
+	}
+
+	agent := core.NewAgent(client, "test-model", "", nil)
+	agent.SetMessages(history)
+	outputStart, err := promptWithContextRecovery(context.Background(), agent, "finish the task", nil, session.AppendCompaction)
+	if err != nil {
+		t.Fatalf("promptWithContextRecovery returned %v", err)
+	}
+	WriteNewTranscript(agent, session, outputStart)
+	if err := session.Close(); err != nil {
+		t.Fatalf("close session: %v", err)
+	}
+
+	records, err := os.ReadFile(session.Path)
+	if err != nil {
+		t.Fatalf("read session: %v", err)
+	}
+	compactions := 0
+	for _, record := range bytes.Split(bytes.TrimSpace(records), []byte("\n")) {
+		var entry struct {
+			Type string `json:"type"`
+		}
+		if err := json.Unmarshal(record, &entry); err != nil {
+			t.Fatalf("decode session record: %v", err)
+		}
+		if entry.Type == "compaction" {
+			compactions++
+		}
+	}
+	if compactions != 1 {
+		t.Fatalf("compaction records = %d, want 1", compactions)
+	}
+
+	reopened, messages, err := core.OpenSession(session.Path)
+	if err != nil {
+		t.Fatalf("reopen session: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := reopened.Close(); err != nil {
+			t.Errorf("close reopened session: %v", err)
+		}
+	})
+	if got := workerRequestMessageTextCount(messages, "finish the task"); got != 1 {
+		t.Fatalf("persisted prompt count = %d, want 1: %#v", got, messages)
+	}
+	if got := finalAssistantText(messages); got != "two\nfour\nrecovered" {
+		t.Fatalf("persisted assistant text = %q, want prior tail plus recovered result", got)
+	}
+}
+
+func workerRequestMessageTextCount(messages []provider.Message, want string) int {
+	count := 0
+	for _, message := range messages {
+		for _, block := range message.Content {
+			if text, ok := block.(provider.TextBlock); ok && text.Text == want {
+				count++
+			}
+		}
+	}
+	return count
+}
+
+func workerRequestContainsText(req provider.Request, want string) bool {
+	for _, message := range req.Messages {
+		for _, block := range message.Content {
+			if text, ok := block.(provider.TextBlock); ok && strings.Contains(text.Text, want) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func workerRequestUserTextCount(req provider.Request, want string) int {
+	count := 0
+	for _, message := range req.Messages {
+		if message.Role != provider.RoleUser {
+			continue
+		}
+		for _, block := range message.Content {
+			if text, ok := block.(provider.TextBlock); ok && text.Text == want {
+				count++
+			}
+		}
+	}
+	return count
+}
+
+func TestResultErrorPayloadSanitizesContextOverflow(t *testing.T) {
+	payload := resultErrorPayload(errors.New("provider error: input exceeds the context window; echoed task text"))
+	if payload["code"] != "context_limit" {
+		t.Fatalf("error code = %q, want context_limit", payload["code"])
+	}
+	if payload["message"] != subagentContextLimitMessage {
+		t.Fatalf("error message = %q, want %q", payload["message"], subagentContextLimitMessage)
+	}
+}
+
+func TestSubagentEventDataSanitizesContextOverflow(t *testing.T) {
+	payload := subagentEventData(core.EvTurnEnd{Err: errors.New("provider error: input exceeds the context window; echoed task text")})
+	if payload["error"] != subagentContextLimitMessage {
+		t.Fatalf("event error = %q, want %q", payload["error"], subagentContextLimitMessage)
 	}
 }
 
