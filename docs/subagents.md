@@ -90,6 +90,8 @@ Shared mode preserves the historical host working directory. For parallel coding
 
 Every child has independent process and turn state. A process may be `alive` while its turn is `idle`; a supervisor restart marks the process `detached` without claiming that its last turn failed. Durable manifests include the task, parent/root session identity, workspace mode, attempt, process/turn state, heartbeat timestamps, and logical result references.
 
+During an active delegated turn, interactive mode shows compact rows beside the input area: a themed spinner, the named profile (or agent ID), current activity, and elapsed time since the latest activity or heartbeat. Rows default below the input and can move above it through **running subagent position** in `/settings` → **tui settings**. On short terminals, omitted workers collapse into one count summary so the editor remains visible. Rows disappear when the turn becomes idle, the process detaches, or the turn reaches a terminal state; use `/subagents` for durable history and results.
+
 The worker and supervisor communicate over newline-delimited JSON. Current messages use version `1` envelopes with `version`, `message_id`, `agent_id`, `turn_id`, `timestamp`, and `payload`. Unknown event names and payload fields are retained. Only versioned JSONL envelopes are accepted on the worker protocol.
 
 A completed worker emits a `turn.result` event and writes `result.json`. The inline output is bounded; inspect the full session through the stable references:

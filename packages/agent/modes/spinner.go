@@ -56,6 +56,28 @@ func (s *spinner) Frame() string {
 	return s.frames[idx]
 }
 
+// FrameAt returns a frame based on an absolute clock. Independent background
+// activity uses it so its animation does not need to reset or interfere with
+// the main turn's spinner lifecycle.
+func (s *spinner) FrameAt(now time.Time) string {
+	if len(s.frames) == 0 {
+		return ""
+	}
+	if now.IsZero() {
+		now = time.Now()
+	}
+	interval := s.interval
+	if interval <= 0 {
+		interval = 80 * time.Millisecond
+	}
+	ticks := now.UnixNano() / int64(interval)
+	idx := int(ticks % int64(len(s.frames)))
+	if idx < 0 {
+		idx += len(s.frames)
+	}
+	return s.frames[idx]
+}
+
 // Elapsed returns the wall-clock duration the spinner has been running.
 func (s *spinner) Elapsed() time.Duration {
 	if s.startedAt.IsZero() {
