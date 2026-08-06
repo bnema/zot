@@ -80,12 +80,6 @@ func (f *Supervisor) SpawnBatch(ctx context.Context, req BatchRequest) (*Batch, 
 	if len(req.Tasks) == 0 {
 		return nil, fmt.Errorf("subagents: batch requires at least one task")
 	}
-	f.mu.Lock()
-	remaining := f.cfg.Policy.MaxTotalSpawned - f.totalSpawned
-	f.mu.Unlock()
-	if len(req.Tasks) > remaining {
-		return nil, fmt.Errorf("subagents: batch needs %d spawn budget entries, only %d remain", len(req.Tasks), remaining)
-	}
 	if ctx == nil {
 		ctx = context.Background()
 	}

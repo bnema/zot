@@ -127,7 +127,6 @@ type Supervisor struct {
 	active         int
 	activeByParent map[string]int
 	activeByBatch  map[string]int
-	totalSpawned   int
 	batches        map[string]*Batch
 
 	// activeSession is the host session id the dashboard is
@@ -369,15 +368,8 @@ func (f *Supervisor) SpawnReq(ctx context.Context, req SpawnRequest) (*Agent, er
 	now := f.cfg.Now()
 	baseID := newAgentID(task, now)
 
-	// Reserve a spawn budget before touching disk. This makes the total
-	// budget race-free across slash commands, tools, and batch callers.
 	f.mu.Lock()
 	id := f.uniqueAgentIDLocked(baseID)
-	if f.totalSpawned >= f.cfg.Policy.MaxTotalSpawned {
-		f.mu.Unlock()
-		return nil, fmt.Errorf("subagents: total spawn budget exhausted (%d)", f.cfg.Policy.MaxTotalSpawned)
-	}
-	f.totalSpawned++
 	dir := f.cfg.RepoRoot
 	fastMode := f.cfg.FastMode
 	configProvider := f.cfg.Provider
@@ -397,14 +389,6 @@ func (f *Supervisor) SpawnReq(ctx context.Context, req SpawnRequest) (*Agent, er
 		baseURL = strings.TrimSpace(configBaseURL)
 	}
 	insecureTLS := req.InsecureTLS || (inheritProviderSettings && configInsecureTLS)
-	reserved := true
-	defer func() {
-		if reserved {
-			f.mu.Lock()
-			f.totalSpawned--
-			f.mu.Unlock()
-		}
-	}()
 
 	stateDir := f.agentStateDir(id)
 	if err := os.MkdirAll(stateDir, 0o700); err != nil {
@@ -542,7 +526,6 @@ func (f *Supervisor) SpawnReq(ctx context.Context, req SpawnRequest) (*Agent, er
 	// supervisor can reconstruct work that never reached a process.
 	f.armQueueTimeout(a)
 	f.schedule()
-	reserved = false
 	return a, nil
 }
 

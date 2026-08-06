@@ -53,7 +53,6 @@ const (
 type SubagentPolicy struct {
 	MaxConcurrent          int
 	MaxConcurrentPerParent int
-	MaxTotalSpawned        int
 	QueueTimeout           time.Duration
 	DefaultTimeout         time.Duration
 	MaxTurns               int
@@ -73,9 +72,6 @@ func (p *SubagentPolicy) normalize() {
 	}
 	if p.MaxConcurrentPerParent <= 0 {
 		p.MaxConcurrentPerParent = 4
-	}
-	if p.MaxTotalSpawned <= 0 {
-		p.MaxTotalSpawned = 32
 	}
 	if p.QueueTimeout <= 0 {
 		p.QueueTimeout = 30 * time.Minute
