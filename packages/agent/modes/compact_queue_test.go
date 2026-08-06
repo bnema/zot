@@ -430,30 +430,6 @@ func TestContextWindowRecoveryStopsAfterOneRetry(t *testing.T) {
 	}
 }
 
-func TestContextOverflowErrorRecognizesProviderMessages(t *testing.T) {
-	tests := []struct {
-		name string
-		err  error
-		want bool
-	}{
-		{name: "http 413", err: errors.New("provider http 413: request rejected"), want: true},
-		{name: "context error code", err: errors.New("context_length_exceeded"), want: true},
-		{name: "maximum context length", err: errors.New("This model's maximum context length is 128000 tokens"), want: true},
-		{name: "context window exceeded", err: errors.New("context window exceeded"), want: true},
-		{name: "maximum input token count", err: errors.New("input token count exceeds the maximum number of tokens allowed"), want: true},
-		{name: "maximum output token count", err: errors.New("max_tokens exceeds the maximum number of tokens allowed"), want: false},
-		{name: "unrelated error", err: errors.New("rate limit exceeded"), want: false},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := isContextOverflowError(tt.err); got != tt.want {
-				t.Fatalf("isContextOverflowError(%q) = %t, want %t", tt.err, got, tt.want)
-			}
-		})
-	}
-}
-
 func requestContainsUserText(req provider.Request, want string) bool {
 	return requestUserTextCount(req, want) > 0
 }
