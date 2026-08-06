@@ -113,6 +113,37 @@ func TestSubagentsDialogEnterShowsTranscript(t *testing.T) {
 	}
 }
 
+func TestSubagentsDialogEnterHydratesTranscript(t *testing.T) {
+	now := time.Now()
+	hydrated := false
+	loads := 0
+	snapshot := func() []subagents.AgentSnapshot {
+		row := subagents.AgentSnapshot{ID: "alpha-1", Task: "do stuff", Status: subagents.StatusDone, Started: now}
+		if hydrated {
+			row.Lines = []string{"loaded history"}
+		}
+		return []subagents.AgentSnapshot{row}
+	}
+	d := newSubagentsDialog()
+	d.SetLoadTranscript(func(id string) error {
+		if id != "alpha-1" {
+			t.Fatalf("load id = %q", id)
+		}
+		loads++
+		hydrated = true
+		return nil
+	})
+	d.Open(snapshot, nil, nil, nil, nil, nil, "")
+	_ = d.Render(tui.Theme{}, 80)
+	d.HandleKey(tui.Key{Kind: tui.KeyEnter})
+	if loads != 1 {
+		t.Fatalf("transcript loads = %d, want 1", loads)
+	}
+	if out := strings.Join(d.Render(tui.Theme{}, 80), "\n"); !strings.Contains(out, "loaded history") {
+		t.Fatalf("hydrated transcript missing from view:\n%s", out)
+	}
+}
+
 func TestSubagentsDialogEscClosesList(t *testing.T) {
 	d := newSubagentsDialog()
 	d.Open(staticSnapshots(), nil, nil, nil, nil, nil, "")

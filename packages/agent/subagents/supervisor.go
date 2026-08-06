@@ -499,6 +499,7 @@ func (f *Supervisor) SpawnReq(ctx context.Context, req SpawnRequest) (*Agent, er
 		inbox:             NewInbox(inboxPath),
 		status:            StatusPending,
 		activity:          "queued",
+		transcriptLoaded:  true,
 		processState:      ProcessPending,
 		turnState:         TurnQueued,
 		updatedAt:         now,
