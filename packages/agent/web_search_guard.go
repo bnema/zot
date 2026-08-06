@@ -44,14 +44,22 @@ func (g *webSearchSessionGuard) wrapRegistry(reg core.Registry) core.Registry {
 	if !ok {
 		return reg
 	}
-	if guarded, ok := tool.(*guardedWebSearchTool); ok && guarded.guard == g {
+	if webSearchToolGuard(tool) == g {
 		return reg
 	}
-	reg["web_search"] = &guardedWebSearchTool{
+	guarded := &guardedWebSearchTool{
 		Tool:       tool,
 		guard:      g,
 		generation: g.generation.Load(),
 	}
+	if previewer, ok := tool.(core.ToolPreviewer); ok {
+		reg["web_search"] = &guardedWebSearchPreviewTool{
+			guardedWebSearchTool: guarded,
+			previewer:            previewer,
+		}
+		return reg
+	}
+	reg["web_search"] = guarded
 	return reg
 }
 
@@ -64,19 +72,19 @@ type guardedWebSearchTool struct {
 	generation uint64
 }
 
-func (t *guardedWebSearchTool) available() bool {
-	return t != nil && t.guard != nil && t.guard.available.Load() && t.generation == t.guard.generation.Load()
+func webSearchToolGuard(tool core.Tool) *webSearchSessionGuard {
+	switch tool := tool.(type) {
+	case *guardedWebSearchTool:
+		return tool.guard
+	case *guardedWebSearchPreviewTool:
+		return tool.guard
+	default:
+		return nil
+	}
 }
 
-func (t *guardedWebSearchTool) Preview(ctx context.Context, args json.RawMessage) (core.ToolResult, error) {
-	if !t.available() {
-		return core.ToolResult{}, errWebSearchSessionRevoked
-	}
-	previewer, ok := t.Tool.(core.ToolPreviewer)
-	if !ok {
-		return core.ToolResult{}, errors.New("web_search preview is unavailable")
-	}
-	return previewer.Preview(ctx, args)
+func (t *guardedWebSearchTool) available() bool {
+	return t != nil && t.guard != nil && t.guard.available.Load() && t.generation == t.guard.generation.Load()
 }
 
 func (t *guardedWebSearchTool) Execute(ctx context.Context, args json.RawMessage, progress func(string)) (core.ToolResult, error) {
@@ -84,4 +92,18 @@ func (t *guardedWebSearchTool) Execute(ctx context.Context, args json.RawMessage
 		return core.ToolResult{}, errWebSearchSessionRevoked
 	}
 	return t.Tool.Execute(ctx, args, progress)
+}
+
+// guardedWebSearchPreviewTool preserves preview support only when the wrapped
+// tool already implements core.ToolPreviewer.
+type guardedWebSearchPreviewTool struct {
+	*guardedWebSearchTool
+	previewer core.ToolPreviewer
+}
+
+func (t *guardedWebSearchPreviewTool) Preview(ctx context.Context, args json.RawMessage) (core.ToolResult, error) {
+	if !t.available() {
+		return core.ToolResult{}, errWebSearchSessionRevoked
+	}
+	return t.previewer.Preview(ctx, args)
 }

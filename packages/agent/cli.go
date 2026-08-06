@@ -1478,7 +1478,7 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 		return reg
 	}
 	prepareInteractiveRegistry := func(reg core.Registry) core.Registry {
-		injectSubagentTools(reg)
+		reg = injectSubagentTools(reg)
 		return webSearchGuard.wrapRegistry(reg)
 	}
 	prepareResolvedInteractiveRegistry := func(reg core.Registry, policy subagents.WebSearchPolicy) core.Registry {
@@ -2269,7 +2269,9 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 			current := liveInteractiveAgent(iv, ag)
 			webSearchPolicy, err := refreshAgentToolsAndPrompt(args, sharedSandbox, extToolAdapter, current, prepareInteractiveRegistry, iv)
 			if err != nil {
-				setWebSearchAvailable(false)
+				if !errors.Is(err, errInteractiveAgentChanged) {
+					setWebSearchAvailable(false)
+				}
 				return err
 			}
 			setWebSearchAvailable(webSearchPolicy == subagents.WebSearchAllow)
@@ -2278,8 +2280,12 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 		SetWebSearchAvailable: setWebSearchAvailable,
 		RefreshPrompt: func() error {
 			current := liveInteractiveAgent(iv, ag)
-			_, err := refreshAgentToolsAndPrompt(args, sharedSandbox, extToolAdapter, current, prepareInteractiveRegistry, iv)
-			return err
+			webSearchPolicy, err := refreshAgentToolsAndPrompt(args, sharedSandbox, extToolAdapter, current, prepareInteractiveRegistry, iv)
+			if err != nil {
+				return err
+			}
+			setWebSearchAvailable(webSearchPolicy == subagents.WebSearchAllow)
+			return nil
 		},
 		AuthManager:                mgr,
 		LlamaCPPConfig:             ResolveLlamaCPPConfig,

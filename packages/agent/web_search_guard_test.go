@@ -28,6 +28,43 @@ func (t *recordingWebSearchTool) Execute(context.Context, json.RawMessage, func(
 	return core.ToolResult{}, nil
 }
 
+type executeOnlyWebSearchTool struct {
+	executions int
+}
+
+func (t *executeOnlyWebSearchTool) Name() string        { return "web_search" }
+func (t *executeOnlyWebSearchTool) Description() string { return "test web search" }
+func (t *executeOnlyWebSearchTool) Schema() json.RawMessage {
+	return json.RawMessage(`{"type":"object"}`)
+}
+func (t *executeOnlyWebSearchTool) Execute(context.Context, json.RawMessage, func(string)) (core.ToolResult, error) {
+	t.executions++
+	return core.ToolResult{}, nil
+}
+
+func TestWebSearchSessionGuardPreservesPreviewCapability(t *testing.T) {
+	guard := &webSearchSessionGuard{}
+	previewable := &recordingWebSearchTool{}
+	registry := guard.wrapRegistry(core.Registry{"web_search": previewable})
+	wrapped := registry["web_search"]
+	previewer, ok := wrapped.(core.ToolPreviewer)
+	if !ok {
+		t.Fatalf("preview-capable tool wrapper = %T, want core.ToolPreviewer", wrapped)
+	}
+	if _, err := previewer.Preview(context.Background(), json.RawMessage(`{}`)); !errors.Is(err, errWebSearchSessionRevoked) {
+		t.Fatalf("revoked Preview error = %v, want session revocation", err)
+	}
+	if got := guard.wrapRegistry(registry)["web_search"]; got != wrapped {
+		t.Fatalf("re-wrapped preview tool = %T, want existing wrapper", got)
+	}
+
+	executeOnly := &executeOnlyWebSearchTool{}
+	registry = guard.wrapRegistry(core.Registry{"web_search": executeOnly})
+	if _, ok := registry["web_search"].(core.ToolPreviewer); ok {
+		t.Fatalf("execute-only tool wrapper = %T, unexpectedly advertises core.ToolPreviewer", registry["web_search"])
+	}
+}
+
 func TestWebSearchSessionGuardRevokesSnapshottedToolBeforeExecute(t *testing.T) {
 	guard := &webSearchSessionGuard{}
 	underlying := &recordingWebSearchTool{}

@@ -440,7 +440,7 @@ Only declare commands the agent genuinely needs. `requirements.bin` checks that 
 
 ## Network and environment permissions
 
-The manifest shape includes `permissions.net.allow` and `permissions.env.read`, but the local runtime does not enforce them yet. To avoid presenting unenforced declarations as security controls, it rejects manifests containing any network host or environment variable. `permissions.net` is rejected rather than ignored; it does not authorize the built-in `web_search` tool. Packaged agents receive no native web search until a future enforced network-permission design exists.
+The manifest shape includes `permissions.net.allow` and `permissions.env.read`, but the local runtime does not enforce them yet. To avoid presenting unenforced declarations as security controls, it rejects manifests containing any network host or environment variable. `permissions.net` is rejected rather than ignored; it does not authorize the built-in `web_search` tool. Packaged agents receive no native web search until a future runtime design enforces network permissions.
 
 Use empty arrays or omit these sections:
 

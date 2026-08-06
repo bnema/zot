@@ -8,7 +8,9 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -75,9 +77,9 @@ const webSearchFixture = `<!doctype html><html><body>
 </body></html>`
 
 func TestWebSearchRequestAndResultContract(t *testing.T) {
-	var calls int
+	var calls atomic.Int64
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		calls++
+		calls.Add(1)
 		if r.Method != http.MethodGet {
 			t.Errorf("method = %s, want GET", r.Method)
 		}
@@ -107,8 +109,8 @@ func TestWebSearchRequestAndResultContract(t *testing.T) {
 	if isError {
 		t.Fatalf("unexpected error: %s", text)
 	}
-	if calls != 1 {
-		t.Fatalf("calls = %d, want 1", calls)
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("calls = %d, want 1", got)
 	}
 	if !strings.HasPrefix(text, webSearchDisclosure+"\n\n[1] One result\n    https://example.com/one\n    First snippet.") {
 		t.Fatalf("unexpected result text:\n%s", text)
@@ -141,14 +143,10 @@ func TestWebSearchEndpointIsFixed(t *testing.T) {
 	}
 }
 
-func TestWebSearchUsesEnvironmentProxy(t *testing.T) {
-	for _, name := range []string{"HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY", "http_proxy", "https_proxy", "all_proxy", "no_proxy"} {
-		t.Setenv(name, "")
-	}
-
-	var proxyCalls int
+func TestWebSearchUsesConfiguredProxyTransport(t *testing.T) {
+	var proxyCalls atomic.Int64
 	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		proxyCalls++
+		proxyCalls.Add(1)
 		if r.URL.Scheme != "http" || r.URL.Host != "web-search.invalid" {
 			t.Errorf("proxy request URL = %q, want absolute web-search.invalid URL", r.URL)
 		}
@@ -162,15 +160,23 @@ func TestWebSearchUsesEnvironmentProxy(t *testing.T) {
 		_, _ = w.Write([]byte(webSearchFixture))
 	}))
 	defer proxy.Close()
-	t.Setenv("HTTP_PROXY", proxy.URL)
 
-	tool := &WebSearchTool{endpointOverride: "http://web-search.invalid/html/"}
+	proxyURL, err := url.Parse(proxy.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	transport := &http.Transport{Proxy: http.ProxyURL(proxyURL)}
+	t.Cleanup(transport.CloseIdleConnections)
+	tool := &WebSearchTool{
+		endpointOverride: "http://web-search.invalid/html/",
+		transport:        transport,
+	}
 	text, isError, _ := executeWebSearch(t, tool, context.Background(), map[string]any{"query": "environment"})
 	if isError {
-		t.Fatalf("unexpected error through environment proxy: %s", text)
+		t.Fatalf("unexpected error through configured proxy: %s", text)
 	}
-	if proxyCalls != 1 {
-		t.Fatalf("proxy calls = %d, want 1", proxyCalls)
+	if got := proxyCalls.Load(); got != 1 {
+		t.Fatalf("proxy calls = %d, want 1", got)
 	}
 }
 
@@ -333,10 +339,10 @@ func TestWebSearchDoesNotUseCookies(t *testing.T) {
 }
 
 func TestWebSearchRejectsRedirectAndOversizedResponse(t *testing.T) {
-	var followed bool
+	var followed atomic.Bool
 	redirect := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/next" {
-			followed = true
+			followed.Store(true)
 		}
 		http.Redirect(w, r, "/next", http.StatusFound)
 	}))
@@ -346,7 +352,7 @@ func TestWebSearchRejectsRedirectAndOversizedResponse(t *testing.T) {
 	if !isError || text != "web search: DuckDuckGo request failed" {
 		t.Fatalf("redirect result = (%q, %v)", text, isError)
 	}
-	if followed {
+	if followed.Load() {
 		t.Fatal("redirect was followed")
 	}
 

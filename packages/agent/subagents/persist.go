@@ -782,7 +782,7 @@ func (f *Supervisor) resume(ctx context.Context, id string, resuming bool) (*Age
 		SessionPath: existing.SessionPath,
 	}
 
-	if m.Subagent == "" && len(m.Tools) == 0 && len(f.cfg.Policy.AllowedTools) > 0 {
+	if len(m.Tools) == 0 && len(f.cfg.Policy.AllowedTools) > 0 {
 		m.Tools = append([]string(nil), f.cfg.Policy.AllowedTools...)
 	}
 	if err := f.validateSpawnOptions(SpawnRequest{MaxTurns: m.MaxTurns, Tools: m.Tools}); err != nil {

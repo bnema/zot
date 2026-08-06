@@ -1260,6 +1260,7 @@ func TestWebSearchPolicyPersistsThroughReloadResumeAndChildArgv(t *testing.T) {
 	}
 
 	first := newSupervisor(WebSearchAllow)
+	t.Cleanup(first.StopAll)
 	spawned, err := first.Spawn(context.Background(), "web policy")
 	if err != nil {
 		t.Fatalf("spawn: %v", err)
@@ -1282,6 +1283,7 @@ func TestWebSearchPolicyPersistsThroughReloadResumeAndChildArgv(t *testing.T) {
 	}
 
 	second := newSupervisor(WebSearchDeny)
+	t.Cleanup(second.StopAll)
 	if loaded, errs := second.Reload(); loaded != 1 || len(errs) != 0 {
 		t.Fatalf("reload loaded=%d errs=%v; want one clean load", loaded, errs)
 	}

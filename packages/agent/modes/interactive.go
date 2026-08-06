@@ -203,7 +203,10 @@ type InteractiveConfig struct {
 	RefreshTools func() error
 
 	// SetWebSearchAvailable updates session-wide execution and generic-child
-	// ceilings after a live registry commit or fail-closed revocation.
+	// ceilings after a live registry commit or fail-closed revocation. It can
+	// run while agentMu and i.mu are held, so callbacks must not re-enter
+	// Interactive or wait on either lock. The CLI callback only updates its
+	// web-search guard and supervisor policy.
 	SetWebSearchAvailable func(bool)
 
 	// RefreshPrompt re-resolves the complete live prompt and tool registry
@@ -4739,6 +4742,8 @@ func (i *Interactive) webSearchUnavailableHint() string {
 func (i *Interactive) setWebSearchAvailable(available bool) {
 	// Advance before publishing the new gate/child ceiling. A resolver that
 	// captured the prior generation can no longer commit after this transition.
+	// Callers may hold agentMu and i.mu; the callback must complete without
+	// calling back into Interactive or requiring either lock.
 	i.webSearchPolicyGeneration.Add(1)
 	if i.cfg.SetWebSearchAvailable != nil {
 		i.cfg.SetWebSearchAvailable(available)
