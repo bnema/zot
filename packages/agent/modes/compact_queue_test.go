@@ -153,7 +153,7 @@ func TestPromptSubmittedDuringCompactionStartsFollowUpTurn(t *testing.T) {
 	interactive := NewInteractive(InteractiveConfig{Agent: agent})
 	interactive.runCtx = context.Background()
 
-	interactive.runCompact(context.Background(), false)
+	interactive.runCompact(context.Background(), false, false)
 	select {
 	case <-client.compactionStarted:
 	case <-time.After(2 * time.Second):
@@ -178,9 +178,12 @@ type thresholdAutoCompactClient struct {
 	compactionStarted chan struct{}
 	releaseCompaction chan struct{}
 	followUpRequest   chan provider.Request
+	firstStop         provider.StopReason
+	firstContent      []provider.Content
 
-	mu    sync.Mutex
-	calls int
+	mu        sync.Mutex
+	calls     int
+	followUps int
 }
 
 func (c *thresholdAutoCompactClient) Name() string { return "threshold-auto-compact-test" }
@@ -196,12 +199,20 @@ func (c *thresholdAutoCompactClient) Stream(ctx context.Context, req provider.Re
 		defer close(out)
 		switch call {
 		case 1:
+			stop := c.firstStop
+			if stop == "" {
+				stop = provider.StopEnd
+			}
+			content := c.firstContent
+			if len(content) == 0 {
+				content = []provider.Content{provider.ReasoningBlock{Summary: "still working"}}
+			}
 			out <- provider.EventUsage{Usage: provider.Usage{InputTokens: 150000}}
 			out <- provider.EventDone{
-				Stop: provider.StopEnd,
+				Stop: stop,
 				Message: provider.Message{
 					Role:    provider.RoleAssistant,
-					Content: []provider.Content{provider.ReasoningBlock{Summary: "still working"}},
+					Content: content,
 				},
 			}
 		case 2:
@@ -214,6 +225,9 @@ func (c *thresholdAutoCompactClient) Stream(ctx context.Context, req provider.Re
 				out <- provider.EventDone{Stop: provider.StopEnd}
 			}
 		default:
+			c.mu.Lock()
+			c.followUps++
+			c.mu.Unlock()
 			c.followUpRequest <- req
 			out <- provider.EventDone{
 				Stop: provider.StopEnd,
@@ -258,6 +272,120 @@ func TestThresholdAutoCompactionContinuesMostRecentIntent(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("threshold auto-compaction did not continue the most recent intent")
+	}
+}
+
+func TestThresholdAutoCompactionContinuesTruncatedText(t *testing.T) {
+	client := &thresholdAutoCompactClient{
+		compactionStarted: make(chan struct{}),
+		releaseCompaction: make(chan struct{}),
+		followUpRequest:   make(chan provider.Request, 1),
+		firstStop:         provider.StopLength,
+		firstContent:      []provider.Content{provider.TextBlock{Text: "partial answer"}},
+	}
+	agent := core.NewAgent(client, "test-model", "", nil)
+	threshold := 70
+	interactive := NewInteractive(InteractiveConfig{
+		Agent:                agent,
+		Provider:             "anthropic",
+		Model:                "claude-sonnet-4-5-20250929",
+		AutoCompactThreshold: &threshold,
+	})
+	interactive.runCtx = context.Background()
+
+	interactive.startTurn(context.Background(), "initial request")
+	select {
+	case <-client.compactionStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("threshold auto-compaction did not start after truncated text")
+	}
+	close(client.releaseCompaction)
+
+	select {
+	case req := <-client.followUpRequest:
+		if got := requestUserTextCount(req, autoCompactContinuationPrompt); got != 1 {
+			t.Fatalf("truncated continuation request contains auto-continue prompt %d times, want 1: %#v", got, req.Messages)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("threshold auto-compaction did not continue truncated text")
+	}
+}
+
+func TestThresholdAutoCompactionForcedContinuationPrecedesQueuedPrompt(t *testing.T) {
+	client := &thresholdAutoCompactClient{
+		compactionStarted: make(chan struct{}),
+		releaseCompaction: make(chan struct{}),
+		followUpRequest:   make(chan provider.Request, 2),
+		firstStop:         provider.StopLength,
+		firstContent:      []provider.Content{provider.TextBlock{Text: "partial answer"}},
+	}
+	agent := core.NewAgent(client, "test-model", "", nil)
+	threshold := 70
+	interactive := NewInteractive(InteractiveConfig{
+		Agent:                agent,
+		Provider:             "anthropic",
+		Model:                "claude-sonnet-4-5-20250929",
+		AutoCompactThreshold: &threshold,
+	})
+	interactive.runCtx = context.Background()
+
+	interactive.startTurn(context.Background(), "initial request")
+	select {
+	case <-client.compactionStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("threshold auto-compaction did not start after truncated text")
+	}
+	interactive.SubmitOrQueue("queued follow-up", nil)
+	close(client.releaseCompaction)
+
+	select {
+	case req := <-client.followUpRequest:
+		if got := requestUserTextCount(req, autoCompactContinuationPrompt); got != 1 {
+			t.Fatalf("first request contains auto-continue prompt %d times, want 1: %#v", got, req.Messages)
+		}
+		if got := requestUserTextCount(req, "queued follow-up"); got != 0 {
+			t.Fatalf("forced continuation request included queued prompt %d times, want 0: %#v", got, req.Messages)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("threshold auto-compaction did not continue truncated text")
+	}
+
+	select {
+	case req := <-client.followUpRequest:
+		if got := requestUserTextCount(req, "queued follow-up"); got != 1 {
+			t.Fatalf("second request contains queued prompt %d times, want 1: %#v", got, req.Messages)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("queued prompt did not run after forced continuation")
+	}
+
+	deadline := time.NewTimer(2 * time.Second)
+	defer deadline.Stop()
+	poll := time.NewTicker(time.Millisecond)
+	defer poll.Stop()
+	for {
+		interactive.mu.Lock()
+		idle := !interactive.busy
+		interactive.mu.Unlock()
+		if idle {
+			break
+		}
+		select {
+		case <-deadline.C:
+			t.Fatal("interactive did not settle after forced continuation and queued prompt")
+		case <-poll.C:
+		}
+	}
+
+	client.mu.Lock()
+	calls := client.calls
+	followUps := client.followUps
+	client.mu.Unlock()
+	if calls != 4 {
+		t.Fatalf("provider called %d times, want initial request, compaction, forced continuation, and queued prompt", calls)
+	}
+	if followUps != 2 {
+		t.Fatalf("follow-up requests = %d, want forced continuation and queued prompt", followUps)
 	}
 }
 

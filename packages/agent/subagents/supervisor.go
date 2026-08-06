@@ -328,7 +328,7 @@ func (f *Supervisor) uniqueAgentIDLocked(base string) string {
 // chosen model regardless of the parent's current selection. A named
 // Subagent is passed to the child as --subagent, where it resolves the
 // markdown profile and applies its instructions. Reasoning is passed
-// as --reasoning when set. FastMode restricts the host setting when a
+// as --reasoning when set. FastMode overrides the host setting when a
 // selected profile declares a fastMode preference.
 type SpawnRequest struct {
 	Task     string
@@ -339,9 +339,8 @@ type SpawnRequest struct {
 	// effective custom provider endpoint.
 	InsecureTLS bool
 	Reasoning   string // optional reasoning/thinking level override
-	// FastMode is an optional profile restriction. A non-nil false value
-	// disables fast mode for this child; true still cannot enable fast mode
-	// when Config.FastMode is false. Nil inherits Config.FastMode.
+	// FastMode is an optional profile override. A non-nil value enables or
+	// disables fast mode for this child; nil inherits Config.FastMode.
 	FastMode *bool
 	Subagent string // optional named markdown profile
 
@@ -413,8 +412,10 @@ func (f *Supervisor) SpawnReq(ctx context.Context, req SpawnRequest) (*Agent, er
 	configInsecureTLS := f.cfg.InsecureTLS
 	sessionID := f.activeSession
 	f.mu.Unlock()
+	fastModeOverridesHost := false
 	if req.FastMode != nil {
-		fastMode = fastMode && *req.FastMode
+		fastModeOverridesHost = !fastMode && *req.FastMode
+		fastMode = *req.FastMode
 	}
 	childProvider := strings.TrimSpace(req.Provider)
 	inheritProviderSettings := childProvider == "" || configProvider == "" || strings.EqualFold(childProvider, strings.TrimSpace(configProvider))
@@ -527,6 +528,7 @@ func (f *Supervisor) SpawnReq(ctx context.Context, req SpawnRequest) (*Agent, er
 		inbox:             NewInbox(inboxPath),
 		status:            StatusPending,
 		activity:          "queued",
+		transcriptLoaded:  true,
 		processState:      ProcessPending,
 		turnState:         TurnQueued,
 		updatedAt:         now,
@@ -538,6 +540,7 @@ func (f *Supervisor) SpawnReq(ctx context.Context, req SpawnRequest) (*Agent, er
 		done:              make(chan struct{}),
 		turnResults:       make(chan *TurnResult, 16),
 	}
+	a.fastModeOverridesHost = fastModeOverridesHost
 	if a.RootSessionID == "" {
 		a.RootSessionID = sessionID
 	}

@@ -41,14 +41,14 @@ Supported metadata:
 |---|---|
 | `name` | Name passed to `subagent_spawn`'s `agent` field. Falls back to the filename. |
 | `description` | Short description shown to the main agent. |
-| `tools` | Comma-separated or list-form tool names. zut enforces its built-in `read`, `write`, `edit`, `bash`, `lsp`, and `web_search` registry; the conditional `skill` tool is available when skills are enabled. Unknown names do not grant capabilities. |
+| `tools` | Comma-separated or list-form tool names. zut enforces its built-in `read`, `write`, `edit`, `bash`, `create_worktree`, `lsp`, and `web_search` registry; the conditional `skill` tool is available when skills are enabled. Unknown names do not grant capabilities. |
 | `model` | Optional model ID. A qualified value such as `openai-codex/gpt-5.6-luna` selects both provider and model. |
 | `provider` | Optional separate provider ID for a model without a provider prefix. |
 | `thinking` / `reasoning` | Optional reasoning level: `off`, `minimum`, `low`, `medium`, `high`, `xhigh`, or `max`. |
 | `systemPromptMode` | `append` (default) or `replace`. |
 | `inheritProjectContext` | Set to `false` to omit `AGENTS.md` context from the child. |
 | `inheritSkills` | Set to `false` to omit skill discovery and the conditional `skill` loader from the child; `--no-skill` has the same effect for a run. |
-| `fastMode` | Optional fast-mode restriction. Omit it to inherit the host setting; `false` disables fast mode for this profile; `true` only permits fast mode when the host setting is enabled. |
+| `fastMode` | Optional fast-mode override. Omit it to inherit the host setting; `false` disables fast mode for this profile; `true` enables it for this profile even when the host setting is off. |
 
 Other frontmatter from another agent host is ignored when zut does not have an equivalent setting. Recursive child spawning is disabled in v1; a worker cannot invoke `subagent_spawn` to create descendants.
 
@@ -98,7 +98,7 @@ The interactive command also supports the same selection explicitly:
 /subagents new --agent implementer --reasoning high Implement the parser change
 ```
 
-Shared mode preserves the historical host working directory. For parallel coding, pass `isolation:"worktree"` to `subagent_spawn`; zut creates a detached Git worktree, captures changed files and a patch, and never merges automatically. Named profiles change the child's instructions and configuration; they are not a security sandbox. A profile's `systemPromptMode` controls its own body relative to the built-in identity; global append addenda, including enabled Ponytail coding guidance, remain present. Child credentials are transferred over stdin rather than argv or persisted metadata, and the active provider endpoint/TLS setting is inherited only when the child uses that provider. Fast mode is inherited by default. A profile with `fastMode: false` opts out, while `fastMode: true` cannot enable fast mode when the host setting is off. Non-OpenAI child providers return an unsupported-provider error instead of silently ignoring an enabled setting.
+Shared mode preserves the historical host working directory. For parallel coding, pass `isolation:"worktree"` to `subagent_spawn`; zut creates a detached Git worktree, captures changed files and a patch, and never merges automatically. Named profiles change the child's instructions and configuration; they are not a security sandbox. A profile's `systemPromptMode` controls its own body relative to the built-in identity; globally appended instructions, including enabled Ponytail coding guidance, remain present. Child credentials are transferred over stdin rather than argv or persisted metadata, and the active provider endpoint/TLS setting is inherited only when the child uses that provider. Fast mode is inherited by default. A profile with `fastMode: false` opts out, while `fastMode: true` enables fast mode even when the host setting is off; the `subagent_spawn` result warns the parent session when this override occurs. Child providers that do not yet support fast mode return an unsupported-provider error instead of silently ignoring an enabled setting.
 
 ## Lifecycle, results, and recovery
 

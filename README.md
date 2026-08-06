@@ -9,7 +9,7 @@ Yet another coding agent harness, lightweight and written (vibe-slopped) in go.
 
 - one static binary.
 - built-in providers for Anthropic, OpenAI/Codex/Responses, Kimi, DeepSeek, Google Gemini/Vertex, GitHub Copilot, Bedrock, Azure OpenAI, OpenRouter, Groq, Cerebras, xAI, Together, Hugging Face, Mistral, Moonshot, Z.AI, Xiaomi, MiniMax, Fireworks, Vercel AI Gateway, OpenCode, Cloudflare AI, and Ollama/local models.
-- six core built-in tools (read, write, edit, bash, lsp, and web_search); the conditional `skill` tool is available when skills are enabled. See [docs/web-search.md](docs/web-search.md) for web-search egress and availability boundaries.
+- seven core built-in tools (read, write, edit, bash, create_worktree, lsp, and web_search); the conditional `skill` tool is available when skills are enabled. See [docs/web-search.md](docs/web-search.md) for web-search egress and availability boundaries.
 - three run modes (interactive tui, print, json).
 - built-in telegram bot.
 - extensions in any language via subprocess + json-rpc. None installed by default; opt in with `zut ext install` or `zut --ext`. See [docs/extensions.md](docs/extensions.md).
@@ -233,10 +233,11 @@ Print-mode stats contain `provider`, `model`, `prompt_tokens`, `reasoning_tokens
 - `write`: create or overwrite files, making parent directories as needed.
 - `edit`: one or more exact-match replacements in an existing file.
 - `bash`: run a command in the session cwd with merged stdout/stderr and a timeout. On Unix, zut uses `/bin/bash -c` when available, then `bash -c` from `PATH`, and falls back to POSIX `/bin/sh -c` when Bash is unavailable. On Windows, it uses `cmd /C`. macOS ships Bash 3.2 by default, so newer Bash features may be unavailable.
+- `create_worktree`: create a new branch from the current `HEAD` and check it out persistently. A repository with no configured root and no `.worktrees` directory first returns bootstrap guidance without making changes; the agent asks whether to use the repository default or an external root, then retries with `bootstrap_root`. The choice is saved privately in local Git config. Choosing `.worktrees` creates `<repository-root>/.worktrees/<branch>` and adds `/.worktrees/` to the root `.gitignore`; an absolute external root leaves tracked repository files and the root `.gitignore` unchanged. The tool never copies uncommitted or ignored files, and it refuses an existing branch or worktree path.
 - `lsp`: query configured language servers and linters for diagnostics, definitions, references, hover information, symbols, renames, code actions, capabilities, and raw protocol requests. LSP servers use stdio JSON-RPC; project `lsp.json` files can add or override servers and CLI linters. Diagnostics are bounded, sorted, deduplicated by path/severity/code/start position, and repeated issues are grouped before they reach the model. See [docs/lsp.md](docs/lsp.md).
 - `web_search`: search the public web through DuckDuckGo HTML and return bounded source titles, URLs, and snippets. Enabled by default for normal CLI sessions; it is unavailable to bot, default SDK, and packaged-agent runs. See [docs/web-search.md](docs/web-search.md).
 
-When the sandbox is on (see `/jail`), filesystem tools and LSP workspace edits refuse paths outside the session cwd. Jail does not sandbox web-search network egress.
+When the sandbox is on (see `/jail`), filesystem tools and LSP workspace edits refuse paths outside the session cwd. `create_worktree` also requires its repository root, configured worktree destination, optional `.gitignore`, and Git metadata to remain inside the jail. Jail does not sandbox web-search network egress.
 
 ## Modes
 
@@ -279,6 +280,7 @@ Slash command names are case-insensitive in the TUI and messaging backends; argu
 | `/logout [provider]` | Clear credentials for any logged-in provider, or all when omitted. `/logout openai-codex` clears ChatGPT/Codex subscription auth while preserving a public OpenAI API key; `/logout kimi` also disables fallback to the official Kimi Code CLI token until you log in to Kimi through zut again. |
 | `/model` | Pick a model from a list (or `/model <id>` to set directly). |
 | `/reasoning` | Set the reasoning level for subsequent model calls. |
+| `/fast` | Toggle fast mode for subsequent model calls. |
 | `/llama` | Connect to the configured llama.cpp router, load, unload, or remove cached models, and search/download GGUF models from Hugging Face with live progress. Shown after llama.cpp login is configured. |
 | `/sessions` | Resume a previous session for this directory. The picker omits branches created only for tree navigation. |
 | `/fork` | Pick a previous user message and fork the current session after that turn. The selected turn becomes branch context and no provider turn starts during the checkout. |
@@ -293,7 +295,7 @@ Slash command names are case-insensitive in the TUI and messaging backends; argu
 | `/unjail` | Allow tools to touch paths outside again. |
 | `/reload-ext` | Hot-reload all extensions (re-read manifests, respawn subprocesses, rebuild tool registry). |
 | `/telegram` | Connect, disconnect, or show status of the Telegram bridge (takes `connect` / `disconnect` / `status` as an optional argument; opens a picker without one). When connected, DMs from the paired user become prompts in the running session and the assistant's replies are mirrored back to Telegram. Alias: `/tg`. |
-| `/settings` | Change persistent settings, including web search, inline images, terminal alerts, AI terminal titles, auto-subagents, Ponytail coding mode, fast mode, main/sub-agent LSP access, and the auto-compact threshold. Saved to `$ZUT_HOME/config.json`; setting changes apply without a restart, while AI title generation waits for the first real prompt. |
+| `/settings` | Change persistent settings, including web search, inline images, terminal alerts, AI terminal titles, auto-subagents, Ponytail coding mode, fast mode, main/sub-agent LSP access, and the auto-compact threshold. `/fast` is a shortcut for the fast-mode toggle. Saved to `$ZUT_HOME/config.json`; setting changes apply without a restart, while AI title generation waits for the first real prompt. |
 | `/clear` | Clear the chat transcript. |
 | `/exit` | Exit zut. |
 
@@ -380,7 +382,7 @@ Background subagents that run alongside your main session. Each one is a separat
 
 **Session scoping** — each agent is stamped with the host session that spawned it and only shows up in that session's dashboard. Swap sessions with `/sessions` and the dashboard re-narrows accordingly. Agents from other sessions keep running in the background and reappear when you switch back.
 
-**Persistence across zut restarts** — every spawn writes a durable manifest, append-only event log, session file, and structured `result.json` under `$ZUT_HOME/subagents/agents/<id>/`. On the next `zut` launch they show up as **detached**; use `R` or `/subagents resume-session <id>` to continue the existing session. `/subagents restart-task <id>` is the explicit operation that intentionally replays the stored task.
+**Persistence across zut restarts** — every spawn writes a durable manifest, lifecycle summary, append-only event log, session file, and structured `result.json` under `$ZUT_HOME/subagents/agents/<id>/`. On the next `zut` launch the compact summary restores each agent as **detached** without replaying its full history. Open its transcript to hydrate the durable event log, then use `R` or `/subagents resume-session <id>` to continue the existing session. `/subagents restart-task <id>` is the explicit operation that intentionally replays the stored task.
 
 **Where state lives** — per-agent manifests, session files, events, results, and patches live under `$ZUT_HOME/subagents/agents/<id>/`; inbox sockets are runtime-only and permission-restricted. Shared-mode edits land directly in the repo. Worktree-mode edits are captured as durable patches and changed-file summaries before cleanup.
 
@@ -402,10 +404,10 @@ Opens a dialog with every persistent setting. `up`/`down` to navigate, `enter` o
 - **AI terminal titles** — after the first real prompt of a fresh interactive session, make one small hidden request to the active model and set the terminal title to `zut: <title>`. The title is limited to 40 Unicode characters, persisted with the session, restored on resume, and never added to the conversation. Enabled by default; disable it to avoid the extra model request. The toggle applies immediately, but title generation still waits for the first real prompt and never starts from startup context, resumed history, or slash commands. Persists as `terminal_title_enabled`.
 - **auto-subagents** — let the main agent spawn background sub-agents in parallel via `subagent_spawn` and query live state via `subagent_status`. Off by default. The tools accept named profiles, reasoning, timeout, turn limits, and shared/worktree isolation where applicable; lifecycle and result references are persisted. Completion updates still arrive through the auto-subagents watcher. See `/subagents` and [docs/subagents.md](docs/subagents.md) for details.
 - **Ponytail coding mode** — include compact engineering guidance in each resolved system prompt; the guidance tells the model to apply it to coding, debugging, and review work rather than ordinary conversation. It favors understanding the real flow, small validated changes, reuse, and preserving safety checks. Enabled by default; changes apply to the next model call and persist as `ponytail_enabled` in `$ZUT_HOME/config.json`. It is included by interactive, print, stream, JSON, RPC, subagent, bot, SDK, and Zutfile agents.
-- **fast mode** — request OpenAI's Fast service tier for OpenAI, OpenAI Responses, and OpenAI Codex models. Off by default; changes apply on the next model call and persist as `fast_mode`. Other providers return an unsupported-provider error. Fast mode may cost more and depends on the selected OpenAI model/account.
+- **fast mode** — request the provider's fast tier where supported. It currently uses OpenAI's Fast service tier for OpenAI, OpenAI Responses, and OpenAI Codex models. Off by default; toggle it with `/fast` or `/settings`; changes apply on the next model call and persist as `fast_mode`. Other providers currently return an unsupported-provider error. Fast mode may cost more and depends on the selected model/account.
 - **lsp in main session** — enable the built-in `lsp` tool and code diagnostics for the main agent. Enabled by default; changes persist as `lsp_enabled`.
 - **lsp in sub-agents** — allow newly spawned background sub-agents to use the built-in `lsp` tool. Enabled by default; changes persist as `subagent_lsp_enabled` and apply when a child starts.
-- **auto-compact threshold** — choose `off`, `70%`, `80%`, `85%` (default), or `90%` of the model's advertised context window. The selected percentage controls automatic compaction before and after interactive turns and persists as `auto_compact_threshold`. After a successful threshold compaction, zut automatically resumes an unfinished most-recent intent; a prompt queued during compaction takes priority. `off` disables percentage-based triggers but keeps manual `/compact` and automatic recovery from context-window and payload-too-large responses.
+- **auto-compact threshold** — choose `off`, `70%`, `80%`, `85%` (default), or `90%` of the model's advertised context window. The selected percentage controls automatic compaction before and after interactive turns and persists as `auto_compact_threshold`. After a successful threshold compaction, zut automatically resumes an unfinished most-recent intent, including truncated output; a prompt queued during compaction takes priority. `off` disables percentage-based triggers but keeps manual `/compact` and automatic recovery from context-window and payload-too-large responses.
 - **jail new sessions by default**: start every new agent with tools confined to its working directory. Off by default. The setting applies to interactive, print, JSON, RPC, and background-agent runs, persists as `jail_by_default`, and immediately updates the current interactive session. `/jail` and `/unjail` remain session-scoped overrides and do not change this default.
 - **compact transcript rendering**: reduce visual chrome in the chat transcript. Tool calls render as a quiet header plus indented output instead of a bordered box, and sent messages render without padded background bubbles. Off by default. Changes apply immediately and persist to `config.json` as `compact_mode`.
 - **show loaded resources at startup**: list the active Zutfile agent (for `zut run`), loaded `AGENTS.md` paths, extensions, and user-installed skills in compact sections above the transcript. Built-in skills are omitted. Off by default. Changes apply immediately and persist to `config.json` as `show_instructions_at_startup`.
@@ -422,11 +424,11 @@ Opens a picker listing every discovered SKILL.md file, built-ins hidden. Each ro
 
 Sends the current transcript through the model with a structured summarization prompt. The returned summary replaces the transcript as one synthetic user message, with the last few exchanges kept verbatim for continuity. The status bar's context meter resets. Use it when the context meter creeps past ~80%.
 
-zut also auto-compacts in the background: after any turn that reaches the configured context threshold, the agent kicks off a condense pass on its own and, once it succeeds, resumes an unfinished most-recent intent automatically. Completed text answers settle normally, while a prompt queued during compaction runs instead of the automatic continuation. Choose `off`, `70%`, `80%`, `85%` (default), or `90%` under `/settings` → **auto-compact threshold**. You'll see `condensing history, esc to cancel` above the status bar and an `(auto)` tag next to the context percentage; `esc` aborts it without touching the transcript. Turning the percentage trigger off does not disable automatic compaction and retry after a context-window or payload-too-large response.
+zut also auto-compacts in the background: after any turn that reaches the configured context threshold, the agent kicks off a condense pass on its own and, once it succeeds, resumes an unfinished most-recent intent automatically, including output that stopped at the model's token limit. Completed text answers settle normally, while a prompt queued during compaction runs instead of the automatic continuation. Choose `off`, `70%`, `80%`, `85%` (default), or `90%` under `/settings` → **auto-compact threshold**. You'll see `condensing history, esc to cancel` above the status bar and an `(auto)` tag next to the context percentage; `esc` aborts it without touching the transcript. Turning the percentage trigger off does not disable automatic compaction and retry after a context-window or payload-too-large response.
 
 ### `/jail`
 
-Enforces a sandbox rooted at the cwd shown in the status bar. `read`, `write`, and `edit` resolve their target path (including through symlinks) and refuse anything outside the sandbox. `bash` refuses obvious escape patterns (`sudo`, `rm -rf /`, leading `cd /`, `cd ..`, `cd ~`, `chmod -R`, `dd of=/`, and similar) and rejects shell arguments or redirections that point outside the sandbox. The status bar shows `jailed, ~/your/cwd` while active. Enable **jail new sessions by default** in `/settings` to persist this behavior across launches; `/unjail` then unlocks only the current session.
+Enforces a sandbox rooted at the cwd shown in the status bar. `read`, `write`, and `edit` resolve their target path (including through symlinks) and refuse anything outside the sandbox. `create_worktree` also requires its repository root, Git metadata, optional `.gitignore`, and configured worktree destination to be inside the sandbox. `bash` refuses obvious escape patterns (`sudo`, `rm -rf /`, leading `cd /`, `cd ..`, `cd ~`, `chmod -R`, `dd of=/`, and similar) and rejects shell arguments or redirections that point outside the sandbox. The status bar shows `jailed, ~/your/cwd` while active. Enable **jail new sessions by default** in `/settings` to persist this behavior across launches; `/unjail` then unlocks only the current session.
 
 This is a guardrail against accidents, not a hard security boundary. If you need real isolation, run zut under docker or a proper sandbox.
 
@@ -794,7 +796,7 @@ Frames containing images are full-repainted (no differential diff) to prevent st
 
 ## Tool rendering
 
-By default each tool call (bash, read, write, edit) renders inside a bordered panel — a `┌─ header ─┐`, `│`-prefixed body rows, and a `└─┘` footer. On a screen with many calls the borders can read as busy, so zut also offers a **flat** mode: a single quiet header line per call (`▌ bash …`) with indented, border-free output. Same information — tool name, arg summary, streamed output, the `... (N more lines, ctrl+o to expand)` truncation — just no frame.
+By default each tool call (bash, read, write, edit, create_worktree, lsp) renders inside a bordered panel — a `┌─ header ─┐`, `│`-prefixed body rows, and a `└─┘` footer. On a screen with many calls the borders can read as busy, so zut also offers a **flat** mode: a single quiet header line per call (`▌ bash …`) with indented, border-free output. Same information — tool name, arg summary, streamed output, the `... (N more lines, ctrl+o to expand)` truncation — just no frame.
 
 Set the `tool_render` key in `$ZUT_HOME/config.json`:
 
@@ -883,7 +885,7 @@ Slash commands also work while the agent is busy. Non-destructive ones (`/help`,
 | `ctrl+b` | Toggle the right sidebar; hidden or narrow widgets use a bounded above-input fallback. |
 | `ctrl+l` | Redraw the screen. |
 | `ctrl+v` | Paste clipboard text into the focused chat, side chat, dialog, filter, or credential input. In the main chat, image clipboard content is attached to the next prompt when the platform exposes it (macOS pasteboard, Wayland `wl-paste`, or X11 `xclip`). On Linux, text uses `wl-paste`, `xclip`, or `xsel`; terminal-native bracketed paste remains available without those commands. |
-| `ctrl+o` | Expand or collapse long tool results (outputs over ~12 lines, including `web_search`). |
+| `ctrl+o` | Expand or collapse long tool results (read, write, edit, bash, create_worktree, lsp, and web_search outputs over ~12 lines). |
 | `ctrl+1` ... `ctrl+9` | Switch to the model bound to that quick-model slot (configured in `/settings` -> model shortcuts). No-op while a turn is running. |
 | `@` | Open the file picker. Browse files and directories in the working directory. |
 
@@ -1066,7 +1068,7 @@ packages/agent/extproto/              extension wire-format types
 packages/agent/modes/                 interactive tui, print, json, dialogs
 packages/agent/modes/bot/             protocol-agnostic bot runner (BotAdapter interface)
 packages/agent/modes/telegram/        telegram adapter, api client, daemon
-packages/agent/tools/                 read, write, edit, bash, lsp, web search, sandbox
+packages/agent/tools/                 read, write, edit, bash, create_worktree, lsp, web search, sandbox
 packages/agent/skills/                skill discovery, frontmatter parser, skill tool
 packages/agent/subagents/             named profiles, supervisor, and background runtime
 packages/agent/sdk/                   public Go SDK for embedding zut in-process (package sdk)

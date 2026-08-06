@@ -1407,15 +1407,18 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 			return subagents.Credential{Value: credential, Method: method, AccountID: accountID}, nil
 		},
 	})
-	// Pull any previously-spawned agents off disk so the dashboard
-	// shows them as detached and the user can resume / remove them.
-	_, _ = subagentsMgr.Reload()
 	if args.PermissionSet != nil {
 		// Packaged zutfile agents have an explicit capability ceiling. A
 		// child process would otherwise rebuild a fresh unrestricted sandbox,
 		// so do not expose either slash or tool-based delegation from this
 		// restricted host until worker capability propagation exists.
 		subagentsMgr = nil
+	} else {
+		// Replaying every historical event log can take seconds for users with
+		// many completed subagents. The manager is safe for concurrent snapshots,
+		// so populate the detached-agent dashboard in the background instead of
+		// blocking the first interactive paint.
+		go func() { _, _ = subagentsMgr.Reload() }()
 	}
 
 	// onSpawnedSupervisor is the OnSpawned callback the subagent_spawn tool

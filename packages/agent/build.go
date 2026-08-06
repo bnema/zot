@@ -890,12 +890,11 @@ func Resolve(args Args, requireCred bool) (Resolved, error) {
 	if args.FastModeSet {
 		fastMode = args.FastMode
 	}
-	// A profile can opt out of the effective host/child fast-mode setting,
-	// but it does not enable fast mode by itself. Keep this as a
-	// restriction on the effective value rather than an override so an
-	// explicit child --fast-mode flag cannot bypass fastMode: false.
+	// A profile's explicit fastMode setting overrides the global setting
+	// for this child. This preserves fastMode: false as an opt-out while
+	// allowing fastMode: true to request the fast tier for a focused worker.
 	if selectedProfile != nil && selectedProfile.FastMode != nil {
-		fastMode = fastMode && *selectedProfile.FastMode
+		fastMode = *selectedProfile.FastMode
 	}
 
 	max := args.MaxSteps // 0 = unlimited
@@ -1225,6 +1224,8 @@ func (r *Resolved) UseSandbox(s *tools.Sandbox) {
 			v.Sandbox = s
 		case *tools.BashTool:
 			v.Sandbox = s
+		case *tools.CreateWorktreeTool:
+			v.Sandbox = s
 		case *tools.LSPTool:
 			v.Sandbox = s
 		}
@@ -1256,10 +1257,11 @@ func buildToolRegistry(args Args, cwd string, sandbox *tools.Sandbox, lspEnabled
 		manager = lsp.NewManagerWithOptions(options)
 	}
 	all := map[string]core.Tool{
-		"read":  &tools.ReadTool{CWD: cwd, Sandbox: sandbox},
-		"write": &tools.WriteTool{CWD: cwd, Sandbox: sandbox, LSP: manager, LSPDiagnostics: diagnosticsOnWrite},
-		"edit":  &tools.EditTool{CWD: cwd, Sandbox: sandbox, LSP: manager, LSPDiagnostics: diagnosticsOnEdit},
-		"bash":  &tools.BashTool{CWD: cwd, Sandbox: sandbox},
+		"read":            &tools.ReadTool{CWD: cwd, Sandbox: sandbox},
+		"write":           &tools.WriteTool{CWD: cwd, Sandbox: sandbox, LSP: manager, LSPDiagnostics: diagnosticsOnWrite},
+		"edit":            &tools.EditTool{CWD: cwd, Sandbox: sandbox, LSP: manager, LSPDiagnostics: diagnosticsOnEdit},
+		"bash":            &tools.BashTool{CWD: cwd, Sandbox: sandbox},
+		"create_worktree": &tools.CreateWorktreeTool{CWD: cwd, Sandbox: sandbox},
 	}
 	if webSearchAllowedForRegistry(args) {
 		all["web_search"] = tools.NewWebSearchTool()
@@ -1332,7 +1334,7 @@ func autoSubagentsToolAllowedFor(args Args, toolName string) bool {
 	return false
 }
 
-var nativeToolSummaryOrder = []string{"read", "write", "edit", "bash", "lsp", "web_search"}
+var nativeToolSummaryOrder = []string{"read", "write", "edit", "bash", "create_worktree", "lsp", "web_search"}
 
 func toolSummaries(reg core.Registry, args Args) []ToolSummary {
 	var out []ToolSummary

@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/bnema/zut/packages/agent/subagents"
 	"github.com/bnema/zut/packages/core"
 	"github.com/bnema/zut/packages/provider"
 )
@@ -73,6 +74,38 @@ func TestApplyFastModeUpdatesAgentAndStore(t *testing.T) {
 	}
 	if store.setCalls != 1 || !store.last {
 		t.Fatalf("store calls = %d/%v, want one enabled write", store.setCalls, store.last)
+	}
+}
+
+func TestFastSlashTogglesFastMode(t *testing.T) {
+	store := &recordingFastModeSettingsStore{}
+	agent := core.NewAgent(fastModeProviderClient{}, "gpt-5", "", nil)
+	supervisor := subagents.New(subagents.Config{Root: t.TempDir(), RepoRoot: t.TempDir()})
+	interactive := NewInteractive(InteractiveConfig{
+		Provider:      "openai",
+		Model:         "gpt-5",
+		SettingsStore: store,
+		Agent:         agent,
+		Supervisor:    supervisor,
+	})
+	interactive.rend = nil
+
+	if interactive.runSlash(context.Background(), "/FAST") {
+		t.Fatal("/fast requested exit")
+	}
+	if interactive.cfg.FastMode == nil || !*interactive.cfg.FastMode || !agent.FastMode || !supervisor.FastMode() {
+		t.Fatalf("/fast did not enable every live fast-mode target: cfg=%v agent=%v supervisor=%v", interactive.cfg.FastMode, agent.FastMode, supervisor.FastMode())
+	}
+	if store.setCalls != 1 || !store.last || interactive.statusOK != "fast mode enabled" {
+		t.Fatalf("enable persistence/status = calls=%d last=%v status=%q", store.setCalls, store.last, interactive.statusOK)
+	}
+
+	interactive.runSlash(context.Background(), "/fast")
+	if interactive.cfg.FastMode == nil || *interactive.cfg.FastMode || agent.FastMode || supervisor.FastMode() {
+		t.Fatalf("/fast did not disable every live fast-mode target: cfg=%v agent=%v supervisor=%v", interactive.cfg.FastMode, agent.FastMode, supervisor.FastMode())
+	}
+	if store.setCalls != 2 || store.last || interactive.statusOK != "fast mode disabled" {
+		t.Fatalf("disable persistence/status = calls=%d last=%v status=%q", store.setCalls, store.last, interactive.statusOK)
 	}
 }
 

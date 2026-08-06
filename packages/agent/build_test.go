@@ -103,7 +103,7 @@ func TestMergeExtensionToolsKeepsDeterministicNativeSummaryOrder(t *testing.T) {
 	for _, summary := range r.ToolSummary {
 		names = append(names, summary.Name)
 	}
-	want := "read,write,edit,bash,web_search,alpha,zeta"
+	want := "read,write,edit,bash,create_worktree,web_search,alpha,zeta"
 	if got := strings.Join(names, ","); got != want {
 		t.Fatalf("merged tool summary order = %q, want %q", got, want)
 	}
@@ -136,7 +136,8 @@ func TestMergeExtensionToolsRetainsPonytailPromptAddendum(t *testing.T) {
 
 func TestBuildToolRegistryIncludesLSPAndWriteDiagnostics(t *testing.T) {
 	root := t.TempDir()
-	registry := buildToolRegistry(Args{}, root, tools.NewSandbox(root), true, true, false)
+	sandbox := tools.NewSandbox(root)
+	registry := buildToolRegistry(Args{}, root, sandbox, true, true, false)
 	lspTool, ok := registry["lsp"].(*tools.LSPTool)
 	if !ok || lspTool.Manager == nil {
 		t.Fatalf("lsp tool = %#v", registry["lsp"])
@@ -144,6 +145,10 @@ func TestBuildToolRegistryIncludesLSPAndWriteDiagnostics(t *testing.T) {
 	t.Cleanup(func() { _ = lspTool.Manager.Close() })
 	if _, ok := registry["lsp"]; !ok {
 		t.Fatal("default registry does not include lsp")
+	}
+	worktree, ok := registry["create_worktree"].(*tools.CreateWorktreeTool)
+	if !ok || worktree.CWD != root || worktree.Sandbox != sandbox {
+		t.Fatalf("default registry worktree tool = %#v", registry["create_worktree"])
 	}
 	if _, ok := registry["web_search"].(*tools.WebSearchTool); !ok {
 		t.Fatalf("default registry web_search = %#v", registry["web_search"])
@@ -156,8 +161,8 @@ func TestBuildToolRegistryIncludesLSPAndWriteDiagnostics(t *testing.T) {
 	if !ok || edit.LSP == nil || edit.LSPDiagnostics {
 		t.Fatalf("edit tool LSP wiring = %#v", edit)
 	}
-	if disabled := buildToolRegistry(Args{}, root, tools.NewSandbox(root), false, true, true); len(disabled) != 5 {
-		t.Fatalf("LSP-disabled registry has %d tools, want 5", len(disabled))
+	if disabled := buildToolRegistry(Args{}, root, tools.NewSandbox(root), false, true, true); len(disabled) != 6 {
+		t.Fatalf("LSP-disabled registry has %d tools, want 6", len(disabled))
 	}
 	readOnly := buildToolRegistry(Args{Tools: []string{"read"}}, root, tools.NewSandbox(root), true, true, true)
 	if read, ok := readOnly["read"].(*tools.ReadTool); !ok || read == nil {
@@ -181,6 +186,46 @@ func TestBuildToolRegistryIncludesLSPAndWriteDiagnostics(t *testing.T) {
 	workerCapped := buildToolRegistry(Args{Mode: ModeSubagentWorker, ToolsSet: true, Tools: []string{"read"}, WebSearchPolicy: subagents.WebSearchAllow}, root, tools.NewSandbox(root), false, false, false)
 	if _, ok := workerCapped["web_search"]; ok {
 		t.Fatalf("worker tool list ceiling was bypassed: %#v", workerCapped)
+	}
+	worktreeOnly := buildToolRegistry(Args{Tools: []string{"create_worktree"}}, root, tools.NewSandbox(root), true, true, true)
+	if worktree, ok := worktreeOnly["create_worktree"].(*tools.CreateWorktreeTool); !ok || worktree == nil || len(worktreeOnly) != 1 {
+		t.Fatalf("worktree-only registry = %#v", worktreeOnly)
+	}
+}
+
+func TestToolSummariesIncludeCreateWorktreeAndWebSearch(t *testing.T) {
+	root := t.TempDir()
+	registry := buildToolRegistry(Args{}, root, tools.NewSandbox(root), false, false, false)
+
+	summaries := toolSummaries(registry, Args{})
+	want := []string{"read", "write", "edit", "bash", "create_worktree", "web_search"}
+	if len(summaries) != len(want) {
+		t.Fatalf("tool summaries = %#v, want %v", summaries, want)
+	}
+	for index, summary := range summaries {
+		if summary.Name != want[index] {
+			t.Fatalf("tool summaries[%d] = %q, want %q", index, summary.Name, want[index])
+		}
+	}
+}
+
+func TestResolvedUseSandboxUpdatesCreateWorktreeTool(t *testing.T) {
+	root := t.TempDir()
+	previous := tools.NewSandbox(root)
+	shared := tools.NewSandbox(root)
+	worktree := &tools.CreateWorktreeTool{CWD: root, Sandbox: previous}
+	resolved := &Resolved{
+		Sandbox:      previous,
+		ToolRegistry: core.NewRegistry(worktree),
+	}
+
+	resolved.UseSandbox(shared)
+
+	if resolved.Sandbox != shared {
+		t.Fatal("resolved sandbox was not replaced")
+	}
+	if worktree.Sandbox != shared {
+		t.Fatal("worktree tool sandbox was not replaced")
 	}
 }
 
@@ -378,7 +423,7 @@ You are a read-only reviewer.
 	}
 }
 
-func TestResolveSubagentFastModeUsesHostSettingAsAnUpperBound(t *testing.T) {
+func TestResolveSubagentFastModeProfileOverridesHostSetting(t *testing.T) {
 	cases := []struct {
 		name         string
 		hostFastMode bool
@@ -390,7 +435,7 @@ func TestResolveSubagentFastModeUsesHostSettingAsAnUpperBound(t *testing.T) {
 		{name: "unset inherits enabled host", hostFastMode: true, wantFastMode: true},
 		{name: "unset inherits disabled host", hostFastMode: false, wantFastMode: false},
 		{name: "false disables enabled host", hostFastMode: true, profileFast: boolPtr(false), wantFastMode: false},
-		{name: "true cannot enable disabled host", hostFastMode: false, profileFast: boolPtr(true), wantFastMode: false},
+		{name: "true enables disabled host", hostFastMode: false, profileFast: boolPtr(true), wantFastMode: true},
 		{name: "false stays disabled with disabled host", hostFastMode: false, profileFast: boolPtr(false), wantFastMode: false},
 		{name: "profile false cannot be bypassed", hostFastMode: true, profileFast: boolPtr(false), argFastMode: true, argFastSet: true, wantFastMode: false},
 	}

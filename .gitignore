@@ -76,3 +76,4 @@ tmp/
 .codereview/
 docs/superpowers/
 npm/
+/.worktrees/

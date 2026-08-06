@@ -77,6 +77,7 @@ func (i *Interactive) runSubagents(ctx context.Context, args []string) {
 	// editor, by typing /model on its own line to pop the picker.
 	i.subagentsDialog.SetCompactMode(i.compactModeEnabled())
 	i.subagentsDialog.SetLineInput(tui.NormalizeInputStyle(i.cfg.TUIInputStyle) == tui.InputStyleLines)
+	i.subagentsDialog.SetLoadTranscript(i.cfg.Supervisor.LoadTranscript)
 	i.subagentsDialog.SetCurrentModel(i.cfg.Model, i.cfg.Provider)
 	if i.cfg.LoggedInProviders != nil {
 		i.subagentsDialog.SetLoggedInProviders(i.cfg.LoggedInProviders())
@@ -203,6 +204,10 @@ func (i *Interactive) runSubagents(ctx context.Context, args []string) {
 	case "logs", "log", "view":
 		if rest == "" {
 			i.subagentsStatus("", "/subagents logs <id>: missing id")
+			return
+		}
+		if err := i.cfg.Supervisor.LoadTranscript(rest); err != nil {
+			i.subagentsStatus("", "logs: "+err.Error())
 			return
 		}
 		ok := i.subagentsDialog.OpenViewing(

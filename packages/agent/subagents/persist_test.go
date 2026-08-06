@@ -292,11 +292,15 @@ func TestReloadReplaysTranscriptFromEventLog(t *testing.T) {
 	if a == nil {
 		t.Fatal("reloaded agent not found")
 	}
-	// Status should reflect the lifecycle terminator we wrote.
-	if a.Status() != StatusDone {
-		t.Errorf("status = %q; want done (offline)", a.Status())
+	// Legacy metadata has no persisted dashboard status, so startup keeps the
+	// agent detached until the user asks to inspect its durable history.
+	if a.Status() != StatusDetached {
+		t.Errorf("startup status = %q; want detached", a.Status())
 	}
 	got := a.Transcript()
+	if a.Status() != StatusDone {
+		t.Errorf("hydrated status = %q; want done (offline)", a.Status())
+	}
 	found := false
 	for _, line := range got {
 		if line == "hello from the past" {
@@ -305,6 +309,80 @@ func TestReloadReplaysTranscriptFromEventLog(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("transcript missing replayed line: %v", got)
+	}
+}
+
+// TestReloadUsesPersistedSummaryBeforeTranscriptHydration ensures startup
+// rebuilds the dashboard from compact metadata rather than replaying the
+// event log. Opening the transcript remains the explicit point that loads
+// durable history.
+func TestReloadUsesPersistedSummaryBeforeTranscriptHydration(t *testing.T) {
+	root := t.TempDir()
+	id := "summary-1"
+	stateDir := filepath.Join(root, "agents", id)
+	agent := &Agent{
+		ID:            id,
+		Task:          "persist summary",
+		OriginalTask:  "persist summary",
+		Dir:           root,
+		Started:       time.Now().Add(-time.Hour),
+		EventLogPath:  filepath.Join(stateDir, "events.jsonl"),
+		SessionPath:   filepath.Join(stateDir, "session.json"),
+		status:        StatusDone,
+		activity:      "done",
+		finished:      time.Now().Add(-time.Minute),
+		processState:  ProcessExited,
+		turnState:     TurnSucceeded,
+		currentTurnID: "turn-1",
+		done:          make(chan struct{}),
+	}
+	if err := writeAgentMeta(stateDir, agent); err != nil {
+		t.Fatal(err)
+	}
+
+	log, err := OpenEventLog(agent.EventLogPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := log.Append(NewEvent("assistant_message", map[string]any{
+		"content": []any{map[string]any{"type": "text", "text": "historical reply"}},
+	})); err != nil {
+		t.Fatal(err)
+	}
+	if err := log.Append(NewEvent("agent_stopped", map[string]any{"reason": "cancelled"})); err != nil {
+		t.Fatal(err)
+	}
+	if err := log.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	supervisor := New(Config{Root: root, RepoRoot: root})
+	if loaded, errs := supervisor.Reload(); loaded != 1 || len(errs) != 0 {
+		t.Fatalf("reload loaded=%d errs=%v", loaded, errs)
+	}
+	reloaded := supervisor.Get(id)
+	if reloaded == nil {
+		t.Fatal("reloaded agent missing")
+	}
+	before := reloaded.Snapshot()
+	if before.Status != StatusDetached || before.Activity != "done" || before.ProcessState != ProcessExited || before.TurnState != TurnSucceeded {
+		t.Fatalf("startup summary = (%q, %q, %q, %q), want (detached, done, exited, succeeded)", before.Status, before.Activity, before.ProcessState, before.TurnState)
+	}
+	if len(before.Lines) != 0 {
+		t.Fatalf("startup loaded transcript lines: %v", before.Lines)
+	}
+	lastActivity := before.LastActivity
+
+	lines := reloaded.Transcript()
+	if len(lines) != 1 || lines[0] != "historical reply" {
+		t.Fatalf("hydrated transcript = %v", lines)
+	}
+	after := reloaded.Snapshot()
+	if after.Status != StatusDetached || after.Activity != "done" {
+		t.Fatalf("hydration overwrote persisted summary: (%q, %q)", after.Status, after.Activity)
+	}
+	if !after.LastActivity.Equal(lastActivity) {
+		t.Fatalf("hydration changed last activity from %s to %s", lastActivity, after.LastActivity)
 	}
 }
 

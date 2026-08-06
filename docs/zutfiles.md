@@ -303,7 +303,7 @@ In `--print` / `--stream` / `--json` modes, `pre` still runs first: shell escape
 
 ## Filesystem permissions
 
-Filesystem permissions are enforced by the built-in `read`, `write`, and `edit` tools. Empty or omitted scopes deny the operation.
+Filesystem permissions are enforced by the built-in `read`, `write`, `edit`, and `create_worktree` tools. Empty or omitted scopes deny the operation.
 
 Two variables are available in filesystem scopes:
 
@@ -372,6 +372,24 @@ Data-only agent:
 ```
 
 Filesystem checks canonicalize existing paths, or the nearest existing parent for a new path, so symlinks cannot be used to escape a declared scope.
+
+`create_worktree` bootstraps a repository without an existing worktree root in two calls. Its first branch-only call returns no-write guidance for the agent to ask the user whether to use `.worktrees` or an external directory. The reply is sent as `bootstrap_root`: `.worktrees` creates `<repository-root>/.worktrees/<branch>` and adds `/.worktrees/` to the repository root's `.gitignore`; an absolute external path creates `<external-root>/<branch>` without changing repository files. The selected root is stored privately as `zut.worktrees.path` in local Git config, so later calls only need `branch`.
+
+The tool needs read and write scopes covering the repository root, Git metadata, and the selected worktree root. It also requires Bash permission for `git`, even though it invokes Git directly without a shell:
+
+```json
+{
+  "permissions": {
+    "fs": {
+      "read": ["${workspace}"],
+      "write": ["${workspace}"]
+    },
+    "bash": { "mode": "allowlist", "allow": ["git"] }
+  }
+}
+```
+
+The tool disables Git hooks, but a repository checkout can still use configured Git filters. Treat `git` permission for `create_worktree` as permission to run repository-controlled checkout behavior; jail mode remains an accident-prevention guardrail, not a security sandbox.
 
 If the working directory changes during a run, `${workspace}` permissions are expanded again for the new directory.
 

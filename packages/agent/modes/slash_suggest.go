@@ -51,6 +51,7 @@ var slashCatalog = []slashCommand{
 	{Name: "/logout", Desc: "clear a provider's credentials"},
 	{Name: "/model", Desc: "pick a model (or /model <id>)"},
 	{Name: "/reasoning", Desc: "set the reasoning level"},
+	{Name: "/fast", Desc: "toggle fast mode"},
 	{Name: "/llama", Desc: "manage llama.cpp router models"},
 	{Name: "/sessions", Desc: "resume a previous session for this directory"},
 	{Name: "/fork", Desc: "pick a user message and fork the current session"},

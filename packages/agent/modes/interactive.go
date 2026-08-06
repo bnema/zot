@@ -4362,7 +4362,7 @@ func (i *Interactive) openSettingsDialog() {
 		{
 			key:   "fast_mode",
 			label: "fast mode",
-			desc:  "request OpenAI's fast service tier; unsupported providers return an error",
+			desc:  "request the provider's fast tier where supported; unsupported providers return an error",
 			value: fastMode,
 			hint:  fastModeHint,
 		},
@@ -5713,6 +5713,9 @@ func (i *Interactive) runSlash(ctx context.Context, cmd string) (done bool) {
 		}
 	case "/reasoning":
 		i.openReasoningDialog()
+	case "/fast":
+		enabled := i.cfg.FastMode == nil || !*i.cfg.FastMode
+		i.applySettingToggle("fast_mode", enabled)
 	case "/settings":
 		i.openSettingsDialog()
 	case "/sessions":
@@ -5728,7 +5731,7 @@ func (i *Interactive) runSlash(ctx context.Context, cmd string) (done bool) {
 	case "/skills":
 		i.openSkillsDialog()
 	case "/compact":
-		i.runCompact(ctx, false)
+		i.runCompact(ctx, false, false)
 	case "/study":
 		// Canned prompt that tells the agent to read every file
 		// in some target so its later turns have the whole thing
@@ -6674,7 +6677,7 @@ func (i *Interactive) clearPendingCompactTurnLocked() {
 	i.pendingPostCompactNote = ""
 }
 
-const autoCompactContinuationPrompt = `Resume work on the user's most recent intent. Re-read the kept recent messages after the summary to confirm what the user asked for last. If their latest request supersedes earlier plans recorded in the summary, follow the latest request. If there is nothing left to do, say so briefly instead of inventing further work.`
+const autoCompactContinuationPrompt = `Context was compacted while work was in progress. Continue the user's most recent active request now; do not wait for them to type "continue". Re-read the context summary and kept recent messages, treating active constraints and preferences there as still in force, including delegation/subagent instructions. If a newer request supersedes earlier plans in the summary, follow the newer request. If there is truly nothing left to do, say so briefly instead of inventing work.`
 
 // startAutoCompactContinuation adds an internal user turn that tells the
 // model to resume the task after threshold compaction. Provider requests
@@ -6709,7 +6712,9 @@ func (i *Interactive) startAutoCompactContinuation(parent context.Context) {
 // When auto is true the spinner message is pinned to "condensing
 // history" and the status bar surfaces "(auto)" next to the context
 // percentage so it's obvious the system triggered this, not the user.
-func (i *Interactive) runCompact(parent context.Context, auto bool) {
+// forceAutoContinue tells the post-compact hand-off to resume even if the
+// transcript tail has visible assistant text, for example after StopLength.
+func (i *Interactive) runCompact(parent context.Context, auto bool, forceAutoContinue bool) {
 	if i.agent == nil {
 		i.mu.Lock()
 		i.statusErr = "not logged in. type /login first."
@@ -6743,7 +6748,7 @@ func (i *Interactive) runCompact(parent context.Context, auto bool) {
 		// Sink discards deltas — we don't stream the summary to the UI.
 		sink := func(delta string) {}
 		msgsBefore := i.agent.Messages()
-		autoContinue := auto && shouldAutoContinueAfterCompaction(msgsBefore)
+		autoContinue := auto && (forceAutoContinue || shouldAutoContinueAfterCompaction(msgsBefore))
 		// Keep the usual recent tail when possible, but never let it cover
 		// the whole transcript. A short session can still be at 70–90% of
 		// a model's window because one prompt or tool result is large; the
@@ -6829,14 +6834,16 @@ func (i *Interactive) runCompact(parent context.Context, auto bool) {
 				i.pendingCompactImages = nil
 				i.hasPendingCompactPrompt = false
 				hasNext = true
+			case forceAutoContinue && autoContinue:
+				continueAutomatically = true
 			case len(i.queued) > 0:
 				next, i.queued = i.queued[0], i.queued[1:]
 				hasNext = true
 			case autoContinue:
 				// A successful threshold compaction must hand control back to
-				// an unfinished model turn. Completed text answers should settle
-				// without an invented extra request; the user can still prompt
-				// again normally.
+				// unfinished work. Completed text answers still settle normally
+				// unless the caller knows the text was truncated and forces this
+				// continuation.
 				continueAutomatically = true
 			}
 		}
@@ -7047,7 +7054,7 @@ func (i *Interactive) startTurnRequest(parent context.Context, prompt string, im
 		i.pendingPostCompactNote = "context auto-compacted; sending your last message"
 		i.mu.Unlock()
 		i.invalidate()
-		i.runCompact(parent, true)
+		i.runCompact(parent, true, false)
 		return
 	}
 	i.mu.Unlock()
@@ -7242,9 +7249,9 @@ func (i *Interactive) startTurnRequest(parent context.Context, prompt string, im
 		case offer:
 			i.openRescueDialog(rescueProv, rescueFprov, rescueModel, rescueWhy, prompt, rescueImgs)
 		case recoverContextOverflow:
-			i.runCompact(parent, true)
+			i.runCompact(parent, true, false)
 		case shouldAutoCompact:
-			i.runCompact(parent, true)
+			i.runCompact(parent, true, lastStop == provider.StopLength)
 		}
 	}()
 }

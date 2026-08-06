@@ -115,22 +115,24 @@ show instructions and should be configured with environment variables.
 | Cloudflare AI Gateway | `CLOUDFLARE_API_KEY` | `cloudflare-ai-gateway` |
 | Azure OpenAI Responses | `AZURE_OPENAI_API_KEY` | `azure-openai-responses` |
 
-### OpenAI Fast mode
-
-OpenAI, OpenAI Responses, and OpenAI Codex requests can opt into OpenAI's
-Fast service tier from `/settings` by enabling **fast mode**. The setting is
-off by default and is stored as `fast_mode` in `$ZUT_HOME/config.json`.
-
-Fast mode is currently limited to those OpenAI provider IDs. Enabling it while
-using another provider returns an error instead of silently changing that
-provider's request. Subagent children inherit the setting from their parent.
-
 Example:
 
 ```bash
 export OPENROUTER_API_KEY=...
 zut --provider openrouter
 ```
+
+## Fast mode
+
+Use `/fast` or `/settings` to enable **fast mode** for subsequent model calls.
+The setting is off by default and is stored as `fast_mode` in
+`$ZUT_HOME/config.json`.
+
+Fast mode currently requests OpenAI's Fast service tier for OpenAI, OpenAI
+Responses, and OpenAI Codex requests. Enabling it while using another provider
+currently returns an error instead of silently changing that provider's request.
+Subagent children inherit the setting from their parent unless their profile
+sets `fastMode` explicitly.
 
 ## Local llama.cpp router
 

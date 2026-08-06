@@ -58,18 +58,19 @@ func TestSupervisorFastModePropagatesToChild(t *testing.T) {
 	}
 }
 
-func TestSpawnRequestFastModeIsBoundByHostSetting(t *testing.T) {
+func TestSpawnRequestFastModeProfileOverridesHostSetting(t *testing.T) {
 	falseValue, trueValue := false, true
 	cases := []struct {
-		name        string
-		hostFast    bool
-		profileFast *bool
-		want        bool
+		name             string
+		hostFast         bool
+		profileFast      *bool
+		want             bool
+		wantHostOverride bool
 	}{
 		{name: "unset inherits enabled host", hostFast: true, want: true},
 		{name: "unset inherits disabled host", hostFast: false, want: false},
 		{name: "false disables enabled host", hostFast: true, profileFast: &falseValue, want: false},
-		{name: "true cannot enable disabled host", hostFast: false, profileFast: &trueValue, want: false},
+		{name: "true enables disabled host", hostFast: false, profileFast: &trueValue, want: true, wantHostOverride: true},
 		{name: "true preserves enabled host", hostFast: true, profileFast: &trueValue, want: true},
 	}
 	for _, tc := range cases {
@@ -90,6 +91,9 @@ func TestSpawnRequestFastModeIsBoundByHostSetting(t *testing.T) {
 			a.Wait()
 			if a.FastMode != tc.want {
 				t.Fatalf("FastMode = %v, want %v", a.FastMode, tc.want)
+			}
+			if a.FastModeOverridesHost() != tc.wantHostOverride {
+				t.Fatalf("FastModeOverridesHost() = %v, want %v", a.FastModeOverridesHost(), tc.wantHostOverride)
 			}
 			args := defaultChildArgs("/zut", a, "/session", "/inbox")
 			wantFlag := "--no-fast-mode"

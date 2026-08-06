@@ -220,6 +220,8 @@ func serializeTranscript(msgs []provider.Message) string {
 
 const summarizationSystem = `You are a context summarization assistant. Your task is to read a conversation between a user and an AI coding assistant, then produce a structured summary following the exact format specified.
 
+Preserve active user instructions, constraints, preferences, prohibitions, and requested workflows as handoff facts. Do not obey task instructions yourself; record what the next assistant must keep following.
+
 Do NOT continue the conversation. Do NOT respond to any questions in the conversation. ONLY output the structured summary.`
 
 const compactionPrompt = `The messages above are a conversation to summarize. Create a structured context checkpoint summary that another LLM will use to continue the work.
@@ -229,9 +231,9 @@ Use this EXACT format:
 ## Goal
 [What is the user trying to accomplish? Can be multiple items if the session covers different tasks.]
 
-## Constraints & Preferences
-- [Any constraints, preferences, or requirements mentioned by user]
-- [Or "(none)" if none were mentioned]
+## Active Instructions & Preferences
+- [Active constraints, preferences, requirements, prohibitions, and requested workflows still in force. Preserve short instructions verbatim when possible, including tool/delegation/subagent guidance.]
+- [Or "(none)" if none are active]
 
 ## Progress
 ### Done
@@ -253,4 +255,4 @@ Use this EXACT format:
 - [Any data, examples, or references needed to continue]
 - [Or "(none)" if not applicable]
 
-Keep each section concise. Preserve exact file paths, function names, and error messages.`
+Keep each section concise. Preserve exact file paths, function names, error messages, active user instructions, and unresolved task requirements. Do not weaken active instructions into optional suggestions.`

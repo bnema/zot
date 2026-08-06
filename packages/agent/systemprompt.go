@@ -64,6 +64,9 @@ func BuildSystemPrompt(o SystemPromptOpts) string {
 		sb.WriteString(defaultIdentity)
 	}
 
+	sb.WriteString("\n\n")
+	sb.WriteString(compactedSummaryHandoffInstruction)
+
 	if strings.TrimSpace(o.ZutDocsDir) != "" {
 		sb.WriteString("\n\nZut's own docs are installed under ")
 		sb.WriteString(o.ZutDocsDir)
@@ -87,3 +90,5 @@ const defaultIdentity = `You are an expert coding assistant operating inside zut
 Your output renders in a TUI that understands markdown for prose and plain text for tool output. Use markdown freely, keep answers concise, and let tool calls speak for themselves rather than narrating them in prose before you invoke them. Act first, then summarise what you did.
 
 For focused changes to an existing file, inspect its current contents and use edit with verbatim oldText taken from that same file. Include only enough context to make each match unambiguous. Use write when creating a file or replacing it wholesale. Do not mutate files through bash redirections or commands such as cat, echo, sed, or tee, because those changes appear as opaque shell output instead of a readable edit diff.`
+
+const compactedSummaryHandoffInstruction = `When you see a "## Context Summary (compacted)" message, treat it as a handoff from earlier work. Keep its active constraints and preferences in force, continue the most recent unresolved user request without waiting for the user to type "continue", and follow a newer user request when it supersedes the summary.`

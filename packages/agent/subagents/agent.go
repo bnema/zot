@@ -58,6 +58,12 @@ type Agent struct {
 	FastMode    bool
 	Subagent    string
 
+	// fastModeOverridesHost records the spawn-time case where an explicit
+	// profile fastMode: true enabled the child while the host was off. It is
+	// intentionally transient: the parent only needs it to report the initial
+	// spawn warning, while the effective FastMode remains durable state.
+	fastModeOverridesHost bool
+
 	// SessionID, when non-empty, scopes the agent to a particular
 	// host zut session: the dashboard only surfaces agents whose
 	// SessionID matches the active session. Empty means "unscoped" and
@@ -105,13 +111,16 @@ type Agent struct {
 	// Supervisor.Spawn so callers do not need to manage the socket directly.
 	inbox *Inbox
 
-	mu            sync.Mutex
-	status        Status
-	activity      string
-	transcript    []string
-	lastAssistant string
-	finished      time.Time
-	lastErr       error
+	mu               sync.Mutex
+	status           Status
+	activity         string
+	transcript       []string
+	lastAssistant    string
+	finished         time.Time
+	lastErr          error
+	transcriptLoaded bool
+	legacyEventState bool
+	transcriptMu     sync.Mutex
 
 	lifecycleMu      sync.Mutex
 	processState     ProcessState
@@ -167,6 +176,12 @@ type Agent struct {
 // agents without inboxes (e.g. tests using a custom Runner that
 // doesn't speak the daemon protocol).
 func (a *Agent) Inbox() *Inbox { return a.inbox }
+
+// FastModeOverridesHost reports whether this child was created with an
+// explicit fast-mode override while the host setting was disabled.
+func (a *Agent) FastModeOverridesHost() bool {
+	return a != nil && a.fastModeOverridesHost
+}
 
 // Status returns the current high-level status. Cheap; safe from any goroutine.
 func (a *Agent) Status() Status {
@@ -299,8 +314,10 @@ func (a *Agent) setResult(result *TurnResult) {
 	a.lifecycleMu.Unlock()
 }
 
-// Transcript returns a copy of the running transcript.
+// Transcript returns a copy of the running transcript. Detached agents
+// hydrate their durable event history the first time it is requested.
 func (a *Agent) Transcript() []string {
+	_ = a.loadTranscript()
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	out := make([]string, len(a.transcript))

@@ -420,9 +420,10 @@ func (e *Extension) Command(name, description string, fn CommandHandler) {
 // OpenAI accept). Call this BEFORE Run(); zut folds extension tools
 // into the agent's registry once the extension's ready frame fires.
 //
-// Conflicts with active built-in tool names are ignored. The native
-// web_search name is reserved even when that built-in is disabled, so an
-// extension cannot claim or replace it.
+// Conflicts with active built-in tool names (read, write, edit, bash,
+// create_worktree, lsp, web_search, and skill) are silently shadowed by the
+// built-in. The native web_search name is reserved even when that built-in is
+// disabled, so an extension cannot claim or replace it.
 func (e *Extension) Tool(name, description string, schema json.RawMessage, fn ToolHandler) {
 	e.registerTool(name, description, schema, false, fn)
 }
