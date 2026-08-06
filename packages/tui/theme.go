@@ -405,14 +405,25 @@ func (t Theme) UserBubbleRow(content string, width int) string {
 	return bar + t.UserBubble(content, bubbleW)
 }
 
-// Bold wraps s in bold SGR.
-func Bold(s string) string { return "\x1b[1m" + s + "\x1b[22m" }
+const (
+	reset           = "\x1b[0m"
+	dim             = "\x1b[2m"
+	normalIntensity = "\x1b[22m"
+)
 
-// Dim wraps s in dim SGR. Re-apply dim after each full SGR reset so
-// independently styled segments remain dimmed too.
+var dimStyleReplacer = strings.NewReplacer(
+	reset, reset+dim,
+	normalIntensity, normalIntensity+dim,
+)
+
+// Bold wraps s in bold SGR.
+func Bold(s string) string { return "\x1b[1m" + s + normalIntensity }
+
+// Dim wraps s in dim SGR. Re-apply dim after sequences that clear faint so
+// independently styled segments remain dimmed too. Like Bold and Italic, it
+// restores only its own attribute so callers can safely compose styles.
 func Dim(s string) string {
-	const dim = "\x1b[2m"
-	return dim + strings.ReplaceAll(s, reset, reset+dim) + reset
+	return dim + dimStyleReplacer.Replace(s) + normalIntensity
 }
 
 // DimLines returns a dimmed copy of lines. It is suitable for content behind
@@ -428,8 +439,6 @@ func DimLines(lines []string) []string {
 
 // Italic wraps s in italic SGR.
 func Italic(s string) string { return "\x1b[3m" + s + "\x1b[23m" }
-
-const reset = "\x1b[0m"
 
 func sgrFG(c int) string { return "\x1b[38;5;" + itoa(clampXtermIndex(c)) + "m" }
 func sgrBG(c int) string { return "\x1b[48;5;" + itoa(clampXtermIndex(c)) + "m" }
