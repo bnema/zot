@@ -106,6 +106,13 @@ func TestRenderRightBarPreservesPhaseProgressWhenTitleIsClipped(t *testing.T) {
 	}
 }
 
+func TestTruncateRightBarPhaseLinePreservesProgressWithoutRoomForName(t *testing.T) {
+	got := truncateRightBarPhaseLine("[>] Current phase  0/1", 9)
+	if want := "[>]   0/1"; got != want {
+		t.Fatalf("truncated phase = %q, want %q", got, want)
+	}
+}
+
 func TestRenderRightBarUsesChecklistIndentEllipsisAndBoldPhases(t *testing.T) {
 	lines := RenderRightBar(Dark, []RightBarWidget{{
 		Extension: "tasked-phases",
@@ -123,7 +130,7 @@ func TestRenderRightBarUsesChecklistIndentEllipsisAndBoldPhases(t *testing.T) {
 	if len(plainLines) < 4 {
 		t.Fatalf("checklist rows are missing: %q", plain)
 	}
-	expectedTask := truncateRightBarLine("  [ ] Sort the leftover star stickers", 35)
+	const expectedTask = "  [ ] Sort the leftover star sti..."
 	if got := strings.TrimRight(plainLines[3], " "); got != expectedTask {
 		t.Fatalf("task row = %q, want clipped row %q", got, expectedTask)
 	}

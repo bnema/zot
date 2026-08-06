@@ -224,7 +224,10 @@ func truncateRightBarPhaseLine(text string, width int) string {
 	prefix := text[:nameStart]
 	suffix := text[nameEnd:]
 	nameWidth := width - visibleWidth(prefix) - visibleWidth(suffix)
-	if nameWidth <= 0 {
+	if nameWidth == 0 {
+		return prefix + suffix
+	}
+	if nameWidth < 0 {
 		return truncateRightBarLine(text, width)
 	}
 	return prefix + truncateRightBarLine(text[nameStart:nameEnd], nameWidth) + suffix
