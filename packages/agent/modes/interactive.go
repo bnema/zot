@@ -144,6 +144,10 @@ type InteractiveConfig struct {
 	// above or below the main input.
 	TUIWorkingPosition string
 
+	// TUISubagentPosition controls whether live subagent activity renders
+	// above or below the main input. Empty defaults below the input.
+	TUISubagentPosition string
+
 	// QuickModelShortcuts maps slots 1-9 to provider/model pairs. The
 	// shortcuts are Ctrl+1..9. Cmd+1..9 may also work when the terminal
 	// forwards Command/Super keypresses, but Ctrl is the displayed chord.
@@ -433,6 +437,7 @@ type SettingsStore interface {
 	SetTUIInputStyle(style string) error
 	SetTUIStatusPosition(position string) error
 	SetTUIWorkingPosition(position string) error
+	SetTUISubagentPosition(position string) error
 	SetReasoning(level string) error
 	SetTheme(name string) error
 }
@@ -512,27 +517,28 @@ type Interactive struct {
 	// it. We snapshot the total expected stream length (already
 	// streamed + still pending) at the moment the tool starts, and
 	// hold the block back until the pacer reaches it.
-	toolGate         map[string]int
-	statusErr        string
-	statusOK         string
-	reloadStatusSeq  uint64
-	extStatuses      map[string]map[string]extensionStatus
-	extWidgets       map[string]map[string]extensionWidget
-	rightBarHidden   bool     // session-only Ctrl+B toggle; zero value keeps the rail visible
-	liveBlock        []string // live streaming/tool progress rendered outside scrollback
-	helpBlock        []string // rendered above the chat when /help was typed
-	cumUsage         provider.Usage
-	lastCtxInput     int // input_tokens of the most recent turn — approximates current context size
-	busy             bool
-	activity         agentActivity
-	pendingIdleWork  []func()
-	dirty            chan struct{}
-	modelRefresh     chan modelRefreshResult
-	modelRefreshing  bool
-	startupPreDone   chan startupPreResult
-	cancelTurn       context.CancelFunc
-	scrollOffset     int // rows from the bottom; 0 = pinned to latest
-	prevScrollOffset int // last value redraw snapped against; tracks intent
+	toolGate               map[string]int
+	statusErr              string
+	statusOK               string
+	reloadStatusSeq        uint64
+	extStatuses            map[string]map[string]extensionStatus
+	extWidgets             map[string]map[string]extensionWidget
+	rightBarHidden         bool     // session-only Ctrl+B toggle; zero value keeps the rail visible
+	liveBlock              []string // live streaming/tool progress rendered outside scrollback
+	helpBlock              []string // rendered above the chat when /help was typed
+	cumUsage               provider.Usage
+	lastCtxInput           int // input_tokens of the most recent turn — approximates current context size
+	busy                   bool
+	activity               agentActivity
+	subagentActivityActive bool
+	pendingIdleWork        []func()
+	dirty                  chan struct{}
+	modelRefresh           chan modelRefreshResult
+	modelRefreshing        bool
+	startupPreDone         chan startupPreResult
+	cancelTurn             context.CancelFunc
+	scrollOffset           int // rows from the bottom; 0 = pinned to latest
+	prevScrollOffset       int // last value redraw snapped against; tracks intent
 
 	// prevChatLen and prevChatCols track the chat buffer's size at the
 	// last redraw so that when content grows below the user's viewport
@@ -1129,9 +1135,10 @@ func (i *Interactive) Run(ctx context.Context) error {
 			// the same way it does inside btw.
 			i.mu.Lock()
 			busy := i.busy
+			subagentActivityActive := i.subagentActivityActive
 			sessionLoading := i.sessionDialog.Loading()
 			i.mu.Unlock()
-			if busy || sessionLoading || i.btwDialog.Loading() || i.subagentsDialog.NeedsTickRefresh() {
+			if busy || subagentActivityActive || sessionLoading || i.btwDialog.Loading() || i.subagentsDialog.NeedsTickRefresh() {
 				requestRedraw()
 			}
 		}
@@ -1823,6 +1830,18 @@ func (i *Interactive) redraw() {
 		i.ed.Prompt = i.cfg.Theme.AccentBar(i.cfg.Theme.Accent)
 	}
 	edLines, curR, curC := i.ed.Render(mainCols)
+	dashboardActive := i.subagentsDialog.Active()
+	var allSubagentLines []string
+	if !dashboardActive {
+		now := i.clock()
+		allSubagentLines = renderSubagentActivityLines(
+			i.cfg.Theme,
+			i.spin.FrameAt(now),
+			i.activeSubagentActivitySnapshots(),
+			mainCols,
+			now,
+		)
+	}
 	var workingLines []string
 	if busyPrefix != "" && !workingWithStatus {
 		workingLines = []string{"  " + busyPrefix}
@@ -1870,26 +1889,31 @@ func (i *Interactive) redraw() {
 	// content. The status block and editor get their own dedicated
 	// blanks so spacing stays consistent whether or not a dialog or
 	// popup is showing.
-	bottom := make([]string, 0, len(dialog)+len(suggest)+len(queue)+len(extensionLines)+len(statusLines)+len(edLines)+9)
-	inputStartRow := -1
-	if len(dialog) > 0 {
-		bottom = append(bottom, "")
-	}
-	bottom = append(bottom, dialog...)
-	// The subagent dashboard owns the bottom of the screen while it's
-	// active: it has its own inline editors for spawn (`n`) and
-	// prompt (`p`), so the main input would be a confusing second
-	// caret. The suggest popup, sliding-in queue, status block, and
-	// main editor are all hidden underneath it. Keystrokes still
-	// reach handleKey — it routes them to subagentsDialog.HandleKey
-	// before the editor ever sees them — so the only effect of this
-	// branch is visual.
-	if !i.subagentsDialog.Active() {
+	composeBottom := func(subagentLines []string) (bottom []string, inputStartRow int) {
+		bottom = make([]string, 0, len(dialog)+len(suggest)+len(queue)+len(extensionLines)+len(statusLines)+len(subagentLines)+len(edLines)+9)
+		inputStartRow = -1
+		if len(dialog) > 0 {
+			bottom = append(bottom, "")
+		}
+		bottom = append(bottom, dialog...)
+		// The subagent dashboard owns the bottom of the screen while it's
+		// active: it has its own inline editors for spawn (`n`) and
+		// prompt (`p`), so the main input would be a confusing second
+		// caret. The suggest popup, sliding-in queue, status block, and
+		// main editor are all hidden underneath it. Keystrokes still
+		// reach handleKey — it routes them to subagentsDialog.HandleKey
+		// before the editor ever sees them — so the only effect of this
+		// branch is visual.
+		if dashboardActive {
+			return bottom, inputStartRow
+		}
+
 		bottom = append(bottom, suggest...)
 		bottom = append(bottom, queue...)
 		lineInput := inputStyle == tui.InputStyleLines
 		statusBelow := statusPosition == tui.StatusPositionBelowInput
 		workingBelow := workingPosition == tui.WorkingPositionBelowInput
+		subagentBelow := tui.NormalizeSubagentPosition(i.cfg.TUISubagentPosition) == tui.SubagentPositionBelowInput
 
 		var aboveInput []string
 		aboveInput = append(aboveInput, extensionLines...)
@@ -1899,7 +1923,13 @@ func (i *Interactive) redraw() {
 		if !workingBelow {
 			aboveInput = append(aboveInput, workingLines...)
 		}
+		if !subagentBelow {
+			aboveInput = append(aboveInput, subagentLines...)
+		}
 		var belowInput []string
+		if subagentBelow {
+			belowInput = append(belowInput, subagentLines...)
+		}
 		if workingBelow {
 			belowInput = append(belowInput, workingLines...)
 		}
@@ -1919,12 +1949,36 @@ func (i *Interactive) redraw() {
 		inputStartRow = len(bottom)
 		bottom = append(bottom, edLines...)
 		if len(belowInput) > 0 {
-			if !lineInput {
+			// Running subagents sit immediately under the prompt by default.
+			// Other below-input chrome keeps the existing breathing room.
+			if !lineInput && (!subagentBelow || len(subagentLines) == 0) {
 				bottom = append(bottom, "")
 			}
 			bottom = append(bottom, belowInput...)
 		}
+		return bottom, inputStartRow
 	}
+
+	// Preserve one chat row and the renderer-owned bottom margin. This keeps
+	// a bounded set of live indicators from pushing the editor or its cursor
+	// out of a fixed right-bar frame on short terminals.
+	const rendererBottomMarginRows = 1
+	maxBottomRows := rows - rendererBottomMarginRows - 1
+	subagentLines := allSubagentLines
+	bottom, inputStartRow := composeBottom(subagentLines)
+	if !dashboardActive && len(allSubagentLines) > 0 {
+		for maxRows := len(allSubagentLines); maxRows >= 0; maxRows-- {
+			candidate := limitSubagentActivityLines(i.cfg.Theme, allSubagentLines, maxRows, mainCols)
+			candidateBottom, candidateInputStartRow := composeBottom(candidate)
+			if len(candidateBottom) <= maxBottomRows || maxRows == 0 {
+				subagentLines = candidate
+				bottom = candidateBottom
+				inputStartRow = candidateInputStartRow
+				break
+			}
+		}
+	}
+	i.subagentActivityActive = !dashboardActive && len(subagentLines) > 0
 
 	chatRows := rows - len(bottom)
 	if rightBarActive {
@@ -3649,6 +3703,18 @@ func (i *Interactive) ApplySessionAgent(ag *core.Agent, providerName, model stri
 	i.invalidate()
 }
 
+// SetSubagentSessionScope changes the live-worker filter and then requests a
+// redraw. Session changes must use this boundary after their host/session
+// state commits so input-adjacent activity cannot remain scoped to the prior
+// session until another UI event arrives.
+func (i *Interactive) SetSubagentSessionScope(sessionID string) {
+	if i.cfg.Supervisor == nil {
+		return
+	}
+	i.cfg.Supervisor.SetActiveSession(sessionID)
+	i.invalidate()
+}
+
 // ApplyChangedCWD is called by hosts after a successful /cd hook that do
 // not provide startup context metadata.
 func (i *Interactive) ApplyChangedCWD(ag *core.Agent, provider, model, cwd string) {
@@ -4117,6 +4183,7 @@ func (i *Interactive) openSettingsDialog() {
 	inputStyle := tui.NormalizeInputStyle(i.cfg.TUIInputStyle)
 	statusPosition := tui.NormalizeStatusPosition(i.cfg.TUIStatusPosition)
 	workingPosition := tui.NormalizeWorkingPosition(i.cfg.TUIWorkingPosition)
+	subagentPosition := tui.NormalizeSubagentPosition(i.cfg.TUISubagentPosition)
 	quickItems := i.quickModelSettingItems()
 
 	autoCompactOptions := []settingsOption{
@@ -4194,6 +4261,18 @@ func (i *Interactive) openSettingsDialog() {
 	for idx, opt := range workingPositionOptions {
 		if opt.value == workingPosition {
 			workingPositionChoice = idx
+			break
+		}
+	}
+
+	subagentPositionOptions := []settingsOption{
+		{value: tui.SubagentPositionAboveInput, label: "above input", desc: "show running subagents above the input"},
+		{value: tui.SubagentPositionBelowInput, label: "below input", desc: "show running subagents immediately below the input"},
+	}
+	subagentPositionChoice := 0
+	for idx, opt := range subagentPositionOptions {
+		if opt.value == subagentPosition {
+			subagentPositionChoice = idx
 			break
 		}
 	}
@@ -4294,15 +4373,8 @@ func (i *Interactive) openSettingsDialog() {
 		{
 			key:   "tui_settings",
 			label: "tui settings",
-			desc:  "choose input chrome and where status information appears",
+			desc:  "choose input chrome in its order around the prompt",
 			children: []settingsItem{
-				{
-					key:     "tui_input_style",
-					label:   "input style",
-					desc:    "choose between the plain prompt, lines, and a block input area",
-					options: inputStyleOptions,
-					choice:  inputStyleChoice,
-				},
 				{
 					key:     "tui_status_position",
 					label:   "status position",
@@ -4316,6 +4388,20 @@ func (i *Interactive) openSettingsDialog() {
 					desc:    "place the working spinner above or below the input",
 					options: workingPositionOptions,
 					choice:  workingPositionChoice,
+				},
+				{
+					key:     "tui_input_style",
+					label:   "input style",
+					desc:    "choose between the plain prompt, lines, and a block input area",
+					options: inputStyleOptions,
+					choice:  inputStyleChoice,
+				},
+				{
+					key:     "tui_subagent_position",
+					label:   "running subagent position",
+					desc:    "place live subagent activity above or below the input",
+					options: subagentPositionOptions,
+					choice:  subagentPositionChoice,
 				},
 			},
 		},
@@ -4355,6 +4441,8 @@ func (i *Interactive) applySettingChange(act settingsAction) {
 		i.applyTUIStatusPositionSetting(act.StringValue)
 	case act.Key == "tui_working_position":
 		i.applyTUIWorkingPositionSetting(act.StringValue)
+	case act.Key == "tui_subagent_position":
+		i.applyTUISubagentPositionSetting(act.StringValue)
 	default:
 		i.applySettingToggle(act.Key, act.Value)
 	}
@@ -4997,6 +5085,33 @@ func (i *Interactive) applyTUIWorkingPositionSetting(position string) {
 		label = "below input"
 	}
 	i.statusOK = "working spinner position " + label
+	i.statusErr = ""
+	i.mu.Unlock()
+}
+
+func (i *Interactive) applyTUISubagentPositionSetting(position string) {
+	defer func() {
+		if i.rend != nil {
+			i.rend.Clear()
+		}
+		i.invalidate()
+	}()
+	position = tui.NormalizeSubagentPosition(position)
+	i.cfg.TUISubagentPosition = position
+	if i.cfg.SettingsStore != nil {
+		if err := i.cfg.SettingsStore.SetTUISubagentPosition(position); err != nil {
+			i.mu.Lock()
+			i.statusErr = "settings: " + err.Error()
+			i.mu.Unlock()
+			return
+		}
+	}
+	i.mu.Lock()
+	label := "below input"
+	if position == tui.SubagentPositionAboveInput {
+		label = "above input"
+	}
+	i.statusOK = "running subagent position " + label
 	i.statusErr = ""
 	i.mu.Unlock()
 }
@@ -7609,6 +7724,7 @@ func (i *Interactive) trackSubagentWorker(a *subagents.Agent, task string) {
 	i.subagentWatchMu.Lock()
 	i.subagentWatch = append(i.subagentWatch, entry)
 	i.subagentWatchMu.Unlock()
+	i.invalidate()
 
 	a.SetOnTurnEnd(func(step int, errMsg string) {
 		outcome := "completed"

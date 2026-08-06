@@ -205,6 +205,20 @@ func (configSettingsStore) SetTUIWorkingPosition(position string) error {
 	return SaveConfig(cfg)
 }
 
+func (configSettingsStore) SetTUISubagentPosition(position string) error {
+	cfg, err := LoadConfig()
+	if err != nil {
+		return err
+	}
+	position = tui.NormalizeSubagentPosition(position)
+	if position == tui.SubagentPositionBelowInput {
+		cfg.TUISubagentPosition = ""
+	} else {
+		cfg.TUISubagentPosition = position
+	}
+	return SaveConfig(cfg)
+}
+
 func (configSettingsStore) SetReasoning(level string) error {
 	cfg, err := LoadConfig()
 	if err != nil {
