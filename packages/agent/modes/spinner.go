@@ -104,7 +104,11 @@ func (s *spinner) FrameAt(now time.Time) string {
 	if interval <= 0 {
 		interval = 80 * time.Millisecond
 	}
-	idx := int((now.UnixNano() / int64(interval)) % int64(len(s.frames)))
+	ticks := now.UnixNano() / int64(interval)
+	idx := int(ticks % int64(len(s.frames)))
+	if idx < 0 {
+		idx += len(s.frames)
+	}
 	return s.frames[idx]
 }
 
