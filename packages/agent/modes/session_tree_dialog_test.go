@@ -1,6 +1,7 @@
 package modes
 
 import (
+	"encoding/json"
 	"os"
 	"strings"
 	"testing"
@@ -118,6 +119,33 @@ func TestSessionTreeRetainsPreCompactionMessagesAndHidesToolRows(t *testing.T) {
 	}
 	if oldFinalRows != 1 {
 		t.Fatalf("preserved compaction-tail row rendered %d times, want once", oldFinalRows)
+	}
+}
+
+func TestSessionTreeOpensWithExtensionStateRows(t *testing.T) {
+	root := t.TempDir()
+	cwd := "/workspace/tree-extension-state"
+	session, err := core.NewSession(root, cwd, "test", "model", "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := session.AppendMessage(treeTestMessage(provider.RoleUser, provider.TextBlock{Text: "prompt"})); err != nil {
+		t.Fatal(err)
+	}
+	if err := session.AppendExtensionState("tasked-phases", json.RawMessage(`{"version":1}`)); err != nil {
+		t.Fatal(err)
+	}
+	if err := session.AppendMessage(treeTestMessage(provider.RoleAssistant, provider.TextBlock{Text: "answer"})); err != nil {
+		t.Fatal(err)
+	}
+	path := session.Path
+	if err := session.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	d := newSessionTreeDialog()
+	if !d.OpenSessionFamily(root, cwd, path) {
+		t.Fatal("OpenSessionFamily returned false for a session with extension state")
 	}
 }
 
