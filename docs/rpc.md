@@ -192,10 +192,16 @@ Stream notifications during a `prompt` or `compact`. None carry an `id`.
 | `type` | Fields | Meaning |
 |---|---|---|
 | `turn_start` | `step` | Beginning of one model call (max-steps loop iteration) |
+| `request_started` | `provider`, `model`, `scope`, `attempt`, `max_attempts` | A provider (`scope=provider`) or agent (`scope=agent`) request attempt started |
+| `retry_scheduled` | `scope`, `attempt`, `max_attempts`, `delay_ms` | The upcoming attempt is delayed; `delay_ms` is a non-negative integer |
 | `user_message` | `content`, `time` | The submitted prompt as it was added to the transcript |
-| `assistant_start` | (none) | About to receive assistant streaming |
+| `assistant_start` | (none) | Provider connection opened; waiting for assistant streaming |
 | `text_delta` | `delta` | Partial assistant text. Concatenate to build the full reply |
-| `tool_call` | `id`, `name`, `args` | The model wants to call a tool |
+| `tool_use_start` | `id`, `name` | Provider started streaming a tool call |
+| `tool_use_args` | `id`, `delta` | Partial tool-call argument JSON |
+| `tool_use_end` | `id` | Provider completed the tool-call argument stream |
+| `tool_call` | `id`, `name`, `args` | The model proposed a tool call |
+| `tool_execution_started` | `id`, `name` | Guard and confirmation checks passed; the tool is about to execute |
 | `tool_progress` | `id`, `text` | Optional progress line from the tool while it runs |
 | `tool_result` | `id`, `is_error`, `content` | Tool finished |
 | `assistant_message` | `content`, `time` | Final assistant message after the model turn ends |
@@ -208,6 +214,10 @@ Stream notifications during a `prompt` or `compact`. None carry an `id`.
 | `ext_widget` | `extension`, `id`, `position`, `title`, `lines` | Persistent extension widget update. `position` may be `above_input` or `right_bar`; clients choose their own layout. |
 | `ext_widget_clear` | `extension`, `id` | Remove one persistent extension widget. |
 | `ext_chrome_clear` | `extension` | The extension exited; discard all persistent status/widget chrome owned by it. |
+
+A `compact` request emits request-lifecycle, `assistant_start`, and summary
+`text_delta` events before `compact_done`. It does not emit model-loop turn or
+tool events.
 
 ## Message shape
 

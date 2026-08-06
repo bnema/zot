@@ -442,7 +442,9 @@ func (s *rpcServer) runCompact(id string) {
 	defer s.setCancel(nil)
 
 	s.writeResponse(id, "compact", map[string]any{"started": true})
-	summary, err := s.agent.Compact(subCtx, 4, nil)
+	summary, err := s.agent.CompactWithEvents(subCtx, 4, func(ev core.AgentEvent) {
+		s.writeEvent(modes.EventToJSON(ev))
+	})
 	if err != nil {
 		if !errors.Is(err, context.Canceled) {
 			s.writeEvent(map[string]any{"type": "error", "message": err.Error()})

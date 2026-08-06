@@ -1,6 +1,6 @@
 {
   "name": "custom-spinner",
-  "description": "An alternative spinner for zut that only displays a single spinner text.",
+  "description": "An alternative busy-spinner animation for zut.",
   "colors": {
     "dark": {
       "spinner_frames": [
@@ -12,9 +12,6 @@
         "\u28DF",
         "\u28EF",
         "\u28F7"
-      ],
-      "spinner_messages": [
-        "working"
       ],
       "spinner_interval_ms": 120
     }

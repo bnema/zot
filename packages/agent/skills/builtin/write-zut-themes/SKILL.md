@@ -88,7 +88,6 @@ Top-level spinner overrides are valid and apply to both modes.
   "name": "custom-spinner",
   "description": "Only changes the busy spinner.",
   "spinner_frames": ["◢", "◣", "◤", "◥"],
-  "spinner_messages": ["working"],
   "spinner_interval_ms": 120
 }
 ```
@@ -103,11 +102,10 @@ settings are used on dark defaults.
 ```json
 {
   "name": "custom-spinner",
-  "description": "An alternative spinner for zut that only displays a single spinner text.",
+  "description": "An alternative busy-spinner animation for zut.",
   "colors": {
     "dark": {
       "spinner_frames": ["◢", "◣", "◤", "◥"],
-      "spinner_messages": ["working"],
       "spinner_interval_ms": 120
     }
   }
@@ -142,7 +140,6 @@ All fields below are optional.
       "selection_bg": 24,
       "selection_fg": 231,
       "spinner_frames": ["⠋", "⠙", "⠚", "⠞", "⠖", "⠦", "⠴", "⠲", "⠳", "⠓"],
-      "spinner_messages": ["thinking", "working"],
       "spinner_interval_ms": 80,
       "syntax_base_style": "monokai",
       "syntax": {
@@ -183,7 +180,7 @@ under `colors`, when they should apply to both modes:
   "name": "tiny",
   "accent": 204,
   "colors": {
-    "spinner_messages": ["shipping"]
+    "spinner_frames": ["◐", "◓", "◑", "◒"]
   }
 }
 ```
@@ -230,16 +227,17 @@ Spinner settings can appear at top level, under `colors`, or under
 
 - `spinner_frames` — list of frame strings. Use single-cell glyphs
   when possible so status-bar alignment stays clean.
-- `spinner_messages` — list of messages; zut chooses one per turn.
 - `spinner_interval_ms` — frame interval in milliseconds; must be
   positive. Missing/invalid falls back to 80ms.
+
+The working-status label belongs to zut and always describes the current
+operation. The legacy `spinner_messages` field is ignored.
 
 Example:
 
 ```json
 {
   "spinner_frames": ["◐", "◓", "◑", "◒"],
-  "spinner_messages": ["shipping pixels", "warming edge cache"],
   "spinner_interval_ms": 120
 }
 ```

@@ -2,6 +2,7 @@ package core
 
 import (
 	"encoding/json"
+	"time"
 
 	"github.com/bnema/zut/packages/provider"
 )
@@ -29,6 +30,35 @@ type EvAssistantStart struct{}
 
 func (EvAssistantStart) Type() string { return "assistant_start" }
 
+// RetryScope identifies the retry layer that issued an activity event.
+type RetryScope string
+
+const (
+	RetryScopeProvider RetryScope = "provider"
+	RetryScopeAgent    RetryScope = "agent"
+)
+
+// EvRequestStarted reports an outbound provider request attempt.
+type EvRequestStarted struct {
+	Provider    string
+	Model       string
+	Scope       RetryScope
+	Attempt     int
+	MaxAttempts int
+}
+
+func (EvRequestStarted) Type() string { return "request_started" }
+
+// EvRetryScheduled reports a retry delay before its upcoming attempt.
+type EvRetryScheduled struct {
+	Scope       RetryScope
+	Attempt     int
+	MaxAttempts int
+	Delay       time.Duration
+}
+
+func (EvRetryScheduled) Type() string { return "retry_scheduled" }
+
 type EvTextDelta struct {
 	Delta string
 }
@@ -42,6 +72,15 @@ type EvToolCall struct {
 }
 
 func (EvToolCall) Type() string { return "tool_call" }
+
+// EvToolExecutionStarted fires after guards and confirmation allow a call,
+// immediately before the tool starts executing.
+type EvToolExecutionStarted struct {
+	ID   string
+	Name string
+}
+
+func (EvToolExecutionStarted) Type() string { return "tool_execution_started" }
 
 // EvToolUseStart fires the moment the provider announces a new
 // tool_use block during streaming, before any arg JSON has

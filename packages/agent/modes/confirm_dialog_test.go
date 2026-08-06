@@ -39,6 +39,7 @@ func TestConfirmToolCallAttachesDiffBeforeDecision(t *testing.T) {
 			Name:    "edit",
 			Summary: "sample.go",
 			Content: "-old\n+new\n",
+			Origin:  "btw",
 		})
 	}()
 
@@ -50,10 +51,10 @@ func TestConfirmToolCallAttachesDiffBeforeDecision(t *testing.T) {
 		t.Fatal("confirmation dialog did not open")
 	}
 	i.mu.Lock()
-	preview := i.toolCalls["call-1"].Preview
+	mainPreview := i.toolCalls["call-1"].Preview
 	i.mu.Unlock()
-	if preview != "-old\n+new\n" {
-		t.Fatalf("tool preview = %q", preview)
+	if mainPreview != "" {
+		t.Fatalf("main tool preview = %q, want side-chat origin to leave it untouched", mainPreview)
 	}
 	btw.mu.Lock()
 	btwPreview := btw.turns[0].Tools[0].Preview

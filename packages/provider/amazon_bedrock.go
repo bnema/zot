@@ -600,6 +600,12 @@ func (c *bedrockClient) Stream(ctx context.Context, req Request) (<-chan Event, 
 	} else {
 		return nil, fmt.Errorf("bedrock: no auth configured")
 	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if req.Lifecycle != nil {
+		req.Lifecycle.RequestAttempt(1, 1)
+	}
 	resp, err := c.http.Do(httpReq)
 	if err != nil {
 		return nil, fmt.Errorf("bedrock: %w", err)

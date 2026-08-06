@@ -578,7 +578,7 @@ func (c *anthropicClient) Stream(ctx context.Context, req Request) (<-chan Event
 		return httpReq, nil
 	}
 
-	resp, err := doStreamWithRetry(ctx, c.http, newReq)
+	resp, err := doStreamWithRetry(ctx, c.http, newReq, req.Lifecycle)
 	if err != nil {
 		return nil, fmt.Errorf("anthropic: %w", err)
 	}

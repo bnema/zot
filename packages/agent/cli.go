@@ -1492,6 +1492,7 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 					Name:    call.Name,
 					Summary: core.BuildPreview(effectiveArgs, 120),
 					Content: content.String(),
+					Origin:  call.Origin,
 				})
 				if !ok {
 					return false, reason, nil

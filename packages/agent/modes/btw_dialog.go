@@ -2,6 +2,7 @@ package modes
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"sync"
@@ -38,13 +39,12 @@ type btwDialog struct {
 	compactMode bool
 	lineInput   bool
 	cancel      context.CancelFunc
+	generation  uint64
 
-	// spin drives the same braille animation + rotating funny-line
-	// shown in the main status bar. Owned by the dialog so its clock
-	// is independent of the main spinner (so re-opening the dialog
-	// always starts fresh and the message doesn't carry over from a
-	// completed main turn).
-	spin *spinner
+	// spin drives the same braille animation as the main status bar. Its
+	// activity label is owned by this dialog under d.mu.
+	spin     *spinner
+	activity agentActivity
 
 	// sideAgent owns an isolated transcript seeded from the main
 	// conversation. It uses the same tools and runtime hooks as the
@@ -104,6 +104,7 @@ func (d *btwDialog) SetToolPreview(id, summary, content string) bool {
 		if tool := findBtwTool(&d.turns[turnIdx], id); tool != nil {
 			tool.Args = summary
 			tool.Preview = content
+			d.activity.activity = activity{kind: activityAwaitingConfirmation, tool: tool.Name}
 			return true
 		}
 	}
@@ -130,6 +131,7 @@ func (d *btwDialog) ToggleToolExpansion() {
 // host redraw loop can pick up the update without polling.
 func (d *btwDialog) Open(th tui.Theme, agent *core.Agent, system, model, cwd, seed string, compactMode, flatTools bool, lineInput bool, invalidate func()) {
 	d.mu.Lock()
+	d.generation++
 	d.active = true
 	d.theme = th
 	d.compactMode = compactMode
@@ -138,6 +140,7 @@ func (d *btwDialog) Open(th tui.Theme, agent *core.Agent, system, model, cwd, se
 	d.turns = nil
 	d.loading = false
 	d.cancel = nil
+	d.activity = agentActivity{}
 	prompt := th.AccentBar(th.Accent)
 	if lineInput {
 		prompt = ""
@@ -156,10 +159,12 @@ func (d *btwDialog) Open(th tui.Theme, agent *core.Agent, system, model, cwd, se
 // Close hides the dialog. Cancels any in-flight request.
 func (d *btwDialog) Close() {
 	d.mu.Lock()
+	d.generation++
 	d.active = false
 	d.turns = nil
 	d.editor = nil
 	d.loading = false
+	d.activity = agentActivity{}
 	cancel := d.cancel
 	d.cancel = nil
 	d.sideAgent = nil
@@ -247,15 +252,25 @@ func (d *btwDialog) submit(invalidate func()) {
 	d.spin.Start()
 	d.turns = append(d.turns, btwTurn{User: question})
 	turnIdx := len(d.turns) - 1
+	generation := d.generation
 
 	ctx, cancel := context.WithCancel(context.Background())
 	d.cancel = cancel
 	agent := d.sideAgent
+	providerName := ""
+	model := ""
+	if agent != nil {
+		model = agent.Model
+		if agent.Client != nil {
+			providerName = agent.Client.Name()
+		}
+	}
+	d.activity = newAgentActivity(providerName, model)
 	d.mu.Unlock()
 
 	go func() {
 		err := agent.Prompt(ctx, question, nil, func(ev core.AgentEvent) {
-			d.handleAgentEvent(turnIdx, ev)
+			d.handleAgentEvent(turnIdx, generation, ev)
 			if invalidate != nil {
 				invalidate()
 			}
@@ -264,7 +279,7 @@ func (d *btwDialog) submit(invalidate func()) {
 		if err != nil && ctx.Err() == nil {
 			errMsg = err.Error()
 		}
-		d.completeTurn(turnIdx, errMsg)
+		d.completeTurn(turnIdx, generation, errMsg)
 		if invalidate != nil {
 			invalidate()
 		}
@@ -278,7 +293,12 @@ func newBtwAgent(main *core.Agent, system, model string) *core.Agent {
 	agent.Temperature = main.Temperature
 	agent.FastMode = main.FastModeEnabled()
 	agent.MaxTokens = main.MaxTokens
-	agent.BeforeToolExecute = main.BeforeToolExecute
+	if beforeToolExecute := main.BeforeToolExecute; beforeToolExecute != nil {
+		agent.BeforeToolExecute = func(call provider.ToolCallBlock) (bool, string, json.RawMessage) {
+			call.Origin = "btw"
+			return beforeToolExecute(call)
+		}
+	}
 	agent.BeforeTurn = main.BeforeTurn
 	agent.BeforeAssistantMessage = main.BeforeAssistantMessage
 	agent.MaxRetries = main.MaxRetries
@@ -288,13 +308,14 @@ func newBtwAgent(main *core.Agent, system, model string) *core.Agent {
 	return agent
 }
 
-func (d *btwDialog) handleAgentEvent(turnIdx int, ev core.AgentEvent) {
+func (d *btwDialog) handleAgentEvent(turnIdx int, generation uint64, ev core.AgentEvent) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	if turnIdx < 0 || turnIdx >= len(d.turns) {
+	if !d.active || generation != d.generation || turnIdx < 0 || turnIdx >= len(d.turns) {
 		return
 	}
 	turn := &d.turns[turnIdx]
+	d.activity.apply(ev)
 	switch e := ev.(type) {
 	case core.EvTextDelta:
 		turn.Assistant += e.Delta
@@ -353,14 +374,15 @@ func findBtwTool(turn *btwTurn, id string) *tui.ToolCallView {
 }
 
 // completeTurn records an error, if any, and clears the loading state.
-func (d *btwDialog) completeTurn(idx int, errMsg string) {
+func (d *btwDialog) completeTurn(idx int, generation uint64, errMsg string) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	if idx < 0 || idx >= len(d.turns) {
+	if !d.active || generation != d.generation || idx < 0 || idx >= len(d.turns) {
 		return
 	}
 	d.turns[idx].Err = errMsg
 	d.loading = false
+	d.activity = agentActivity{}
 	d.cancel = nil
 }
 
@@ -408,12 +430,13 @@ func (d *btwDialog) Render(th tui.Theme, width int) []string {
 
 	if d.loading && d.spin != nil {
 		out = append(out, "")
-		// Match the main chat busy prefix shape: spinner glyph,
-		// rotating funny-line, elapsed seconds, then a muted hint
-		// that esc cancels.
+		label := d.activity.label()
+		if label == "" {
+			label = "Preparing request"
+		}
 		prefix := fmt.Sprintf("%s %s - %s",
 			th.FGColor(th.Assistant, d.spin.Frame()),
-			th.FGColor(th.Assistant, d.spin.Message()),
+			th.FGColor(th.Assistant, label),
 			th.FGColor(th.Muted, d.spin.Elapsed().String()),
 		)
 		out = append(out, "  "+prefix+"  "+th.FGColor(th.Muted, "(esc cancels)"))

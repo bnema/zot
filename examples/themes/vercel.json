@@ -62,13 +62,6 @@
         "\u25d1",
         "\u25d2"
       ],
-      "spinner_messages": [
-        "shipping pixels",
-        "deploying thoughts",
-        "warming edge cache",
-        "building preview",
-        "checking redirects"
-      ],
       "spinner_interval_ms": 120
     },
     "light": {
@@ -112,13 +105,6 @@
         "\u25d3",
         "\u25d1",
         "\u25d2"
-      ],
-      "spinner_messages": [
-        "shipping pixels",
-        "deploying thoughts",
-        "warming edge cache",
-        "building preview",
-        "checking redirects"
       ],
       "spinner_interval_ms": 120
     }
