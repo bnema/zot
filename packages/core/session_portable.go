@@ -824,7 +824,7 @@ func scanSessionMeta(path string) (meta SessionMeta, err error) {
 			}
 			meta = *row.Meta
 			sawMeta = true
-		case "message", "compaction", "usage", "rename":
+		case "message", "compaction", "usage", "rename", "extension_state":
 			// These rows are intentionally not hydrated here.
 		default:
 			return fmt.Errorf("line %d: unknown row type %q", lineNo, head.Type)

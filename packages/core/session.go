@@ -535,6 +535,11 @@ func ReadSessionHistory(path string) (SessionHistory, error) {
 				cumulative:   *row.Cumulative,
 			})
 
+		case "extension_state":
+			// Extension state is session metadata rather than transcript history.
+			// The snapshot reader restores it for resume; tree history only needs
+			// provider messages and usage checkpoints.
+
 		case "rename":
 			var row struct {
 				Title *string `json:"title"`

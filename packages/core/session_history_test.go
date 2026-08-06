@@ -1,6 +1,7 @@
 package core
 
 import (
+	"encoding/json"
 	"testing"
 	"time"
 
@@ -82,6 +83,36 @@ func TestReadSessionHistoryRetainsPreCompactionSegments(t *testing.T) {
 	if branch.Meta.Parent != history.Meta.ID {
 		t.Fatalf("branch parent = %q, want %q", branch.Meta.Parent, history.Meta.ID)
 	}
+}
+
+func TestReadSessionHistoryIgnoresExtensionStateRows(t *testing.T) {
+	root := t.TempDir()
+	session, err := NewSession(root, "/workspace/history-extension-state", "test", "model", "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := session.AppendMessage(textMessage(provider.RoleUser, "prompt")); err != nil {
+		t.Fatal(err)
+	}
+	if err := session.AppendExtensionState("tasked-phases", json.RawMessage(`{"version":1}`)); err != nil {
+		t.Fatal(err)
+	}
+	if err := session.AppendMessage(textMessage(provider.RoleAssistant, "answer")); err != nil {
+		t.Fatal(err)
+	}
+	path := session.Path
+	if err := session.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	history, err := ReadSessionHistory(path)
+	if err != nil {
+		t.Fatalf("ReadSessionHistory: %v", err)
+	}
+	if len(history.Segments) != 1 {
+		t.Fatalf("history segments = %d, want 1", len(history.Segments))
+	}
+	assertMessageTexts(t, history.Segments[0].Messages, []string{"prompt", "answer"})
 }
 
 func TestReadSessionHistoryRepairsEachSegmentIndependently(t *testing.T) {

@@ -144,6 +144,9 @@ func TestScanSessionMetaReturnsLatestRowWithoutHydratingMessages(t *testing.T) {
 	if err := session.UpdateModel("new-provider", "new-model"); err != nil {
 		t.Fatal(err)
 	}
+	if err := session.AppendExtensionState("tasked-phases", json.RawMessage(`{"version":1}`)); err != nil {
+		t.Fatal(err)
+	}
 	path := session.Path
 	if err := session.Close(); err != nil {
 		t.Fatal(err)
