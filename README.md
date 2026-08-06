@@ -380,7 +380,7 @@ Background subagents that run alongside your main session. Each one is a separat
 
 **Session scoping** — each agent is stamped with the host session that spawned it and only shows up in that session's dashboard. Swap sessions with `/sessions` and the dashboard re-narrows accordingly. Agents from other sessions keep running in the background and reappear when you switch back.
 
-**Persistence across zut restarts** — every spawn writes a durable manifest, append-only event log, session file, and structured `result.json` under `$ZUT_HOME/subagents/agents/<id>/`. On the next `zut` launch they show up as **detached**; use `R` or `/subagents resume-session <id>` to continue the existing session. `/subagents restart-task <id>` is the explicit operation that intentionally replays the stored task.
+**Persistence across zut restarts** — every spawn writes a durable manifest, append-only event log, session file, and structured `result.json` under `$ZUT_HOME/subagents/agents/<id>/`. On the next `zut` launch they reappear as **detached** while history restores in the background; use `R` or `/subagents resume-session <id>` to continue the existing session. `/subagents restart-task <id>` is the explicit operation that intentionally replays the stored task.
 
 **Where state lives** — per-agent manifests, session files, events, results, and patches live under `$ZUT_HOME/subagents/agents/<id>/`; inbox sockets are runtime-only and permission-restricted. Shared-mode edits land directly in the repo. Worktree-mode edits are captured as durable patches and changed-file summaries before cleanup.
 
