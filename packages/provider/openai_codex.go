@@ -418,7 +418,7 @@ func (c *codexClient) Stream(ctx context.Context, req Request) (<-chan Event, er
 		return httpReq, nil
 	}
 
-	resp, err := doStreamWithRetry(ctx, c.http, newReq)
+	resp, err := doStreamWithRetry(ctx, c.http, newReq, req.Lifecycle)
 	if err != nil {
 		return nil, fmt.Errorf("openai-codex: %w", err)
 	}

@@ -121,6 +121,44 @@ func (d *confirmDialog) CancelAll(reason string) {
 	}
 }
 
+// CancelChildConfirmations refuses side-chat confirmations without affecting
+// queued main-thread calls. Closing /btw must unblock its agent even though
+// the confirmation UI is no longer visible.
+func (d *confirmDialog) CancelChildConfirmations(reason string) {
+	if d == nil {
+		return
+	}
+	d.mu.Lock()
+	pending := d.pending
+	remaining := make([]*confirmRequest, 0, len(pending))
+	cancelled := make([]*confirmRequest, 0, len(pending))
+	activeCancelled := false
+	for index, req := range pending {
+		if req.returnToChild {
+			cancelled = append(cancelled, req)
+			activeCancelled = activeCancelled || index == 0
+			continue
+		}
+		remaining = append(remaining, req)
+	}
+	d.pending = remaining
+	if activeCancelled {
+		d.cursor = 0
+		d.focused = len(remaining) > 0
+		if d.focused {
+			d.activeSince = time.Now()
+		}
+	}
+	d.mu.Unlock()
+
+	for _, req := range cancelled {
+		select {
+		case req.resp <- core.ConfirmDecision{Allow: false, Reason: reason}:
+		default:
+		}
+	}
+}
+
 // AllowAllPending approves every pending request and drains the
 // queue. Used by /yolo so any confirmation dialog already on screen
 // resolves immediately as "yes".

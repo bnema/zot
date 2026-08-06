@@ -18,10 +18,21 @@ import (
 // the summary. 0 means summarize everything; a typical useful value is
 // 4-8 (last couple of exchanges).
 //
-// The method blocks until the summary request completes. Emitted
-// events via sink are limited to text deltas from the summary call so
-// the UI can show progress.
+// The method blocks until the summary request completes. The optional sink
+// receives text deltas from the summary call.
 func (a *Agent) Compact(ctx context.Context, keepTail int, sink func(delta string)) (summary string, err error) {
+	return a.compact(ctx, keepTail, sink, nil)
+}
+
+// CompactWithEvents is Compact for consumers that need factual provider
+// lifecycle observations in addition to the final summary. It emits only
+// request lifecycle and summary text-delta events; compaction has no tool or
+// model-loop turn events.
+func (a *Agent) CompactWithEvents(ctx context.Context, keepTail int, sink func(AgentEvent)) (summary string, err error) {
+	return a.compact(ctx, keepTail, nil, sink)
+}
+
+func (a *Agent) compact(ctx context.Context, keepTail int, textSink func(delta string), eventSink func(AgentEvent)) (summary string, err error) {
 	a.mu.Lock()
 	msgs := append([]provider.Message(nil), a.messages...)
 	a.mu.Unlock()
@@ -65,10 +76,27 @@ func (a *Agent) Compact(ctx context.Context, keepTail int, sink func(delta strin
 			},
 		},
 	}
+	if eventSink != nil {
+		req.Lifecycle = requestLifecycleSink{
+			sink:     eventSink,
+			provider: a.Client.Name(),
+			model:    a.Model,
+		}
+		eventSink(EvRequestStarted{
+			Provider:    a.Client.Name(),
+			Model:       a.Model,
+			Scope:       RetryScopeAgent,
+			Attempt:     1,
+			MaxAttempts: 1,
+		})
+	}
 
 	stream, err := a.Client.Stream(ctx, req)
 	if err != nil {
 		return "", err
+	}
+	if eventSink != nil {
+		eventSink(EvAssistantStart{})
 	}
 
 	var sb strings.Builder
@@ -76,8 +104,11 @@ func (a *Agent) Compact(ctx context.Context, keepTail int, sink func(delta strin
 		switch e := ev.(type) {
 		case provider.EventTextDelta:
 			sb.WriteString(e.Delta)
-			if sink != nil {
-				sink(e.Delta)
+			if textSink != nil {
+				textSink(e.Delta)
+			}
+			if eventSink != nil {
+				eventSink(EvTextDelta{Delta: e.Delta})
 			}
 		case provider.EventDone:
 			if e.Err != nil {

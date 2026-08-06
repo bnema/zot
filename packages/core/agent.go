@@ -474,14 +474,25 @@ func (a *Agent) runLoop(ctx context.Context, sink func(AgentEvent)) error {
 			assistantMsg provider.Message
 			err          error
 		)
+		maxAttempts := max(a.MaxRetries+1, 1)
 		for attempt := 0; ; attempt++ {
-			stop, assistantMsg, err = a.oneTurn(ctx, sink, turnContext)
+			stop, assistantMsg, err = a.oneTurn(ctx, sink, turnContext, attempt, maxAttempts)
 			sink(EvTurnEnd{Stop: stop, Err: err})
 			if err == nil || !a.canRetryError(err, attempt) {
 				break
 			}
 			a.dropLastAssistantMessage()
-			if sleepErr := sleepRetry(ctx, a.retryDelay(attempt)); sleepErr != nil {
+			delay := a.retryDelay(attempt)
+			if retryErr := ctx.Err(); retryErr != nil {
+				return retryErr
+			}
+			sink(EvRetryScheduled{
+				Scope:       RetryScopeAgent,
+				Attempt:     attempt + 2,
+				MaxAttempts: maxAttempts,
+				Delay:       delay,
+			})
+			if sleepErr := sleepRetry(ctx, delay); sleepErr != nil {
 				return sleepErr
 			}
 		}
@@ -633,9 +644,36 @@ func (a *Agent) dropLastAssistantMessage() {
 	}
 }
 
+// requestLifecycleSink adapts provider-owned pre-stream retries into core
+// events without letting provider concerns leak into mode renderers.
+type requestLifecycleSink struct {
+	sink     func(AgentEvent)
+	provider string
+	model    string
+}
+
+func (s requestLifecycleSink) RequestAttempt(attempt, maxAttempts int) {
+	s.sink(EvRequestStarted{
+		Provider:    s.provider,
+		Model:       s.model,
+		Scope:       RetryScopeProvider,
+		Attempt:     attempt,
+		MaxAttempts: maxAttempts,
+	})
+}
+
+func (s requestLifecycleSink) RetryScheduled(attempt, maxAttempts int, delay time.Duration) {
+	s.sink(EvRetryScheduled{
+		Scope:       RetryScopeProvider,
+		Attempt:     attempt,
+		MaxAttempts: maxAttempts,
+		Delay:       delay,
+	})
+}
+
 // oneTurn calls the LLM once, forwards events, returns the stop reason
 // and the assembled assistant message (already appended to the transcript).
-func (a *Agent) oneTurn(ctx context.Context, sink func(AgentEvent), turnContext string) (provider.StopReason, provider.Message, error) {
+func (a *Agent) oneTurn(ctx context.Context, sink func(AgentEvent), turnContext string, attempt, maxAttempts int) (provider.StopReason, provider.Message, error) {
 	fastMode := a.FastModeEnabled()
 	if err := provider.ValidateFastMode(a.Client.Name(), fastMode); err != nil {
 		return provider.StopError, provider.Message{}, err
@@ -664,7 +702,19 @@ func (a *Agent) oneTurn(ctx context.Context, sink func(AgentEvent), turnContext 
 		FastMode:    fastMode,
 		MaxTokens:   a.MaxTokens,
 		Temperature: a.Temperature,
+		Lifecycle: requestLifecycleSink{
+			sink:     sink,
+			provider: a.Client.Name(),
+			model:    a.Model,
+		},
 	}
+	sink(EvRequestStarted{
+		Provider:    a.Client.Name(),
+		Model:       a.Model,
+		Scope:       RetryScopeAgent,
+		Attempt:     attempt + 1,
+		MaxAttempts: maxAttempts,
+	})
 	stream, err := a.Client.Stream(ctx, req)
 	if err != nil {
 		return provider.StopError, provider.Message{}, err
@@ -852,6 +902,7 @@ func (a *Agent) runOneTool(ctx context.Context, tc provider.ToolCallBlock, tools
 				}
 			}
 		}()
+		sink(EvToolExecutionStarted{ID: tc.ID, Name: tc.Name})
 		out, err := tool.Execute(ctx, args, func(text string) {
 			sink(EvToolProgress{ID: tc.ID, Text: text})
 		})

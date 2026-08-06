@@ -51,6 +51,9 @@ type ToolCallBlock struct {
 	Name             string          `json:"name"`
 	Arguments        json.RawMessage `json:"arguments"`
 	ThoughtSignature string          `json:"thought_signature,omitempty"`
+	// Origin is host-only routing metadata. It is never serialized to a
+	// provider or stored in the transcript.
+	Origin string `json:"-"`
 }
 
 func (ToolCallBlock) isContent() {}
@@ -245,6 +248,14 @@ type EventDone struct {
 
 func (EventDone) isEvent() {}
 
+// RequestLifecycle observes request attempts and retry delays without being
+// serialized onto a provider wire. Implementations must call RequestAttempt
+// immediately before an outbound attempt and RetryScheduled before sleeping.
+type RequestLifecycle interface {
+	RequestAttempt(attempt, maxAttempts int)
+	RetryScheduled(attempt, maxAttempts int, delay time.Duration)
+}
+
 // Request is a single LLM call.
 type Request struct {
 	Model       string
@@ -260,6 +271,9 @@ type Request struct {
 	// FastMode requests OpenAI's fast service tier. Providers that do not
 	// implement the OpenAI service-tier contract reject the request.
 	FastMode bool
+	// Lifecycle receives in-memory request-attempt notifications. It is not
+	// included in any provider request payload.
+	Lifecycle RequestLifecycle
 }
 
 // OpenAI's current Fast mode is represented as the priority service tier on

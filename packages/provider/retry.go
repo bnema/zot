@@ -63,9 +63,10 @@ func streamRetryBackoff(attempt int) time.Duration {
 // If every attempt fails, the last error/response is returned so the
 // caller can format a normal error message. On context cancellation
 // the loop bails out immediately with ctx.Err().
-func doStreamWithRetry(ctx context.Context, client *http.Client, newReq func() (*http.Request, error)) (*http.Response, error) {
+func doStreamWithRetry(ctx context.Context, client *http.Client, newReq func() (*http.Request, error), lifecycle RequestLifecycle) (*http.Response, error) {
 	var lastErr error
 	serverDelay := time.Duration(-1) // <0: use the default fixed backoff
+	maxAttempts := streamRetryAttempts + 1
 	for attempt := 0; attempt <= streamRetryAttempts; attempt++ {
 		if attempt > 0 {
 			delay := streamRetryBackoff(attempt)
@@ -73,15 +74,30 @@ func doStreamWithRetry(ctx context.Context, client *http.Client, newReq func() (
 				delay = serverDelay
 			}
 			serverDelay = -1
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+			if lifecycle != nil {
+				lifecycle.RetryScheduled(attempt+1, maxAttempts, delay)
+			}
 			select {
 			case <-ctx.Done():
 				return nil, ctx.Err()
 			case <-time.After(delay):
 			}
 		}
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		req, err := newReq()
 		if err != nil {
 			return nil, err
+		}
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		if lifecycle != nil {
+			lifecycle.RequestAttempt(attempt+1, maxAttempts)
 		}
 		resp, err := client.Do(req)
 		if err != nil {

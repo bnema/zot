@@ -105,7 +105,6 @@ Spinner-only:
   "name": "custom-spinner",
   "description": "Only changes the busy spinner.",
   "spinner_frames": ["◢", "◣", "◤", "◥"],
-  "spinner_messages": ["working"],
   "spinner_interval_ms": 120
 }
 ```
@@ -117,11 +116,10 @@ light default. The inverse also works.
 ```json
 {
   "name": "custom-spinner",
-  "description": "An alternative spinner for zut that only displays a single spinner text.",
+  "description": "An alternative busy-spinner animation for zut.",
   "colors": {
     "dark": {
       "spinner_frames": ["◢", "◣", "◤", "◥"],
-      "spinner_messages": ["working"],
       "spinner_interval_ms": 120
     }
   }
@@ -157,7 +155,6 @@ All fields are optional.
       "selection_bg": 24,
       "selection_fg": 231,
       "spinner_frames": ["⠋", "⠙", "⠚", "⠞", "⠖", "⠦", "⠴", "⠲", "⠳", "⠓"],
-      "spinner_messages": ["thinking", "working"],
       "spinner_interval_ms": 80,
       "syntax_base_style": "monokai",
       "syntax": {
@@ -198,7 +195,7 @@ You may also put overrides directly at the top level or directly under
   "name": "tiny",
   "accent": 204,
   "colors": {
-    "spinner_messages": ["shipping"]
+    "spinner_frames": ["◐", "◓", "◑", "◒"]
   }
 }
 ```
@@ -249,9 +246,14 @@ Spinner settings can appear at top level, under `colors`, or under
 
 - `spinner_frames` — list of frame strings. Single-cell glyphs keep
   status-bar alignment clean.
-- `spinner_messages` — list of messages; zut picks one per turn.
 - `spinner_interval_ms` — frame interval in milliseconds. Missing or
   invalid falls back to 80ms.
+
+Working-status text is owned by zut and reflects the current operation. The
+legacy `spinner_messages` field is ignored when present in existing theme
+files. In this v0 API, the former `tui.Theme.SpinnerMessages` and
+`tui.ThemeOverrides.SpinnerMessages` Go fields are removed; no compatibility
+alias is provided.
 
 ## Syntax fields
 

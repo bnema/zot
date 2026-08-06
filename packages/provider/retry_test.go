@@ -2,6 +2,7 @@ package provider
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -38,7 +39,8 @@ func TestOpenAIStreamRetriesOn503(t *testing.T) {
 	defer srv.Close()
 
 	c := NewOpenAI("x", srv.URL)
-	evs, err := c.Stream(context.Background(), Request{Model: "gpt-5"})
+	lifecycle := &recordingRequestLifecycle{}
+	evs, err := c.Stream(context.Background(), Request{Model: "gpt-5", Lifecycle: lifecycle})
 	if err != nil {
 		t.Fatalf("stream returned error: %v", err)
 	}
@@ -53,6 +55,12 @@ func TestOpenAIStreamRetriesOn503(t *testing.T) {
 	}
 	if got := attempts.Load(); got != 3 {
 		t.Fatalf("attempts=%d want 3", got)
+	}
+	if got := lifecycle.attempts; len(got) != 3 || got[0] != (lifecycleAttempt{attempt: 1, max: 3}) || got[2] != (lifecycleAttempt{attempt: 3, max: 3}) {
+		t.Fatalf("lifecycle attempts = %#v, want 1 through 3", got)
+	}
+	if got := lifecycle.retries; len(got) != 2 || got[0].attempt != 2 || got[1].attempt != 3 {
+		t.Fatalf("lifecycle retries = %#v, want retries before attempts 2 and 3", got)
 	}
 }
 
@@ -208,6 +216,74 @@ func TestOpenAIStreamRejectsExcessiveRetryAfter(t *testing.T) {
 	}
 }
 
+type lifecycleAttempt struct {
+	attempt int
+	max     int
+}
+
+type lifecycleRetry struct {
+	attempt int
+	max     int
+	delay   time.Duration
+}
+
+type recordingRequestLifecycle struct {
+	attempts []lifecycleAttempt
+	retries  []lifecycleRetry
+}
+
+func (r *recordingRequestLifecycle) RequestAttempt(attempt, maxAttempts int) {
+	r.attempts = append(r.attempts, lifecycleAttempt{attempt: attempt, max: maxAttempts})
+}
+
+func (r *recordingRequestLifecycle) RetryScheduled(attempt, maxAttempts int, delay time.Duration) {
+	r.retries = append(r.retries, lifecycleRetry{attempt: attempt, max: maxAttempts, delay: delay})
+}
+
+func TestDoStreamWithRetryReportsLifecycle(t *testing.T) {
+	var attempts atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		if attempts.Add(1) == 1 {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	lifecycle := &recordingRequestLifecycle{}
+	resp, err := doStreamWithRetry(context.Background(), srv.Client(), func() (*http.Request, error) {
+		return http.NewRequestWithContext(context.Background(), http.MethodPost, srv.URL, nil)
+	}, lifecycle)
+	if err != nil {
+		t.Fatalf("doStreamWithRetry: %v", err)
+	}
+	resp.Body.Close()
+
+	if got := lifecycle.attempts; len(got) != 2 || got[0] != (lifecycleAttempt{attempt: 1, max: 3}) || got[1] != (lifecycleAttempt{attempt: 2, max: 3}) {
+		t.Fatalf("attempts = %#v, want attempts 1 and 2 of 3", got)
+	}
+	if got := lifecycle.retries; len(got) != 1 || got[0].attempt != 2 || got[0].max != 3 || got[0].delay != 250*time.Millisecond {
+		t.Fatalf("retries = %#v, want attempt 2 of 3 after 250ms", got)
+	}
+}
+
+func TestDoStreamWithRetryStopsLifecycleAfterCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	lifecycle := &recordingRequestLifecycle{}
+	_, err := doStreamWithRetry(ctx, http.DefaultClient, func() (*http.Request, error) {
+		t.Fatal("new request called after cancellation")
+		return nil, nil
+	}, lifecycle)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("error = %v, want context.Canceled", err)
+	}
+	if len(lifecycle.attempts) != 0 || len(lifecycle.retries) != 0 {
+		t.Fatalf("lifecycle after cancellation = %#v %#v", lifecycle.attempts, lifecycle.retries)
+	}
+}
+
 func TestRetryAfterDelay(t *testing.T) {
 	mk := func(kv ...string) http.Header {
 		h := http.Header{}
@@ -291,3 +367,45 @@ func TestIsTransientConnectError(t *testing.T) {
 type stringErr string
 
 func (s stringErr) Error() string { return string(s) }
+
+func TestDoStreamWithRetryDoesNotReportAttemptWhenRequestCreationFails(t *testing.T) {
+	lifecycle := &recordingRequestLifecycle{}
+	_, err := doStreamWithRetry(context.Background(), http.DefaultClient, func() (*http.Request, error) {
+		return nil, errors.New("cannot build request")
+	}, lifecycle)
+	if err == nil || !strings.Contains(err.Error(), "cannot build request") {
+		t.Fatalf("error = %v, want request creation failure", err)
+	}
+	if len(lifecycle.attempts) != 0 {
+		t.Fatalf("request attempts = %#v, want none", lifecycle.attempts)
+	}
+}
+
+type retryRoundTripper func(*http.Request) (*http.Response, error)
+
+func (f retryRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
+}
+
+func TestDoStreamWithRetryDoesNotReportCancelledRetry(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	client := &http.Client{Transport: retryRoundTripper(func(_ *http.Request) (*http.Response, error) {
+		cancel()
+		return &http.Response{
+			StatusCode: http.StatusServiceUnavailable,
+			Header:     make(http.Header),
+			Body:       http.NoBody,
+		}, nil
+	})}
+	lifecycle := &recordingRequestLifecycle{}
+	_, err := doStreamWithRetry(ctx, client, func() (*http.Request, error) {
+		return http.NewRequestWithContext(ctx, http.MethodPost, "https://example.test", nil)
+	}, lifecycle)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("error = %v, want context.Canceled", err)
+	}
+	if len(lifecycle.retries) != 0 {
+		t.Fatalf("retry lifecycle = %#v, want none after cancellation", lifecycle.retries)
+	}
+}

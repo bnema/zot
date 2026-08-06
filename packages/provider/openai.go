@@ -504,7 +504,7 @@ func (c *openaiClient) Stream(ctx context.Context, req Request) (<-chan Event, e
 		return httpReq, nil
 	}
 
-	resp, err := doStreamWithRetry(ctx, c.http, newReq)
+	resp, err := doStreamWithRetry(ctx, c.http, newReq, req.Lifecycle)
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", c.Name(), err)
 	}

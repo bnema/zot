@@ -514,9 +514,9 @@ func (d *sessionDialog) loadingMessage(th tui.Theme) string {
 		}
 		idx = int(elapsed/(time.Duration(interval)*time.Millisecond)) % len(frames)
 	}
-	progress := "loading sessions"
+	progress := "Loading sessions"
 	if d.loadingTotal > 0 {
-		progress = fmt.Sprintf("loading sessions (%d/%d)", d.loadingDone, d.loadingTotal)
+		progress = fmt.Sprintf("Loading sessions (%d/%d)", d.loadingDone, d.loadingTotal)
 	}
 	return th.FGColor(th.Spinner, frames[idx]) + " " + th.FGColor(th.Muted, progress+" (esc cancel)")
 }
