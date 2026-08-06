@@ -16,6 +16,10 @@ const (
 	RightBarMaxWidth = 36
 	// RightBarMinMainWidth preserves enough room for the editor and chat.
 	RightBarMinMainWidth = 48
+
+	// rightBarRightPadding leaves a small gutter between widget text and the
+	// terminal's right edge.
+	rightBarRightPadding = 1
 )
 
 // RightBarWidget is declarative content for one persistent extension widget.
@@ -60,13 +64,14 @@ func RightBarColumns(cols int) (mainWidth, rightBarWidth int, ok bool) {
 // RenderRightBar renders a bounded, full-height side rail without adding a
 // second frame around the host-owned separator. Widgets are sorted by
 // extension name and ID so output stays deterministic even when extension
-// frames arrive concurrently. Long lines are clipped to the rail width with
-// a three-dot ellipsis.
+// frames arrive concurrently. Long lines are clipped with a three-dot ellipsis
+// while reserving one cell of right padding.
 func RenderRightBar(th Theme, widgets []RightBarWidget, width, height int) []string {
 	if width <= 0 || height <= 0 {
 		return nil
 	}
 
+	contentWidth := width - rightBarRightPadding
 	ordered := append([]RightBarWidget(nil), widgets...)
 	sort.SliceStable(ordered, func(a, b int) bool {
 		if ordered[a].Extension != ordered[b].Extension {
@@ -78,10 +83,13 @@ func RenderRightBar(th Theme, widgets []RightBarWidget, width, height int) []str
 	content := make([]string, 0, height)
 	truncated := false
 	padLine := func(text string, phase bool) string {
+		if contentWidth <= 0 {
+			return strings.Repeat(" ", width)
+		}
 		if phase {
-			text = truncateRightBarPhaseLine(text, width)
+			text = truncateRightBarPhaseLine(text, contentWidth)
 		} else {
-			text = truncateRightBarLine(text, width)
+			text = truncateRightBarLine(text, contentWidth)
 		}
 		if visible := visibleWidth(text); visible < width {
 			text += strings.Repeat(" ", width-visible)

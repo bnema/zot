@@ -61,12 +61,30 @@ func TestRenderRightBarClipsLongWidgetLinesWithEllipsis(t *testing.T) {
 		t.Fatalf("right bar rows = %d, want 8", len(lines))
 	}
 	plain := stripANSI(strings.Join(lines, "\n"))
-	if !strings.Contains(plain, " one two thre...") || strings.Contains(plain, "four five six") {
+	if !strings.Contains(plain, " one two thr...") || strings.Contains(plain, "four five six") {
 		t.Fatalf("long widget line was not clipped with an ellipsis: %q", plain)
 	}
 	for idx, line := range lines {
 		if width := visibleWidth(line); width != 16 {
 			t.Fatalf("clipped right bar line %d width = %d, want 16: %q", idx, width, line)
+		}
+	}
+}
+
+func TestRenderRightBarLeavesOneCellOfRightPadding(t *testing.T) {
+	lines := RenderRightBar(Dark, []RightBarWidget{{
+		Extension: "tasked-phases",
+		Title:     "p 0/1 | t 0/1",
+		Lines:     []string{"[>] A phase title that is much too long to fit  0/1"},
+	}}, 24, 4)
+
+	for idx, line := range lines {
+		plain := stripANSI(line)
+		if !strings.HasSuffix(plain, " ") {
+			t.Fatalf("right bar line %d lacks right padding: %q", idx, plain)
+		}
+		if visibleWidth(strings.TrimRight(plain, " ")) > 23 {
+			t.Fatalf("right bar line %d content reaches the right edge: %q", idx, plain)
 		}
 	}
 }
@@ -105,7 +123,7 @@ func TestRenderRightBarUsesChecklistIndentEllipsisAndBoldPhases(t *testing.T) {
 	if len(plainLines) < 4 {
 		t.Fatalf("checklist rows are missing: %q", plain)
 	}
-	expectedTask := truncateRightBarLine("  [ ] Sort the leftover star stickers", 36)
+	expectedTask := truncateRightBarLine("  [ ] Sort the leftover star stickers", 35)
 	if got := strings.TrimRight(plainLines[3], " "); got != expectedTask {
 		t.Fatalf("task row = %q, want clipped row %q", got, expectedTask)
 	}
