@@ -6868,7 +6868,7 @@ func (i *Interactive) startTurnRequest(parent context.Context, prompt string, im
 		// based auto-compact can miss both when metadata is stale or the
 		// limit is measured in raw bytes. Compact once, then continue the
 		// user message already present in the transcript.
-		contextOverflow := err != nil && ctx.Err() == nil && isContextOverflowError(err)
+		contextOverflow := err != nil && ctx.Err() == nil && provider.IsContextOverflowError(err)
 		recoverContextOverflow := contextOverflow && !overflowRecoveryAttempted
 		if recoverContextOverflow {
 			i.statusErr = ""
@@ -7040,27 +7040,6 @@ func stripAutoCompactNotes(notes []string) []string {
 // the busy-spinner overwrite of the status row.
 func autoCompactNoteLine(th tui.Theme, msg string) string {
 	return "  " + th.FGColor(th.Warning, "⚠ "+msg)
-}
-
-// isContextOverflowError matches provider responses that reject the
-// current request because its raw payload or tokenized input is too
-// large. Providers surface this as either HTTP 413 or semantic context
-// errors with differing codes and messages.
-func isContextOverflowError(err error) bool {
-	if err == nil {
-		return false
-	}
-	msg := strings.ToLower(err.Error())
-	return strings.Contains(msg, "http 413") ||
-		strings.Contains(msg, " 413") ||
-		strings.HasPrefix(msg, "413 ") ||
-		strings.Contains(msg, "payload too large") ||
-		strings.Contains(msg, "request entity too large") ||
-		strings.Contains(msg, "input exceeds the context window") ||
-		strings.Contains(msg, "context window exceeded") ||
-		strings.Contains(msg, "maximum context length") ||
-		strings.Contains(msg, "context_length_exceeded") ||
-		(strings.Contains(msg, "input") && strings.Contains(msg, "exceeds the maximum number of tokens"))
 }
 
 const defaultAutoCompactThreshold = 85

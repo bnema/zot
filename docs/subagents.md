@@ -94,6 +94,8 @@ The worker and supervisor communicate over newline-delimited JSON. Current messa
 
 A completed worker emits a `turn.result` event and writes `result.json`. The inline output is bounded; inspect the full session through the stable references:
 
+If a provider rejects a child request because its payload or context window is too large, the worker compacts its persisted transcript and continues the same request once. If compaction or that retry cannot fit, the result uses error code `context_limit` and directs the caller to narrow the task or reduce gathered context; it does not include the provider's raw request error.
+
 ```text
 subagent://<id>
 subagent://<id>/history

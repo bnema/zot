@@ -201,11 +201,14 @@ func runSubagentWorkerMode(ctx context.Context, args Args, version string) error
 		em.emit("turn.started", map[string]any{"step": step, "turn_id": turnID})
 
 		sink := func(ev core.AgentEvent) {
-			em.emit(ev.Type(), modes.EventToJSON(ev))
+			em.emit(ev.Type(), subagentEventData(ev))
 		}
 
-		start := len(ag.Messages())
-		err := ag.Prompt(c, prompt, nil, sink)
+		var persistCompaction func([]provider.Message) error
+		if sess != nil {
+			persistCompaction = sess.AppendCompaction
+		}
+		start, err := promptWithContextRecovery(c, ag, prompt, sink, persistCompaction)
 		WriteNewTranscript(ag, sess, start)
 
 		output := finalAssistantText(ag.Messages()[start:])
@@ -231,7 +234,7 @@ func runSubagentWorkerMode(ctx context.Context, args Args, version string) error
 		em.emit("turn_end", map[string]any{
 			"step":    step,
 			"turn_id": turnID,
-			"error":   errString(err),
+			"error":   turnErrorMessage(err),
 		})
 		em.emit("agent.idle", map[string]any{"turn_id": turnID})
 
@@ -402,6 +405,14 @@ func (e *subagentEmitter) emit(typ string, data map[string]any) {
 	}
 }
 
+func subagentEventData(ev core.AgentEvent) map[string]any {
+	data := modes.EventToJSON(ev)
+	if turnEnd, ok := ev.(core.EvTurnEnd); ok && provider.IsContextOverflowError(turnEnd.Err) {
+		data["error"] = subagentContextLimitMessage
+	}
+	return data
+}
+
 func canonicalWorkerEvent(typ string) string {
 	switch typ {
 	case "agent_ready":
@@ -421,6 +432,48 @@ func canonicalWorkerEvent(typ string) string {
 	default:
 		return typ
 	}
+}
+
+const subagentContextLimitMessage = "request exceeds the model context window; narrow the task or reduce gathered context"
+
+// promptWithContextRecovery appends prompt and runs it once. When the provider
+// rejects that request for exceeding its context limit, it compacts the current
+// transcript and continues the already-appended prompt exactly once.
+//
+// The returned index marks the first message that can contribute to the turn
+// result or be appended after a compaction checkpoint. Compact replaces the
+// transcript, so callers must not reuse the index captured before Prompt.
+func promptWithContextRecovery(ctx context.Context, ag *core.Agent, prompt string, sink func(core.AgentEvent), persistCompaction func([]provider.Message) error) (outputStart int, err error) {
+	outputStart = len(ag.Messages())
+	if err = ag.Prompt(ctx, prompt, nil, sink); err == nil || ctx.Err() != nil || !provider.IsContextOverflowError(err) {
+		return outputStart, err
+	}
+
+	messages := ag.Messages()
+	if len(messages) <= 1 {
+		// The only message is the failed prompt. Summarizing it would replace
+		// the user's task with an LLM-generated paraphrase, so report the
+		// provider's limit and ask the caller to narrow the task instead.
+		return outputStart, err
+	}
+	keepTail := min(4, len(messages)-1)
+	if _, compactErr := ag.Compact(ctx, keepTail, nil); compactErr != nil {
+		return outputStart, fmt.Errorf("compact transcript after initial overflow: %w", compactErr)
+	}
+
+	compacted := ag.Messages()
+	if persistCompaction != nil {
+		if persistErr := persistCompaction(compacted); persistErr != nil {
+			// Keep the original history plus the user's pending task so the
+			// outer transcript flush can persist that task without committing
+			// an in-memory compaction that the session did not receive.
+			ag.SetMessages(messages)
+			return outputStart, fmt.Errorf("persist compacted transcript: %w", persistErr)
+		}
+	}
+
+	outputStart = len(compacted)
+	return outputStart, ag.Continue(ctx, sink)
 }
 
 func finalAssistantText(messages []provider.Message) string {
@@ -498,7 +551,17 @@ func resultErrorPayload(err error) map[string]any {
 	if err == nil {
 		return nil
 	}
+	if provider.IsContextOverflowError(err) {
+		return map[string]any{"code": "context_limit", "message": subagentContextLimitMessage}
+	}
 	return map[string]any{"code": "turn_failed", "message": truncateForLog(err.Error(), 500)}
+}
+
+func turnErrorMessage(err error) string {
+	if provider.IsContextOverflowError(err) {
+		return subagentContextLimitMessage
+	}
+	return errString(err)
 }
 
 func errString(err error) string {
