@@ -274,6 +274,9 @@ func (t *SubagentSpawnTool) Execute(ctx context.Context, raw json.RawMessage, pr
 	if agent.FastMode {
 		sb.WriteString("fast mode: enabled\n")
 	}
+	if fastModeOverride != nil && *fastModeOverride && agent.FastModeOverridesHost() {
+		sb.WriteString("warning: subagent profile has fast mode enabled, overriding global fast mode off\n")
+	}
 	sb.WriteString("\nThe sub-agent is running in the background. Use /subagents in the TUI to monitor it. ")
 	sb.WriteString("This conversation continues immediately; do not wait for the sub-agent to finish before working on the next thing.")
 	return core.ToolResult{

@@ -300,7 +300,7 @@ You are a read-only reviewer.
 	}
 }
 
-func TestResolveSubagentFastModeUsesHostSettingAsAnUpperBound(t *testing.T) {
+func TestResolveSubagentFastModeProfileOverridesHostSetting(t *testing.T) {
 	cases := []struct {
 		name         string
 		hostFastMode bool
@@ -312,7 +312,7 @@ func TestResolveSubagentFastModeUsesHostSettingAsAnUpperBound(t *testing.T) {
 		{name: "unset inherits enabled host", hostFastMode: true, wantFastMode: true},
 		{name: "unset inherits disabled host", hostFastMode: false, wantFastMode: false},
 		{name: "false disables enabled host", hostFastMode: true, profileFast: boolPtr(false), wantFastMode: false},
-		{name: "true cannot enable disabled host", hostFastMode: false, profileFast: boolPtr(true), wantFastMode: false},
+		{name: "true enables disabled host", hostFastMode: false, profileFast: boolPtr(true), wantFastMode: true},
 		{name: "false stays disabled with disabled host", hostFastMode: false, profileFast: boolPtr(false), wantFastMode: false},
 		{name: "profile false cannot be bypassed", hostFastMode: true, profileFast: boolPtr(false), argFastMode: true, argFastSet: true, wantFastMode: false},
 	}
