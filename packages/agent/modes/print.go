@@ -15,6 +15,14 @@ import (
 // assistant text block to out. It returns usage for this invocation,
 // excluding any cumulative usage restored from a session.
 func RunPrint(ctx context.Context, ag *core.Agent, prompt string, images []provider.ImageBlock, out io.Writer) (provider.Usage, error) {
+	usage, _, err := RunPrintWithContextRecovery(ctx, ag, prompt, images, out, nil)
+	return usage, err
+}
+
+// RunPrintWithContextRecovery is RunPrint with an optional checkpoint writer
+// for a one-shot context-overflow compaction. OutputStart identifies the
+// transcript suffix that callers must persist after a successful checkpoint.
+func RunPrintWithContextRecovery(ctx context.Context, ag *core.Agent, prompt string, images []provider.ImageBlock, out io.Writer, persistCompaction func([]provider.Message) error) (provider.Usage, ContextRecoveryResult, error) {
 	var finalText strings.Builder
 	var lastAssistant string
 	var usage provider.Usage
@@ -51,17 +59,21 @@ func RunPrint(ctx context.Context, ag *core.Agent, prompt string, images []provi
 		}
 	}
 
-	if err := ag.Prompt(ctx, prompt, images, sink); err != nil {
-		return usage, err
+	recovery, err := PromptWithContextRecovery(ctx, ag, prompt, images, sink, ContextRecoveryOptions{
+		PersistCompaction:            persistCompaction,
+		SuppressInitialOverflowEvent: true,
+	})
+	if err != nil {
+		return usage, recovery, err
 	}
 	if runErr != nil {
-		return usage, runErr
+		return usage, recovery, runErr
 	}
 
 	finalText.WriteString(lastAssistant)
 	if finalText.Len() > 0 && !strings.HasSuffix(finalText.String(), "\n") {
 		finalText.WriteString("\n")
 	}
-	_, err := fmt.Fprint(out, finalText.String())
-	return usage, err
+	_, err = fmt.Fprint(out, finalText.String())
+	return usage, recovery, err
 }

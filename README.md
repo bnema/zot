@@ -247,6 +247,8 @@ When the sandbox is on (see `/jail`), filesystem tools and LSP workspace edits r
 - **JSON**: `zut --json "prompt"` emits one JSON object per agent event to stdout, newline-delimited. The schema is documented in [docs/rpc.md](docs/rpc.md).
 - **RPC**: `zut rpc` runs as a long-lived child process; commands in on stdin, events and responses out on stdout, both as NDJSON. Designed for embedding zut in third-party apps written in any language. See [docs/rpc.md](docs/rpc.md) for the wire schema and `examples/rpc/{python,node,shell,go}` for working clients.
 
+When an initial print, stream, or JSON request exceeds the provider context window, zut compacts the existing transcript and continues the already-appended prompt once. Print still writes only the recovered final text, stream keeps assistant text on stdout and tool diagnostics on stderr, and JSON suppresses the recoverable first terminal error so stdout remains JSONL for the successful turn. A compaction failure or a second context-window error remains terminal; this is not a general autonomous-follow-up policy. The same one-shot recovery applies to subagent workers. It does not apply to RPC, SDK, bot, or Telegram requests.
+
 ## zutfile agents
 
 A zutfile packages an agent's instructions, skills, requirements, and enforced tool permissions as a shareable agent. Run one from a local directory, a packed `.zut` artifact, a short name, or directly from a public GitHub repository:

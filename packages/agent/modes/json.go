@@ -13,6 +13,16 @@ import (
 // RunJSON runs the agent to completion, writing one JSON object per
 // AgentEvent as newline-delimited JSON.
 func RunJSON(ctx context.Context, ag *core.Agent, prompt string, images []provider.ImageBlock, out io.Writer) error {
+	_, err := RunJSONWithContextRecovery(ctx, ag, prompt, images, out, nil)
+	return err
+}
+
+// RunJSONWithContextRecovery is RunJSON with an optional checkpoint writer
+// for a one-shot context-overflow compaction. It suppresses the recoverable
+// first turn_end so stdout never contains a terminal error frame before the
+// continued turn succeeds. OutputStart identifies the suffix to persist after
+// a successful checkpoint.
+func RunJSONWithContextRecovery(ctx context.Context, ag *core.Agent, prompt string, images []provider.ImageBlock, out io.Writer, persistCompaction func([]provider.Message) error) (ContextRecoveryResult, error) {
 	enc := json.NewEncoder(out)
 	write := func(v any) {
 		_ = enc.Encode(v)
@@ -23,14 +33,18 @@ func RunJSON(ctx context.Context, ag *core.Agent, prompt string, images []provid
 		write(EventToJSON(ev))
 	}
 
-	if err := ag.Prompt(ctx, prompt, images, sink); err != nil {
+	recovery, err := PromptWithContextRecovery(ctx, ag, prompt, images, sink, ContextRecoveryOptions{
+		PersistCompaction:            persistCompaction,
+		SuppressInitialOverflowEvent: true,
+	})
+	if err != nil {
 		runErr = err
 	}
 
 	if runErr != nil {
 		fmt.Fprintln(out, `{"type":"error","message":`+jsonString(runErr.Error())+`}`)
 	}
-	return runErr
+	return recovery, runErr
 }
 
 // EventToJSON converts an AgentEvent to a JSON-friendly map. The on-wire
