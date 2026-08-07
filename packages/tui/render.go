@@ -37,9 +37,17 @@ type Renderer struct {
 	// in the terminal's visible viewport so we can diff safely, and bail
 	// out to clear+replay when the diff would touch rows that are no
 	// longer addressable.
-	logChat             []string
-	logBottom           []string
-	logLines            []string
+	logChat   []string
+	logBottom []string
+	logLines  []string
+	// Raw logical rows let DrawLog reject an unchanged frame before
+	// truncating and repainting every transcript row.
+	logRawChat          []string
+	logRawBottom        []string
+	logRawCols          int
+	logRawRows          int
+	logRawBackground    string
+	logRawHasThemeBG    bool
 	logViewportTop      int
 	logHardwareRow      int
 	logInit             bool
@@ -430,6 +438,13 @@ func (r *Renderer) DrawLog(chat, bottom []string, cursorBottomRow, cursorCol int
 	if len(bottom) == 0 {
 		bottom = []string{""}
 	}
+	if r.logInit && len(r.logLines) > 0 &&
+		cursorBottomRow == r.cursorRow && cursorCol == r.cursorCol &&
+		r.logRawCols == r.cols && r.logRawRows == r.rows && r.logRawBackground == r.backgroundStyle &&
+		r.logRawHasThemeBG == (r.theme.Background != nil) &&
+		sameLines(chat, r.logRawChat) && sameLines(bottom, r.logRawBottom) {
+		return
+	}
 	chatFrame := make([]string, len(chat))
 	for i, line := range chat {
 		chatFrame[i] = paintBackgroundRow(truncateToWidth(line, r.cols), r.cols, r.backgroundStyle)
@@ -808,6 +823,12 @@ func (r *Renderer) DrawLog(chat, bottom []string, cursorBottomRow, cursorCol int
 	r.logChat = append(r.logChat[:0], chatFrame...)
 	r.logBottom = append(r.logBottom[:0], bottomFrame...)
 	r.logLines = append(r.logLines[:0], lines...)
+	r.logRawChat = append(r.logRawChat[:0], chat...)
+	r.logRawBottom = append(r.logRawBottom[:0], bottom...)
+	r.logRawCols = r.cols
+	r.logRawRows = r.rows
+	r.logRawBackground = r.backgroundStyle
+	r.logRawHasThemeBG = r.theme.Background != nil
 	r.cursorRow = cursorBottomRow
 	r.cursorCol = cursorCol
 }

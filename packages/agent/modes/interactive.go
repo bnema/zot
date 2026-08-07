@@ -430,22 +430,24 @@ type modelRefreshResult struct{ err error }
 
 // Interactive is the TUI chat loop.
 type chatCacheKey struct {
-	cols            int
-	agentRev        uint64
-	statusOK        string
-	statusErr       string
-	help            string
-	extNotes        string
-	extStatuses     string
-	extWidgets      string
-	reloadErrors    string
-	updateAvailable bool
-	updateCurrent   string
-	updateLatest    string
-	updateURL       string
-	welcomeShowVer  bool
-	expandAll       bool
-	tailLimit       int
+	cols                 int
+	agentRev             uint64
+	statusOK             string
+	statusErr            string
+	help                 string
+	extNotes             string
+	extStatuses          string
+	extWidgets           string
+	reloadErrors         string
+	updateAvailable      bool
+	updateCurrent        string
+	updateLatest         string
+	updateURL            string
+	welcomeShowVer       bool
+	expandAll            bool
+	tailLimit            int
+	renderedMessageCount int
+	viewCacheRev         uint64
 }
 
 // QuickModelShortcut is one configured quick model switch slot.
@@ -666,6 +668,9 @@ type Interactive struct {
 	subagentActivityActive bool
 	pendingIdleWork        []func()
 	dirty                  chan struct{}
+	renderScheduler        atomic.Pointer[latestFrameScheduler]
+	renderRevision         atomic.Uint64
+	renderOutsideLock      bool
 	modelRefresh           chan modelRefreshResult
 	modelRefreshing        bool
 	startupPreDone         chan startupPreResult
@@ -694,6 +699,13 @@ type Interactive struct {
 	chatCache      []string
 	chatCacheKey   chatCacheKey
 	chatCacheValid bool
+
+	// stableChatCache contains only transcript/startup rows. Live streaming,
+	// tool overlays, and errors are appended separately so spinner/progress
+	// frames can reuse finalized chat while a turn is busy.
+	stableChatCache      []string
+	stableChatCacheKey   chatCacheKey
+	stableChatCacheValid bool
 
 	// Messages typed while a turn is in flight. Each is delivered as
 	// its own follow-up turn once the current one finishes. Rendered
@@ -1043,16 +1055,28 @@ func (i *Interactive) Run(ctx context.Context) error {
 
 	cols, rows := term.Size()
 	i.rend.Resize(cols, rows)
-	term.OnResize(func() {
+	renderScheduler := newLatestFrameScheduler()
+	i.renderScheduler.Store(renderScheduler)
+	go renderScheduler.run(func(req renderRequest) {
 		c, r := term.Size()
 		i.rend.Resize(c, r)
-		// Force an immediate redraw on resize. The throttled invalidate
-		// path is fine for animation, but a window resize is a discrete
-		// user action where any visible delay (or stale frame) reads as
-		// brokenness. redraw() is mutex-safe; the worst that happens is
-		// a duplicate paint if the throttler is mid-flight, which is
-		// invisible.
+		if req.theme != nil {
+			i.rend.SetTheme(*req.theme)
+		}
+		if req.clear {
+			i.rend.Clear()
+		}
+		if req.invalidate {
+			i.rend.Invalidate()
+		}
 		i.redraw()
+	})
+	defer renderScheduler.stop()
+	term.OnResize(func() {
+		// Resize and redraw share the renderer owner. The owner reads the
+		// latest terminal size just before its next frame.
+		i.renderRevision.Add(1)
+		renderScheduler.request(false, false)
 	})
 
 	if i.cfg.StartupPre != "" {
@@ -1140,7 +1164,7 @@ func (i *Interactive) Run(ctx context.Context) error {
 		if pendingRedraw {
 			pendingRedraw = false
 			lastRedraw = time.Now()
-			i.redraw()
+			renderScheduler.request(false, false)
 		}
 	}
 
@@ -1158,7 +1182,7 @@ func (i *Interactive) Run(ctx context.Context) error {
 			}
 			pendingRedraw = false
 			lastRedraw = time.Now()
-			i.redraw()
+			renderScheduler.request(false, false)
 			return
 		}
 		if pendingRedraw {
@@ -1287,7 +1311,42 @@ func (i *Interactive) Run(ctx context.Context) error {
 	}
 }
 
+func (i *Interactive) requestRendererClear() {
+	if scheduler := i.renderScheduler.Load(); scheduler != nil {
+		scheduler.request(true, false)
+		return
+	}
+	if i.rend != nil {
+		i.rend.Clear()
+	}
+}
+
+func (i *Interactive) requestRendererInvalidate() {
+	if scheduler := i.renderScheduler.Load(); scheduler != nil {
+		scheduler.request(false, true)
+		return
+	}
+	if i.rend != nil {
+		i.rend.Invalidate()
+	}
+}
+
+func (i *Interactive) requestRendererTheme(theme tui.Theme) {
+	if scheduler := i.renderScheduler.Load(); scheduler != nil {
+		scheduler.requestTheme(theme)
+		return
+	}
+	if i.rend != nil {
+		i.rend.SetTheme(theme)
+	}
+}
+
 func (i *Interactive) invalidate() {
+	i.renderRevision.Add(1)
+	if scheduler := i.renderScheduler.Load(); scheduler != nil {
+		scheduler.request(false, false)
+		return
+	}
 	select {
 	case i.dirty <- struct{}{}:
 	default:
@@ -1295,51 +1354,50 @@ func (i *Interactive) invalidate() {
 }
 
 func (i *Interactive) cachedChatLocked(cols int) []string {
-	key, cacheable := i.chatCacheKeyLocked(cols)
-	if cacheable && i.chatCacheValid && i.chatCacheKey == key {
+	// A busy frame contains mutable streaming/tool state. Keep the stable
+	// transcript cache, but never return a full-frame cache entry that would
+	// hide a newly arrived delta or completed result.
+	if i.busy || i.streamOn || i.streamFlushPending {
+		return i.buildChatLocked(cols)
+	}
+	key := i.chatCacheKeyLocked(cols)
+	if i.chatCacheValid && i.chatCacheKey == key {
 		return append([]string(nil), i.chatCache...)
 	}
 	chat := i.buildChatLocked(cols)
-	if cacheable {
-		i.chatCache = append(i.chatCache[:0], chat...)
-		i.chatCacheKey = key
-		i.chatCacheValid = true
-	} else {
-		i.chatCacheValid = false
-	}
+	key = i.chatCacheKeyLocked(cols)
+	i.chatCache = append(i.chatCache[:0], chat...)
+	i.chatCacheKey = key
+	i.chatCacheValid = true
 	return chat
 }
 
-func (i *Interactive) chatCacheKeyLocked(cols int) (chatCacheKey, bool) {
-	// Live turns mutate streaming/tool-call state at high frequency;
-	// keep those on the old rebuild path. The cache targets the common
-	// idle case where only the editor contents changed between redraws.
-	if i.busy || i.streamOn || i.streamFlushPending {
-		return chatCacheKey{}, false
-	}
+func (i *Interactive) chatCacheKeyLocked(cols int) chatCacheKey {
 	var rev uint64
 	if i.agent != nil {
 		rev = i.agent.Revision()
 	}
 	showVer := len(i.view.Messages) == 0 && !i.streamOn && len(i.toolOrder) == 0 && !i.welcomeStart.IsZero() && time.Since(i.welcomeStart) < welcomeVersionDuration
 	return chatCacheKey{
-		cols:            cols,
-		agentRev:        rev,
-		statusOK:        i.statusOK,
-		statusErr:       i.statusErr,
-		help:            strings.Join(i.helpBlock, "\n"),
-		extNotes:        strings.Join(i.extNotes, "\n"),
-		extStatuses:     i.extensionStatusesKeyLocked(),
-		extWidgets:      i.extensionWidgetsKeyLocked(),
-		reloadErrors:    strings.Join(i.reloadErrors, "\n"),
-		updateAvailable: i.updateInfo.Available,
-		updateCurrent:   i.updateInfo.Current,
-		updateLatest:    i.updateInfo.Latest,
-		updateURL:       i.updateInfo.URL,
-		welcomeShowVer:  showVer,
-		expandAll:       i.view.ExpandAll,
-		tailLimit:       i.view.TailLimit,
-	}, true
+		cols:                 cols,
+		agentRev:             rev,
+		statusOK:             i.statusOK,
+		statusErr:            i.statusErr,
+		help:                 strings.Join(i.helpBlock, "\n"),
+		extNotes:             strings.Join(i.extNotes, "\n"),
+		extStatuses:          i.extensionStatusesKeyLocked(),
+		extWidgets:           i.extensionWidgetsKeyLocked(),
+		reloadErrors:         strings.Join(i.reloadErrors, "\n"),
+		updateAvailable:      i.updateInfo.Available,
+		updateCurrent:        i.updateInfo.Current,
+		updateLatest:         i.updateInfo.Latest,
+		updateURL:            i.updateInfo.URL,
+		welcomeShowVer:       showVer,
+		expandAll:            i.view.ExpandAll,
+		tailLimit:            i.view.TailLimit,
+		renderedMessageCount: len(i.view.Messages),
+		viewCacheRev:         i.view.RenderCacheRevision,
+	}
 }
 
 func sortedNestedOuterKeys[T any](groups map[string]map[string]T) []string {
@@ -1515,11 +1573,48 @@ func (i *Interactive) extensionChromeLinesAtLocked(cols int, rightBarActive bool
 	return out
 }
 
+func (i *Interactive) stableChatRowsLocked(cols int) []string {
+	key := i.chatCacheKeyLocked(cols)
+	if i.stableChatCacheValid && i.stableChatCacheKey == key {
+		return append([]string(nil), i.stableChatCache...)
+	}
+
+	renderView := i.view.CloneForRender()
+	renderView.Streaming = ""
+	renderView.StreamingActive = false
+	renderView.ToolCalls = nil
+	renderView.Err = ""
+	if !i.renderOutsideLock {
+		rows := renderView.Build(cols)
+		i.stableChatCache = append(i.stableChatCache[:0], rows...)
+		i.stableChatCacheKey = key
+		i.stableChatCacheValid = true
+		return append([]string(nil), rows...)
+	}
+	// Markdown, syntax highlighting, and wrapping are the expensive part of
+	// a frame. Build the immutable snapshot without holding the interactive
+	// mutex so key processing can continue while a cold transcript renders.
+	i.mu.Unlock()
+	rows := renderView.Build(cols)
+	i.mu.Lock()
+	if i.view.MessagesRevision == renderView.MessagesRevision &&
+		i.view.RenderCacheRevision == renderView.RenderCacheRevision {
+		i.view.AdoptRenderCacheFrom(renderView)
+	}
+
+	i.stableChatCache = append(i.stableChatCache[:0], rows...)
+	i.stableChatCacheKey = key
+	i.stableChatCacheValid = true
+	return append([]string(nil), rows...)
+}
+
 func (i *Interactive) buildChatLocked(cols int) []string {
 	if i.agent != nil {
 		i.view.Messages = filterHiddenTranscriptMessages(i.agent.Messages())
+		i.view.MessagesRevision = i.agent.Revision()
 	} else {
 		i.view.Messages = nil
+		i.view.MessagesRevision = 0
 	}
 	// Pacer flush: while the streaming pacer is still draining the
 	// buffer (i.e. EvAssistantMessage already fired but more runes
@@ -1583,7 +1678,9 @@ func (i *Interactive) buildChatLocked(cols int) []string {
 	// rows update in place at the end of the buffer, instead of the
 	// whole bottom band shrinking and shifting chat lines around.
 	i.liveBlock = nil
-	chat := i.view.Build(cols)
+	stable := i.stableChatRowsLocked(cols)
+	chat := append([]string(nil), stable...)
+	chat = append(chat, i.view.BuildLive(cols)...)
 
 	// Welcome banner: shown at the top of the chat area when there is
 	// no transcript yet. Disappears after the first message is sent.
@@ -1708,7 +1805,7 @@ func (i *Interactive) scrollBy(delta int) {
 		// wrapped-character fragments behind during scroll-driven
 		// viewport changes. Force a full repaint on scroll, but
 		// avoid a whole-screen clear because that visibly flickers.
-		i.rend.Invalidate()
+		i.requestRendererInvalidate()
 	}
 	i.mu.Unlock()
 	i.invalidate()
@@ -1749,16 +1846,14 @@ func (i *Interactive) scrollToBottom() {
 	// after resume. See commit 43da5e5 for the same fix on new turns.
 	i.prevChatLen = 0
 	i.prevChatCols = 0
-	if i.rend != nil {
-		i.rend.Invalidate()
-	}
+	i.requestRendererInvalidate()
 	i.mu.Unlock()
 	i.invalidate()
 }
 
 func (i *Interactive) redraw() {
 	i.mu.Lock()
-	defer i.mu.Unlock()
+	renderRevision := i.renderRevision.Load()
 
 	cols, rows := i.cfg.Terminal.Size()
 	mainCols := cols
@@ -1773,7 +1868,13 @@ func (i *Interactive) redraw() {
 		}
 	}
 	rightBarFallback := len(rightBarWidgets) > 0 && !rightBarActive
+	i.renderOutsideLock = true
 	chat := i.cachedChatLocked(mainCols)
+	i.renderOutsideLock = false
+	if i.renderRevision.Load() != renderRevision {
+		i.mu.Unlock()
+		return
+	}
 
 	// Dialogs (login or model picker) render between chat and the editor.
 	var dialog []string
@@ -2351,8 +2452,16 @@ func (i *Interactive) redraw() {
 		cursorCol = 0
 	}
 	i.setInputCursorDimmed(modalBackdrop && !cursorInDialog)
+	if i.renderRevision.Load() != renderRevision {
+		i.mu.Unlock()
+		return
+	}
+	theme := i.cfg.Theme
+	// State assembly above is synchronized; terminal output is owned by
+	// this renderer goroutine and must not hold the global state mutex.
+	i.mu.Unlock()
 	if rightBarActive {
-		rightBar := tui.RenderRightBar(i.cfg.Theme, rightBarWidgets, rightBarWidth, rows)
+		rightBar := tui.RenderRightBar(theme, rightBarWidgets, rightBarWidth, rows)
 		if modalBackdrop {
 			i.rend.DrawRightBarDimmed(visibleChat, bottom, tui.DimLines(rightBar), cursorRow, cursorCol)
 		} else {
@@ -2362,11 +2471,13 @@ func (i *Interactive) redraw() {
 		_ = visibleChat // maintained for legacy scroll state/indicators; DrawLog owns chat viewport.
 		i.rend.DrawLog(chat, bottom, cursorRow, cursorCol)
 	}
+	i.mu.Lock()
 	if i.pendingAlert != nil && !i.busy && !i.streamOn && !i.streamFlushPending && len(i.streamPending) == 0 {
 		alert := *i.pendingAlert
 		i.pendingAlert = nil
 		i.emitAlertLocked(alert)
 	}
+	i.mu.Unlock()
 }
 
 func hasImageEscape(line string) bool {
@@ -2612,9 +2723,7 @@ func (i *Interactive) clearFileSuggestQuery() {
 func (i *Interactive) setToolExpansion(expanded bool) {
 	i.mu.Lock()
 	i.view.ExpandAll = expanded
-	if i.rend != nil {
-		i.rend.Clear()
-	}
+	i.requestRendererClear()
 	i.mu.Unlock()
 	i.invalidate()
 }
@@ -2629,9 +2738,7 @@ func (i *Interactive) toggleToolExpansion() {
 func (i *Interactive) toggleBtwToolExpansion() {
 	i.btwDialog.ToggleToolExpansion()
 	i.mu.Lock()
-	if i.rend != nil {
-		i.rend.Clear()
-	}
+	i.requestRendererClear()
 	i.mu.Unlock()
 	i.invalidate()
 }
@@ -3184,11 +3291,11 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 		i.mu.Lock()
 		i.rightBarHidden = !i.rightBarHidden
 		i.mu.Unlock()
-		i.rend.Invalidate()
+		i.requestRendererInvalidate()
 		i.invalidate()
 		return false
 	case tui.KeyCtrlL:
-		i.rend.Clear()
+		i.requestRendererClear()
 		i.invalidate()
 		return false
 	case tui.KeyPasteClipboard:
@@ -3918,6 +4025,7 @@ func (i *Interactive) applyChangedCWD(ag *core.Agent, provider, model, cwd strin
 	}
 	i.cfg.StartupContextPaths = append([]string(nil), startupContextPaths...)
 	i.view.StartupContextPaths = nil
+	i.view.InvalidateRenderCache()
 	if i.cfg.ShowInstructionsAtStartup != nil && *i.cfg.ShowInstructionsAtStartup {
 		i.view.StartupContextPaths = append(i.view.StartupContextPaths, startupContextPaths...)
 	}
@@ -4987,9 +5095,7 @@ func (i *Interactive) applySettingToggle(key string, value bool) {
 	// change (image rendering, status copy, future toggles) lands
 	// immediately instead of waiting for the next diff frame.
 	defer func() {
-		if i.rend != nil {
-			i.rend.Clear()
-		}
+		i.requestRendererClear()
 		i.invalidate()
 	}()
 	switch key {
@@ -5331,6 +5437,7 @@ func (i *Interactive) applySettingToggle(key string, value bool) {
 		i.view.StartupContextPaths = nil
 		i.view.StartupExtensionNames = nil
 		i.view.StartupSkillNames = nil
+		i.view.InvalidateRenderCache()
 		if value {
 			i.view.StartupAgentName = i.cfg.StartupAgentName
 			i.view.StartupContextPaths = append(i.view.StartupContextPaths, i.cfg.StartupContextPaths...)
@@ -5345,9 +5452,7 @@ func (i *Interactive) applySettingToggle(key string, value bool) {
 
 func (i *Interactive) applyTUIInputStyleSetting(style string) {
 	defer func() {
-		if i.rend != nil {
-			i.rend.Clear()
-		}
+		i.requestRendererClear()
 		i.invalidate()
 	}()
 	style = tui.NormalizeInputStyle(style)
@@ -5369,9 +5474,7 @@ func (i *Interactive) applyTUIInputStyleSetting(style string) {
 
 func (i *Interactive) applyTUIStatusPositionSetting(position string) {
 	defer func() {
-		if i.rend != nil {
-			i.rend.Clear()
-		}
+		i.requestRendererClear()
 		i.invalidate()
 	}()
 	position = tui.NormalizeStatusPosition(position)
@@ -5396,9 +5499,7 @@ func (i *Interactive) applyTUIStatusPositionSetting(position string) {
 
 func (i *Interactive) applyTUIWorkingPositionSetting(position string) {
 	defer func() {
-		if i.rend != nil {
-			i.rend.Clear()
-		}
+		i.requestRendererClear()
 		i.invalidate()
 	}()
 	position = tui.NormalizeWorkingPosition(position)
@@ -5423,9 +5524,7 @@ func (i *Interactive) applyTUIWorkingPositionSetting(position string) {
 
 func (i *Interactive) applyTUISubagentPositionSetting(position string) {
 	defer func() {
-		if i.rend != nil {
-			i.rend.Clear()
-		}
+		i.requestRendererClear()
 		i.invalidate()
 	}()
 	position = tui.NormalizeSubagentPosition(position)
@@ -5496,24 +5595,22 @@ func (i *Interactive) applyThemeNow(name string) {
 		i.statusErr = ""
 		i.mu.Unlock()
 	}
+	i.mu.Lock()
 	i.cfg.Theme = th
 	i.view.Theme = th
 	i.view.InvalidateRenderCache()
+	i.mu.Unlock()
 	i.ed.Prompt = th.AccentBar(th.Accent)
 	i.applyInputCursorColor()
 	i.spin.Configure(th)
-	if i.rend != nil {
-		i.rend.SetTheme(th)
-		i.rend.Clear()
-	}
+	i.requestRendererTheme(th)
+	i.requestRendererClear()
 	i.invalidate()
 }
 
 func (i *Interactive) applyReasoningSetting(level string) {
 	defer func() {
-		if i.rend != nil {
-			i.rend.Clear()
-		}
+		i.requestRendererClear()
 		i.invalidate()
 	}()
 	level = provider.NormalizeReasoning(level)
@@ -7566,8 +7663,7 @@ func (i *Interactive) startTurnRequest(parent context.Context, prompt string, im
 			lastStop = e.Stop
 			lastTurnErr = e.Err
 		}
-		i.handleEvent(ev)
-		i.invalidate()
+		i.handleEventForPresentation(ev)
 	}
 
 	go func() {
@@ -8002,6 +8098,32 @@ func (i *Interactive) shouldAutoCompactLocked() bool {
 	return shouldAutoCompact(i.lastCtxInput, m.ContextWindow, threshold)
 }
 
+func eventAffectsPresentation(ev core.AgentEvent) bool {
+	switch ev.(type) {
+	case core.EvToolProgress:
+		return false
+	default:
+		return true
+	}
+}
+
+func bumpToolRevision(tc *tui.ToolCallView) {
+	if tc.Revision == ^uint64(0) {
+		tc.Revision = 1
+		return
+	}
+	tc.Revision++
+}
+
+func (i *Interactive) handleEventForPresentation(ev core.AgentEvent) {
+	i.handleEvent(ev)
+	// Progress payloads are still delivered to the core sink and applied
+	// in order, but they have no interactive-visible representation.
+	if eventAffectsPresentation(ev) {
+		i.invalidate()
+	}
+}
+
 func (i *Interactive) handleEvent(ev core.AgentEvent) {
 	i.mu.Lock()
 	defer i.mu.Unlock()
@@ -8058,6 +8180,7 @@ func (i *Interactive) handleEvent(ev core.AgentEvent) {
 			i.toolCalls[e.ID] = &tui.ToolCallView{
 				ID:        e.ID,
 				Name:      e.Name,
+				Revision:  1,
 				Streaming: true,
 			}
 			i.toolOrder = append(i.toolOrder, e.ID)
@@ -8066,6 +8189,7 @@ func (i *Interactive) handleEvent(ev core.AgentEvent) {
 	case core.EvToolUseArgs:
 		if tc, ok := i.toolCalls[e.ID]; ok {
 			tc.RawJSONBuf += e.Delta
+			bumpToolRevision(tc)
 			// Refresh the live path as soon as it parses; used in
 			// the header (write /Users/example/Desktop/demo.ts)
 			// while the content is still streaming.
@@ -8078,6 +8202,7 @@ func (i *Interactive) handleEvent(ev core.AgentEvent) {
 	case core.EvToolUseEnd:
 		if tc, ok := i.toolCalls[e.ID]; ok {
 			tc.Streaming = false
+			bumpToolRevision(tc)
 		}
 	case core.EvToolCall:
 		// If we already pre-created the view during streaming, just
@@ -8085,6 +8210,7 @@ func (i *Interactive) handleEvent(ev core.AgentEvent) {
 		// (non-streaming providers or legacy paths).
 		if tc, ok := i.toolCalls[e.ID]; ok {
 			tc.Args = tui.ShortArgs(e.Name, e.Args)
+			bumpToolRevision(tc)
 			if tc.RawJSONBuf == "" {
 				tc.RawJSONBuf = string(e.Args)
 			}
@@ -8093,6 +8219,7 @@ func (i *Interactive) handleEvent(ev core.AgentEvent) {
 			i.toolCalls[e.ID] = &tui.ToolCallView{
 				ID:         e.ID,
 				Name:       e.Name,
+				Revision:   1,
 				Args:       tui.ShortArgs(e.Name, e.Args),
 				RawJSONBuf: string(e.Args),
 			}
@@ -8114,6 +8241,7 @@ func (i *Interactive) handleEvent(ev core.AgentEvent) {
 				}
 			}
 			tc.Result = text.String()
+			bumpToolRevision(tc)
 		}
 		if i.cfg.OnToolResult != nil {
 			i.cfg.OnToolResult(e.ID, e.Result)
@@ -9560,9 +9688,7 @@ func (i *Interactive) resetTranscriptRenderLocked() {
 	i.prevChatCols = 0
 	i.prevChatRows = 0
 	i.prevScrollOffset = 0
-	if i.rend != nil {
-		i.rend.Invalidate()
-	}
+	i.requestRendererInvalidate()
 }
 
 // resetStreamingStateLocked clears every piece of streaming state
