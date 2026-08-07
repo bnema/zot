@@ -101,6 +101,12 @@ type InteractiveConfig struct {
 	// the launch-time --no-tools/--tools policy excludes status queries.
 	AutoSubagentsStatusToolAllowed *bool
 
+	// AutoSubagentsStopToolAllowed and AutoSubagentsResumeToolAllowed are nil
+	// for normal sessions and false when the launch-time tool policy excludes
+	// manager lifecycle actions.
+	AutoSubagentsStopToolAllowed   *bool
+	AutoSubagentsResumeToolAllowed *bool
+
 	// FastMode mirrors the persisted OpenAI fast-mode flag at startup.
 	// nil/missing means disabled. Unsupported providers reject attempts
 	// to enable it and reject requests when it remains enabled.
@@ -8553,32 +8559,59 @@ func (a telegramSenderAdapter) Active() bool {
 // subagentWatchEntry is one tracked auto-subagents sub-agent. It records the
 // delegated turn's outcome separately from the long-lived daemon status.
 type subagentWatchEntry struct {
-	agent   *subagents.Agent
-	task    string
-	done    bool
-	outcome string
-	err     string
+	agent    *subagents.Agent
+	task     string
+	followUp bool
+	done     bool
+	outcome  string
+	err      string
 }
 
 // TrackSubagentWorker is the exported entry point used by the cli to
 // hand a freshly-spawned auto-subagents agent off to the watcher.
 func (i *Interactive) TrackSubagentWorker(a *subagents.Agent, task string) {
-	i.trackSubagentWorker(a, task)
+	i.trackSubagentWorker(a, task, false)
 }
 
-// trackSubagentWorker records a freshly-spawned auto-subagents agent and
-// subscribes to both ways its delegated task can finish. Successful
-// long-lived agents report a prompt-level turn_end and keep listening;
-// startup failures and unexpected daemon exits only unblock Agent.Wait.
-// Whichever signal arrives first completes the entry exactly once.
-//
-// Wired in from cli.go via SubagentSpawnTool.OnSpawned only when auto-
-// subagent is enabled, so this is a no-op when the feature is off.
-func (i *Interactive) trackSubagentWorker(a *subagents.Agent, task string) {
+// TrackResumedSubagentWorker watches a resumed follow-up independently of the
+// worker's original task. A long-lived daemon can complete several manager
+// turns, each of which must produce its own automatic delivery.
+func (i *Interactive) TrackResumedSubagentWorker(a *subagents.Agent, prompt string) {
+	i.trackSubagentWorker(a, prompt, true)
+}
+
+// TrackStoppedSubagentWorker watches a requested worker shutdown. If an active
+// task watcher already owns the worker, that watcher reports the terminal
+// outcome; otherwise this creates a single exit-only watcher, including for a
+// worker restored by Reload.
+func (i *Interactive) TrackStoppedSubagentWorker(a *subagents.Agent) {
 	if i == nil || a == nil {
 		return
 	}
-	entry := &subagentWatchEntry{agent: a, task: task}
+	i.subagentWatchMu.Lock()
+	for _, existing := range i.subagentWatch {
+		if existing.agent.ID == a.ID && !existing.done {
+			i.subagentWatchMu.Unlock()
+			return
+		}
+	}
+	entry := &subagentWatchEntry{agent: a, task: a.Task}
+	i.subagentWatch = append(i.subagentWatch, entry)
+	i.subagentWatchMu.Unlock()
+	i.invalidate()
+	i.watchSubagentExit(entry)
+}
+
+// trackSubagentWorker records an auto-subagents turn and subscribes to both
+// ways it can finish. Successful long-lived agents report a prompt-level
+// turn_end and keep listening; startup failures and unexpected daemon exits
+// only unblock Agent.Wait. Whichever signal arrives first completes the entry
+// exactly once.
+func (i *Interactive) trackSubagentWorker(a *subagents.Agent, task string, followUp bool) {
+	if i == nil || a == nil {
+		return
+	}
+	entry := &subagentWatchEntry{agent: a, task: task, followUp: followUp}
 	i.subagentWatchMu.Lock()
 	i.subagentWatch = append(i.subagentWatch, entry)
 	i.subagentWatchMu.Unlock()
@@ -8591,9 +8624,13 @@ func (i *Interactive) trackSubagentWorker(a *subagents.Agent, task string) {
 		}
 		i.completeSupervisorWatchEntry(entry, outcome, errMsg)
 	})
+	i.watchSubagentExit(entry)
+}
+
+func (i *Interactive) watchSubagentExit(entry *subagentWatchEntry) {
 	go func() {
-		a.Wait()
-		snap := a.Snapshot()
+		entry.agent.Wait()
+		snap := entry.agent.Snapshot()
 		outcome := string(snap.Status)
 		if snap.Status == subagents.StatusDone {
 			outcome = "completed"
@@ -8646,7 +8683,10 @@ func (i *Interactive) flushSupervisorSummary(batch []*subagentWatchEntry) {
 		if status == "" {
 			status = string(snap.Status)
 		}
-		task := snap.Task
+		task := e.task
+		if task == "" || !e.followUp {
+			task = snap.Task
+		}
 		if task == "" {
 			task = e.task
 		}
@@ -8762,7 +8802,7 @@ func (i *Interactive) applyAutoSubagentsSystemPrompt(active bool) {
 // snapshot+mutate pattern so extension tools and /reload-ext additions
 // survive a toggle.
 func (i *Interactive) autoSubagentsAvailable() bool {
-	return i.cfg.Supervisor != nil && (i.autoSubagentsToolAllowed() || i.autoSubagentsStatusToolAllowed())
+	return i.cfg.Supervisor != nil && autoSubagentsAnyToolAllowedConfig(i.cfg)
 }
 
 func (i *Interactive) autoSubagentsUnavailableHint() string {
@@ -8770,8 +8810,8 @@ func (i *Interactive) autoSubagentsUnavailableHint() string {
 	if i.cfg.Supervisor == nil {
 		hints = append(hints, "subagent supervisor not available in this mode")
 	}
-	if !i.autoSubagentsToolAllowed() && !i.autoSubagentsStatusToolAllowed() {
-		hints = append(hints, "launch-time tool policy excludes subagent_spawn and subagent_status")
+	if !autoSubagentsAnyToolAllowedConfig(i.cfg) {
+		hints = append(hints, "launch-time tool policy excludes subagent manager tools")
 	}
 	return strings.Join(hints, "; ")
 }
@@ -8789,12 +8829,41 @@ func autoSubagentsStatusToolAllowedConfig(cfg InteractiveConfig) bool {
 	return autoSubagentsToolAllowedConfig(cfg)
 }
 
+func autoSubagentsStopToolAllowedConfig(cfg InteractiveConfig) bool {
+	if cfg.AutoSubagentsStopToolAllowed != nil {
+		return *cfg.AutoSubagentsStopToolAllowed
+	}
+	return autoSubagentsToolAllowedConfig(cfg)
+}
+
+func autoSubagentsResumeToolAllowedConfig(cfg InteractiveConfig) bool {
+	if cfg.AutoSubagentsResumeToolAllowed != nil {
+		return *cfg.AutoSubagentsResumeToolAllowed
+	}
+	return autoSubagentsToolAllowedConfig(cfg)
+}
+
+func autoSubagentsAnyToolAllowedConfig(cfg InteractiveConfig) bool {
+	return autoSubagentsToolAllowedConfig(cfg) ||
+		autoSubagentsStatusToolAllowedConfig(cfg) ||
+		autoSubagentsStopToolAllowedConfig(cfg) ||
+		autoSubagentsResumeToolAllowedConfig(cfg)
+}
+
 func (i *Interactive) autoSubagentsToolAllowed() bool {
 	return autoSubagentsToolAllowedConfig(i.cfg)
 }
 
 func (i *Interactive) autoSubagentsStatusToolAllowed() bool {
 	return autoSubagentsStatusToolAllowedConfig(i.cfg)
+}
+
+func (i *Interactive) autoSubagentsStopToolAllowed() bool {
+	return autoSubagentsStopToolAllowedConfig(i.cfg)
+}
+
+func (i *Interactive) autoSubagentsResumeToolAllowed() bool {
+	return autoSubagentsResumeToolAllowedConfig(i.cfg)
 }
 
 func (i *Interactive) autoSubagentsEnabled() bool {
@@ -8818,7 +8887,7 @@ func (i *Interactive) applyAutoSubagentsTool(active bool) {
 	current := i.agent.ToolsSnapshot()
 	next := core.Registry{}
 	for name, t := range current {
-		if name == "subagent_spawn" || name == "subagent_status" {
+		if name == "subagent_spawn" || name == "subagent_status" || name == "subagent_stop" || name == "subagent_resume" {
 			continue
 		}
 		next[name] = t
@@ -8832,7 +8901,7 @@ func (i *Interactive) applyAutoSubagentsTool(active bool) {
 				DefaultProvider:  func() string { return i.cfg.Provider },
 				DefaultReasoning: func() string { return i.cfg.Reasoning },
 				ResolveSubagent:  i.cfg.ResolveSubagent,
-				OnSpawned:        i.trackSubagentWorker,
+				OnSpawned:        i.TrackSubagentWorker,
 			}
 			next[canonical.Name()] = canonical
 		}
@@ -8842,6 +8911,22 @@ func (i *Interactive) applyAutoSubagentsTool(active bool) {
 				Enabled:    func() bool { return i.autoSubagentsEnabled() },
 			}
 			next[statusTool.Name()] = statusTool
+		}
+		if i.autoSubagentsStopToolAllowed() {
+			stopTool := &tools.SubagentStopTool{
+				Supervisor:      i.cfg.Supervisor,
+				Enabled:         func() bool { return i.autoSubagentsEnabled() },
+				OnStopRequested: i.TrackStoppedSubagentWorker,
+			}
+			next[stopTool.Name()] = stopTool
+		}
+		if i.autoSubagentsResumeToolAllowed() {
+			resumeTool := &tools.SubagentResumeTool{
+				Supervisor: i.cfg.Supervisor,
+				Enabled:    func() bool { return i.autoSubagentsEnabled() },
+				OnResumed:  i.TrackResumedSubagentWorker,
+			}
+			next[resumeTool.Name()] = resumeTool
 		}
 	}
 	i.agent.SetTools(next)

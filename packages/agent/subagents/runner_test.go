@@ -364,6 +364,24 @@ func TestDefaultChildArgsResumeOmitsTask(t *testing.T) {
 	}
 }
 
+func TestDefaultChildArgsResumeUsesFollowUpPrompt(t *testing.T) {
+	a := &Agent{
+		Dir:          "/wt",
+		Task:         "review the change",
+		Resuming:     true,
+		ResumePrompt: "I applied your feedback. Please review it again.",
+	}
+	args := defaultChildArgs("/zut", a, "/s.json", "/in.sock")
+	if got := args[len(args)-1]; got != a.ResumePrompt {
+		t.Fatalf("resume argv last = %q, want follow-up prompt %q\n%v", got, a.ResumePrompt, args)
+	}
+	for _, v := range args[:len(args)-1] {
+		if v == a.Task {
+			t.Fatalf("resume argv contains original task; it would duplicate the first turn\n%v", args)
+		}
+	}
+}
+
 func TestUpdateAgentFromEventIgnoresProviderToolLoopTurnEnd(t *testing.T) {
 	a := &Agent{}
 	a.setTurnState(TurnRunning, "turn-1")

@@ -1,6 +1,46 @@
 package agent
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
+
+func TestAutoSubagentsSystemAddendumForListsOnlyEnabledLifecycleTools(t *testing.T) {
+	for _, tc := range []struct {
+		name            string
+		spawn           bool
+		stop            bool
+		resume          bool
+		want            []string
+		unwanted        []string
+		wantUnavailable bool
+	}{
+		{name: "none", spawn: true, unwanted: []string{"subagent_stop", "subagent_resume"}},
+		{name: "fully unavailable", unwanted: []string{"subagent_stop", "subagent_resume"}, wantUnavailable: true},
+		{name: "stop", spawn: true, stop: true, want: []string{"subagent_stop"}, unwanted: []string{"subagent_resume"}},
+		{name: "resume", spawn: true, resume: true, want: []string{"subagent_resume"}, unwanted: []string{"subagent_stop"}},
+		{name: "both", spawn: true, stop: true, resume: true, want: []string{"subagent_stop", "subagent_resume"}},
+		{name: "stop without spawn", stop: true, want: []string{"subagent_stop", "Spawning new workers is unavailable"}, unwanted: []string{"subagent_resume"}},
+		{name: "resume without spawn", resume: true, want: []string{"subagent_resume", "Spawning new workers is unavailable"}, unwanted: []string{"subagent_stop"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := AutoSubagentsSystemAddendumFor(tc.spawn, tc.stop, tc.resume)
+			for _, want := range tc.want {
+				if !strings.Contains(got, want) {
+					t.Fatalf("addendum missing enabled lifecycle tool %q:\n%s", want, got)
+				}
+			}
+			for _, unwanted := range tc.unwanted {
+				if strings.Contains(got, unwanted) {
+					t.Fatalf("addendum mentions unavailable lifecycle tool %q:\n%s", unwanted, got)
+				}
+			}
+			if gotUnavailable := strings.Contains(got, AutoSubagentsDelegationUnavailableAddendum); gotUnavailable != tc.wantUnavailable {
+				t.Fatalf("delegation-unavailable guidance present = %t, want %t:\n%s", gotUnavailable, tc.wantUnavailable, got)
+			}
+		})
+	}
+}
 
 func TestConfigSettingsStorePersistsShowInstructionsAtStartup(t *testing.T) {
 	t.Setenv("ZUT_HOME", t.TempDir())

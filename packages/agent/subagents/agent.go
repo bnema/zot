@@ -76,11 +76,15 @@ type Agent struct {
 	// rather than Spawn. The runner consults it to decide whether
 	// to pass the original Task as a positional argv to the child:
 	// on first Spawn we want the child to run the task immediately;
-	// on Resume the task was already run last time and replaying it
-	// would produce a second turn that collides ("agent busy; send
-	// 'cancel' first") with whatever the user types next. Not
-	// persisted — every Resume sets it explicitly.
+	// on Resume the task was already run last time and must not replay.
+	// Not persisted — every Resume sets it explicitly.
 	Resuming bool
+
+	// ResumePrompt is an optional manager follow-up passed to a resumed child as
+	// its initial prompt. It remains in durable metadata until the child reports
+	// turn.started, so a host exit while the worker is queued cannot lose it.
+	ResumePrompt   string
+	ResumePromptAt time.Time
 
 	// InboxPath is the unix socket the child agent listens on for
 	// follow-up prompts and control messages. The supervisor opens
@@ -382,6 +386,37 @@ func (a *Agent) stateDirectory(defaultRoot string) string {
 // from the runner when the child daemon emits a prompt-level
 // turn_end event with a step field. Safe to call from any goroutine:
 // the runner reads the callback under the same mutex.
+func (a *Agent) resumePrompt() string {
+	prompt, _ := a.resumePromptInfo()
+	return prompt
+}
+
+func (a *Agent) resumePromptInfo() (string, time.Time) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.ResumePrompt, a.ResumePromptAt
+}
+
+func (a *Agent) setResumePrompt(prompt string, acceptedAt time.Time) (string, time.Time) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	previousPrompt, previousAcceptedAt := a.ResumePrompt, a.ResumePromptAt
+	a.ResumePrompt = prompt
+	a.ResumePromptAt = acceptedAt
+	return previousPrompt, previousAcceptedAt
+}
+
+func (a *Agent) clearResumePrompt() bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.ResumePrompt == "" {
+		return false
+	}
+	a.ResumePrompt = ""
+	a.ResumePromptAt = time.Time{}
+	return true
+}
+
 func (a *Agent) SetOnTurnEnd(fn func(step int, errMsg string)) {
 	a.mu.Lock()
 	a.OnTurnEnd = fn

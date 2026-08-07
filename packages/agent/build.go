@@ -858,7 +858,11 @@ func Resolve(args Args, requireCred bool) (Resolved, error) {
 				append_ = append(append_, subagentsAddendum)
 			}
 		}
-		append_ = append(append_, AutoSubagentsSystemAddendumFor(autoSubagentsToolAllowed(args)))
+		append_ = append(append_, AutoSubagentsSystemAddendumFor(
+			autoSubagentsToolAllowed(args),
+			autoSubagentsStopToolAllowed(args),
+			autoSubagentsResumeToolAllowed(args),
+		))
 	}
 	if selectedProfile != nil && selectedProfile.SystemPromptMode != "replace" && selectedProfile.SystemPrompt != "" {
 		append_ = append(append_, selectedProfile.SystemPrompt)
@@ -1317,8 +1321,19 @@ func autoSubagentsStatusToolAllowed(args Args) bool {
 	return autoSubagentsToolAllowedFor(args, "subagent_status")
 }
 
+func autoSubagentsStopToolAllowed(args Args) bool {
+	return autoSubagentsToolAllowedFor(args, "subagent_stop")
+}
+
+func autoSubagentsResumeToolAllowed(args Args) bool {
+	return autoSubagentsToolAllowedFor(args, "subagent_resume")
+}
+
 func autoSubagentsAnyToolAllowed(args Args) bool {
-	return autoSubagentsToolAllowed(args) || autoSubagentsStatusToolAllowed(args)
+	return autoSubagentsToolAllowed(args) ||
+		autoSubagentsStatusToolAllowed(args) ||
+		autoSubagentsStopToolAllowed(args) ||
+		autoSubagentsResumeToolAllowed(args)
 }
 
 func autoSubagentsToolAllowedFor(args Args, toolName string) bool {

@@ -3,6 +3,8 @@ package subagents
 import (
 	"context"
 	"errors"
+	"net"
+	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -283,6 +285,125 @@ func TestStopContextCancelsDetachedWaitWithoutHoldingOperationLock(t *testing.T)
 	}
 	if got := a.Status(); got != StatusDetached {
 		t.Fatalf("status after canceled stop = %s; want detached", got)
+	}
+}
+
+func TestStopDetachedWorkerClosesWaiters(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("subagent inbox transport uses Unix-domain sockets")
+	}
+	path := filepath.Join(shortSocketDir(t), "agent.sock")
+	listener, err := Listen(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	root := t.TempDir()
+	f := New(Config{Root: root, RepoRoot: root})
+	stateDir := f.agentStateDir("detached-agent")
+	if err := os.MkdirAll(stateDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	a := &Agent{
+		ID:        "detached-agent",
+		stateDir:  stateDir,
+		InboxPath: path,
+		inbox:     NewInbox(path),
+		status:    StatusDetached,
+		done:      make(chan struct{}),
+	}
+	defer a.inbox.Close()
+	f.mu.Lock()
+	f.agents[a.ID] = a
+	f.order = append(f.order, a.ID)
+	f.mu.Unlock()
+
+	stopped := make(chan error, 1)
+	go func() { stopped <- f.StopContext(context.Background(), a.ID) }()
+	select {
+	case msg := <-listener.Lines():
+		if msg == "" {
+			t.Fatal("shutdown command was empty")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("detached worker did not receive shutdown")
+	}
+	if err := listener.Close(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-stopped:
+		if err != nil {
+			t.Fatalf("stop detached worker: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("detached worker stop did not finish")
+	}
+	select {
+	case <-a.done:
+	case <-time.After(time.Second):
+		t.Fatal("detached worker stop did not close waiters")
+	}
+	result, err := readTurnResult(stateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.AgentID != a.ID || result.Status != ResultCanceled {
+		t.Fatalf("detached worker result = agent %q status %q, want agent %q status %q", result.AgentID, result.Status, a.ID, ResultCanceled)
+	}
+}
+
+func TestStopDetachedWorkerHonorsCanceledShutdownSend(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("subagent inbox transport uses Unix-domain sockets")
+	}
+	path := filepath.Join(shortSocketDir(t), "agent.sock")
+	listener, err := Listen(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+
+	local, remote := net.Pipe()
+	defer remote.Close()
+	conn := &blockingWriteConn{
+		Conn:    local,
+		started: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+	inbox := NewInbox(path)
+	inbox.conn = conn
+	defer inbox.Close()
+
+	f := New(Config{Root: t.TempDir()})
+	a := &Agent{
+		ID:        "detached-cancel",
+		InboxPath: path,
+		inbox:     inbox,
+		status:    StatusDetached,
+		done:      make(chan struct{}),
+	}
+	f.mu.Lock()
+	f.agents[a.ID] = a
+	f.order = append(f.order, a.ID)
+	f.mu.Unlock()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	stopped := make(chan error, 1)
+	go func() { stopped <- f.StopContext(ctx, a.ID) }()
+	select {
+	case <-conn.started:
+	case <-time.After(time.Second):
+		t.Fatal("detached worker shutdown send did not start")
+	}
+	cancel()
+	select {
+	case err := <-stopped:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("stop detached worker error = %v, want context canceled", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("detached worker shutdown send did not honor cancellation")
 	}
 }
 
