@@ -360,9 +360,133 @@ Review without editing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"[subagents_list]", "reviewer", "Read-only code reviewer", "[/subagents_list]"} {
+	for _, want := range []string{
+		"[subagents_list]",
+		"reviewer",
+		"Read-only code reviewer",
+		"[/subagents_list]",
+		"primary-agent orchestrator",
+		"Delegate all implementation, debugging/testing, and code-review work",
+		"appropriately named subagent profile",
+		"general worker",
+		"Do not write or edit code yourself",
+		"direct implementation tool calls",
+		"inspect or review code",
+		"apply worker patches",
+		"Shared-worktree",
+		"isolation:\"worktree\"",
+		"Child workers cannot recursively spawn more sub-agents in v1",
+	} {
 		if !strings.Contains(r.SystemPrompt, want) {
 			t.Fatalf("system prompt missing %q:\n%s", want, r.SystemPrompt)
+		}
+	}
+}
+
+func TestResolveKeepsStrictContractButOmitsProfilesWhenSpawnIsUnavailable(t *testing.T) {
+	root := t.TempDir()
+	home := filepath.Join(root, "home")
+	zutHome := filepath.Join(root, "zut-home")
+	project := filepath.Join(root, "repo")
+	if err := os.MkdirAll(filepath.Join(home, ".agents", "agents"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(project, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", home)
+	t.Setenv("ZUT_HOME", zutHome)
+	t.Setenv("ZUT_AGENT_PROFILES", filepath.Join(home, ".agents", "agents"))
+	enabled := true
+	if err := SaveConfig(Config{Provider: "openai", Model: "gpt-5", AutoSubagentsEnabled: &enabled}); err != nil {
+		t.Fatal(err)
+	}
+	profile := "---\nname: reviewer\ndescription: Read-only code reviewer\n---\nReview without editing.\n"
+	if err := os.WriteFile(filepath.Join(home, ".agents", "agents", "reviewer.md"), []byte(profile), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cases := []struct {
+		name string
+		args Args
+	}{
+		{name: "no tools", args: Args{CWD: project, NoTools: true}},
+		{name: "read allowlist", args: Args{CWD: project, Tools: []string{"read"}, ToolsSet: true}},
+		{name: "status allowlist", args: Args{CWD: project, Tools: []string{"subagent_status"}, ToolsSet: true}},
+		{name: "permission set", args: Args{CWD: project, PermissionSet: &tools.PermissionSet{}}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			r, err := Resolve(tc.args, false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, want := range []string{
+				"primary-agent orchestrator",
+				"Do not write or edit code yourself",
+				"subagent_spawn",
+				"report this limitation to the user",
+				"Completion is host-event-driven",
+			} {
+				if !strings.Contains(r.SystemPrompt, want) {
+					t.Fatalf("system prompt missing %q:\n%s", want, r.SystemPrompt)
+				}
+			}
+			for _, unwanted := range []string{"[subagents_list]", "reviewer", "Read-only code reviewer"} {
+				if strings.Contains(r.SystemPrompt, unwanted) {
+					t.Fatalf("system prompt advertises unusable profile %q:\n%s", unwanted, r.SystemPrompt)
+				}
+			}
+		})
+	}
+}
+
+func TestAutoSubagentsSystemAddendumRequiresHostCompletionUpdate(t *testing.T) {
+	for _, want := range []string{
+		"bash sleep",
+		"watch",
+		"tail -f",
+		"polling loops",
+		"repeated \"subagent_status\"",
+		"dashboard, metadata, event-log, or file checks",
+		"unrelated independent tasks",
+		"end or yield your turn",
+		"[auto-subagents update]",
+		"Completion updates are the only completion signal",
+		"user-requested commands, provider flows, extensions, or tests",
+	} {
+		if !strings.Contains(AutoSubagentsSystemAddendum, want) {
+			t.Fatalf("auto-subagents contract missing %q:\n%s", want, AutoSubagentsSystemAddendum)
+		}
+	}
+}
+
+func TestResolveOmitsAutoSubagentsOrchestratorContractWhenDisabled(t *testing.T) {
+	root := t.TempDir()
+	home := filepath.Join(root, "home")
+	zutHome := filepath.Join(root, "zut-home")
+	project := filepath.Join(root, "repo")
+	if err := os.MkdirAll(project, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", home)
+	t.Setenv("ZUT_HOME", zutHome)
+	disabled := false
+	if err := SaveConfig(Config{Provider: "openai", Model: "gpt-5", AutoSubagentsEnabled: &disabled}); err != nil {
+		t.Fatal(err)
+	}
+
+	r, err := Resolve(Args{CWD: project}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, unwanted := range []string{
+		AutoSubagentsSystemAddendum,
+		"primary-agent orchestrator",
+		"[subagents_list]",
+	} {
+		if strings.Contains(r.SystemPrompt, unwanted) {
+			t.Fatalf("disabled system prompt contains auto-subagents contract %q:\n%s", unwanted, r.SystemPrompt)
 		}
 	}
 }

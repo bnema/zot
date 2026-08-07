@@ -850,13 +850,15 @@ func Resolve(args Args, requireCred bool) (Resolved, error) {
 		append_ = append(append_, skillAddendum)
 	}
 	interactiveMode := args.Mode == "" || args.Mode == ModeInteractive
-	if selectedProfile == nil && interactiveMode && autoSubagentsAnyToolAllowed(args) && cfg.AutoSubagentsEnabled != nil && *cfg.AutoSubagentsEnabled {
-		homeDir, _ := os.UserHomeDir()
-		profiles, _ := subagents.Discover(args.CWD, homeDir)
-		if subagentsAddendum := subagents.SystemPromptAddendum(profiles); subagentsAddendum != "" {
-			append_ = append(append_, subagentsAddendum)
+	if selectedProfile == nil && interactiveMode && cfg.AutoSubagentsEnabled != nil && *cfg.AutoSubagentsEnabled {
+		if autoSubagentsToolAllowed(args) {
+			homeDir, _ := os.UserHomeDir()
+			profiles, _ := subagents.Discover(args.CWD, homeDir)
+			if subagentsAddendum := subagents.SystemPromptAddendum(profiles); subagentsAddendum != "" {
+				append_ = append(append_, subagentsAddendum)
+			}
 		}
-		append_ = append(append_, AutoSubagentsSystemAddendum)
+		append_ = append(append_, AutoSubagentsSystemAddendumFor(autoSubagentsToolAllowed(args)))
 	}
 	if selectedProfile != nil && selectedProfile.SystemPromptMode != "replace" && selectedProfile.SystemPrompt != "" {
 		append_ = append(append_, selectedProfile.SystemPrompt)

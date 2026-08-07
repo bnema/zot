@@ -956,7 +956,7 @@ func NewInteractive(cfg InteractiveConfig) *Interactive {
 		baseURL, _, err := cfg.LlamaCPPConfig()
 		i.llamaConfigured = err == nil && baseURL != ""
 	}
-	if cfg.AutoSubagentsEnabled != nil && *cfg.AutoSubagentsEnabled && cfg.Supervisor != nil && autoSubagentsAnyToolAllowedConfig(cfg) {
+	if cfg.AutoSubagentsEnabled != nil && *cfg.AutoSubagentsEnabled {
 		i.managedAutoSubagentsAddenda = autoSubagentsAddenda(cfg)
 	}
 	if cfg.Agent != nil {
@@ -5115,15 +5115,20 @@ func (i *Interactive) applySettingToggle(key string, value bool) {
 			i.mu.Unlock()
 			return
 		}
-		val := value
 		i.mu.Lock()
+		previousFlag := i.cfg.AutoSubagentsEnabled
+		previous := previousFlag != nil && *previousFlag
+		val := value
 		i.cfg.AutoSubagentsEnabled = &val
 		i.mu.Unlock()
 		if i.cfg.SettingsStore != nil {
 			if err := i.cfg.SettingsStore.SetAutoSubagents(value); err != nil {
 				i.mu.Lock()
+				i.cfg.AutoSubagentsEnabled = previousFlag
+				i.statusOK = ""
 				i.statusErr = "settings: " + err.Error()
 				i.mu.Unlock()
+				i.resetSettingsToggle(key, previous)
 				return
 			}
 		}
@@ -8677,8 +8682,10 @@ func truncateForSummary(s string, n int) string {
 // toggle, in the same order Resolve appends them to a new agent.
 func autoSubagentsAddenda(cfg InteractiveConfig) []string {
 	addenda := make([]string, 0, 2)
-	if addendum := strings.TrimSpace(cfg.SubagentsSystemAddendum); addendum != "" {
-		addenda = append(addenda, addendum)
+	if cfg.Supervisor != nil && autoSubagentsToolAllowedConfig(cfg) {
+		if addendum := strings.TrimSpace(cfg.SubagentsSystemAddendum); addendum != "" {
+			addenda = append(addenda, addendum)
+		}
 	}
 	if addendum := strings.TrimSpace(cfg.AutoSubagentsSystemAddendum); addendum != "" {
 		addenda = append(addenda, addendum)

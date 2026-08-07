@@ -2260,7 +2260,7 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 		FlatTools:                      initialCfg.FlatToolRender(),
 		CompactUser:                    initialCfg.CompactUserInput(),
 		ExtensionThemes:                extMgr.ThemeOptions,
-		AutoSubagentsSystemAddendum:    AutoSubagentsSystemAddendum,
+		AutoSubagentsSystemAddendum:    AutoSubagentsSystemAddendumFor(autoSubagentsToolAllowedForSession),
 		SubagentsSystemAddendum:        subagentsAddendum,
 		SettingsStore:                  configSettingsStore{},
 		Model:                          r.Model,

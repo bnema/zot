@@ -2,14 +2,86 @@ package modes
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/bnema/zut/packages/agent/subagents"
+	"github.com/bnema/zut/packages/agent/tools"
 	"github.com/bnema/zut/packages/core"
 	"github.com/bnema/zut/packages/provider"
 )
+
+type failingAutoSubagentsSettingsStore struct {
+	SettingsStore
+	err   error
+	calls int
+}
+
+func (s *failingAutoSubagentsSettingsStore) SetAutoSubagents(bool) error {
+	s.calls++
+	return s.err
+}
+
+func TestAutoSubagentsToggleRollsBackInMemoryStateWhenPersistenceFails(t *testing.T) {
+	previous := true
+	allowed := true
+	supervisor := subagents.New(subagents.Config{Root: t.TempDir(), RepoRoot: t.TempDir()})
+	t.Cleanup(supervisor.StopAll)
+	store := &failingAutoSubagentsSettingsStore{err: errors.New("disk full")}
+	agent := core.NewAgent(nil, "test-model", "base system\n\nauto-subagents guidance", core.Registry{
+		"subagent_spawn":  &tools.SubagentSpawnTool{Supervisor: supervisor},
+		"subagent_status": &tools.SubagentStatusTool{Supervisor: supervisor},
+	})
+	interactive := NewInteractive(InteractiveConfig{
+		Agent:                          agent,
+		Supervisor:                     supervisor,
+		AutoSubagentsEnabled:           &previous,
+		AutoSubagentsToolAllowed:       &allowed,
+		AutoSubagentsStatusToolAllowed: &allowed,
+		AutoSubagentsSystemAddendum:    "auto-subagents guidance",
+		SettingsStore:                  store,
+	})
+	interactive.settingsDialog = newSettingsDialog()
+	interactive.rend = nil
+	interactive.openSettingsDialog()
+	beforeSystem, _ := agent.PromptConfig()
+	beforeTools := agent.ToolsSnapshot()
+
+	interactive.applySettingToggle("auto_subagents_enabled", false)
+
+	interactive.mu.Lock()
+	gotEnabled := interactive.cfg.AutoSubagentsEnabled != nil && *interactive.cfg.AutoSubagentsEnabled
+	statusErr := interactive.statusErr
+	interactive.mu.Unlock()
+	if !gotEnabled {
+		t.Fatal("auto-subagents flag stayed disabled after persistence failure")
+	}
+	if store.calls != 1 {
+		t.Fatalf("SetAutoSubagents calls = %d, want 1", store.calls)
+	}
+	if !strings.Contains(statusErr, "disk full") {
+		t.Fatalf("status error = %q, want persistence failure", statusErr)
+	}
+	afterSystem, _ := agent.PromptConfig()
+	if afterSystem != beforeSystem {
+		t.Fatalf("system prompt changed after persistence failure: %q -> %q", beforeSystem, afterSystem)
+	}
+	afterTools := agent.ToolsSnapshot()
+	if len(afterTools) != len(beforeTools) {
+		t.Fatalf("tool registry size = %d, want unchanged %d", len(afterTools), len(beforeTools))
+	}
+	for name, before := range beforeTools {
+		if afterTools[name] != before {
+			t.Fatalf("tool %q changed after persistence failure", name)
+		}
+	}
+	item := findSettingsItem(interactive.settingsDialog.items, "auto_subagents_enabled")
+	if item == nil || !item.value {
+		t.Fatalf("settings row = %#v, want restored enabled value", item)
+	}
+}
 
 func TestAutoSubagentsSettingsDisableUnavailablePolicy(t *testing.T) {
 	trueValue := true

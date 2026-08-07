@@ -30,6 +30,56 @@ func newTestSupervisor(t *testing.T) *subagents.Supervisor {
 	return manager
 }
 
+func TestSubagentSpawnGuidanceUsesHostCompletionUpdatesWithoutPolling(t *testing.T) {
+	tool := &SubagentSpawnTool{
+		Supervisor: newTestSupervisor(t),
+		Enabled:    func() bool { return true },
+	}
+	for _, want := range []string{
+		"host-event-driven",
+		"[auto-subagents update]",
+		"bash sleep",
+		"watch",
+		"tail -f",
+		"polling loops",
+		"repeated subagent_status",
+		"dashboard/metadata/event-log/file checks",
+		"unrelated independent tasks",
+		"end/yield your turn",
+	} {
+		if !strings.Contains(tool.Description(), want) {
+			t.Fatalf("spawn description missing %q: %s", want, tool.Description())
+		}
+	}
+
+	res, err := tool.Execute(context.Background(), json.RawMessage(`{"task":"research docs"}`), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.IsError {
+		t.Fatalf("unexpected tool error: %s", textResult(res.Content))
+	}
+	text := textResult(res.Content)
+	for _, want := range []string{
+		"host-event-driven",
+		"[auto-subagents update]",
+		"the only completion signal",
+		"bash sleep",
+		"watch",
+		"tail -f",
+		"polling loops",
+		"repeated subagent_status",
+		"dashboard/metadata/event-log/file checks",
+		"unrelated independent tasks",
+		"end or yield your turn",
+		"user-requested commands, provider flows, extensions, or tests",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("spawn result missing %q:\n%s", want, text)
+		}
+	}
+}
+
 func TestSubagentSpawnSchemaAdvertisesEffectiveMaxTurns(t *testing.T) {
 	for _, tc := range []struct {
 		name   string

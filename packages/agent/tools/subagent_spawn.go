@@ -113,8 +113,7 @@ const subagentSpawnSchemaTemplate = `{
 
 func (t *SubagentSpawnTool) Name() string { return "subagent_spawn" }
 func (t *SubagentSpawnTool) Description() string {
-	return "Spawn a background sub-agent to work on a parallel sub-task. Optionally select a named markdown profile, model/provider/reasoning, timeout, turn limit, and shared/worktree isolation, and fast-mode preference. Returns the sub-agent id immediately; completion arrives through the result/event path."
-
+	return "Spawn a background sub-agent to work on a parallel sub-task. Optionally select a named markdown profile, model/provider/reasoning, timeout, turn limit, and shared/worktree isolation, and fast-mode preference. Returns the sub-agent id immediately. Completion is host-event-driven: wait only for the injected [auto-subagents update]; never use bash sleep, watch, tail -f, polling loops, repeated subagent_status, or dashboard/metadata/event-log/file checks solely to wait. Work on unrelated independent tasks or end/yield your turn. Legitimate waits inside user-requested commands, provider flows, extensions, or tests are allowed."
 }
 func (t *SubagentSpawnTool) Schema() json.RawMessage {
 	maxTurns := 3
@@ -277,8 +276,9 @@ func (t *SubagentSpawnTool) Execute(ctx context.Context, raw json.RawMessage, pr
 	if fastModeOverride != nil && *fastModeOverride && agent.FastModeOverridesHost() {
 		sb.WriteString("warning: subagent profile has fast mode enabled, overriding global fast mode off\n")
 	}
-	sb.WriteString("\nThe sub-agent is running in the background. Use /subagents in the TUI to monitor it. ")
-	sb.WriteString("This conversation continues immediately; do not wait for the sub-agent to finish before working on the next thing.")
+	sb.WriteString("\nThe sub-agent is running in the background. Completion is host-event-driven: wait for the injected [auto-subagents update], the only completion signal. ")
+	sb.WriteString("Never use bash sleep, watch, tail -f, polling loops, repeated subagent_status, or dashboard/metadata/event-log/file checks solely to wait. ")
+	sb.WriteString("Work on unrelated independent tasks; otherwise end or yield your turn. Legitimate waits inside user-requested commands, provider flows, extensions, or tests are allowed.")
 	return core.ToolResult{
 		Content: []provider.Content{provider.TextBlock{Text: sb.String()}},
 		Details: map[string]any{
