@@ -126,7 +126,8 @@ type Config struct {
 
 	// AutoCompactThreshold is the percentage of the model context window
 	// that triggers automatic transcript compaction in interactive mode.
-	// nil/missing means 85; zero disables percentage-based triggers.
+	// nil/missing means 85; valid values are 0, 70, 80, 85, 90, or 95.
+	// zero disables percentage-based triggers.
 	AutoCompactThreshold *int `json:"auto_compact_threshold,omitempty"`
 
 	// JailByDefault confines tools to the session working directory when

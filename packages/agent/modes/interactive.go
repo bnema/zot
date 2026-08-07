@@ -4378,6 +4378,7 @@ func (i *Interactive) openSettingsDialog() {
 		{value: "80", label: "80%", desc: "compact with moderate context headroom"},
 		{value: "85", label: "85%", desc: "default balance between history and headroom"},
 		{value: "90", label: "90%", desc: "retain more history before compacting"},
+		{value: "95", label: "95%", desc: "retain most history before compacting"},
 	}
 	autoCompactThreshold := normalizeAutoCompactThreshold(i.cfg.AutoCompactThreshold)
 	autoCompactChoice := 0
@@ -7829,7 +7830,7 @@ func normalizeAutoCompactThreshold(threshold *int) int {
 		return defaultAutoCompactThreshold
 	}
 	switch *threshold {
-	case 0, 70, 80, 85, 90:
+	case 0, 70, 80, 85, 90, 95:
 		return *threshold
 	default:
 		return defaultAutoCompactThreshold

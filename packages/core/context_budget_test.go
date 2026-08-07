@@ -1,0 +1,295 @@
+package core
+
+import (
+	"context"
+	"reflect"
+	"strings"
+	"testing"
+	"unicode/utf8"
+
+	"github.com/bnema/zut/packages/provider"
+)
+
+func TestProjectToolResultMessagesBoundsAndUTF8(t *testing.T) {
+	msgs := make([]provider.Message, 0, 10)
+	for i := 0; i < 5; i++ {
+		id := "call-" + string(rune('1'+i))
+		msgs = append(msgs,
+			provider.Message{
+				Role:    provider.RoleAssistant,
+				Content: []provider.Content{provider.ToolCallBlock{ID: id, Name: "read"}},
+			},
+			provider.Message{
+				Role: provider.RoleTool,
+				Content: []provider.Content{provider.ToolResultBlock{
+					CallID:  id,
+					Content: []provider.Content{provider.TextBlock{Text: strings.Repeat("界", maxToolResultTextBytes+100)}},
+				}},
+			},
+		)
+	}
+
+	projected := projectToolResultMessages(msgs)
+	total := 0
+	for _, message := range projected {
+		for _, content := range message.Content {
+			result, ok := content.(provider.ToolResultBlock)
+			if !ok {
+				continue
+			}
+			retainedBytes := retainedToolResultTextBytes(result.Content)
+			if retainedBytes > maxToolResultTextBytes {
+				t.Fatalf("result %q retains %d text bytes, want <= %d", result.CallID, retainedBytes, maxToolResultTextBytes)
+			}
+			if !hasToolResultOmissionMarker(result.Content) {
+				t.Fatalf("truncated result %q is missing the omission marker", result.CallID)
+			}
+			for _, inner := range result.Content {
+				if text, ok := inner.(provider.TextBlock); ok && !utf8.ValidString(text.Text) {
+					t.Fatalf("result %q contains invalid UTF-8", result.CallID)
+				}
+			}
+			total += retainedBytes
+		}
+	}
+	if total > maxToolResultTotalTextBytes {
+		t.Fatalf("projected tool-result text = %d bytes, want <= %d", total, maxToolResultTotalTextBytes)
+	}
+}
+
+func TestProjectToolResultMessagesRetainsNewestResultsFirst(t *testing.T) {
+	msgs := make([]provider.Message, 0, 10)
+	for i := 1; i <= 5; i++ {
+		id := "call-" + string(rune('0'+i))
+		text := strings.Repeat("result-"+id+" ", maxToolResultTextBytes/4)
+		msgs = append(msgs,
+			provider.Message{
+				Role:    provider.RoleAssistant,
+				Content: []provider.Content{provider.ToolCallBlock{ID: id, Name: "read"}},
+			},
+			provider.Message{
+				Role:    provider.RoleTool,
+				Content: []provider.Content{provider.ToolResultBlock{CallID: id, Content: []provider.Content{provider.TextBlock{Text: text}}}},
+			},
+		)
+	}
+
+	projected := projectToolResultMessages(msgs)
+	oldest := toolResultTextForCall(projected, "call-1")
+	newest := toolResultTextForCall(projected, "call-5")
+	if oldest != toolResultOmissionMarker {
+		t.Fatalf("oldest result = %q, want omission marker after newer results filled budget", oldest)
+	}
+	if !strings.HasPrefix(newest, "result-call-5 ") || !strings.Contains(newest, toolResultOmissionMarker) {
+		t.Fatalf("newest result was not retained and truncated first: %q", newest[:min(len(newest), 80)])
+	}
+}
+
+func TestProjectToolResultMessagesMarksResultsAfterAggregateBudgetIsExhausted(t *testing.T) {
+	const resultCount = maxToolResultTotalTextBytes/maxToolResultTextBytes + 1
+	msgs := make([]provider.Message, 0, resultCount)
+	for i := 0; i < resultCount; i++ {
+		id := "call-" + string(rune('1'+i))
+		msgs = append(msgs, provider.Message{
+			Role: provider.RoleTool,
+			Content: []provider.Content{provider.ToolResultBlock{
+				CallID:  id,
+				Content: []provider.Content{provider.TextBlock{Text: strings.Repeat("x", maxToolResultTextBytes+1)}},
+			}},
+		})
+	}
+
+	projected := projectToolResultMessages(msgs)
+	retainedTotal := 0
+	for _, message := range projected {
+		for _, content := range message.Content {
+			result, ok := content.(provider.ToolResultBlock)
+			if !ok {
+				continue
+			}
+			if !hasToolResultOmissionMarker(result.Content) {
+				t.Fatalf("result %q is missing the omission marker", result.CallID)
+			}
+			retainedTotal += retainedToolResultTextBytes(result.Content)
+		}
+	}
+	if retainedTotal != maxToolResultTotalTextBytes {
+		t.Fatalf("retained tool-result text = %d bytes, want exactly %d", retainedTotal, maxToolResultTotalTextBytes)
+	}
+	if got := toolResultTextForCall(projected, "call-1"); got != toolResultOmissionMarker {
+		t.Fatalf("aggregate-exhausted result = %q, want omission marker", got)
+	}
+}
+
+func TestProjectToolResultMessagesPreservesToolResultBlocksAndRawInput(t *testing.T) {
+	msgs := []provider.Message{
+		{Role: provider.RoleAssistant, Content: []provider.Content{
+			provider.ToolCallBlock{ID: "call-1", Name: "read"},
+			provider.ToolCallBlock{ID: "call-2", Name: "bash"},
+		}},
+		{Role: provider.RoleTool, Content: []provider.Content{
+			provider.ToolResultBlock{CallID: "call-1", Content: []provider.Content{provider.TextBlock{Text: strings.Repeat("one", maxToolResultTextBytes)}}},
+			provider.ToolResultBlock{CallID: "call-2", Content: []provider.Content{provider.TextBlock{Text: strings.Repeat("two", maxToolResultTextBytes)}}},
+		}},
+	}
+	wantRaw := append([]provider.Message(nil), msgs...)
+
+	projected := projectToolResultMessages(msgs)
+	if !reflect.DeepEqual(msgs, wantRaw) {
+		t.Fatal("projection mutated the raw input transcript")
+	}
+	var resultIDs []string
+	for _, content := range projected[1].Content {
+		result, ok := content.(provider.ToolResultBlock)
+		if !ok {
+			t.Fatalf("projected content = %T, want ToolResultBlock", content)
+		}
+		resultIDs = append(resultIDs, result.CallID)
+	}
+	if !reflect.DeepEqual(resultIDs, []string{"call-1", "call-2"}) {
+		t.Fatalf("projected result IDs = %v, want both tool results in order", resultIDs)
+	}
+	if got := toolResultTextForCall(msgs, "call-1"); got != strings.Repeat("one", maxToolResultTextBytes) {
+		t.Fatal("raw tool result text changed after projection")
+	}
+}
+
+func TestAgentNormalRequestProjectsToolResultsAfterPairRepair(t *testing.T) {
+	client := &captureClient{}
+	agent := NewAgent(client, "model", "system", Registry{})
+	full := strings.Repeat("full-normal-result ", maxToolResultTextBytes)
+	agent.SetMessages([]provider.Message{
+		{Role: provider.RoleUser, Content: []provider.Content{provider.TextBlock{Text: "continue"}}},
+		{Role: provider.RoleAssistant, Content: []provider.Content{provider.ToolCallBlock{ID: "call-1", Name: "read"}}},
+		{Role: provider.RoleTool, Content: []provider.Content{provider.ToolResultBlock{
+			CallID:  "call-1",
+			Content: []provider.Content{provider.TextBlock{Text: full}},
+		}}},
+		{Role: provider.RoleAssistant, Content: []provider.Content{provider.ToolCallBlock{ID: "call-2", Name: "read"}}},
+	})
+
+	if err := agent.Continue(context.Background(), nil); err != nil {
+		t.Fatalf("Continue: %v", err)
+	}
+	projectedText := toolResultTextForCall(client.lastReq.Messages, "call-1")
+	if retainedToolResultTextBytesForCall(client.lastReq.Messages, "call-1") > maxToolResultTextBytes || !strings.Contains(projectedText, toolResultOmissionMarker) {
+		t.Fatalf("normal request result was not bounded: %d bytes, %q", len(projectedText), projectedText[:min(len(projectedText), 80)])
+	}
+	if !hasToolResultCall(client.lastReq.Messages, "call-2") {
+		t.Fatal("pair repair result was not preserved in normal request")
+	}
+	if got := toolResultTextForCall(agent.Messages(), "call-1"); got != full {
+		t.Fatalf("raw Agent.Messages tool result changed: got %d bytes, want %d", len(got), len(full))
+	}
+	if hasToolResultCall(agent.Messages(), "call-2") {
+		t.Fatal("pair-repair stub leaked into raw Agent.Messages")
+	}
+}
+
+func TestCompactionProjectsSummaryInputWithoutChangingPersistedTail(t *testing.T) {
+	client := &compactLifecycleClient{}
+	agent := NewAgent(client, "model", "system", Registry{})
+	oldText := strings.Repeat("full-compaction-result ", maxToolResultTextBytes)
+	tailText := strings.Repeat("full-tail-result ", maxToolResultTextBytes)
+	agent.SetMessages([]provider.Message{
+		{Role: provider.RoleUser, Content: []provider.Content{provider.TextBlock{Text: "summarize this"}}},
+		{Role: provider.RoleAssistant, Content: []provider.Content{provider.ToolCallBlock{ID: "old-call", Name: "read"}}},
+		{Role: provider.RoleTool, Content: []provider.Content{provider.ToolResultBlock{
+			CallID:  "old-call",
+			Content: []provider.Content{provider.TextBlock{Text: oldText}},
+		}}},
+		{Role: provider.RoleAssistant, Content: []provider.Content{provider.ToolCallBlock{ID: "tail-call", Name: "read"}}},
+		{Role: provider.RoleTool, Content: []provider.Content{provider.ToolResultBlock{
+			CallID:  "tail-call",
+			Content: []provider.Content{provider.TextBlock{Text: tailText}},
+		}}},
+	})
+	var persisted []provider.Message
+	agent.OnTranscriptCompacted = func(messages []provider.Message) {
+		persisted = messages
+	}
+
+	if _, err := agent.Compact(context.Background(), 2, nil); err != nil {
+		t.Fatalf("Compact: %v", err)
+	}
+	requestText := client.req.Messages[0].Content[0].(provider.TextBlock).Text
+	if !strings.Contains(requestText, toolResultOmissionMarker) {
+		t.Fatal("compaction request is missing the tool-result omission marker")
+	}
+	if got := toolResultTextForCall(agent.Messages(), "tail-call"); got != tailText {
+		t.Fatalf("compacted Agent.Messages tail changed: got %d bytes, want %d", len(got), len(tailText))
+	}
+	if got := toolResultTextForCall(persisted, "tail-call"); got != tailText {
+		t.Fatalf("persisted compacted tail changed: got %d bytes, want %d", len(got), len(tailText))
+	}
+	if hasToolResultCall(agent.Messages(), "old-call") {
+		t.Fatal("summarized tool result remained in the compacted transcript")
+	}
+}
+
+func retainedToolResultTextBytes(content []provider.Content) int {
+	total := 0
+	for _, block := range content {
+		if text, ok := block.(provider.TextBlock); ok && text.Text != toolResultOmissionMarker {
+			total += len(text.Text)
+		}
+	}
+	return total
+}
+
+func hasToolResultOmissionMarker(content []provider.Content) bool {
+	for _, block := range content {
+		if text, ok := block.(provider.TextBlock); ok && text.Text == toolResultOmissionMarker {
+			return true
+		}
+	}
+	return false
+}
+
+func retainedToolResultTextBytesForCall(messages []provider.Message, callID string) int {
+	for _, message := range messages {
+		for _, content := range message.Content {
+			result, ok := content.(provider.ToolResultBlock)
+			if ok && result.CallID == callID {
+				return retainedToolResultTextBytes(result.Content)
+			}
+		}
+	}
+	return 0
+}
+
+func toolResultTextForCall(messages []provider.Message, callID string) string {
+	var text strings.Builder
+	for _, message := range messages {
+		for _, content := range message.Content {
+			result, ok := content.(provider.ToolResultBlock)
+			if !ok || result.CallID != callID {
+				continue
+			}
+			for _, inner := range result.Content {
+				if block, ok := inner.(provider.TextBlock); ok {
+					text.WriteString(block.Text)
+				}
+			}
+		}
+	}
+	return text.String()
+}
+
+func hasToolResultCall(messages []provider.Message, callID string) bool {
+	for _, message := range messages {
+		for _, content := range message.Content {
+			if result, ok := content.(provider.ToolResultBlock); ok && result.CallID == callID {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
