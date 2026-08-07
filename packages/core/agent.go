@@ -685,6 +685,10 @@ func (a *Agent) oneTurn(ctx context.Context, sink func(AgentEvent), turnContext 
 		}
 		system += "[Extension context for this turn]\n" + contextText
 	}
+	// Repair pairs before projecting the copied provider-input view. The
+	// repair can add stub results for aborted calls; those results must also
+	// remain in the request so every tool call still has a matching result.
+	messages := repairToolUseResultPairs(a.Messages())
 	req := provider.Request{
 		Model:  a.Model,
 		System: system,
@@ -696,7 +700,7 @@ func (a *Agent) oneTurn(ctx context.Context, sink func(AgentEvent), turnContext 
 		// next in-process request is rejected by providers like Anthropic
 		// with "tool_use ids were found without tool_result blocks". The
 		// repair is pure and a no-op on already-valid transcripts.
-		Messages:    repairToolUseResultPairs(a.Messages()),
+		Messages:    projectToolResultMessages(messages),
 		Tools:       tools.Specs(),
 		Reasoning:   a.Reasoning,
 		FastMode:    fastMode,

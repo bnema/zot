@@ -21,6 +21,7 @@ func TestNormalizeAutoCompactThreshold(t *testing.T) {
 		{name: "eighty", value: autoCompactIntPtr(80), want: 80},
 		{name: "eighty five", value: autoCompactIntPtr(85), want: 85},
 		{name: "ninety", value: autoCompactIntPtr(90), want: 90},
+		{name: "ninety five", value: autoCompactIntPtr(95), want: 95},
 		{name: "invalid low", value: autoCompactIntPtr(42), want: 85},
 		{name: "invalid high", value: autoCompactIntPtr(100), want: 85},
 	}
@@ -344,6 +345,7 @@ func TestShouldAutoCompactUsesConfiguredThreshold(t *testing.T) {
 		{name: "seventy percent preset", used: 70, window: 100, threshold: 70, want: true},
 		{name: "eighty percent preset", used: 80, window: 100, threshold: 80, want: true},
 		{name: "ninety percent preset", used: 90, window: 100, threshold: 90, want: true},
+		{name: "ninety five percent preset", used: 95, window: 100, threshold: 95, want: true},
 		{name: "off", used: 100, window: 100, threshold: 0, want: false},
 		{name: "missing usage", used: 0, window: 100, threshold: 85, want: false},
 		{name: "missing window", used: 85, window: 0, threshold: 85, want: false},
@@ -374,7 +376,7 @@ func TestSettingsDialogOffersAutoCompactThresholdPresets(t *testing.T) {
 		t.Fatal("settings dialog is missing auto-compact threshold")
 	}
 
-	wantValues := []string{"0", "70", "80", "85", "90"}
+	wantValues := []string{"0", "70", "80", "85", "90", "95"}
 	if len(thresholdItem.options) != len(wantValues) {
 		t.Fatalf("auto-compact options = %d, want %d", len(thresholdItem.options), len(wantValues))
 	}

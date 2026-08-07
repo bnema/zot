@@ -185,6 +185,7 @@ func repairOrphanedToolResults(msgs []provider.Message) []provider.Message {
 // text transcript the summarization model can read without trying to
 // continue the conversation.
 func serializeTranscript(msgs []provider.Message) string {
+	msgs = projectToolResultMessages(msgs)
 	var sb strings.Builder
 	for _, m := range msgs {
 		switch m.Role {
