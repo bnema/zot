@@ -32,7 +32,7 @@ func TestNormalizeAutoCompactThreshold(t *testing.T) {
 	}
 }
 
-func TestShouldAutoContinueAfterCompaction(t *testing.T) {
+func TestClassifyCompactionContinuation(t *testing.T) {
 	tests := []struct {
 		name         string
 		origin       compactContinuationOrigin

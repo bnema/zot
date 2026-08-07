@@ -7646,12 +7646,6 @@ func wordRuneAfter(text string, index int) bool {
 	return unicode.IsLetter(rune_) || unicode.IsDigit(rune_) || rune_ == '_'
 }
 
-// shouldAutoContinueAfterCompaction reports only the legacy structural-tail
-// predicate. Status rescue admission is reason-oriented and origin-aware.
-func shouldAutoContinueAfterCompaction(msgs []provider.Message) bool {
-	return structuralCompactionContinuation(msgs)
-}
-
 // shouldAutoCompactLocked reports whether the last turn pushed context
 // usage past the auto-compact threshold. Must be called with i.mu
 // held; it reads lastCtxInput and the current model's context window.
