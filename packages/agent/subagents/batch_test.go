@@ -58,6 +58,16 @@ func TestBatchReloadsDurableResult(t *testing.T) {
 	if want.Status != BatchSucceeded {
 		t.Fatalf("first batch status = %s", want.Status)
 	}
+	// WaitBatch returns once the aggregate result is available, which can
+	// precede each child's final metadata write. Wait for that finalisation
+	// before another supervisor reloads the same durable state.
+	for _, childID := range batch.ChildIDs {
+		child := first.Get(childID)
+		if child == nil {
+			t.Fatalf("first supervisor is missing child %q", childID)
+		}
+		child.Wait()
+	}
 
 	second := newSupervisor()
 	t.Cleanup(second.StopAll)
