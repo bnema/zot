@@ -3159,15 +3159,15 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 			handoff, persistHandoff = i.resetCompactContinuationLocked()
 		}
 		i.mu.Unlock()
-		if persistHandoff {
-			i.persistCompactHandoff(handoff)
-		}
 		if busyCancel {
 			cancelTurn()
 			// If a confirm dialog is pending, refuse it so the agent
 			// goroutine unblocks and the context cancellation can
 			// actually take effect.
 			i.confirmDialog.CancelAll("turn cancelled")
+			if persistHandoff {
+				i.persistCompactHandoff(handoff)
+			}
 			return false
 		}
 	case tui.KeyCtrlD:
@@ -4036,11 +4036,11 @@ func (i *Interactive) CancelTurn() {
 		i.mu.Lock()
 		handoff, persistHandoff := i.resetCompactContinuationLocked()
 		i.mu.Unlock()
+		cancel()
+		i.confirmDialog.CancelAll("turn cancelled")
 		if persistHandoff {
 			i.persistCompactHandoff(handoff)
 		}
-		cancel()
-		i.confirmDialog.CancelAll("turn cancelled")
 	}
 }
 
@@ -6413,10 +6413,10 @@ func (i *Interactive) cancelAndWaitForIdle() {
 		i.mu.Lock()
 		handoff, persistHandoff := i.resetCompactContinuationLocked()
 		i.mu.Unlock()
+		cancel()
 		if persistHandoff {
 			i.persistCompactHandoff(handoff)
 		}
-		cancel()
 	}
 	// ConfirmToolCall waits on its response channel rather than the turn
 	// context, so cancellation must also resolve every pending prompt.
@@ -7026,9 +7026,17 @@ func (i *Interactive) startRestoredCompactHandoff(parent context.Context) {
 			handoff, persistHandoff = i.resetCompactContinuationLocked()
 		}
 	}
+	// Reserve the turn slot before persisting or dispatching so concurrent input
+	// can only queue behind the restored handoff, never start a competing turn.
+	starting := next != "" || continueQueued || resume == compactHandoffContinueExisting || resume == compactHandoffAppendPrompt
+	i.busy = starting
 	i.mu.Unlock()
 	if persistHandoff {
 		i.persistCompactHandoff(handoff)
+	}
+	if !starting {
+		i.invalidate()
+		return
 	}
 	switch {
 	case next != "":
@@ -7661,7 +7669,7 @@ func (i *Interactive) startTurnRequest(parent context.Context, prompt string, im
 		continueStatusRescue := false
 		var handoff json.RawMessage
 		var persistHandoff bool
-		if statusRescueActive && !awaitingPre && !hasNext && !continueQueued && !shouldAutoCompact && err == nil && ctx.Err() == nil && lastStop == provider.StopEnd && lastTurnErr == nil {
+		if statusRescueActive && i.agent != nil && !awaitingPre && !hasNext && !continueQueued && !shouldAutoCompact && err == nil && ctx.Err() == nil && lastStop == provider.StopEnd && lastTurnErr == nil {
 			followUpMessages := i.agent.Messages()
 			reason := classifyCompactionContinuation(compactOriginManual, true, lastStop, lastTurnErr, followUpMessages)
 			if reason == compactContinuationStatusRescue && i.compactContinuation.rescueAttempts < maxStatusRescueContinuations {
@@ -7674,7 +7682,7 @@ func (i *Interactive) startTurnRequest(parent context.Context, prompt string, im
 				handoff, persistHandoff = i.resetCompactContinuationLocked()
 			}
 		}
-		if !continueStatusRescue && (ctx.Err() != nil || err != nil || awaitingPre || hasNext || continueQueued || offer || recoverContextOverflow || (!shouldAutoCompact && !statusRescueActive)) {
+		if !continueStatusRescue && (i.agent == nil || ctx.Err() != nil || err != nil || awaitingPre || hasNext || continueQueued || offer || recoverContextOverflow || (!shouldAutoCompact && !statusRescueActive)) {
 			handoff, persistHandoff = i.resetCompactContinuationLocked()
 		}
 		// The agent run can finish before the paced final text reaches the
@@ -9362,9 +9370,10 @@ func (i *Interactive) applySessionTreeTarget(target sessionTreeTarget, turnNo in
 	i.statusErr = ""
 	i.mu.Unlock()
 	i.scrollToBottom()
-	// Selection only changes local/session state. In particular, do not call
-	// Submit, startTurn, or queue a message here; the restored user draft is
-	// submitted only by a later explicit Enter.
+	// Selection does not submit, start, or queue the restored user draft; only
+	// a later explicit Enter does that. An inherited compact handoff may resume
+	// its hidden continuation below when this branch has the complete effective
+	// transcript, without submitting the restored draft.
 	i.invalidate()
 	if state.reason != compactContinuationNone {
 		i.startRestoredCompactHandoff(i.runCtx)

@@ -1,7 +1,6 @@
 package modes
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"testing"
@@ -245,29 +244,58 @@ func TestNewInteractiveRestoresValidCompactHandoff(t *testing.T) {
 	}
 }
 
-func TestCancelTurnClearsPersistedCompactHandoff(t *testing.T) {
+func TestCancelTurnCancelsBeforePersistingCompactHandoff(t *testing.T) {
 	persisted := make(chan string, 1)
+	cancelled := make(chan struct{})
+	persistenceStarted := make(chan struct{})
+	releasePersistence := make(chan struct{})
+	released := false
+	defer func() {
+		if !released {
+			close(releasePersistence)
+		}
+	}()
+
 	interactive := NewInteractive(InteractiveConfig{
 		InitialCompactHandoff: json.RawMessage(`{"version":1,"reason":"status_rescue","rescue_attempts":1}`),
 		PersistCompactHandoff: func(state json.RawMessage) error {
+			close(persistenceStarted)
+			<-releasePersistence
 			persisted <- string(state)
 			return nil
 		},
 	})
-	_, cancel := context.WithCancel(context.Background())
 	interactive.mu.Lock()
 	interactive.busy = true
-	interactive.cancelTurn = cancel
+	interactive.cancelTurn = func() { close(cancelled) }
 	interactive.mu.Unlock()
 
-	interactive.CancelTurn()
+	done := make(chan struct{})
+	go func() {
+		interactive.CancelTurn()
+		close(done)
+	}()
+
+	select {
+	case <-cancelled:
+	case <-time.After(2 * time.Second):
+		t.Fatal("cancellation waited for compact handoff persistence")
+	}
+	select {
+	case <-persistenceStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("cancellation did not persist the cleared compact handoff")
+	}
+	close(releasePersistence)
+	released = true
+	<-done
 	select {
 	case state := <-persisted:
 		if state != "" {
 			t.Fatalf("cleared compact handoff = %q, want empty", state)
 		}
 	case <-time.After(2 * time.Second):
-		t.Fatal("cancellation did not clear the persisted compact handoff")
+		t.Fatal("cancellation did not finish compact handoff persistence")
 	}
 }
 

@@ -293,6 +293,34 @@ func (c *restoredHandoffClient) Stream(_ context.Context, req provider.Request) 
 	return out, nil
 }
 
+type heldCompletionClient struct {
+	started chan struct{}
+	release chan struct{}
+}
+
+func (c *heldCompletionClient) Name() string { return "held-completion-test" }
+
+func (c *heldCompletionClient) Stream(ctx context.Context, _ provider.Request) (<-chan provider.Event, error) {
+	out := make(chan provider.Event, 1)
+	go func() {
+		defer close(out)
+		close(c.started)
+		select {
+		case <-ctx.Done():
+			out <- provider.EventDone{Stop: provider.StopAborted, Err: ctx.Err()}
+		case <-c.release:
+			out <- provider.EventDone{
+				Stop: provider.StopEnd,
+				Message: provider.Message{
+					Role:    provider.RoleAssistant,
+					Content: []provider.Content{provider.TextBlock{Text: "Next I will inspect the remaining call sites."}},
+				},
+			}
+		}
+	}()
+	return out, nil
+}
+
 func TestRestoredStatusHandoffContinuesExistingPromptWithoutDuplication(t *testing.T) {
 	client := &restoredHandoffClient{
 		requests: make(chan provider.Request, 2),
@@ -364,12 +392,21 @@ func TestRestoredHandoffAfterFinalReplyIsDiscarded(t *testing.T) {
 		Agent:                 agent,
 		InitialCompactHandoff: json.RawMessage(`{"version":1,"reason":"status_rescue","rescue_attempts":1}`),
 		PersistCompactHandoff: func(state json.RawMessage) error {
-			persisted <- string(state)
+			select {
+			case persisted <- string(state):
+			default:
+			}
 			return nil
 		},
 	})
 
 	interactive.startRestoredCompactHandoff(context.Background())
+	interactive.mu.Lock()
+	busy := interactive.busy
+	interactive.mu.Unlock()
+	if busy {
+		t.Fatal("discarded restored handoff left the turn slot reserved")
+	}
 	select {
 	case state := <-persisted:
 		if state != "" {
@@ -383,6 +420,110 @@ func TestRestoredHandoffAfterFinalReplyIsDiscarded(t *testing.T) {
 		t.Fatalf("stale handoff started a provider request: %#v", req.Messages)
 	default:
 	}
+}
+
+func TestRestoredHandoffReservesTurnBeforePersistence(t *testing.T) {
+	client := &restoredHandoffClient{
+		requests: make(chan provider.Request, 1),
+		replies:  []string{"All required work is complete."},
+	}
+	agent := core.NewAgent(client, "test-model", "", nil)
+	agent.SetMessages([]provider.Message{{
+		Role:    provider.RoleUser,
+		Content: []provider.Content{provider.TextBlock{Text: autoCompactContinuationPrompt}},
+		Meta:    map[string]string{autoCompactContinueMetaKey: "true"},
+	}})
+	persistenceStarted := make(chan struct{})
+	releasePersistence := make(chan struct{})
+	released := false
+	defer func() {
+		if !released {
+			close(releasePersistence)
+		}
+	}()
+	interactive := NewInteractive(InteractiveConfig{
+		Agent:                 agent,
+		InitialCompactHandoff: json.RawMessage(`{"version":1,"reason":"status_rescue","rescue_attempts":1}`),
+		PersistCompactHandoff: func(json.RawMessage) error {
+			close(persistenceStarted)
+			<-releasePersistence
+			return nil
+		},
+	})
+	interactive.runCtx = context.Background()
+	interactive.mu.Lock()
+	interactive.queued = []string{"newer user request"}
+	interactive.mu.Unlock()
+
+	done := make(chan struct{})
+	go func() {
+		interactive.startRestoredCompactHandoff(context.Background())
+		close(done)
+	}()
+	select {
+	case <-persistenceStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("restored handoff did not reach persistence")
+	}
+	interactive.mu.Lock()
+	busy := interactive.busy
+	interactive.mu.Unlock()
+	if !busy {
+		t.Fatal("restored handoff did not reserve the turn slot before persistence")
+	}
+	close(releasePersistence)
+	released = true
+	<-done
+	select {
+	case <-client.requests:
+	case <-time.After(2 * time.Second):
+		t.Fatal("restored handoff did not continue after persistence")
+	}
+	waitInteractiveIdle(t, interactive)
+}
+
+func TestStatusRescueClearsHandoffWhenAgentIsRemovedDuringTurn(t *testing.T) {
+	client := &heldCompletionClient{started: make(chan struct{}), release: make(chan struct{})}
+	agent := core.NewAgent(client, "test-model", "", nil)
+	agent.SetMessages([]provider.Message{{
+		Role:    provider.RoleUser,
+		Content: []provider.Content{provider.TextBlock{Text: autoCompactContinuationPrompt}},
+		Meta:    map[string]string{autoCompactContinueMetaKey: "true"},
+	}})
+	persisted := make(chan string, 1)
+	interactive := NewInteractive(InteractiveConfig{
+		Agent:                 agent,
+		InitialCompactHandoff: json.RawMessage(`{"version":1,"reason":"status_rescue","rescue_attempts":1}`),
+		PersistCompactHandoff: func(state json.RawMessage) error {
+			select {
+			case persisted <- string(state):
+			default:
+			}
+			return nil
+		},
+	})
+	interactive.runCtx = context.Background()
+
+	interactive.startTurnRequest(context.Background(), "", nil, true, false)
+	select {
+	case <-client.started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("continuation did not start")
+	}
+	interactive.mu.Lock()
+	interactive.agent = nil
+	interactive.mu.Unlock()
+	close(client.release)
+
+	select {
+	case state := <-persisted:
+		if state != "" {
+			t.Fatalf("cleared handoff = %q, want empty", state)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("agent removal did not clear the persisted handoff")
+	}
+	waitInteractiveIdle(t, interactive)
 }
 
 func TestRestoredHandoffDefersToQueuedUserPrompt(t *testing.T) {
@@ -503,7 +644,10 @@ func TestThresholdAutoCompactionRescuesStatusAfterCompaction(t *testing.T) {
 		Model:                "claude-sonnet-4-5-20250929",
 		AutoCompactThreshold: &threshold,
 		PersistCompactHandoff: func(state json.RawMessage) error {
-			persistedHandoff <- string(state)
+			select {
+			case persistedHandoff <- string(state):
+			default:
+			}
 			return nil
 		},
 	})
