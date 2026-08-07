@@ -389,6 +389,31 @@ func TestSubagentSpawnRejectsUnknownProfile(t *testing.T) {
 	}
 }
 
+func TestSubagentSpawnNormalizesMatchingQualifiedModelOverride(t *testing.T) {
+	tool := &SubagentSpawnTool{
+		Supervisor: newTestSupervisor(t),
+		Enabled:    func() bool { return true },
+	}
+
+	res, err := tool.Execute(context.Background(), json.RawMessage(`{"task":"review auth","provider":"openai-codex","model":"openai-codex/gpt-5.6-sol"}`), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.IsError {
+		t.Fatalf("unexpected tool error: %s", textResult(res.Content))
+	}
+	agents := tool.Supervisor.List()
+	if len(agents) != 1 {
+		t.Fatalf("spawned agents = %d, want 1", len(agents))
+	}
+	if got := agents[0].Model; got != "gpt-5.6-sol" {
+		t.Fatalf("agent model = %q, want unqualified model ID", got)
+	}
+	if got := agents[0].Provider; got != "openai-codex" {
+		t.Fatalf("agent provider = %q, want openai-codex", got)
+	}
+}
+
 func TestSubagentSpawnRejectsPartialModelProviderOverride(t *testing.T) {
 	tool := &SubagentSpawnTool{
 		Supervisor:      newTestSupervisor(t),

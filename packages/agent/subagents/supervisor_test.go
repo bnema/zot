@@ -23,6 +23,26 @@ func newTestSupervisor(t *testing.T, mk func(a *Agent) Runner) *Supervisor {
 	})
 }
 
+func TestUnqualifiedModelID(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		provider string
+		model    string
+		want     string
+	}{
+		{name: "matching provider", provider: "openai-codex", model: "openai-codex/gpt-5.6-sol", want: "gpt-5.6-sol"},
+		{name: "matching provider with whitespace", provider: "openai-codex", model: "  openai-codex/gpt-5.6-sol  ", want: "gpt-5.6-sol"},
+		{name: "other slash-containing model ID", provider: "openrouter", model: "anthropic/claude-sonnet-4-5", want: "anthropic/claude-sonnet-4-5"},
+		{name: "no provider", model: "/custom-model", want: "/custom-model"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := unqualifiedModelID(tc.provider, tc.model); got != tc.want {
+				t.Fatalf("unqualifiedModelID(%q, %q) = %q, want %q", tc.provider, tc.model, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestSpawnRunsAndCompletes(t *testing.T) {
 	ran := make(chan string, 1)
 	f := newTestSupervisor(t, func(a *Agent) Runner {

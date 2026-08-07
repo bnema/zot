@@ -374,6 +374,18 @@ func (f *Supervisor) Spawn(ctx context.Context, task string) (*Agent, error) {
 	return f.SpawnReq(ctx, SpawnRequest{Task: task})
 }
 
+// unqualifiedModelID removes a redundant provider prefix from a model ID.
+// Model IDs themselves may contain slashes, so only the explicitly selected
+// provider's exact prefix is removed.
+func unqualifiedModelID(provider, model string) string {
+	provider = strings.TrimSpace(provider)
+	model = strings.TrimSpace(model)
+	if provider == "" {
+		return model
+	}
+	return strings.TrimPrefix(model, provider+"/")
+}
+
 // SpawnReq is the full-fat variant of Spawn that accepts a SpawnRequest.
 // Existing callers can keep using Spawn; new code that wants to pin the
 // child's model, policy, or workspace uses this.
@@ -388,6 +400,7 @@ func (f *Supervisor) SpawnReq(ctx context.Context, req SpawnRequest) (*Agent, er
 	if err := f.validateSpawnRequest(req); err != nil {
 		return nil, err
 	}
+	req.Model = unqualifiedModelID(req.Provider, req.Model)
 	if ctx == nil {
 		ctx = context.Background()
 	}
