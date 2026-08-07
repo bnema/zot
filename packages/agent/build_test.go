@@ -233,18 +233,24 @@ func TestAutoSubagentsToolPoliciesTrackEachTool(t *testing.T) {
 	for _, tc := range []struct {
 		name       string
 		tools      []string
+		toolsSet   bool
 		wantSpawn  bool
 		wantStatus bool
+		wantStop   bool
+		wantResume bool
 		wantAny    bool
 	}{
-		{name: "default", wantSpawn: true, wantStatus: true, wantAny: true},
+		{name: "default", wantSpawn: true, wantStatus: true, wantStop: true, wantResume: true, wantAny: true},
+		{name: "explicit empty", toolsSet: true},
 		{name: "spawn", tools: []string{"subagent_spawn"}, wantSpawn: true, wantAny: true},
 		{name: "status", tools: []string{"subagent_status"}, wantStatus: true, wantAny: true},
+		{name: "stop", tools: []string{"subagent_stop"}, wantStop: true, wantAny: true},
+		{name: "resume", tools: []string{"subagent_resume"}, wantResume: true, wantAny: true},
 		{name: "other", tools: []string{"read"}},
 		{name: "no tools", wantAny: false, tools: nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			args := Args{Tools: tc.tools}
+			args := Args{Tools: tc.tools, ToolsSet: tc.toolsSet}
 			if tc.name == "no tools" {
 				args.NoTools = true
 			}
@@ -253,6 +259,12 @@ func TestAutoSubagentsToolPoliciesTrackEachTool(t *testing.T) {
 			}
 			if got := autoSubagentsStatusToolAllowed(args); got != tc.wantStatus {
 				t.Fatalf("status allowed = %v, want %v", got, tc.wantStatus)
+			}
+			if got := autoSubagentsStopToolAllowed(args); got != tc.wantStop {
+				t.Fatalf("stop allowed = %v, want %v", got, tc.wantStop)
+			}
+			if got := autoSubagentsResumeToolAllowed(args); got != tc.wantResume {
+				t.Fatalf("resume allowed = %v, want %v", got, tc.wantResume)
 			}
 			if got := autoSubagentsAnyToolAllowed(args); got != tc.wantAny {
 				t.Fatalf("any allowed = %v, want %v", got, tc.wantAny)

@@ -865,7 +865,7 @@ func (f *Supervisor) stop(ctx context.Context, id string) error {
 	}
 	graceful := false
 	if a.inbox != nil {
-		err := a.inbox.SendCommand(NewCommand(CommandAgentShutdown, a.ID, a.CurrentTurnID(), AgentShutdownPayload{}))
+		err := a.inbox.SendCommandContext(ctx, NewCommand(CommandAgentShutdown, a.ID, a.CurrentTurnID(), AgentShutdownPayload{}))
 		if err == nil {
 			graceful = true
 		}
@@ -918,7 +918,7 @@ func (f *Supervisor) stopDetached(ctx context.Context, a *Agent, path string, in
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if err := inbox.SendCommand(NewCommand(CommandAgentShutdown, a.ID, a.CurrentTurnID(), AgentShutdownPayload{})); err != nil {
+	if err := inbox.SendCommandContext(ctx, NewCommand(CommandAgentShutdown, a.ID, a.CurrentTurnID(), AgentShutdownPayload{})); err != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return ctxErr
 		}
@@ -966,7 +966,9 @@ func (f *Supervisor) markDetachedKilled(a *Agent) {
 	a.setProcessState(ProcessKilled)
 	a.setTurnState(TurnCanceled, a.CurrentTurnID())
 	a.setProcessPID(0)
+	f.ensureResult(a, StatusKilled, context.Canceled)
 	f.persistAgent(a)
+	a.closeDone()
 }
 
 // StopAll cancels every running agent. Used on shutdown.

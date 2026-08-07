@@ -114,6 +114,84 @@ func TestTrackSubagentWorkerReportsStartupFailure(t *testing.T) {
 	}
 }
 
+func TestTrackStoppedSubagentWorkerDeliversTerminalUpdate(t *testing.T) {
+	started := make(chan struct{})
+	mgr := subagents.New(subagents.Config{
+		Root:     t.TempDir(),
+		RepoRoot: t.TempDir(),
+		NewRunner: func(*subagents.Agent) subagents.Runner {
+			return subagents.RunnerFunc(func(ctx context.Context, _ subagents.Sink) error {
+				close(started)
+				<-ctx.Done()
+				return ctx.Err()
+			})
+		},
+	})
+	a, err := mgr.Spawn(context.Background(), "investigate the stuck worker")
+	if err != nil {
+		t.Fatal(err)
+	}
+	<-started
+	t.Cleanup(func() {
+		_ = mgr.Stop(a.ID)
+		a.Wait()
+	})
+
+	iv := newQueuedAutoSubagentsInteractive()
+	iv.TrackStoppedSubagentWorker(a)
+	if err := mgr.Stop(a.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	update := waitForQueuedPrompt(t, iv)
+	if !strings.Contains(update, "task: investigate the stuck worker") {
+		t.Fatalf("stop update missing task: %q", update)
+	}
+	if !strings.Contains(update, "status: killed") {
+		t.Fatalf("stop update missing killed status: %q", update)
+	}
+}
+
+func TestTrackResumedSubagentWorkerDeliversFollowUp(t *testing.T) {
+	started := make(chan struct{})
+	mgr := subagents.New(subagents.Config{
+		Root:     t.TempDir(),
+		RepoRoot: t.TempDir(),
+		NewRunner: func(*subagents.Agent) subagents.Runner {
+			return subagents.RunnerFunc(func(ctx context.Context, _ subagents.Sink) error {
+				close(started)
+				<-ctx.Done()
+				return ctx.Err()
+			})
+		},
+	})
+	a, err := mgr.Spawn(context.Background(), "review the implementation")
+	if err != nil {
+		t.Fatal(err)
+	}
+	<-started
+	t.Cleanup(func() {
+		_ = mgr.Stop(a.ID)
+		a.Wait()
+	})
+
+	iv := newQueuedAutoSubagentsInteractive()
+	const followUp = "I applied your review. What do you think now?"
+	iv.TrackResumedSubagentWorker(a, followUp)
+	if a.OnTurnEnd == nil {
+		t.Fatal("resumed worker has no completion watcher")
+	}
+	a.OnTurnEnd(2, "")
+
+	update := waitForQueuedPrompt(t, iv)
+	if !strings.Contains(update, "task: "+followUp) {
+		t.Fatalf("follow-up update uses the original task instead of the new prompt: %q", update)
+	}
+	if !strings.Contains(update, "status: completed") {
+		t.Fatalf("follow-up update missing completed status: %q", update)
+	}
+}
+
 func TestCompleteSupervisorWatchReportsTurnOutcomeOnce(t *testing.T) {
 	started := make(chan struct{})
 	mgr := subagents.New(subagents.Config{

@@ -1454,6 +1454,16 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 			iv.TrackSubagentWorker(a, task)
 		}
 	}
+	onResumedSupervisor := func(a *subagents.Agent, prompt string) {
+		if iv != nil {
+			iv.TrackResumedSubagentWorker(a, prompt)
+		}
+	}
+	onStopRequestedSupervisor := func(a *subagents.Agent) {
+		if iv != nil {
+			iv.TrackStoppedSubagentWorker(a)
+		}
+	}
 	resolveSubagent := func(name string) (*subagents.Profile, error) {
 		return findSubagentProfile(r.CWD, name)
 	}
@@ -1497,6 +1507,22 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 				Enabled:    AutoSubagentsEnabled,
 			}
 			reg[statusTool.Name()] = statusTool
+		}
+		if autoSubagentsStopToolAllowed(args) {
+			stopTool := &tools.SubagentStopTool{
+				Supervisor:      subagentsMgr,
+				Enabled:         AutoSubagentsEnabled,
+				OnStopRequested: onStopRequestedSupervisor,
+			}
+			reg[stopTool.Name()] = stopTool
+		}
+		if autoSubagentsResumeToolAllowed(args) {
+			resumeTool := &tools.SubagentResumeTool{
+				Supervisor: subagentsMgr,
+				Enabled:    AutoSubagentsEnabled,
+				OnResumed:  onResumedSupervisor,
+			}
+			reg[resumeTool.Name()] = resumeTool
 		}
 		return reg
 	}
@@ -2216,6 +2242,8 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 	subagentsAddendum := subagents.SystemPromptAddendum(discoveredSubagents)
 	autoSubagentsToolAllowedForSession := autoSubagentsToolAllowed(args)
 	autoSubagentsStatusToolAllowedForSession := autoSubagentsStatusToolAllowed(args)
+	autoSubagentsStopToolAllowedForSession := autoSubagentsStopToolAllowed(args)
+	autoSubagentsResumeToolAllowedForSession := autoSubagentsResumeToolAllowed(args)
 	webSearchToolAllowedForInvocation := webSearchToolAllowedForSession(args)
 	webSearchInvocationOverride := webSearchExplicitlyEnabledForSession(args)
 	setWebSearchAvailable := func(available bool) {
@@ -2243,6 +2271,8 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 		WebSearchInvocationOverride:    webSearchInvocationOverride,
 		AutoSubagentsToolAllowed:       &autoSubagentsToolAllowedForSession,
 		AutoSubagentsStatusToolAllowed: &autoSubagentsStatusToolAllowedForSession,
+		AutoSubagentsStopToolAllowed:   &autoSubagentsStopToolAllowedForSession,
+		AutoSubagentsResumeToolAllowed: &autoSubagentsResumeToolAllowedForSession,
 		FastMode:                       &fastMode,
 		LSPEnabled:                     initialCfg.LSPEnabled,
 		SubagentLSPEnabled:             initialCfg.SubagentLSPEnabled,
@@ -2260,31 +2290,35 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 		FlatTools:                      initialCfg.FlatToolRender(),
 		CompactUser:                    initialCfg.CompactUserInput(),
 		ExtensionThemes:                extMgr.ThemeOptions,
-		AutoSubagentsSystemAddendum:    AutoSubagentsSystemAddendumFor(autoSubagentsToolAllowedForSession),
-		SubagentsSystemAddendum:        subagentsAddendum,
-		SettingsStore:                  configSettingsStore{},
-		Model:                          r.Model,
-		Provider:                       r.Provider,
-		AuthMethod:                     r.AuthMethod,
-		BaseURL:                        r.BaseURL,
-		Reasoning:                      r.Reasoning,
-		SystemPrompt:                   r.SystemPrompt,
-		Tools:                          r.ToolRegistry,
-		MaxSteps:                       r.MaxSteps,
-		CWD:                            r.CWD,
-		StartupAgentName:               args.AgentName,
-		StartupContextPaths:            instructionContextPaths(r.ContextFiles),
-		StartupExtensionNames:          startupExtensionNames(extMgr.All()),
-		StartupExtensionErrors:         startupExtensionErrors,
-		StartupSkillNames:              startupSkillNames(startupSkills),
-		ShowInstructionsAtStartup:      initialCfg.ShowInstructionsAtStartup,
-		ZutHome:                        ZutHome(),
-		SessionsRoot:                   agentSessionsRoot(ZutHome(), args),
-		Version:                        version,
-		UpdateInfoChan:                 updateCh,
-		Sandbox:                        sharedSandbox,
-		Agent:                          ag,
-		InitialCompactHandoff:          currentCompactHandoff(),
+		AutoSubagentsSystemAddendum: AutoSubagentsSystemAddendumFor(
+			autoSubagentsToolAllowedForSession,
+			autoSubagentsStopToolAllowedForSession,
+			autoSubagentsResumeToolAllowedForSession,
+		),
+		SubagentsSystemAddendum:   subagentsAddendum,
+		SettingsStore:             configSettingsStore{},
+		Model:                     r.Model,
+		Provider:                  r.Provider,
+		AuthMethod:                r.AuthMethod,
+		BaseURL:                   r.BaseURL,
+		Reasoning:                 r.Reasoning,
+		SystemPrompt:              r.SystemPrompt,
+		Tools:                     r.ToolRegistry,
+		MaxSteps:                  r.MaxSteps,
+		CWD:                       r.CWD,
+		StartupAgentName:          args.AgentName,
+		StartupContextPaths:       instructionContextPaths(r.ContextFiles),
+		StartupExtensionNames:     startupExtensionNames(extMgr.All()),
+		StartupExtensionErrors:    startupExtensionErrors,
+		StartupSkillNames:         startupSkillNames(startupSkills),
+		ShowInstructionsAtStartup: initialCfg.ShowInstructionsAtStartup,
+		ZutHome:                   ZutHome(),
+		SessionsRoot:              agentSessionsRoot(ZutHome(), args),
+		Version:                   version,
+		UpdateInfoChan:            updateCh,
+		Sandbox:                   sharedSandbox,
+		Agent:                     ag,
+		InitialCompactHandoff:     currentCompactHandoff(),
 		InitialSessionTitle: func() string {
 			if sess == nil || sessionTitlePending {
 				return ""

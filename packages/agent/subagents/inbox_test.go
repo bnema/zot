@@ -1,8 +1,10 @@
 package subagents
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -90,6 +92,127 @@ func TestInboxNotReady(t *testing.T) {
 	}
 	if !errors.Is(err, ErrNotReady) {
 		t.Fatalf("sendBytes err = %v; want ErrNotReady", err)
+	}
+}
+
+func TestDialUnixContextNonPositiveTimeoutIsNotReady(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "existing")
+	if err := os.WriteFile(path, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, timeout := range []time.Duration{0, -time.Millisecond} {
+		_, err := dialUnixContext(context.Background(), path, timeout)
+		if !errors.Is(err, ErrNotReady) {
+			t.Fatalf("dial timeout %s error = %v, want ErrNotReady", timeout, err)
+		}
+	}
+}
+
+type blockingWriteConn struct {
+	net.Conn
+	started   chan struct{}
+	release   chan struct{}
+	startOnce sync.Once
+	closeOnce sync.Once
+}
+
+func (c *blockingWriteConn) Write(data []byte) (int, error) {
+	c.startOnce.Do(func() { close(c.started) })
+	<-c.release
+	return c.Conn.Write(data)
+}
+
+func (c *blockingWriteConn) Close() error {
+	c.closeOnce.Do(func() { close(c.release) })
+	return c.Conn.Close()
+}
+
+type notifyingContext struct {
+	context.Context
+	doneCalled chan struct{}
+	once       sync.Once
+}
+
+func (c *notifyingContext) Done() <-chan struct{} {
+	c.once.Do(func() { close(c.doneCalled) })
+	return c.Context.Done()
+}
+
+func TestInboxSendContextCancelsBlockedWrite(t *testing.T) {
+	local, remote := net.Pipe()
+	defer remote.Close()
+	conn := &blockingWriteConn{
+		Conn:    local,
+		started: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+	inbox := NewInbox("unused")
+	inbox.conn = conn
+	defer inbox.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	sent := make(chan error, 1)
+	go func() { sent <- inbox.sendBytesContext(ctx, []byte("follow-up\n")) }()
+	select {
+	case <-conn.started:
+	case <-time.After(time.Second):
+		t.Fatal("write did not start")
+	}
+	cancel()
+	select {
+	case err := <-sent:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("blocked write error = %v, want context canceled", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("blocked write did not honor context cancellation")
+	}
+}
+
+func TestInboxSendContextCancelsWhileAnotherWriteIsBlocked(t *testing.T) {
+	local, remote := net.Pipe()
+	defer remote.Close()
+	conn := &blockingWriteConn{
+		Conn:    local,
+		started: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+	inbox := NewInbox("unused")
+	inbox.conn = conn
+	defer inbox.Close()
+
+	first := make(chan error, 1)
+	go func() { first <- inbox.sendBytesContext(context.Background(), []byte("first\n")) }()
+	select {
+	case <-conn.started:
+	case <-time.After(time.Second):
+		t.Fatal("first write did not start")
+	}
+
+	base, cancel := context.WithCancel(context.Background())
+	secondCtx := &notifyingContext{Context: base, doneCalled: make(chan struct{})}
+	second := make(chan error, 1)
+	go func() { second <- inbox.sendBytesContext(secondCtx, []byte("second\n")) }()
+	select {
+	case <-secondCtx.doneCalled:
+	case <-time.After(time.Second):
+		t.Fatal("second write did not wait for the send semaphore")
+	}
+	cancel()
+	select {
+	case err := <-second:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("waiting write error = %v, want context canceled", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("waiting write did not honor context cancellation")
+	}
+
+	_ = conn.Close()
+	select {
+	case <-first:
+	case <-time.After(time.Second):
+		t.Fatal("first write did not unblock")
 	}
 }
 

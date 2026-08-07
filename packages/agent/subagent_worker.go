@@ -236,13 +236,16 @@ func runSubagentWorkerMode(ctx context.Context, args Args, version string) error
 			"turn_id": turnID,
 			"error":   turnErrorMessage(err),
 		})
-		em.emit("agent.idle", map[string]any{"turn_id": turnID})
 
 		cancel()
 		mu.Lock()
 		busyTurn = false
 		cancelFn = nil
 		mu.Unlock()
+		// The supervisor treats agent.idle as permission to start a follow-up.
+		// Publish it only after the busy gate has opened, otherwise a manager
+		// can send a turn that the inbox loop drops as still busy.
+		em.emit("agent.idle", map[string]any{"turn_id": turnID})
 	}
 
 	launchTurn := func(prompt string) {

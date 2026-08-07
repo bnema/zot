@@ -2,6 +2,7 @@ package subagents
 
 import (
 	"bufio"
+	"context"
 	"errors"
 	"fmt"
 	"net"
@@ -32,6 +33,10 @@ type Inbox struct {
 
 	mu   sync.Mutex
 	conn net.Conn // lazily dialed; one persistent connection per agent
+
+	// send is a one-slot semaphore that serializes JSONL writes without making
+	// a caller wait behind another blocked write after its context is canceled.
+	send chan struct{}
 }
 
 // NewInbox returns a handle that will dial the socket at path on
@@ -40,7 +45,11 @@ type Inbox struct {
 // parent build the Inbox before the child has booted; sends that
 // happen before the child is ready get a clear "not yet" error
 // the caller can retry or surface.
-func NewInbox(path string) *Inbox { return &Inbox{path: path} }
+func NewInbox(path string) *Inbox {
+	inbox := &Inbox{path: path, send: make(chan struct{}, 1)}
+	inbox.send <- struct{}{}
+	return inbox
+}
 
 // Path returns the absolute socket path. Used by the runner to
 // pass the path to the child as a flag.
@@ -48,32 +57,107 @@ func (b *Inbox) Path() string { return b.path }
 
 // SendCommand sends a versioned JSONL command.
 func (b *Inbox) SendCommand(command Envelope) error {
+	return b.SendCommandContext(context.Background(), command)
+}
+
+// SendCommandContext sends a command while honoring cancellation during both
+// connection setup and a blocked write. Cancellation closes the persistent
+// connection so a later command redials instead of reusing a half-written
+// stream.
+func (b *Inbox) SendCommandContext(ctx context.Context, command Envelope) error {
 	line, err := MarshalJSONL(command)
 	if err != nil {
 		return err
 	}
-	return b.sendBytes(line)
+	return b.sendBytesContext(ctx, line)
 }
 
 func (b *Inbox) sendBytes(data []byte) error {
+	return b.sendBytesContext(context.Background(), data)
+}
+
+func (b *Inbox) sendBytesContext(ctx context.Context, data []byte) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	send, err := b.acquireSend(ctx)
+	if err != nil {
+		return err
+	}
+	defer releaseSend(send)
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
 	b.mu.Lock()
-	defer b.mu.Unlock()
 	if b.conn == nil {
-		c, err := dialUnix(b.path, 200*time.Millisecond)
+		c, err := dialUnixContext(ctx, b.path, 200*time.Millisecond)
 		if err != nil {
+			b.mu.Unlock()
 			return err
 		}
 		b.conn = c
 	}
-	if _, err := b.conn.Write(data); err != nil {
-		// Drop the connection so the next call redials. The
-		// previous error is more informative than the redial's
-		// would be, so surface this one.
-		_ = b.conn.Close()
-		b.conn = nil
+	conn := b.conn
+	b.mu.Unlock()
+
+	stopCancel := context.AfterFunc(ctx, func() { _ = conn.Close() })
+	if deadline, ok := ctx.Deadline(); ok {
+		if err := conn.SetWriteDeadline(deadline); err != nil {
+			stopCancel()
+			return err
+		}
+		defer conn.SetWriteDeadline(time.Time{})
+	}
+	if _, err := conn.Write(data); err != nil {
+		// Drop the connection so the next call redials. The previous error is
+		// more informative than the redial's would be, so surface this one.
+		stopCancel()
+		b.mu.Lock()
+		if b.conn == conn {
+			_ = b.conn.Close()
+			b.conn = nil
+		}
+		b.mu.Unlock()
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return ctxErr
+		}
 		return err
 	}
+	if !stopCancel() {
+		// Cancellation closed this connection after the write completed. Drop it
+		// so the next command redials instead of reusing a closed stream.
+		b.mu.Lock()
+		if b.conn == conn {
+			b.conn = nil
+		}
+		b.mu.Unlock()
+		return ctx.Err()
+	}
 	return nil
+}
+
+func (b *Inbox) acquireSend(ctx context.Context) (chan struct{}, error) {
+	b.mu.Lock()
+	if b.send == nil {
+		b.send = make(chan struct{}, 1)
+		b.send <- struct{}{}
+	}
+	send := b.send
+	b.mu.Unlock()
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-send:
+		return send, nil
+	}
+}
+
+func releaseSend(send chan struct{}) {
+	send <- struct{}{}
 }
 
 // Close drops any persistent connection. Safe to call repeatedly.
@@ -95,29 +179,48 @@ func (b *Inbox) Close() error {
 // the TUI surfaces it as "agent <id> not listening yet".
 var ErrNotReady = errors.New("subagent: agent inbox not ready")
 
-// dialUnix wraps net.DialTimeout with a small retry window so the
-// happy path "child just started, supervisor sends right away"
-// works without forcing the caller to poll.
-//
-// Errors collapse onto ErrNotReady whenever the failure means "no
-// one is listening": either the socket file doesn't exist (child
-// hasn't booted) or it does exist but the dial was refused (the
-// previous child exited and left a stale inode). Both are
-// recoverable by Supervisor.Resume, and both should surface as the same
-// user-facing hint rather than as a path-leaking error string.
-func dialUnix(path string, timeout time.Duration) (net.Conn, error) {
+// dialUnixContext retries a Unix-socket connection briefly so the happy path
+// "child just started, supervisor sends right away" works without forcing the
+// caller to poll. Errors collapse onto ErrNotReady whenever the failure means
+// no worker is listening, without exposing the socket path to the caller.
+func dialUnixContext(ctx context.Context, path string, timeout time.Duration) (net.Conn, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	deadline := time.Now().Add(timeout)
 	var lastErr error
 	for {
-		c, err := net.DialTimeout("unix", path, 50*time.Millisecond)
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		attemptTimeout := 50 * time.Millisecond
+		if remaining := time.Until(deadline); remaining < attemptTimeout {
+			attemptTimeout = remaining
+		}
+		if attemptTimeout <= 0 {
+			break
+		}
+		c, err := (&net.Dialer{Timeout: attemptTimeout}).DialContext(ctx, "unix", path)
 		if err == nil {
 			return c, nil
+		}
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return nil, ctxErr
 		}
 		lastErr = err
 		if time.Now().After(deadline) {
 			break
 		}
-		time.Sleep(20 * time.Millisecond)
+		wait := time.NewTimer(20 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			wait.Stop()
+			return nil, ctx.Err()
+		case <-wait.C:
+		}
+	}
+	if lastErr == nil {
+		return nil, ErrNotReady
 	}
 	if _, statErr := os.Stat(path); os.IsNotExist(statErr) {
 		return nil, ErrNotReady

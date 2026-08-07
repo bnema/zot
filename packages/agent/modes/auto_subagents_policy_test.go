@@ -102,7 +102,7 @@ func TestAutoSubagentsSettingsDisableUnavailablePolicy(t *testing.T) {
 			name:       "launch policy excludes tool",
 			supervisor: subagents.New(subagents.Config{Root: t.TempDir(), RepoRoot: t.TempDir()}),
 			allowed:    &falseValue,
-			wantHint:   "launch-time tool policy excludes subagent_spawn",
+			wantHint:   "launch-time tool policy excludes subagent manager tools",
 		},
 	}
 	for _, tt := range tests {
@@ -162,6 +162,12 @@ func TestAutoSubagentsToolRegistrationHonorsLaunchPolicy(t *testing.T) {
 	if _, ok := iv.agent.Tools["subagent_status"]; ok {
 		t.Fatal("subagent_status registered despite launch-time policy")
 	}
+	if _, ok := iv.agent.Tools["subagent_stop"]; ok {
+		t.Fatal("subagent_stop registered despite launch-time policy")
+	}
+	if _, ok := iv.agent.Tools["subagent_resume"]; ok {
+		t.Fatal("subagent_resume registered despite launch-time policy")
+	}
 	iv.applySettingToggle("auto_subagents_enabled", true)
 	iv.mu.Lock()
 	statusErr := iv.statusErr
@@ -180,17 +186,25 @@ func TestAutoSubagentsToolRegistrationHonorsSeparateLaunchPolicies(t *testing.T)
 		name          string
 		spawnAllowed  bool
 		statusAllowed bool
+		stopAllowed   bool
+		resumeAllowed bool
 		wantSpawn     bool
 		wantStatus    bool
+		wantStop      bool
+		wantResume    bool
 	}{
 		{name: "status only", statusAllowed: true, wantStatus: true},
 		{name: "spawn only", spawnAllowed: true, wantSpawn: true},
-		{name: "both", spawnAllowed: true, statusAllowed: true, wantSpawn: true, wantStatus: true},
+		{name: "stop only", stopAllowed: true, wantStop: true},
+		{name: "resume only", resumeAllowed: true, wantResume: true},
+		{name: "all", spawnAllowed: true, statusAllowed: true, stopAllowed: true, resumeAllowed: true, wantSpawn: true, wantStatus: true, wantStop: true, wantResume: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			enabled := true
 			spawnAllowed := tc.spawnAllowed
 			statusAllowed := tc.statusAllowed
+			stopAllowed := tc.stopAllowed
+			resumeAllowed := tc.resumeAllowed
 			supervisor := subagents.New(subagents.Config{Root: t.TempDir(), RepoRoot: t.TempDir()})
 			t.Cleanup(supervisor.StopAll)
 			iv := &Interactive{
@@ -199,6 +213,8 @@ func TestAutoSubagentsToolRegistrationHonorsSeparateLaunchPolicies(t *testing.T)
 					AutoSubagentsEnabled:           &enabled,
 					AutoSubagentsToolAllowed:       &spawnAllowed,
 					AutoSubagentsStatusToolAllowed: &statusAllowed,
+					AutoSubagentsStopToolAllowed:   &stopAllowed,
+					AutoSubagentsResumeToolAllowed: &resumeAllowed,
 					Supervisor:                     supervisor,
 				},
 				dirty: make(chan struct{}, 1),
@@ -207,8 +223,10 @@ func TestAutoSubagentsToolRegistrationHonorsSeparateLaunchPolicies(t *testing.T)
 			iv.applyAutoSubagentsTool(true)
 			_, gotSpawn := iv.agent.Tools["subagent_spawn"]
 			_, gotStatus := iv.agent.Tools["subagent_status"]
-			if gotSpawn != tc.wantSpawn || gotStatus != tc.wantStatus {
-				t.Fatalf("registered tools spawn=%v status=%v, want spawn=%v status=%v", gotSpawn, gotStatus, tc.wantSpawn, tc.wantStatus)
+			_, gotStop := iv.agent.Tools["subagent_stop"]
+			_, gotResume := iv.agent.Tools["subagent_resume"]
+			if gotSpawn != tc.wantSpawn || gotStatus != tc.wantStatus || gotStop != tc.wantStop || gotResume != tc.wantResume {
+				t.Fatalf("registered tools spawn=%v status=%v stop=%v resume=%v, want spawn=%v status=%v stop=%v resume=%v", gotSpawn, gotStatus, gotStop, gotResume, tc.wantSpawn, tc.wantStatus, tc.wantStop, tc.wantResume)
 			}
 		})
 	}

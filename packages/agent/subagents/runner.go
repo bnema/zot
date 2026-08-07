@@ -84,17 +84,14 @@ type subagentWorkerArgsOpts struct {
 // side effects.
 //
 // On Spawn (Resuming==false) we pass the task so the child's first
-// turn runs immediately. On Resume (Resuming==true) we omit it: the
-// child reopens the existing session file, loads the prior
-// conversation, and just waits on the inbox for the next prompt.
-// Re-firing the task on every resume produces a duplicate turn that
-// collides with whatever the user types next, surfacing the
-// "agent busy; send 'cancel' first" error between two assistant
-// messages — which is exactly the bug this helper fixes.
+// turn runs immediately. On Resume (Resuming==true) we omit the original task
+// so the child reopens the existing session file without replaying it. A
+// caller can instead supply ResumePrompt to begin exactly one new follow-up
+// turn without racing the inbox listener startup.
 func defaultChildArgs(exe string, a *Agent, sessionPath, inboxPath string) []string {
 	task := a.Task
 	if a.Resuming {
-		task = ""
+		task = a.resumePrompt()
 	}
 	return subagentWorkerArgs(subagentWorkerArgsOpts{
 		Exe:             exe,
@@ -624,6 +621,7 @@ func updateAgentFromEvent(a *Agent, ev Event) {
 		}
 		a.setProcessState(ProcessAlive)
 		a.setTurnState(TurnRunning, turnID)
+		a.clearResumePrompt()
 		persist = true
 	case EventTurnResult, "turn_result":
 		if result, err := decodeTurnResultEvent(ev, a.ID, a.maxOutputBytes, a.maxOutputLines); err == nil {

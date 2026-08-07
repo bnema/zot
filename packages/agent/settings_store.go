@@ -282,11 +282,25 @@ When workers finish, use the host update's agent ID, status, task, optional erro
 // spawn tool.
 const AutoSubagentsDelegationUnavailableAddendum = `Delegation is unavailable in this session because the launch-time tool policy does not expose subagent_spawn. Remain the primary-agent orchestrator: report this limitation to the user rather than implementing, debugging/testing, or reviewing directly, and end or yield your turn until delegation is available. Do not treat subagent_status or other tools as a substitute for subagent_spawn.`
 
-// AutoSubagentsSystemAddendumFor returns the strict contract with explicit
-// limitation guidance when the spawn tool is not available.
-func AutoSubagentsSystemAddendumFor(spawnToolAllowed bool) string {
-	if spawnToolAllowed {
-		return AutoSubagentsSystemAddendum
+// AutoSubagentsSystemAddendumFor returns the strict contract with lifecycle
+// guidance only for manager actions exposed by the launch-time tool policy.
+// It adds explicit limitation guidance when the spawn tool is not available.
+func AutoSubagentsSystemAddendumFor(spawnToolAllowed, stopToolAllowed, resumeToolAllowed bool) string {
+	addendum := AutoSubagentsSystemAddendum
+	switch {
+	case stopToolAllowed && resumeToolAllowed:
+		addendum += "\n\nManager lifecycle actions are available: use subagent_stop to request termination of a stuck worker, and subagent_resume with an agent id and follow-up prompt to continue an idle worker or restart a stopped worker with its existing session context."
+	case stopToolAllowed:
+		addendum += "\n\nA manager lifecycle action is available: use subagent_stop to request termination of a stuck worker."
+	case resumeToolAllowed:
+		addendum += "\n\nA manager lifecycle action is available: use subagent_resume with an agent id and follow-up prompt to continue an idle worker or restart a stopped worker with its existing session context."
 	}
-	return AutoSubagentsSystemAddendum + "\n\n" + AutoSubagentsDelegationUnavailableAddendum
+	if !spawnToolAllowed {
+		if stopToolAllowed || resumeToolAllowed {
+			addendum += "\n\nSpawning new workers is unavailable in this session. Use only the enabled manager lifecycle actions for existing workers. Do not implement, debug, test, or review directly."
+		} else {
+			addendum += "\n\n" + AutoSubagentsDelegationUnavailableAddendum
+		}
+	}
+	return addendum
 }

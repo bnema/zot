@@ -74,6 +74,11 @@ type agentMeta struct {
 	InboxPath        string          `json:"inbox_path"`
 	EventLogPath     string          `json:"event_log_path"`
 	SessionPath      string          `json:"session_path"`
+	// ResumePrompt is a follow-up accepted by subagent_resume but not yet
+	// acknowledged by the child with a turn.started event. It is durable so a
+	// host exit while the worker is queued does not lose the manager signal.
+	ResumePrompt   string    `json:"resume_prompt,omitempty"`
+	ResumePromptAt time.Time `json:"resume_prompt_at,omitempty"`
 
 	// SessionID, when non-empty, scopes the agent to a particular
 	// host zut session: the dashboard only shows agents whose
@@ -97,6 +102,8 @@ func writeAgentMeta(stateDir string, a *Agent) error {
 	status := a.status
 	activity := a.activity
 	finished := a.finished
+	resumePrompt := a.resumePromptText
+	resumePromptAt := a.resumePromptAt
 	errText := ""
 	if a.lastErr != nil {
 		errText = a.lastErr.Error()
@@ -156,6 +163,8 @@ func writeAgentMeta(stateDir string, a *Agent) error {
 		InboxPath:        a.InboxPath,
 		EventLogPath:     a.EventLogPath,
 		SessionPath:      a.SessionPath,
+		ResumePrompt:     resumePrompt,
+		ResumePromptAt:   resumePromptAt,
 		SessionID:        a.SessionID,
 	}
 	b, err := json.MarshalIndent(m, "", "  ")
@@ -440,6 +449,8 @@ func (f *Supervisor) buildDetachedAgent(m agentMeta) *Agent {
 		InboxPath:        m.InboxPath,
 		EventLogPath:     m.EventLogPath,
 		SessionPath:      m.SessionPath,
+		resumePromptText: m.ResumePrompt,
+		resumePromptAt:   m.ResumePromptAt,
 		SessionID:        m.SessionID,
 		inbox:            NewInbox(m.InboxPath),
 		status:           status,
@@ -531,6 +542,9 @@ func (a *Agent) loadTranscript() error {
 	if err != nil {
 		return fmt.Errorf("read subagent transcript: %w", err)
 	}
+	if prompt, acceptedAt := a.ResumePromptInfo(); prompt != "" && resumePromptAcknowledged(events, acceptedAt) {
+		a.clearResumePrompt()
+	}
 	a.mu.Lock()
 	if a.transcriptLoaded {
 		a.mu.Unlock()
@@ -569,6 +583,18 @@ func (a *Agent) loadTranscript() error {
 // Status precedence: explicit lifecycle events (agent_stopped) win
 // over inferred ones (assistant_message → idle). If the log contains
 // no terminator we keep status=StatusDetached so the user can resume.
+func resumePromptAcknowledged(events []Event, acceptedAt time.Time) bool {
+	if acceptedAt.IsZero() {
+		return false
+	}
+	for _, ev := range events {
+		if (ev.Type == EventTurnStarted || ev.Type == "turn_start") && !ev.Time.Before(acceptedAt) {
+			return true
+		}
+	}
+	return false
+}
+
 func replayEventsIntoAgent(a *Agent, evs []Event) {
 	terminal := false
 	for _, ev := range evs {
@@ -698,22 +724,76 @@ func replayEventTranscript(a *Agent, ev Event) {
 // Killed). Resuming a still-running agent returns an error so two
 // runners don't race for the same session.
 func (f *Supervisor) Resume(ctx context.Context, id string) (*Agent, error) {
-	return f.resume(ctx, id, true)
+	return f.resume(ctx, id, true, "")
 }
 
 // ResumeSession continues the existing child session without replaying the
 // original task. It is the explicit canonical spelling for Resume.
 func (f *Supervisor) ResumeSession(ctx context.Context, id string) (*Agent, error) {
-	return f.resume(ctx, id, true)
+	return f.resume(ctx, id, true, "")
+}
+
+// ResumeWithPrompt continues an agent with a manager follow-up while retaining
+// its existing session. An idle live worker receives the turn through its
+// inbox; a terminal worker is restarted with the follow-up as its initial
+// prompt, avoiding a race with inbox listener startup.
+func (f *Supervisor) ResumeWithPrompt(ctx context.Context, id, prompt string) (*Agent, error) {
+	if strings.TrimSpace(prompt) == "" {
+		return nil, fmt.Errorf("subagent: follow-up prompt is required")
+	}
+
+	f.operationMu.Lock()
+	existing := f.Get(id)
+	if existing == nil {
+		f.operationMu.Unlock()
+		return nil, fmt.Errorf("subagent: no such agent %q", id)
+	}
+	status := existing.Status()
+	if status == StatusRunning {
+		if existing.ProcessState() != ProcessAlive || existing.TurnState() != TurnIdle {
+			f.operationMu.Unlock()
+			return nil, fmt.Errorf("subagent: agent %s is still working; wait for it to become idle before sending a follow-up", existing.ID)
+		}
+		if existing.inbox == nil {
+			f.operationMu.Unlock()
+			return nil, fmt.Errorf("subagent: agent %s has no inbox", existing.ID)
+		}
+		turnID := existing.CurrentTurnID()
+		// Reserve the worker before writing to its inbox. A second manager call
+		// must not enqueue another turn in the small interval before the worker
+		// reports its turn.start event. Persist the prompt first so a host exit
+		// before that event can resume and redeliver it.
+		previousPrompt, previousPromptAt := existing.setResumePrompt(prompt, f.cfg.Now())
+		existing.setTurnState(TurnQueued, turnID)
+		inbox := existing.inbox
+		command := NewCommand(CommandTurnStart, existing.ID, turnID, TurnStartPayload{Prompt: prompt})
+		f.persistAgent(existing)
+		f.operationMu.Unlock()
+
+		if err := inbox.SendCommandContext(ctx, command); err != nil {
+			f.operationMu.Lock()
+			if existing.Status() == StatusRunning && existing.TurnState() == TurnQueued && existing.CurrentTurnID() == turnID {
+				existing.setTurnState(TurnIdle, turnID)
+				existing.setResumePrompt(previousPrompt, previousPromptAt)
+				f.persistAgent(existing)
+			}
+			f.operationMu.Unlock()
+			return nil, fmt.Errorf("subagent: send follow-up to %s: %w", existing.ID, err)
+		}
+		return existing, nil
+	}
+	f.operationMu.Unlock()
+
+	return f.resume(ctx, id, true, prompt)
 }
 
 // RestartTask intentionally runs the stored original task again in a fresh
 // worker attempt. Callers should use ResumeSession for normal recovery.
 func (f *Supervisor) RestartTask(ctx context.Context, id string) (*Agent, error) {
-	return f.resume(ctx, id, false)
+	return f.resume(ctx, id, false, "")
 }
 
-func (f *Supervisor) resume(ctx context.Context, id string, resuming bool) (*Agent, error) {
+func (f *Supervisor) resume(ctx context.Context, id string, resuming bool, resumePrompt string) (*Agent, error) {
 	f.operationMu.Lock()
 	defer f.operationMu.Unlock()
 	if ctx == nil {
@@ -741,6 +821,14 @@ func (f *Supervisor) resume(ctx context.Context, id string, resuming bool) (*Age
 	if inboxLive(existing.InboxPath) {
 		return nil, fmt.Errorf("subagent: agent %s still has a live worker; send shutdown or stop it first", existing.ID)
 	}
+	// A fresh Reload does not hydrate its event log. Before replaying a pending
+	// follow-up, hydrate it to see whether the child already acknowledged the
+	// turn before the previous host exited.
+	if resuming && existing.resumePrompt() != "" {
+		if err := existing.loadTranscript(); err != nil {
+			return nil, fmt.Errorf("subagent: replay pending follow-up: %w", err)
+		}
+	}
 	stateDir := existing.stateDirectory(f.cfg.Root)
 	lease, err := acquireAgentLease(stateDir)
 	if err != nil {
@@ -762,7 +850,13 @@ func (f *Supervisor) resume(ctx context.Context, id string, resuming bool) (*Age
 	if err != nil {
 		return nil, fmt.Errorf("subagent inbox path: %w", err)
 	}
+	now := f.cfg.Now()
 	fastMode := existing.FastMode
+	pendingResumePrompt, pendingResumePromptAt := existing.ResumePromptInfo()
+	if resumePrompt != "" {
+		pendingResumePrompt = resumePrompt
+		pendingResumePromptAt = now
+	}
 	m := agentMeta{
 		ID: existing.ID, Task: existing.Task,
 		OriginalTask: existing.OriginalTask,
@@ -779,7 +873,9 @@ func (f *Supervisor) resume(ctx context.Context, id string, resuming bool) (*Age
 		CurrentTurnID:   existingSnapshot.CurrentTurnID, Attempt: existingSnapshot.Attempt,
 		SessionID: existing.SessionID,
 		InboxPath: inboxPath, EventLogPath: existing.EventLogPath,
-		SessionPath: existing.SessionPath,
+		SessionPath:    existing.SessionPath,
+		ResumePrompt:   pendingResumePrompt,
+		ResumePromptAt: pendingResumePromptAt,
 	}
 
 	if len(m.Tools) == 0 && len(f.cfg.Policy.AllowedTools) > 0 {
@@ -805,7 +901,6 @@ func (f *Supervisor) resume(ctx context.Context, id string, resuming bool) (*Age
 	if err := validateWorkspaceRoot(repositoryRoot, workspaceMode, allowedRoots); err != nil {
 		return nil, err
 	}
-	now := f.cfg.Now()
 	maxTurns := m.MaxTurns
 	if maxTurns <= 0 {
 		maxTurns = f.cfg.Policy.MaxTurns
@@ -868,6 +963,8 @@ func (f *Supervisor) resume(ctx context.Context, id string, resuming bool) (*Age
 		EventLogPath:      m.EventLogPath,
 		SessionPath:       m.SessionPath,
 		Resuming:          resuming,
+		resumePromptText:  pendingResumePrompt,
+		resumePromptAt:    pendingResumePromptAt,
 		inbox:             NewInbox(m.InboxPath),
 		status:            StatusPending,
 		activity:          "resuming",
