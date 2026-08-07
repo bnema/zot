@@ -188,6 +188,16 @@ type InteractiveConfig struct {
 	// user must /login before they can prompt.
 	Agent *core.Agent
 
+	// InitialCompactHandoff is the opaque, persisted handoff snapshot for a
+	// resumed interactive session. Invalid data is ignored by this package.
+	InitialCompactHandoff json.RawMessage
+	// PersistCompactHandoff records the current opaque handoff snapshot in the
+	// active session. It must not re-enter Interactive.
+	PersistCompactHandoff func(json.RawMessage) error
+	// CurrentCompactHandoff returns the opaque handoff snapshot for the session
+	// currently owned by the host after a session switch. Invalid data is ignored.
+	CurrentCompactHandoff func() json.RawMessage
+
 	InitialInput string
 
 	// StartupPre is auto-submitted once when the interactive session
@@ -526,9 +536,62 @@ const (
 
 const maxStatusRescueContinuations = 2
 
+const compactHandoffVersion = 1
+
 type compactContinuationState struct {
 	reason         compactContinuationReason
 	rescueAttempts int
+}
+
+type persistedCompactHandoff struct {
+	Version        int    `json:"version"`
+	Reason         string `json:"reason"`
+	RescueAttempts int    `json:"rescue_attempts,omitempty"`
+}
+
+func decodeCompactHandoff(raw json.RawMessage) compactContinuationState {
+	var persisted persistedCompactHandoff
+	if len(raw) == 0 || json.Unmarshal(raw, &persisted) != nil || persisted.Version != compactHandoffVersion {
+		return compactContinuationState{}
+	}
+	switch persisted.Reason {
+	case "structural_tail":
+		if persisted.RescueAttempts == 0 {
+			return compactContinuationState{reason: compactContinuationStructuralTail}
+		}
+	case "forced_length":
+		if persisted.RescueAttempts == 0 {
+			return compactContinuationState{reason: compactContinuationForcedLength}
+		}
+	case "status_rescue":
+		if persisted.RescueAttempts >= 1 && persisted.RescueAttempts <= maxStatusRescueContinuations {
+			return compactContinuationState{reason: compactContinuationStatusRescue, rescueAttempts: persisted.RescueAttempts}
+		}
+	}
+	return compactContinuationState{}
+}
+
+func encodeCompactHandoff(state compactContinuationState) json.RawMessage {
+	var reason string
+	switch state.reason {
+	case compactContinuationStructuralTail:
+		reason = "structural_tail"
+	case compactContinuationForcedLength:
+		reason = "forced_length"
+	case compactContinuationStatusRescue:
+		reason = "status_rescue"
+	default:
+		return nil
+	}
+	encoded, err := json.Marshal(persistedCompactHandoff{
+		Version:        compactHandoffVersion,
+		Reason:         reason,
+		RescueAttempts: state.rescueAttempts,
+	})
+	if err != nil {
+		return nil
+	}
+	return encoded
 }
 
 type Interactive struct {
@@ -850,38 +913,39 @@ func NewInteractive(cfg InteractiveConfig) *Interactive {
 		// Prompt is the standard half-block accent bar used by chat
 		// speaker labels too, so the input gutter matches the rest
 		// of the UI.
-		ed:                tui.NewEditor(cfg.Theme.AccentBar(cfg.Theme.Accent)),
-		rend:              renderer,
-		toolCalls:         map[string]*tui.ToolCallView{},
-		toolGate:          map[string]int{},
-		dirty:             make(chan struct{}, 8),
-		modelRefresh:      make(chan modelRefreshResult, 1),
-		startupPreDone:    make(chan startupPreResult, 1),
-		dialog:            newLoginDialog(),
-		modelDialog:       newModelDialog(),
-		llamaDialog:       newLlamaDialog(),
-		rescueDialog:      newRescueDialog(),
-		sessionDialog:     newSessionDialog(),
-		subagentsDialog:   newSubagentsDialog(),
-		jumpDialog:        newJumpDialog(),
-		btwDialog:         newBtwDialog(),
-		skillsDialog:      newSkillsDialog(),
-		changelogDialog:   newChangelogDialog(),
-		confirmDialog:     newConfirmDialog(),
-		logoutDialog:      newLogoutDialog(),
-		telegramDialog:    newTelegramDialog(),
-		settingsDialog:    newSettingsDialog(),
-		sessionOpsDialog:  newSessionOpsDialog(),
-		sessionTreeDialog: newSessionTreeDialog(),
-		extPanel:          newExtPanelDialog(),
-		extStatuses:       map[string]map[string]extensionStatus{},
-		extWidgets:        map[string]map[string]extensionWidget{},
-		suggest:           newSlashSuggester(),
-		fileSuggest:       newFileSuggester(),
-		spin:              newSpinner(cfg.Theme),
-		inputHistoryIndex: -1,
-		clock:             time.Now,
-		reloadErrors:      append([]string(nil), cfg.StartupExtensionErrors...),
+		ed:                  tui.NewEditor(cfg.Theme.AccentBar(cfg.Theme.Accent)),
+		rend:                renderer,
+		toolCalls:           map[string]*tui.ToolCallView{},
+		toolGate:            map[string]int{},
+		dirty:               make(chan struct{}, 8),
+		modelRefresh:        make(chan modelRefreshResult, 1),
+		startupPreDone:      make(chan startupPreResult, 1),
+		dialog:              newLoginDialog(),
+		modelDialog:         newModelDialog(),
+		llamaDialog:         newLlamaDialog(),
+		rescueDialog:        newRescueDialog(),
+		sessionDialog:       newSessionDialog(),
+		subagentsDialog:     newSubagentsDialog(),
+		jumpDialog:          newJumpDialog(),
+		btwDialog:           newBtwDialog(),
+		skillsDialog:        newSkillsDialog(),
+		changelogDialog:     newChangelogDialog(),
+		confirmDialog:       newConfirmDialog(),
+		logoutDialog:        newLogoutDialog(),
+		telegramDialog:      newTelegramDialog(),
+		settingsDialog:      newSettingsDialog(),
+		sessionOpsDialog:    newSessionOpsDialog(),
+		sessionTreeDialog:   newSessionTreeDialog(),
+		extPanel:            newExtPanelDialog(),
+		extStatuses:         map[string]map[string]extensionStatus{},
+		extWidgets:          map[string]map[string]extensionWidget{},
+		suggest:             newSlashSuggester(),
+		fileSuggest:         newFileSuggester(),
+		spin:                newSpinner(cfg.Theme),
+		inputHistoryIndex:   -1,
+		clock:               time.Now,
+		reloadErrors:        append([]string(nil), cfg.StartupExtensionErrors...),
+		compactContinuation: decodeCompactHandoff(cfg.InitialCompactHandoff),
 	}
 	i.btwDialog.setCloseHook(func() {
 		i.confirmDialog.CancelChildConfirmations("side chat closed")
@@ -897,7 +961,7 @@ func NewInteractive(cfg InteractiveConfig) *Interactive {
 	}
 	if cfg.Agent != nil {
 		i.agent = cfg.Agent
-		i.view.Messages = cfg.Agent.Messages()
+		i.view.Messages = filterHiddenTranscriptMessages(cfg.Agent.Messages())
 		i.cumUsage = cfg.Agent.Cost()
 		// Rehydrate the "context used" gauge from the last persisted
 		// turn. Without this the status bar reads 0.0% after a resume
@@ -992,8 +1056,11 @@ func (i *Interactive) Run(ctx context.Context) error {
 		i.Submit(i.cfg.StartupPre)
 	} else if i.cfg.AutoSubmitInitial && i.cfg.InitialInput != "" {
 		i.Submit(i.cfg.InitialInput)
-	} else if i.cfg.InitialInput != "" {
-		i.ed.SetValue(i.cfg.InitialInput)
+	} else {
+		if i.cfg.InitialInput != "" {
+			i.ed.SetValue(i.cfg.InitialInput)
+		}
+		i.startRestoredCompactHandoff(ctx)
 	}
 
 	// Stamp the welcome time and schedule a one-shot redraw at the
@@ -3086,10 +3153,15 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 		i.mu.Lock()
 		busyCancel := i.busy && i.cancelTurn != nil
 		cancelTurn := i.cancelTurn
+		var handoff json.RawMessage
+		var persistHandoff bool
 		if busyCancel {
-			i.resetCompactContinuationLocked()
+			handoff, persistHandoff = i.resetCompactContinuationLocked()
 		}
 		i.mu.Unlock()
+		if persistHandoff {
+			i.persistCompactHandoff(handoff)
+		}
 		if busyCancel {
 			cancelTurn()
 			// If a confirm dialog is pending, refuse it so the agent
@@ -3403,16 +3475,21 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 				return false
 			}
 			clearSubmittedInput()
+			var handoff json.RawMessage
+			var persistHandoff bool
 			if ag != nil && !compacting {
 				i.mu.Lock()
-				i.resetCompactContinuationLocked()
+				handoff, persistHandoff = i.resetCompactContinuationLocked()
 				ag.QueueMessage(text)
 				i.mu.Unlock()
 			} else {
 				i.mu.Lock()
-				i.resetCompactContinuationLocked()
+				handoff, persistHandoff = i.resetCompactContinuationLocked()
 				i.queued = append(i.queued, text)
 				i.mu.Unlock()
+			}
+			if persistHandoff {
+				i.persistCompactHandoff(handoff)
 			}
 			i.invalidate()
 			return false
@@ -3755,6 +3832,10 @@ func (i *Interactive) applyStartupPreResult(result startupPreResult) {
 // Unlike ApplyChangedCWD it does not mutate cwd-scoped resources or startup
 // context; the session loader is changing the transcript/provider only.
 func (i *Interactive) ApplySessionAgent(ag *core.Agent, providerName, model string) {
+	i.ApplySessionAgentWithCompactHandoff(ag, providerName, model, nil)
+}
+
+func (i *Interactive) ApplySessionAgentWithCompactHandoff(ag *core.Agent, providerName, model string, compactHandoff json.RawMessage) {
 	if ag == nil {
 		return
 	}
@@ -3762,6 +3843,7 @@ func (i *Interactive) ApplySessionAgent(ag *core.Agent, providerName, model stri
 	defer i.agentMu.Unlock()
 	i.mu.Lock()
 	i.prepareReplacementAgentLocked(ag)
+	i.compactContinuation = decodeCompactHandoff(compactHandoff)
 	i.agent = ag
 	i.cfg.Provider = providerName
 	i.cfg.Model = model
@@ -3819,6 +3901,7 @@ func (i *Interactive) applyChangedCWD(ag *core.Agent, provider, model, cwd strin
 	defer i.agentMu.Unlock()
 	i.mu.Lock()
 	i.prepareReplacementAgentLocked(ag)
+	i.resetCompactContinuationLocked()
 	i.agent = ag
 	i.cfg.CWD = cwd
 	i.cfg.SubagentsSystemAddendum = subagentsAddendum
@@ -3913,14 +3996,19 @@ func (i *Interactive) SubmitOrQueue(text string, images []provider.ImageBlock) {
 		// cannot inspect the agent queue between the busy check and enqueue.
 		// Compaction uses the host queue because it has no active agent loop
 		// to drain Agent.QueueMessage entries.
+		var handoff json.RawMessage
+		var persistHandoff bool
 		if i.agent != nil && !i.compacting {
-			i.resetCompactContinuationLocked()
+			handoff, persistHandoff = i.resetCompactContinuationLocked()
 			i.agent.QueueMessage(text)
 		} else {
-			i.resetCompactContinuationLocked()
+			handoff, persistHandoff = i.resetCompactContinuationLocked()
 			i.queued = append(i.queued, text)
 		}
 		i.mu.Unlock()
+		if persistHandoff {
+			i.persistCompactHandoff(handoff)
+		}
 		i.invalidate()
 		return
 	}
@@ -3946,8 +4034,11 @@ func (i *Interactive) CancelTurn() {
 	i.mu.Unlock()
 	if cancel != nil {
 		i.mu.Lock()
-		i.resetCompactContinuationLocked()
+		handoff, persistHandoff := i.resetCompactContinuationLocked()
 		i.mu.Unlock()
+		if persistHandoff {
+			i.persistCompactHandoff(handoff)
+		}
 		cancel()
 		i.confirmDialog.CancelAll("turn cancelled")
 	}
@@ -5712,9 +5803,12 @@ func (i *Interactive) runSlash(ctx context.Context, cmd string) (done bool) {
 		i.scrollOffset = 0
 		i.extNotes = nil
 		i.reloadErrors = nil
-		i.resetCompactContinuationLocked()
+		handoff, persistHandoff := i.resetCompactContinuationLocked()
 		i.view.InvalidateRenderCache()
 		i.mu.Unlock()
+		if persistHandoff {
+			i.persistCompactHandoff(handoff)
+		}
 	case "/help":
 		i.mu.Lock()
 		i.helpBlock = renderHelpBlock(i.cfg.Theme, i.lastCols(), i.llamaConfigured)
@@ -5811,16 +5905,21 @@ func (i *Interactive) runSlash(ctx context.Context, cmd string) (done bool) {
 		ag := i.agent
 		i.mu.Unlock()
 		if busy {
+			var handoff json.RawMessage
+			var persistHandoff bool
 			if ag != nil && !compacting {
 				i.mu.Lock()
-				i.resetCompactContinuationLocked()
+				handoff, persistHandoff = i.resetCompactContinuationLocked()
 				ag.QueueMessage(studyPrompt)
 				i.mu.Unlock()
 			} else {
 				i.mu.Lock()
-				i.resetCompactContinuationLocked()
+				handoff, persistHandoff = i.resetCompactContinuationLocked()
 				i.queued = append(i.queued, studyPrompt)
 				i.mu.Unlock()
+			}
+			if persistHandoff {
+				i.persistCompactHandoff(handoff)
 			}
 			i.invalidate()
 			break
@@ -6104,13 +6203,15 @@ func (i *Interactive) doLogout(target string) {
 	}
 
 	i.mu.Lock()
-	defer i.mu.Unlock()
 	i.llamaConfigured = llamaConfigured
 	if len(errs) > 0 {
 		i.statusErr = "logout errors: " + strings.Join(errs, "; ")
+		i.mu.Unlock()
 		return
 	}
 	i.statusErr = ""
+	var handoff json.RawMessage
+	var persistHandoff bool
 	if clearedCurrent {
 		// The running agent was using a credential we just wiped. Drop
 		// it so prompts can't go out with the stale client, and hint at
@@ -6119,10 +6220,14 @@ func (i *Interactive) doLogout(target string) {
 			_ = tools.CloseLSPManagers(i.agent.ToolsSnapshot())
 		}
 		i.agent = nil
-		i.resetCompactContinuationLocked()
+		handoff, persistHandoff = i.resetCompactContinuationLocked()
 		i.statusOK = "logged out of " + strings.Join(providers, ", ") + ". type /login to sign back in."
 	} else {
 		i.statusOK = "logged out of " + strings.Join(providers, ", ")
+	}
+	i.mu.Unlock()
+	if persistHandoff {
+		i.persistCompactHandoff(handoff)
 	}
 }
 
@@ -6306,8 +6411,11 @@ func (i *Interactive) cancelAndWaitForIdle() {
 	}
 	if cancel != nil {
 		i.mu.Lock()
-		i.resetCompactContinuationLocked()
+		handoff, persistHandoff := i.resetCompactContinuationLocked()
 		i.mu.Unlock()
+		if persistHandoff {
+			i.persistCompactHandoff(handoff)
+		}
 		cancel()
 	}
 	// ConfirmToolCall waits on its response channel rather than the turn
@@ -6371,14 +6479,19 @@ func (i *Interactive) submitOrQueuePrompt(ctx context.Context, prompt string) {
 		// Keep the mutex held while enqueueing so the turn-completion
 		// goroutine cannot publish idle and inspect an empty queue between
 		// this check and the append.
+		var handoff json.RawMessage
+		var persistHandoff bool
 		if i.compacting {
-			i.resetCompactContinuationLocked()
+			handoff, persistHandoff = i.resetCompactContinuationLocked()
 			i.queued = append(i.queued, prompt)
 		} else {
-			i.resetCompactContinuationLocked()
+			handoff, persistHandoff = i.resetCompactContinuationLocked()
 			i.agent.QueueMessage(prompt)
 		}
 		i.mu.Unlock()
+		if persistHandoff {
+			i.persistCompactHandoff(handoff)
+		}
 		i.invalidate()
 		return
 	}
@@ -6525,7 +6638,9 @@ func (i *Interactive) applySessionSelection(path string) {
 			return
 		}
 		i.restoreLoadedSessionTitle()
+		state := decodeCompactHandoff(i.currentCompactHandoff())
 		i.mu.Lock()
+		i.compactContinuation = state
 		i.sessionLoading = false
 		i.statusOK = "resumed session: " + path
 		i.statusErr = ""
@@ -6540,7 +6655,7 @@ func (i *Interactive) applySessionSelection(path string) {
 		i.extNotes = nil
 		i.view.InvalidateRenderCache()
 		if i.agent != nil {
-			i.view.Messages = i.agent.Messages()
+			i.view.Messages = filterHiddenTranscriptMessages(i.agent.Messages())
 			i.cumUsage = i.agent.Cost()
 			if last := i.agent.LastTurnUsage(); last.InputTokens > 0 || last.CacheReadTokens > 0 || last.CacheWriteTokens > 0 {
 				i.lastCtxInput = last.InputTokens + last.CacheReadTokens + last.CacheWriteTokens
@@ -6558,6 +6673,9 @@ func (i *Interactive) applySessionSelection(path string) {
 		}
 		i.mu.Unlock()
 		i.invalidate()
+		if state.reason != compactContinuationNone {
+			i.startRestoredCompactHandoff(i.runCtx)
+		}
 	}()
 }
 
@@ -6581,25 +6699,30 @@ func (i *Interactive) applyRescueModelSelection(prov, model string) {
 // the supplied builder. rescue=true tags the success message so the
 // user can see that launch-time overrides were ignored.
 func (i *Interactive) swapModel(prov, model string, builder func(string, string) (*core.Agent, string, string, error), rescue bool) {
-	if i.cfg.SessionTransition != nil {
-		i.cfg.SessionTransition(func() {
-			i.swapModelUnserialized(prov, model, builder, rescue)
-		})
-		return
+	var replaced bool
+	swap := func() {
+		replaced = i.swapModelUnserialized(prov, model, builder, rescue)
 	}
-	i.swapModelUnserialized(prov, model, builder, rescue)
+	if i.cfg.SessionTransition != nil {
+		i.cfg.SessionTransition(swap)
+	} else {
+		swap()
+	}
+	if replaced {
+		i.resetCompactHandoff()
+	}
 }
 
-func (i *Interactive) swapModelUnserialized(prov, model string, builder func(string, string) (*core.Agent, string, string, error), rescue bool) {
+func (i *Interactive) swapModelUnserialized(prov, model string, builder func(string, string) (*core.Agent, string, string, error), rescue bool) bool {
 	if model == "" {
-		return
+		return false
 	}
 	m, err := provider.FindModel(prov, model)
 	if err != nil {
 		i.mu.Lock()
 		i.statusErr = err.Error()
 		i.mu.Unlock()
-		return
+		return false
 	}
 	// Same provider AND not a rescue retry: just swap the model on
 	// the existing agent. Mixed-API providers dispatch from model metadata,
@@ -6615,13 +6738,13 @@ func (i *Interactive) swapModelUnserialized(prov, model string, builder func(str
 		if i.cfg.PersistModel != nil {
 			i.cfg.PersistModel(i.cfg.Provider, m.ID)
 		}
-		return
+		return false
 	}
 	if builder == nil {
 		i.mu.Lock()
 		i.statusErr = "cannot switch provider: no builder configured"
 		i.mu.Unlock()
-		return
+		return false
 	}
 	// Snapshot the current transcript and cumulative usage BEFORE we
 	// build the replacement agent so we can hand them off. Without
@@ -6639,7 +6762,7 @@ func (i *Interactive) swapModelUnserialized(prov, model string, builder func(str
 		i.mu.Lock()
 		i.statusErr = err.Error()
 		i.mu.Unlock()
-		return
+		return false
 	}
 
 	// Replay the transcript and seed the cost on the freshly-built
@@ -6682,6 +6805,7 @@ func (i *Interactive) swapModelUnserialized(prov, model string, builder func(str
 	if i.cfg.PersistModel != nil {
 		i.cfg.PersistModel(p, md)
 	}
+	return true
 }
 
 func (i *Interactive) handleAuthEvent(ev auth.Event) {
@@ -6697,6 +6821,7 @@ func (i *Interactive) handleAuthEvent(ev auth.Event) {
 		// same transition as settings/session changes. Otherwise a build that
 		// started under the old web-search policy could commit afterward.
 		var buildErr error
+		var clearHandoff bool
 		buildAndCommitLogin := func() {
 			ag, prov, model, err := i.cfg.BuildAgent()
 			if err != nil {
@@ -6707,6 +6832,7 @@ func (i *Interactive) handleAuthEvent(ev auth.Event) {
 			i.mu.Lock()
 			oldAgent := i.agent
 			i.prepareReplacementAgentLocked(ag)
+			_, clearHandoff = i.resetCompactContinuationLocked()
 			i.agent = ag
 			i.cfg.Provider = prov
 			i.cfg.Model = model
@@ -6734,6 +6860,9 @@ func (i *Interactive) handleAuthEvent(ev auth.Event) {
 			i.dialog.ShowResult(false, buildErr.Error())
 			return
 		}
+		if clearHandoff {
+			i.persistCompactHandoff(nil)
+		}
 		i.dialog.ShowResult(true, "")
 	}
 }
@@ -6748,13 +6877,167 @@ func (i *Interactive) clearPendingCompactTurnLocked() {
 	i.pendingPostCompactNote = ""
 }
 
-// resetCompactContinuationLocked clears the private handoff state. The
+// compactHandoffLocked returns a self-contained persistence snapshot. The
 // caller must hold i.mu.
-func (i *Interactive) resetCompactContinuationLocked() {
-	i.compactContinuation = compactContinuationState{}
+func (i *Interactive) compactHandoffLocked() json.RawMessage {
+	return encodeCompactHandoff(i.compactContinuation)
+}
+
+// setCompactContinuationLocked updates the private handoff state and returns
+// its persistence snapshot plus whether persistence is needed. The caller must
+// hold i.mu.
+func (i *Interactive) setCompactContinuationLocked(state compactContinuationState) (json.RawMessage, bool) {
+	if i.compactContinuation == state {
+		return i.compactHandoffLocked(), false
+	}
+	i.compactContinuation = state
+	return i.compactHandoffLocked(), true
+}
+
+// resetCompactContinuationLocked clears the private handoff state and returns
+// its persistence snapshot plus whether persistence is needed. The caller must
+// hold i.mu.
+func (i *Interactive) resetCompactContinuationLocked() (json.RawMessage, bool) {
+	return i.setCompactContinuationLocked(compactContinuationState{})
+}
+
+func (i *Interactive) persistCompactHandoff(state json.RawMessage) {
+	if persist := i.cfg.PersistCompactHandoff; persist != nil {
+		if err := persist(state); err != nil {
+			i.ReportError(fmt.Errorf("persist compact handoff: %w", err))
+		}
+	}
+}
+
+func (i *Interactive) resetCompactHandoff() {
+	i.mu.Lock()
+	state, persist := i.resetCompactContinuationLocked()
+	i.mu.Unlock()
+	if persist {
+		i.persistCompactHandoff(state)
+	}
+}
+
+func (i *Interactive) currentCompactHandoff() json.RawMessage {
+	if current := i.cfg.CurrentCompactHandoff; current != nil {
+		return current()
+	}
+	return nil
+}
+
+func (i *Interactive) restoreCompactHandoff(state compactContinuationState) {
+	i.mu.Lock()
+	i.compactContinuation = state
+	i.mu.Unlock()
+}
+
+func (i *Interactive) restoreCurrentCompactHandoff() compactContinuationState {
+	state := decodeCompactHandoff(i.currentCompactHandoff())
+	i.restoreCompactHandoff(state)
+	return state
 }
 
 const autoCompactContinuationPrompt = `Context was compacted while work was in progress. Continue the user's most recent active request now; do not wait for them to type "continue". Inspect the context summary and kept recent messages, treating active constraints and preferences there as still in force, including delegation/subagent instructions. If a newer request supersedes earlier plans in the summary, follow the newer request. A progress report, plan update, or statement of future work is not completion: if required work remains, take the next concrete action now. Only finish when the request is actually complete or when a specific user decision is required. If nothing remains, give a brief truthful completion; do not invent work or force a tool call.`
+
+type compactHandoffResume uint8
+
+const (
+	compactHandoffDiscard compactHandoffResume = iota
+	compactHandoffContinueExisting
+	compactHandoffAppendPrompt
+)
+
+// classifyCompactHandoffResume validates that the persisted checkpoint still
+// describes the effective transcript. A normal assistant reply or a newer
+// explicit user message supersedes the checkpoint; tool activity remains an
+// unfinished existing turn. No hidden prompt means the process stopped after
+// recording the handoff but before appending its context message.
+func classifyCompactHandoffResume(messages []provider.Message) compactHandoffResume {
+	lastHandoff := -1
+	for idx := len(messages) - 1; idx >= 0; idx-- {
+		message := messages[idx]
+		if message.Role == provider.RoleUser && message.Meta[autoCompactContinueMetaKey] == "true" {
+			lastHandoff = idx
+			break
+		}
+	}
+	if lastHandoff < 0 {
+		return compactHandoffAppendPrompt
+	}
+	for _, message := range messages[lastHandoff+1:] {
+		switch message.Role {
+		case provider.RoleTool:
+			continue
+		case provider.RoleAssistant:
+			hasToolCall := false
+			for _, content := range message.Content {
+				if _, ok := content.(provider.ToolCallBlock); ok {
+					hasToolCall = true
+					break
+				}
+			}
+			if !hasToolCall {
+				return compactHandoffDiscard
+			}
+		default:
+			return compactHandoffDiscard
+		}
+	}
+	return compactHandoffContinueExisting
+}
+
+// startRestoredCompactHandoff resumes a handoff checkpoint restored from the
+// active session. When its hidden context message was already persisted, the
+// agent continues that existing turn rather than appending it again.
+func (i *Interactive) startRestoredCompactHandoff(parent context.Context) {
+	if parent == nil {
+		parent = i.runCtx
+	}
+	if parent == nil {
+		parent = context.Background()
+	}
+	i.mu.Lock()
+	state := i.compactContinuation
+	ag := i.agent
+	busy := i.busy || i.compacting || i.autoCompacting || i.shellRunning
+	if state.reason == compactContinuationNone || ag == nil || busy {
+		i.mu.Unlock()
+		return
+	}
+
+	var next string
+	continueQueued := false
+	var resume compactHandoffResume
+	var handoff json.RawMessage
+	var persistHandoff bool
+	switch {
+	case state.reason != compactContinuationForcedLength && len(i.queued) > 0:
+		next, i.queued = i.queued[0], i.queued[1:]
+		handoff, persistHandoff = i.resetCompactContinuationLocked()
+	case state.reason != compactContinuationForcedLength && ag.QueuedMessageCount() > 0:
+		continueQueued = true
+		handoff, persistHandoff = i.resetCompactContinuationLocked()
+	default:
+		resume = classifyCompactHandoffResume(ag.Messages())
+		if resume == compactHandoffDiscard {
+			handoff, persistHandoff = i.resetCompactContinuationLocked()
+		}
+	}
+	i.mu.Unlock()
+	if persistHandoff {
+		i.persistCompactHandoff(handoff)
+	}
+	switch {
+	case next != "":
+		i.startTurn(parent, next)
+	case continueQueued:
+		i.startTurnRequest(parent, "", nil, true, false)
+	case resume == compactHandoffContinueExisting:
+		i.startTurnRequest(parent, "", nil, true, false)
+	case resume == compactHandoffAppendPrompt:
+		i.startAutoCompactContinuation(parent)
+	}
+}
 
 // startAutoCompactContinuation adds an internal user turn that tells the
 // model to resume the task after threshold compaction. Provider requests
@@ -6779,14 +7062,20 @@ func (i *Interactive) startAutoCompactContinuation(parent context.Context) {
 	if i.compactContinuation.reason != compactContinuationForcedLength && len(i.queued) > 0 {
 		next := i.queued[0]
 		i.queued = i.queued[1:]
-		i.resetCompactContinuationLocked()
+		handoff, persistHandoff := i.resetCompactContinuationLocked()
 		i.mu.Unlock()
+		if persistHandoff {
+			i.persistCompactHandoff(handoff)
+		}
 		i.startTurn(parent, next)
 		return
 	}
 	if i.compactContinuation.reason != compactContinuationForcedLength && ag.QueuedMessageCount() > 0 {
-		i.resetCompactContinuationLocked()
+		handoff, persistHandoff := i.resetCompactContinuationLocked()
 		i.mu.Unlock()
+		if persistHandoff {
+			i.persistCompactHandoff(handoff)
+		}
 		i.startTurnRequest(parent, "", nil, true, false)
 		return
 	}
@@ -6827,8 +7116,10 @@ func (i *Interactive) runCompact(parent context.Context, request compactContinua
 		i.activity.kind = activityCompactingHistory
 	}
 	i.cancelTurn = cancel
+	var initialHandoff json.RawMessage
+	persistInitialHandoff := false
 	if request.origin == compactOriginManual || request.origin == compactOriginRecovery {
-		i.resetCompactContinuationLocked()
+		initialHandoff, persistInitialHandoff = i.resetCompactContinuationLocked()
 	}
 	i.statusErr = ""
 	i.statusOK = ""
@@ -6838,6 +7129,9 @@ func (i *Interactive) runCompact(parent context.Context, request compactContinua
 	i.scrollOffset = 0
 	i.helpBlock = nil
 	i.mu.Unlock()
+	if persistInitialHandoff {
+		i.persistCompactHandoff(initialHandoff)
+	}
 	i.invalidate()
 
 	go func() {
@@ -6880,6 +7174,8 @@ func (i *Interactive) runCompact(parent context.Context, request compactContinua
 		var hasNext bool
 		var continueExisting bool
 		var continueAutomatically bool
+		var handoff json.RawMessage
+		var persistHandoff bool
 
 		switch {
 		case err != nil && ctx.Err() != nil:
@@ -6891,7 +7187,7 @@ func (i *Interactive) runCompact(parent context.Context, request compactContinua
 			}
 			i.queued = nil // drop queue on cancel
 			i.clearPendingCompactTurnLocked()
-			i.resetCompactContinuationLocked()
+			handoff, persistHandoff = i.resetCompactContinuationLocked()
 			if i.agent != nil {
 				i.agent.DrainQueuedMessages()
 			}
@@ -6900,7 +7196,7 @@ func (i *Interactive) runCompact(parent context.Context, request compactContinua
 			i.statusOK = ""
 			i.queued = nil // drop queue on error
 			i.clearPendingCompactTurnLocked()
-			i.resetCompactContinuationLocked()
+			handoff, persistHandoff = i.resetCompactContinuationLocked()
 			if i.agent != nil {
 				i.agent.DrainQueuedMessages()
 			}
@@ -6941,12 +7237,12 @@ func (i *Interactive) runCompact(parent context.Context, request compactContinua
 			case continuationReason == compactContinuationForcedLength:
 				// Forced truncated-output continuation keeps its existing
 				// priority over an explicitly queued prompt.
-				i.compactContinuation = compactContinuationState{reason: continuationReason}
+				handoff, persistHandoff = i.setCompactContinuationLocked(compactContinuationState{reason: continuationReason})
 				continueAutomatically = true
 			case len(i.queued) > 0:
 				next, i.queued = i.queued[0], i.queued[1:]
 				hasNext = true
-				i.resetCompactContinuationLocked()
+				handoff, persistHandoff = i.resetCompactContinuationLocked()
 			case continuationReason == compactContinuationStructuralTail || continuationReason == compactContinuationStatusRescue:
 				if continuationReason == compactContinuationStatusRescue {
 					attempts := 1
@@ -6954,19 +7250,19 @@ func (i *Interactive) runCompact(parent context.Context, request compactContinua
 						attempts = i.compactContinuation.rescueAttempts + 1
 					}
 					if attempts > maxStatusRescueContinuations {
-						i.resetCompactContinuationLocked()
+						handoff, persistHandoff = i.resetCompactContinuationLocked()
 						break
 					}
-					i.compactContinuation = compactContinuationState{
+					handoff, persistHandoff = i.setCompactContinuationLocked(compactContinuationState{
 						reason:         continuationReason,
 						rescueAttempts: attempts,
-					}
+					})
 				} else {
-					i.compactContinuation = compactContinuationState{reason: continuationReason}
+					handoff, persistHandoff = i.setCompactContinuationLocked(compactContinuationState{reason: continuationReason})
 				}
 				continueAutomatically = true
 			default:
-				i.resetCompactContinuationLocked()
+				handoff, persistHandoff = i.resetCompactContinuationLocked()
 			}
 		}
 		// Keep the host busy until the hand-off decision is committed under
@@ -6977,6 +7273,9 @@ func (i *Interactive) runCompact(parent context.Context, request compactContinua
 		i.compacting = false
 		i.autoCompacting = false
 		i.mu.Unlock()
+		if persistHandoff {
+			i.persistCompactHandoff(handoff)
+		}
 		runPendingIdleWork(pendingIdleWork)
 		i.invalidate()
 
@@ -7156,8 +7455,10 @@ func (i *Interactive) startTurnRequest(parent context.Context, prompt string, im
 	// The condense flow re-fires the user's queued prompt for us, so
 	// we just hand it off and exit.
 	i.mu.Lock()
+	var resetHandoff json.RawMessage
+	var persistResetHandoff bool
 	if !continueExisting {
-		i.resetCompactContinuationLocked()
+		resetHandoff, persistResetHandoff = i.resetCompactContinuationLocked()
 	}
 	needsPreCompact := !overflowRecoveryAttempted && !i.autoCompacting && i.shouldAutoCompactLocked()
 	if needsPreCompact {
@@ -7178,11 +7479,17 @@ func (i *Interactive) startTurnRequest(parent context.Context, prompt string, im
 		i.extNotes = append(i.extNotes, autoCompactNoteLine(i.cfg.Theme, "context near limit — condensing history before sending..."))
 		i.pendingPostCompactNote = "context auto-compacted; sending your last message"
 		i.mu.Unlock()
+		if persistResetHandoff {
+			i.persistCompactHandoff(resetHandoff)
+		}
 		i.invalidate()
 		i.runCompact(parent, compactContinuationRequest{origin: compactOriginPreTurnThreshold})
 		return
 	}
 	i.mu.Unlock()
+	if persistResetHandoff {
+		i.persistCompactHandoff(resetHandoff)
+	}
 
 	ctx, cancel := context.WithCancel(parent)
 	i.mu.Lock()
@@ -7349,18 +7656,23 @@ func (i *Interactive) startTurnRequest(parent context.Context, prompt string, im
 		continueQueued := !awaitingPre && !hasNext && agentQueued > 0 && err == nil && ctx.Err() == nil
 		shouldAutoCompact := !awaitingPre && !hasNext && agentQueued == 0 && err == nil && ctx.Err() == nil && i.shouldAutoCompactLocked()
 		continueStatusRescue := false
+		var handoff json.RawMessage
+		var persistHandoff bool
 		if statusRescueActive && !awaitingPre && !hasNext && !continueQueued && !shouldAutoCompact && err == nil && ctx.Err() == nil && lastStop == provider.StopEnd && lastTurnErr == nil {
 			followUpMessages := i.agent.Messages()
 			reason := classifyCompactionContinuation(compactOriginManual, true, lastStop, lastTurnErr, followUpMessages)
 			if reason == compactContinuationStatusRescue && i.compactContinuation.rescueAttempts < maxStatusRescueContinuations {
-				i.compactContinuation.rescueAttempts++
+				handoff, persistHandoff = i.setCompactContinuationLocked(compactContinuationState{
+					reason:         compactContinuationStatusRescue,
+					rescueAttempts: i.compactContinuation.rescueAttempts + 1,
+				})
 				continueStatusRescue = true
 			} else {
-				i.resetCompactContinuationLocked()
+				handoff, persistHandoff = i.resetCompactContinuationLocked()
 			}
 		}
 		if !continueStatusRescue && (ctx.Err() != nil || err != nil || awaitingPre || hasNext || continueQueued || offer || recoverContextOverflow || (!shouldAutoCompact && !statusRescueActive)) {
-			i.resetCompactContinuationLocked()
+			handoff, persistHandoff = i.resetCompactContinuationLocked()
 		}
 		// The agent run can finish before the paced final text reaches the
 		// transcript. A compaction replaces that transcript, so it must never
@@ -7372,6 +7684,9 @@ func (i *Interactive) startTurnRequest(parent context.Context, prompt string, im
 		alertReason := mainAlertReason(ctx, err, lastTurnErr, lastStop, awaitingPre, hasNext || agentQueued > 0, offer, recoverContextOverflow, shouldAutoCompact)
 		i.busy = hasNext || continueQueued || continueStatusRescue || recoverContextOverflow || shouldAutoCompact
 		i.mu.Unlock()
+		if persistHandoff {
+			i.persistCompactHandoff(handoff)
+		}
 		if alertReason != "" {
 			i.scheduleMainAlert(alertReason)
 		}
@@ -7866,7 +8181,6 @@ func (i *Interactive) applyAgentPromptConfig(ag *core.Agent, system string, tool
 // prepareReplacementAgentLocked applies session-wide capability policy before
 // ag becomes visible to prompt submission. The caller holds agentMu and i.mu.
 func (i *Interactive) prepareReplacementAgentLocked(ag *core.Agent) {
-	i.resetCompactContinuationLocked()
 	if ag == nil {
 		i.setWebSearchAvailable(false)
 		return
@@ -8778,11 +9092,27 @@ func (i *Interactive) doSessionImport(src string) {
 		return
 	}
 	i.restoreLoadedSessionTitle()
+	state := i.restoreCurrentCompactHandoff()
 	i.mu.Lock()
 	i.statusOK = "imported and switched to session " + friendlyPath(newPath)
 	i.statusErr = ""
+	if i.agent != nil {
+		i.view.Messages = filterHiddenTranscriptMessages(i.agent.Messages())
+		i.cumUsage = i.agent.Cost()
+		last := i.agent.LastTurnUsage()
+		i.lastCtxInput = last.InputTokens + last.CacheReadTokens + last.CacheWriteTokens
+		if len(i.view.Messages) > initialResumeTailLimit {
+			i.view.TailLimit = initialResumeTailLimit
+		} else {
+			i.view.TailLimit = 0
+		}
+		i.view.InvalidateRenderCache()
+	}
 	i.mu.Unlock()
 	i.invalidate()
+	if state.reason != compactContinuationNone {
+		i.startRestoredCompactHandoff(i.runCtx)
+	}
 }
 
 // defaultExportDir returns ~/Downloads when it exists, or ~ as a
@@ -8997,6 +9327,7 @@ func (i *Interactive) applySessionTreeTarget(target sessionTreeTarget, turnNo in
 		i.setSessionTreeError("tree: checkout failed: " + err.Error())
 		return
 	}
+	state := i.restoreCurrentCompactHandoff()
 
 	// LoadSession is intentionally the old func(string) error callback: the
 	// CLI and embedders already own agent/session swapping. Refresh the view
@@ -9032,6 +9363,9 @@ func (i *Interactive) applySessionTreeTarget(target sessionTreeTarget, turnNo in
 	// Submit, startTurn, or queue a message here; the restored user draft is
 	// submitted only by a later explicit Enter.
 	i.invalidate()
+	if state.reason != compactContinuationNone {
+		i.startRestoredCompactHandoff(i.runCtx)
+	}
 }
 
 // applyForkSelection branches the current session at msgIdx+1 (so
@@ -9079,12 +9413,16 @@ func (i *Interactive) applyForkSelection(msgIdx int) {
 		i.invalidate()
 		return
 	}
+	state := i.restoreCurrentCompactHandoff()
 	i.resetSessionTitleForFreshBranch()
 	i.mu.Lock()
 	i.statusOK = "forked and switched to new branch at " + friendlyPath(newPath)
 	i.statusErr = ""
 	i.mu.Unlock()
 	i.invalidate()
+	if state.reason != compactContinuationNone {
+		i.startRestoredCompactHandoff(i.runCtx)
+	}
 }
 
 // formatInt is a tiny strconv.Itoa shim; keeps the handler above

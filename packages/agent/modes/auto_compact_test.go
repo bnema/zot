@@ -1,8 +1,11 @@
 package modes
 
 import (
+	"context"
+	"encoding/json"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/bnema/zut/packages/provider"
 )
@@ -230,6 +233,72 @@ func TestAutoCompactContinuationIsHiddenFromTranscriptButPersisted(t *testing.T)
 	}
 	if got := hidden.Meta[autoCompactContinueMetaKey]; got != "true" {
 		t.Fatalf("persisted continuation metadata = %q, want true", got)
+	}
+}
+
+func TestNewInteractiveRestoresValidCompactHandoff(t *testing.T) {
+	interactive := NewInteractive(InteractiveConfig{
+		InitialCompactHandoff: json.RawMessage(`{"version":1,"reason":"status_rescue","rescue_attempts":1}`),
+	})
+	if got, want := interactive.compactContinuation, (compactContinuationState{reason: compactContinuationStatusRescue, rescueAttempts: 1}); got != want {
+		t.Fatalf("restored compact handoff = %#v, want %#v", got, want)
+	}
+}
+
+func TestCancelTurnClearsPersistedCompactHandoff(t *testing.T) {
+	persisted := make(chan string, 1)
+	interactive := NewInteractive(InteractiveConfig{
+		InitialCompactHandoff: json.RawMessage(`{"version":1,"reason":"status_rescue","rescue_attempts":1}`),
+		PersistCompactHandoff: func(state json.RawMessage) error {
+			persisted <- string(state)
+			return nil
+		},
+	})
+	_, cancel := context.WithCancel(context.Background())
+	interactive.mu.Lock()
+	interactive.busy = true
+	interactive.cancelTurn = cancel
+	interactive.mu.Unlock()
+
+	interactive.CancelTurn()
+	select {
+	case state := <-persisted:
+		if state != "" {
+			t.Fatalf("cleared compact handoff = %q, want empty", state)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("cancellation did not clear the persisted compact handoff")
+	}
+}
+
+func TestDecodeCompactHandoff(t *testing.T) {
+	tests := []struct {
+		name string
+		raw  string
+		want compactContinuationState
+	}{
+		{
+			name: "status rescue",
+			raw:  `{"version":1,"reason":"status_rescue","rescue_attempts":1}`,
+			want: compactContinuationState{reason: compactContinuationStatusRescue, rescueAttempts: 1},
+		},
+		{
+			name: "forced length",
+			raw:  `{"version":1,"reason":"forced_length"}`,
+			want: compactContinuationState{reason: compactContinuationForcedLength},
+		},
+		{
+			name: "invalid status attempt", raw: `{"version":1,"reason":"status_rescue","rescue_attempts":3}`},
+		{name: "unknown reason", raw: `{"version":1,"reason":"other"}`},
+		{name: "invalid JSON", raw: `{`},
+		{name: "missing", raw: ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := decodeCompactHandoff([]byte(tt.raw)); got != tt.want {
+				t.Fatalf("decodeCompactHandoff(%q) = %#v, want %#v", tt.raw, got, tt.want)
+			}
+		})
 	}
 }
 

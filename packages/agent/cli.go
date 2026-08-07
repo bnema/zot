@@ -1748,6 +1748,24 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 			extMgr.EmitSessionEvent("session_compacted", session, states)
 		}
 	}
+	persistCompactHandoff := func(state json.RawMessage) error {
+		sessionTransitionMu.RLock()
+		defer sessionTransitionMu.RUnlock()
+		persistMu.Lock()
+		defer persistMu.Unlock()
+		if sess == nil {
+			return nil
+		}
+		return sess.UpdateCompactHandoff(state)
+	}
+	currentCompactHandoff := func() json.RawMessage {
+		persistMu.Lock()
+		defer persistMu.Unlock()
+		if sess == nil {
+			return nil
+		}
+		return append(json.RawMessage(nil), sess.Meta.CompactHandoff...)
+	}
 	persistToolResult := func(_ string, result core.ToolResult) {
 		persistMu.Lock()
 		defer persistMu.Unlock()
@@ -1870,7 +1888,7 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 			// writer, so no new message can land on the old file between the
 			// two state changes.
 			if iv != nil {
-				iv.ApplySessionAgent(candidate.agent, candidate.provider, candidate.model)
+				iv.ApplySessionAgentWithCompactHandoff(candidate.agent, candidate.provider, candidate.model, candidate.session.Meta.CompactHandoff)
 			}
 			ag = candidate.agent
 		} else {
@@ -2242,6 +2260,7 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 		UpdateInfoChan:                 updateCh,
 		Sandbox:                        sharedSandbox,
 		Agent:                          ag,
+		InitialCompactHandoff:          currentCompactHandoff(),
 		InitialSessionTitle: func() string {
 			if sess == nil || sessionTitlePending {
 				return ""
@@ -2315,8 +2334,10 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 			}
 			return out
 		},
-		LoadSession: loadSession,
-		ChangeCWD:   changeCWD,
+		LoadSession:           loadSession,
+		ChangeCWD:             changeCWD,
+		PersistCompactHandoff: persistCompactHandoff,
+		CurrentCompactHandoff: currentCompactHandoff,
 		CurrentSessionPath: func() string {
 			persistMu.Lock()
 			defer persistMu.Unlock()

@@ -29,6 +29,10 @@ func TestSessionExportImportRoundTrip(t *testing.T) {
 		Role:    provider.RoleAssistant,
 		Content: []provider.Content{provider.TextBlock{Text: "hi — reply from the assistant"}},
 	})
+	handoff := json.RawMessage(`{"version":1,"reason":"status_rescue","rescue_attempts":1}`)
+	if err := sess.UpdateCompactHandoff(handoff); err != nil {
+		t.Fatal(err)
+	}
 	_ = sess.Close()
 
 	// Export to a directory — helper should build a name inside it.
@@ -69,6 +73,9 @@ func TestSessionExportImportRoundTrip(t *testing.T) {
 	}
 	if imported.Meta.Model != "claude-opus-4-7" {
 		t.Errorf("model not preserved: %q", imported.Meta.Model)
+	}
+	if got := string(imported.Meta.CompactHandoff); got != string(handoff) {
+		t.Errorf("compact handoff = %q, want %q", got, handoff)
 	}
 	if len(msgs) != 2 {
 		t.Fatalf("want 2 messages, got %d", len(msgs))
@@ -491,6 +498,94 @@ func TestBranchSessionUsesEffectiveTranscriptAfterCompaction(t *testing.T) {
 	assertMessageTexts(t, shortBranchMsgs, []string{"summary", "tail-c"})
 	if shortBranch.Meta.ForkPoint != 2 {
 		t.Errorf("short branch fork_point: want 2, got %d", shortBranch.Meta.ForkPoint)
+	}
+}
+
+func TestBranchSessionCompactHandoffFollowsCopiedEffectiveTail(t *testing.T) {
+	root := t.TempDir()
+	cwd := "/project"
+	parent, err := NewSession(root, cwd, "anthropic", "claude", "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, text := range []string{"first", "second"} {
+		if err := parent.AppendMessage(provider.Message{Role: provider.RoleUser, Content: []provider.Content{provider.TextBlock{Text: text}}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	handoff := json.RawMessage(`{"version":1,"reason":"status_rescue","rescue_attempts":1}`)
+	if err := parent.UpdateCompactHandoff(handoff); err != nil {
+		t.Fatal(err)
+	}
+	if err := parent.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	fullPath, err := BranchSession(parent.Path, root, cwd, "test", 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	full, _, err := OpenSession(fullPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = full.Close() })
+	if got := string(full.Meta.CompactHandoff); got != string(handoff) {
+		t.Fatalf("full branch compact handoff = %q, want %q", got, handoff)
+	}
+
+	prefixPath, err := BranchSession(parent.Path, root, cwd, "test", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	prefix, _, err := OpenSession(prefixPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = prefix.Close() })
+	if len(prefix.Meta.CompactHandoff) != 0 {
+		t.Fatalf("prefix branch compact handoff = %q, want empty", prefix.Meta.CompactHandoff)
+	}
+}
+
+func TestBranchSessionHiddenFromHistoryClearsCompactHandoff(t *testing.T) {
+	root := t.TempDir()
+	cwd := "/project"
+	parent, err := NewSession(root, cwd, "anthropic", "claude", "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := parent.AppendMessage(provider.Message{Role: provider.RoleUser, Content: []provider.Content{provider.TextBlock{Text: "old"}}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := parent.AppendCompaction([]provider.Message{{Role: provider.RoleUser, Content: []provider.Content{provider.TextBlock{Text: "summary"}}}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := parent.UpdateCompactHandoff(json.RawMessage(`{"version":1,"reason":"forced_length"}`)); err != nil {
+		t.Fatal(err)
+	}
+	if err := parent.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	history, err := ReadSessionHistory(parent.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(history.Segments) < 2 {
+		t.Fatalf("history segments = %d, want at least 2", len(history.Segments))
+	}
+	branchPath, err := BranchSessionHiddenFromHistory(parent.Path, root, cwd, "test", history.Segments[0], len(history.Segments[0].Messages))
+	if err != nil {
+		t.Fatal(err)
+	}
+	branch, _, err := OpenSession(branchPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = branch.Close() })
+	if len(branch.Meta.CompactHandoff) != 0 {
+		t.Fatalf("historical branch compact handoff = %q, want empty", branch.Meta.CompactHandoff)
 	}
 }
 
