@@ -513,6 +513,69 @@ func TestResumeRestartsRunnerOnSameSession(t *testing.T) {
 	}
 }
 
+func TestRestartTaskRetainsQueuedResumePrompt(t *testing.T) {
+	root := t.TempDir()
+	started := make(chan *Agent, 2)
+	f := New(Config{
+		Root: root, RepoRoot: root,
+		NewRunner: func(a *Agent) Runner {
+			return RunnerFunc(func(ctx context.Context, _ Sink) error {
+				started <- a
+				<-ctx.Done()
+				return ctx.Err()
+			})
+		},
+	})
+	t.Cleanup(f.StopAll)
+
+	existing, err := f.Spawn(context.Background(), "review the implementation")
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case got := <-started:
+		if got != existing {
+			t.Fatalf("initial runner agent = %p, want %p", got, existing)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("initial runner did not start")
+	}
+
+	const followUp = "I applied your review. What do you think now?"
+	acceptedAt := time.Now().Add(-time.Minute)
+	existing.setResumePrompt(followUp, acceptedAt)
+	f.persistAgent(existing)
+	if err := f.Stop(existing.ID); err != nil {
+		t.Fatal(err)
+	}
+	existing.Wait()
+
+	restarted, err := f.RestartTask(context.Background(), existing.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case got := <-started:
+		if got != restarted {
+			t.Fatalf("restarted runner agent = %p, want %p", got, restarted)
+		}
+		resumePrompt, resumePromptAt := got.ResumePromptInfo()
+		if got.Resuming || resumePrompt != followUp || !resumePromptAt.Equal(acceptedAt) {
+			t.Fatalf("restarted lifecycle = resuming %t prompt %q accepted %s, want false, prompt %q, and accepted %s", got.Resuming, resumePrompt, resumePromptAt, followUp, acceptedAt)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("restarted runner did not start")
+	}
+
+	persisted, err := readAgentMeta(filepath.Join(root, "agents", existing.ID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if persisted.ResumePrompt != followUp || !persisted.ResumePromptAt.Equal(acceptedAt) {
+		t.Fatalf("persisted restart prompt = %q accepted %s, want prompt %q and accepted %s", persisted.ResumePrompt, persisted.ResumePromptAt, followUp, acceptedAt)
+	}
+}
+
 func TestResumeRecalculatesInvalidStateInboxPath(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("subagent inbox runtime relocation applies to Unix sockets")
@@ -771,8 +834,9 @@ func TestResumeWithPromptRetainsSessionAndStartsFollowUp(t *testing.T) {
 	if resumed.ID != first.ID || resumed.SessionPath != first.SessionPath {
 		t.Fatalf("resumed agent = id %q session %q, want id %q session %q", resumed.ID, resumed.SessionPath, first.ID, first.SessionPath)
 	}
-	if !resumed.Resuming || resumed.ResumePrompt != followUp || resumed.ResumePromptAt.IsZero() {
-		t.Fatalf("resumed lifecycle = resuming %t prompt %q accepted %s, want true, prompt %q, and timestamp", resumed.Resuming, resumed.ResumePrompt, resumed.ResumePromptAt, followUp)
+	resumePrompt, resumePromptAt := resumed.ResumePromptInfo()
+	if !resumed.Resuming || resumePrompt != followUp || resumePromptAt.IsZero() {
+		t.Fatalf("resumed lifecycle = resuming %t prompt %q accepted %s, want true, prompt %q, and timestamp", resumed.Resuming, resumePrompt, resumePromptAt, followUp)
 	}
 	persisted, err := readAgentMeta(filepath.Join(root, "agents", first.ID))
 	if err != nil {
@@ -786,8 +850,9 @@ func TestResumeWithPromptRetainsSessionAndStartsFollowUp(t *testing.T) {
 		if got != resumed {
 			t.Fatalf("follow-up runner agent = %p, want %p", got, resumed)
 		}
-		if got.ResumePrompt != followUp {
-			t.Fatalf("runner follow-up = %q, want %q", got.ResumePrompt, followUp)
+		resumePrompt, _ := got.ResumePromptInfo()
+		if resumePrompt != followUp {
+			t.Fatalf("runner follow-up = %q, want %q", resumePrompt, followUp)
 		}
 	case <-time.After(time.Second):
 		t.Fatal("resumed runner did not start")

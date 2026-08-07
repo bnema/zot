@@ -102,8 +102,8 @@ func writeAgentMeta(stateDir string, a *Agent) error {
 	status := a.status
 	activity := a.activity
 	finished := a.finished
-	resumePrompt := a.ResumePrompt
-	resumePromptAt := a.ResumePromptAt
+	resumePrompt := a.resumePromptText
+	resumePromptAt := a.resumePromptAt
 	errText := ""
 	if a.lastErr != nil {
 		errText = a.lastErr.Error()
@@ -449,8 +449,8 @@ func (f *Supervisor) buildDetachedAgent(m agentMeta) *Agent {
 		InboxPath:        m.InboxPath,
 		EventLogPath:     m.EventLogPath,
 		SessionPath:      m.SessionPath,
-		ResumePrompt:     m.ResumePrompt,
-		ResumePromptAt:   m.ResumePromptAt,
+		resumePromptText: m.ResumePrompt,
+		resumePromptAt:   m.ResumePromptAt,
 		SessionID:        m.SessionID,
 		inbox:            NewInbox(m.InboxPath),
 		status:           status,
@@ -542,7 +542,7 @@ func (a *Agent) loadTranscript() error {
 	if err != nil {
 		return fmt.Errorf("read subagent transcript: %w", err)
 	}
-	if prompt, acceptedAt := a.resumePromptInfo(); prompt != "" && resumePromptAcknowledged(events, acceptedAt) {
+	if prompt, acceptedAt := a.ResumePromptInfo(); prompt != "" && resumePromptAcknowledged(events, acceptedAt) {
 		a.clearResumePrompt()
 	}
 	a.mu.Lock()
@@ -852,15 +852,10 @@ func (f *Supervisor) resume(ctx context.Context, id string, resuming bool, resum
 	}
 	now := f.cfg.Now()
 	fastMode := existing.FastMode
-	pendingResumePrompt := ""
-	pendingResumePromptAt := time.Time{}
-	if resuming {
-		pendingResumePrompt = firstNonEmpty(resumePrompt, existing.resumePrompt())
-		if resumePrompt != "" {
-			pendingResumePromptAt = now
-		} else if pendingResumePrompt != "" {
-			_, pendingResumePromptAt = existing.resumePromptInfo()
-		}
+	pendingResumePrompt, pendingResumePromptAt := existing.ResumePromptInfo()
+	if resumePrompt != "" {
+		pendingResumePrompt = resumePrompt
+		pendingResumePromptAt = now
 	}
 	m := agentMeta{
 		ID: existing.ID, Task: existing.Task,
@@ -968,8 +963,8 @@ func (f *Supervisor) resume(ctx context.Context, id string, resuming bool, resum
 		EventLogPath:      m.EventLogPath,
 		SessionPath:       m.SessionPath,
 		Resuming:          resuming,
-		ResumePrompt:      pendingResumePrompt,
-		ResumePromptAt:    pendingResumePromptAt,
+		resumePromptText:  pendingResumePrompt,
+		resumePromptAt:    pendingResumePromptAt,
 		inbox:             NewInbox(m.InboxPath),
 		status:            StatusPending,
 		activity:          "resuming",

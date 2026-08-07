@@ -1340,6 +1340,9 @@ func autoSubagentsToolAllowedFor(args Args, toolName string) bool {
 	if args.NoTools || args.PermissionSet != nil {
 		return false
 	}
+	if args.ToolsSet && len(args.Tools) == 0 {
+		return false
+	}
 	if len(args.Tools) == 0 {
 		return true
 	}

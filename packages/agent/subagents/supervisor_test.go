@@ -297,6 +297,7 @@ func TestStopDetachedWorkerClosesWaiters(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = listener.Close() })
 
 	root := t.TempDir()
 	f := New(Config{Root: root, RepoRoot: root})

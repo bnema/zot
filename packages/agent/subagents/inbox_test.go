@@ -95,6 +95,19 @@ func TestInboxNotReady(t *testing.T) {
 	}
 }
 
+func TestDialUnixContextNonPositiveTimeoutIsNotReady(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "existing")
+	if err := os.WriteFile(path, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, timeout := range []time.Duration{0, -time.Millisecond} {
+		_, err := dialUnixContext(context.Background(), path, timeout)
+		if !errors.Is(err, ErrNotReady) {
+			t.Fatalf("dial timeout %s error = %v, want ErrNotReady", timeout, err)
+		}
+	}
+}
+
 type blockingWriteConn struct {
 	net.Conn
 	started   chan struct{}

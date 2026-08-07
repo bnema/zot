@@ -80,11 +80,12 @@ type Agent struct {
 	// Not persisted — every Resume sets it explicitly.
 	Resuming bool
 
-	// ResumePrompt is an optional manager follow-up passed to a resumed child as
-	// its initial prompt. It remains in durable metadata until the child reports
-	// turn.started, so a host exit while the worker is queued cannot lose it.
-	ResumePrompt   string
-	ResumePromptAt time.Time
+	// resumePromptText is an optional manager follow-up passed to a resumed
+	// child as its initial prompt. It remains in durable metadata until the
+	// child reports turn.started, so a host exit while the worker is queued
+	// cannot lose it. Access it through ResumePromptInfo.
+	resumePromptText string
+	resumePromptAt   time.Time
 
 	// InboxPath is the unix socket the child agent listens on for
 	// follow-up prompts and control messages. The supervisor opens
@@ -387,33 +388,35 @@ func (a *Agent) stateDirectory(defaultRoot string) string {
 // turn_end event with a step field. Safe to call from any goroutine:
 // the runner reads the callback under the same mutex.
 func (a *Agent) resumePrompt() string {
-	prompt, _ := a.resumePromptInfo()
+	prompt, _ := a.ResumePromptInfo()
 	return prompt
 }
 
-func (a *Agent) resumePromptInfo() (string, time.Time) {
+// ResumePromptInfo returns the queued manager follow-up and its acceptance
+// time. Both values are read as one synchronized snapshot.
+func (a *Agent) ResumePromptInfo() (string, time.Time) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	return a.ResumePrompt, a.ResumePromptAt
+	return a.resumePromptText, a.resumePromptAt
 }
 
 func (a *Agent) setResumePrompt(prompt string, acceptedAt time.Time) (string, time.Time) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	previousPrompt, previousAcceptedAt := a.ResumePrompt, a.ResumePromptAt
-	a.ResumePrompt = prompt
-	a.ResumePromptAt = acceptedAt
+	previousPrompt, previousAcceptedAt := a.resumePromptText, a.resumePromptAt
+	a.resumePromptText = prompt
+	a.resumePromptAt = acceptedAt
 	return previousPrompt, previousAcceptedAt
 }
 
 func (a *Agent) clearResumePrompt() bool {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	if a.ResumePrompt == "" {
+	if a.resumePromptText == "" {
 		return false
 	}
-	a.ResumePrompt = ""
-	a.ResumePromptAt = time.Time{}
+	a.resumePromptText = ""
+	a.resumePromptAt = time.Time{}
 	return true
 }
 

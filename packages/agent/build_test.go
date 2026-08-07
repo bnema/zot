@@ -233,6 +233,7 @@ func TestAutoSubagentsToolPoliciesTrackEachTool(t *testing.T) {
 	for _, tc := range []struct {
 		name       string
 		tools      []string
+		toolsSet   bool
 		wantSpawn  bool
 		wantStatus bool
 		wantStop   bool
@@ -240,6 +241,7 @@ func TestAutoSubagentsToolPoliciesTrackEachTool(t *testing.T) {
 		wantAny    bool
 	}{
 		{name: "default", wantSpawn: true, wantStatus: true, wantStop: true, wantResume: true, wantAny: true},
+		{name: "explicit empty", toolsSet: true},
 		{name: "spawn", tools: []string{"subagent_spawn"}, wantSpawn: true, wantAny: true},
 		{name: "status", tools: []string{"subagent_status"}, wantStatus: true, wantAny: true},
 		{name: "stop", tools: []string{"subagent_stop"}, wantStop: true, wantAny: true},
@@ -248,7 +250,7 @@ func TestAutoSubagentsToolPoliciesTrackEachTool(t *testing.T) {
 		{name: "no tools", wantAny: false, tools: nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			args := Args{Tools: tc.tools}
+			args := Args{Tools: tc.tools, ToolsSet: tc.toolsSet}
 			if tc.name == "no tools" {
 				args.NoTools = true
 			}

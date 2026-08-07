@@ -366,14 +366,15 @@ func TestDefaultChildArgsResumeOmitsTask(t *testing.T) {
 
 func TestDefaultChildArgsResumeUsesFollowUpPrompt(t *testing.T) {
 	a := &Agent{
-		Dir:          "/wt",
-		Task:         "review the change",
-		Resuming:     true,
-		ResumePrompt: "I applied your feedback. Please review it again.",
+		Dir:      "/wt",
+		Task:     "review the change",
+		Resuming: true,
 	}
+	const followUp = "I applied your feedback. Please review it again."
+	a.setResumePrompt(followUp, time.Now())
 	args := defaultChildArgs("/zut", a, "/s.json", "/in.sock")
-	if got := args[len(args)-1]; got != a.ResumePrompt {
-		t.Fatalf("resume argv last = %q, want follow-up prompt %q\n%v", got, a.ResumePrompt, args)
+	if got := args[len(args)-1]; got != followUp {
+		t.Fatalf("resume argv last = %q, want follow-up prompt %q\n%v", got, followUp, args)
 	}
 	for _, v := range args[:len(args)-1] {
 		if v == a.Task {

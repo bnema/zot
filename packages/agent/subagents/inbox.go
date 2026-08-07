@@ -219,6 +219,9 @@ func dialUnixContext(ctx context.Context, path string, timeout time.Duration) (n
 		case <-wait.C:
 		}
 	}
+	if lastErr == nil {
+		return nil, ErrNotReady
+	}
 	if _, statErr := os.Stat(path); os.IsNotExist(statErr) {
 		return nil, ErrNotReady
 	}

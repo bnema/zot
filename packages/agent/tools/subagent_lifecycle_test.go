@@ -149,8 +149,9 @@ func TestSubagentResumeRestartsSessionWithFollowUp(t *testing.T) {
 		if resumed.SessionPath != first.SessionPath {
 			t.Fatalf("resumed session = %q, want %q", resumed.SessionPath, first.SessionPath)
 		}
-		if !resumed.Resuming || resumed.ResumePrompt != prompt {
-			t.Fatalf("resumed lifecycle = resuming %t prompt %q, want true and %q", resumed.Resuming, resumed.ResumePrompt, prompt)
+		resumePrompt, _ := resumed.ResumePromptInfo()
+		if !resumed.Resuming || resumePrompt != prompt {
+			t.Fatalf("resumed lifecycle = resuming %t prompt %q, want true and %q", resumed.Resuming, resumePrompt, prompt)
 		}
 	case <-time.After(time.Second):
 		t.Fatal("resumed subagent did not start")
