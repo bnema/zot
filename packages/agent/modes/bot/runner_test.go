@@ -103,3 +103,32 @@ func TestHandleMessageClaimsDrainSlotBeforeSpawningDrainer(t *testing.T) {
 
 	close(client.release)
 }
+
+type cacheOnlyUsageClient struct{}
+
+func (cacheOnlyUsageClient) Name() string { return "cache-only-usage" }
+
+func (cacheOnlyUsageClient) Stream(context.Context, provider.Request) (<-chan provider.Event, error) {
+	events := make(chan provider.Event, 2)
+	events <- provider.EventUsage{Usage: provider.Usage{
+		CacheReadTokens:  400,
+		CacheWriteTokens: 50,
+	}}
+	events <- provider.EventDone{Stop: provider.StopEnd}
+	close(events)
+	return events, nil
+}
+
+func TestRunTurnUpdatesContextUsageFromCacheOnlyTurn(t *testing.T) {
+	runner := NewRunner(testAdapter{}, core.NewAgent(cacheOnlyUsageClient{}, "test-model", "", nil), Config{})
+	runner.lastCtxInput = 99
+
+	runner.runTurn(context.Background(), queuedTurn{channelID: "channel", prompt: "prompt"})
+
+	runner.mu.Lock()
+	got := runner.lastCtxInput
+	runner.mu.Unlock()
+	if got != 450 {
+		t.Fatalf("context usage = %d, want 450", got)
+	}
+}

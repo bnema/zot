@@ -8109,8 +8109,8 @@ func (i *Interactive) handleEvent(ev core.AgentEvent) {
 		}
 	case core.EvUsage:
 		i.cumUsage = e.Cumulative
-		if e.Usage.InputTokens > 0 {
-			i.lastCtxInput = e.Usage.InputTokens + e.Usage.CacheReadTokens + e.Usage.CacheWriteTokens
+		if contextUsed := e.Usage.InputTokens + e.Usage.CacheReadTokens + e.Usage.CacheWriteTokens; contextUsed > 0 {
+			i.lastCtxInput = contextUsed
 		}
 	case core.EvTurnEnd:
 		if e.Stop == provider.StopAborted {
