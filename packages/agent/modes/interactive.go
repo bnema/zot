@@ -8789,10 +8789,6 @@ func autoSubagentsStatusToolAllowedConfig(cfg InteractiveConfig) bool {
 	return autoSubagentsToolAllowedConfig(cfg)
 }
 
-func autoSubagentsAnyToolAllowedConfig(cfg InteractiveConfig) bool {
-	return autoSubagentsToolAllowedConfig(cfg) || autoSubagentsStatusToolAllowedConfig(cfg)
-}
-
 func (i *Interactive) autoSubagentsToolAllowed() bool {
 	return autoSubagentsToolAllowedConfig(i.cfg)
 }
