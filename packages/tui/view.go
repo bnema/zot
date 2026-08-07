@@ -187,8 +187,11 @@ type View struct {
 	renderCache          map[msgCacheKey][]string
 	liveRenderCache      map[liveToolCacheKey][]string
 	messageCache         []messageRenderCacheEntry
+	messageCacheStart    int
 	messageCacheRevision uint64
 	messageCacheLen      int
+	messageCachePrefix   uint64
+	messageCachePrefixOK bool
 	toolPathRevision     uint64
 
 	// TailLimit caps how many messages from the END of Messages are
@@ -201,29 +204,10 @@ type View struct {
 	TailLimit int
 }
 
-// msgCacheKey identifies a cached message render. hash is a 64-bit
-// FNV-1a of the message's content, which is cheap to compute and
-// unambiguous enough for the cache (collisions produce a stale frame,
-// not wrong data, and we recompute on invalidation anyway).
-type msgCacheKey struct {
-	hash      uint64
-	width     int
-	expandAll bool
-	// turnOpen is true when the previous rendered message belongs to
-	// the same agent turn (assistant tool_use, or tool result). The
-	// header ("▍ zut") is suppressed in that case so a single turn
-	// — even one that spans many assistant/tool message round-trips
-	// in the underlying API — renders under one header instead of a
-	// new one per assistant message.
-	turnOpen    bool
-	flatTools   bool
-	compactMode bool
-	compactUser bool
-	imageProto  ImageProtocol
-	theme       uint64
-}
-
-type messageRenderCacheEntry struct {
+// msgVisualKey identifies the visual configuration that affects a cached
+// message render. Keep this shared by both cache implementations so their
+// invalidation rules cannot drift apart.
+type msgVisualKey struct {
 	width       int
 	expandAll   bool
 	turnOpen    bool
@@ -232,8 +216,21 @@ type messageRenderCacheEntry struct {
 	compactUser bool
 	imageProto  ImageProtocol
 	theme       uint64
-	lines       []string
-	valid       bool
+}
+
+// msgCacheKey identifies a cached message render. hash is a 64-bit
+// FNV-1a of the message's content, which is cheap to compute and
+// unambiguous enough for the cache (collisions produce a stale frame,
+// not wrong data, and we recompute on invalidation anyway).
+type msgCacheKey struct {
+	hash   uint64
+	visual msgVisualKey
+}
+
+type messageRenderCacheEntry struct {
+	visual msgVisualKey
+	lines  []string
+	valid  bool
 }
 
 type liveToolCacheKey struct {
@@ -256,8 +253,11 @@ func (v *View) InvalidateRenderCache() {
 	v.renderCache = nil
 	v.liveRenderCache = nil
 	v.messageCache = nil
+	v.messageCacheStart = 0
 	v.messageCacheRevision = 0
 	v.messageCacheLen = 0
+	v.messageCachePrefix = 0
+	v.messageCachePrefixOK = false
 	v.toolPathRevision = 0
 }
 
@@ -320,8 +320,11 @@ func (v *View) AdoptRenderCacheFrom(snapshot *View) {
 	v.renderCache = snapshot.renderCache
 	v.liveRenderCache = snapshot.liveRenderCache
 	v.messageCache = snapshot.messageCache
+	v.messageCacheStart = snapshot.messageCacheStart
 	v.messageCacheRevision = snapshot.messageCacheRevision
 	v.messageCacheLen = snapshot.messageCacheLen
+	v.messageCachePrefix = snapshot.messageCachePrefix
+	v.messageCachePrefixOK = snapshot.messageCachePrefixOK
 	v.toolPaths = snapshot.toolPaths
 	v.toolStartLines = snapshot.toolStartLines
 	v.toolCallLabels = snapshot.toolCallLabels
@@ -488,10 +491,33 @@ func (v *View) renderStartupResources(width int) []string {
 // to map a message index back to a row offset.
 func (v *View) BuildWithAnchors(width int) ([]string, []MessageAnchor) {
 	themeKey := toolThemeKey(v.Theme)
-	if v.MessagesRevision != 0 && v.messageCacheRevision != 0 && v.messageCacheRevision != v.MessagesRevision && len(v.Messages) <= v.messageCacheLen {
+	if v.MessagesRevision == 0 && v.messageCacheRevision != 0 {
 		v.messageCache = nil
+		v.messageCacheStart = 0
+		v.messageCacheRevision = 0
+		v.messageCacheLen = 0
+		v.messageCachePrefix = 0
+		v.messageCachePrefixOK = false
 	}
 	if v.MessagesRevision != 0 {
+		if v.messageCacheRevision != 0 && v.messageCacheRevision != v.MessagesRevision {
+			verifiedAppend := len(v.Messages) > v.messageCacheLen && v.messageCachePrefixOK &&
+				hashMessagePrefix(v.Messages, v.messageCacheLen) == v.messageCachePrefix
+			if verifiedAppend {
+				for _, m := range v.Messages[v.messageCacheLen:] {
+					v.messageCachePrefix = appendMessageHash(v.messageCachePrefix, hashMessage(m))
+				}
+			} else {
+				v.messageCache = nil
+				v.messageCacheStart = 0
+				v.messageCachePrefix = hashMessagePrefix(v.Messages, len(v.Messages))
+			}
+			v.messageCachePrefixOK = true
+		}
+		if v.messageCacheRevision == 0 {
+			v.messageCachePrefix = hashMessagePrefix(v.Messages, len(v.Messages))
+			v.messageCachePrefixOK = true
+		}
 		v.messageCacheRevision = v.MessagesRevision
 		v.messageCacheLen = len(v.Messages)
 	}
@@ -537,6 +563,7 @@ func (v *View) BuildWithAnchors(width int) ([]string, []MessageAnchor) {
 	if v.TailLimit > 0 && len(v.Messages) > v.TailLimit {
 		renderFrom = len(v.Messages) - v.TailLimit
 	}
+	v.boundMessageCache(renderFrom, len(v.Messages))
 	for idx, m := range v.Messages {
 		if idx < renderFrom {
 			rendered[idx] = nil
@@ -672,28 +699,48 @@ func (v *View) refreshToolPaths() {
 	}
 }
 
+func (v *View) boundMessageCache(renderFrom, messageCount int) {
+	if renderFrom < 0 {
+		renderFrom = 0
+	}
+	if renderFrom > messageCount {
+		renderFrom = messageCount
+	}
+	if len(v.messageCache) == 0 {
+		v.messageCacheStart = renderFrom
+		return
+	}
+
+	start := v.messageCacheStart
+	if renderFrom > start {
+		drop := renderFrom - start
+		if drop >= len(v.messageCache) {
+			v.messageCache = nil
+			v.messageCacheStart = renderFrom
+			return
+		}
+		v.messageCache = v.messageCache[drop:]
+		start = renderFrom
+	} else if renderFrom < start {
+		prefix := make([]messageRenderCacheEntry, start-renderFrom)
+		v.messageCache = append(prefix, v.messageCache...)
+		start = renderFrom
+	}
+
+	max := messageCount - renderFrom
+	if len(v.messageCache) > max {
+		v.messageCache = v.messageCache[:max]
+	}
+	v.messageCacheStart = start
+}
+
 // renderMessageCached returns the rendered line slice for m, using the
 // cache if the same (content hash, width, expandAll) combination has
 // been rendered before. The slice returned is shared — callers must
 // not mutate it; Build() only ever appends to its own `out` so the
 // shared slice is safe.
 func (v *View) renderMessageCached(idx int, m provider.Message, width int, turnOpen bool, themeKey uint64) []string {
-	if v.MessagesRevision != 0 {
-		if idx < len(v.messageCache) {
-			entry := v.messageCache[idx]
-			if entry.valid && entry.width == width && entry.expandAll == v.ExpandAll && entry.turnOpen == turnOpen && entry.flatTools == v.FlatTools && entry.compactMode == v.CompactMode && entry.compactUser == v.CompactUser && entry.imageProto == v.ImageProto && entry.theme == themeKey {
-				return entry.lines
-			}
-		}
-		lines := v.renderMessage(m, width, turnOpen)
-		if idx >= len(v.messageCache) {
-			v.messageCache = append(v.messageCache, make([]messageRenderCacheEntry, idx-len(v.messageCache)+1)...)
-		}
-		v.messageCache[idx] = messageRenderCacheEntry{width: width, expandAll: v.ExpandAll, turnOpen: turnOpen, flatTools: v.FlatTools, compactMode: v.CompactMode, compactUser: v.CompactUser, imageProto: v.ImageProto, theme: themeKey, lines: lines, valid: true}
-		return lines
-	}
-	key := msgCacheKey{
-		hash:        hashMessage(m),
+	visual := msgVisualKey{
 		width:       width,
 		expandAll:   v.ExpandAll,
 		turnOpen:    turnOpen,
@@ -703,6 +750,25 @@ func (v *View) renderMessageCached(idx int, m provider.Message, width int, turnO
 		imageProto:  v.ImageProto,
 		theme:       themeKey,
 	}
+	if v.MessagesRevision != 0 {
+		cacheIdx := idx - v.messageCacheStart
+		if cacheIdx >= 0 && cacheIdx < len(v.messageCache) {
+			entry := v.messageCache[cacheIdx]
+			if entry.valid && entry.visual == visual {
+				return entry.lines
+			}
+		}
+		lines := v.renderMessage(m, width, turnOpen)
+		if cacheIdx < 0 {
+			return lines
+		}
+		if cacheIdx >= len(v.messageCache) {
+			v.messageCache = append(v.messageCache, make([]messageRenderCacheEntry, cacheIdx-len(v.messageCache)+1)...)
+		}
+		v.messageCache[cacheIdx] = messageRenderCacheEntry{visual: visual, lines: lines, valid: true}
+		return lines
+	}
+	key := msgCacheKey{hash: hashMessage(m), visual: visual}
 	if v.renderCache != nil {
 		if lines, ok := v.renderCache[key]; ok {
 			return lines
@@ -733,6 +799,25 @@ func (v *View) renderMessageCached(idx int, m provider.Message, width int, turnO
 		v.renderCache[key] = lines
 	}
 	return lines
+}
+
+func appendMessageHash(h, messageHash uint64) uint64 {
+	h = fnv64aWriteByte(h, 0x01)
+	for shift := uint(0); shift < 64; shift += 8 {
+		h = fnv64aWriteByte(h, byte(messageHash>>shift))
+	}
+	return h
+}
+
+func hashMessagePrefix(messages []provider.Message, end int) uint64 {
+	if end > len(messages) {
+		end = len(messages)
+	}
+	h := fnv64aInit
+	for i := 0; i < end; i++ {
+		h = appendMessageHash(h, hashMessage(messages[i]))
+	}
+	return h
 }
 
 // hashMessage returns a 64-bit FNV-1a over the role + content blocks
@@ -805,6 +890,13 @@ func assistantBodyWidth(outer int) int {
 func fnv64aWriteByte(h uint64, b byte) uint64 {
 	h ^= uint64(b)
 	h *= fnv64aPrime
+	return h
+}
+
+func fnv64aWriteUint64(h, value uint64) uint64 {
+	for shift := uint(0); shift < 64; shift += 8 {
+		h = fnv64aWriteByte(h, byte(value>>shift))
+	}
 	return h
 }
 
@@ -1089,9 +1181,15 @@ func toolThemeKey(theme Theme) uint64 {
 	} {
 		h = hashThemeColor(h, c)
 	}
-	if theme.Background != nil {
+	if theme.Background == nil {
+		h = fnv64aWriteByte(h, 0)
+	} else {
+		h = fnv64aWriteByte(h, 1)
 		h = hashThemeColor(h, *theme.Background)
 	}
+	h = fnv64aWriteByte(h, 0xff)
+	h = fnv64aWriteUint64(h, uint64(len(theme.Terminal.Palette)))
+	h = fnv64aWriteByte(h, 0xff)
 	for _, c := range theme.Terminal.Palette {
 		h = hashThemeColor(h, c)
 	}
@@ -1255,14 +1353,11 @@ func (v *View) renderToolCall(tc ToolCallView, width int) []string {
 // confirmation preview immediately gets the same colors, numbered gutters,
 // and syntax highlighting as its final tool result.
 func (v *View) renderLiveToolResult(text string, width int, color TerminalColor, sourcePath string) []string {
-	if !v.ExpandAll {
-		total := estimateToolTextLines(text, width)
-		if total > ToolCollapseLines {
-			lines := v.renderToolText(previewToolText(text, width), width, color, sourcePath, 1)
-			return v.collapseToolBodyWithTotal(lines, false, total)
-		}
+	full := v.renderToolText(text, width, color, sourcePath, 1)
+	if v.ExpandAll || len(full) <= ToolCollapseLines {
+		return full
 	}
-	return v.renderToolText(text, width, color, sourcePath, 1)
+	return v.collapseToolBodyWithTotal(full, false, len(full))
 }
 
 // renderLiveToolBody renders the in-flight preview of a streaming
@@ -1769,14 +1864,15 @@ func (v *View) renderToolResultContent(blocks []provider.Content, width int, col
 			if v.FlatTools || v.CompactMode {
 				bodyWidth = flatToolBodyRenderWidth(width)
 			}
-			estimated := estimateToolTextLines(bb.Text, bodyWidth)
+			estimateWidth := effectiveToolTextWidth(bb.Text, bodyWidth)
+			estimated := estimateToolTextLines(bb.Text, estimateWidth)
 			total += estimated
 			text := bb.Text
 			// A collapsed result only exposes its first ten rendered rows.
 			// Render a bounded source preview in that case; syntax
 			// highlighting and wrapping the omitted tail is wasted work.
 			if !v.ExpandAll && !hasImage && estimated > ToolCollapseLines {
-				text = previewToolText(text, bodyWidth)
+				text = previewToolText(text, estimateWidth)
 			}
 			body = append(body, v.renderToolText(text, bodyWidth, color, sourcePath, startLine)...)
 		case provider.ImageBlock:
@@ -1814,6 +1910,21 @@ func (v *View) collapseToolBodyWithTotal(lines []string, hasImage bool, total in
 	out := append([]string(nil), kept...)
 	out = append(out, "")
 	return append(out, footer)
+}
+
+func effectiveToolTextWidth(text string, width int) int {
+	// renderToolText prefixes ordinary rows with a four-cell gutter before
+	// wrapping them. Diff rows also carry a five-cell read gutter. Estimating
+	// against the outer body width undercounts long rows and produces an
+	// incorrect collapse total.
+	width -= 4
+	if looksLikeUnifiedDiff(text) {
+		width -= 5
+	}
+	if width < 1 {
+		return 1
+	}
+	return width
 }
 
 func estimateToolTextLines(text string, width int) int {

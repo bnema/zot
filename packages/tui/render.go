@@ -45,6 +45,7 @@ type Renderer struct {
 	logRawChat          []string
 	logRawBottom        []string
 	logRawCols          int
+	logRawRows          int
 	logRawBackground    string
 	logRawHasThemeBG    bool
 	logViewportTop      int
@@ -439,7 +440,7 @@ func (r *Renderer) DrawLog(chat, bottom []string, cursorBottomRow, cursorCol int
 	}
 	if r.logInit && len(r.logLines) > 0 &&
 		cursorBottomRow == r.cursorRow && cursorCol == r.cursorCol &&
-		r.logRawCols == r.cols && r.logRawBackground == r.backgroundStyle &&
+		r.logRawCols == r.cols && r.logRawRows == r.rows && r.logRawBackground == r.backgroundStyle &&
 		r.logRawHasThemeBG == (r.theme.Background != nil) &&
 		sameLines(chat, r.logRawChat) && sameLines(bottom, r.logRawBottom) {
 		return
@@ -825,6 +826,7 @@ func (r *Renderer) DrawLog(chat, bottom []string, cursorBottomRow, cursorCol int
 	r.logRawChat = append(r.logRawChat[:0], chat...)
 	r.logRawBottom = append(r.logRawBottom[:0], bottom...)
 	r.logRawCols = r.cols
+	r.logRawRows = r.rows
 	r.logRawBackground = r.backgroundStyle
 	r.logRawHasThemeBG = r.theme.Background != nil
 	r.cursorRow = cursorBottomRow

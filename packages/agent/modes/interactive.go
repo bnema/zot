@@ -424,23 +424,24 @@ type modelRefreshResult struct{ err error }
 
 // Interactive is the TUI chat loop.
 type chatCacheKey struct {
-	cols            int
-	agentRev        uint64
-	statusOK        string
-	statusErr       string
-	help            string
-	extNotes        string
-	extStatuses     string
-	extWidgets      string
-	reloadErrors    string
-	updateAvailable bool
-	updateCurrent   string
-	updateLatest    string
-	updateURL       string
-	welcomeShowVer  bool
-	expandAll       bool
-	tailLimit       int
-	viewCacheRev    uint64
+	cols                 int
+	agentRev             uint64
+	statusOK             string
+	statusErr            string
+	help                 string
+	extNotes             string
+	extStatuses          string
+	extWidgets           string
+	reloadErrors         string
+	updateAvailable      bool
+	updateCurrent        string
+	updateLatest         string
+	updateURL            string
+	welcomeShowVer       bool
+	expandAll            bool
+	tailLimit            int
+	renderedMessageCount int
+	viewCacheRev         uint64
 }
 
 // QuickModelShortcut is one configured quick model switch slot.
@@ -1059,6 +1060,9 @@ func (i *Interactive) Run(ctx context.Context) error {
 		if req.clear {
 			i.rend.Clear()
 		}
+		if req.invalidate {
+			i.rend.Invalidate()
+		}
 		i.redraw()
 	})
 	defer renderScheduler.stop()
@@ -1066,7 +1070,7 @@ func (i *Interactive) Run(ctx context.Context) error {
 		// Resize and redraw share the renderer owner. The owner reads the
 		// latest terminal size just before its next frame.
 		i.renderRevision.Add(1)
-		renderScheduler.request(false)
+		renderScheduler.request(false, false)
 	})
 
 	if i.cfg.StartupPre != "" {
@@ -1154,7 +1158,7 @@ func (i *Interactive) Run(ctx context.Context) error {
 		if pendingRedraw {
 			pendingRedraw = false
 			lastRedraw = time.Now()
-			renderScheduler.request(false)
+			renderScheduler.request(false, false)
 		}
 	}
 
@@ -1172,7 +1176,7 @@ func (i *Interactive) Run(ctx context.Context) error {
 			}
 			pendingRedraw = false
 			lastRedraw = time.Now()
-			renderScheduler.request(false)
+			renderScheduler.request(false, false)
 			return
 		}
 		if pendingRedraw {
@@ -1303,7 +1307,7 @@ func (i *Interactive) Run(ctx context.Context) error {
 
 func (i *Interactive) requestRendererClear() {
 	if scheduler := i.renderScheduler.Load(); scheduler != nil {
-		scheduler.request(true)
+		scheduler.request(true, false)
 		return
 	}
 	if i.rend != nil {
@@ -1313,7 +1317,7 @@ func (i *Interactive) requestRendererClear() {
 
 func (i *Interactive) requestRendererInvalidate() {
 	if scheduler := i.renderScheduler.Load(); scheduler != nil {
-		scheduler.request(false)
+		scheduler.request(false, true)
 		return
 	}
 	if i.rend != nil {
@@ -1334,7 +1338,7 @@ func (i *Interactive) requestRendererTheme(theme tui.Theme) {
 func (i *Interactive) invalidate() {
 	i.renderRevision.Add(1)
 	if scheduler := i.renderScheduler.Load(); scheduler != nil {
-		scheduler.request(false)
+		scheduler.request(false, false)
 		return
 	}
 	select {
@@ -1350,46 +1354,44 @@ func (i *Interactive) cachedChatLocked(cols int) []string {
 	if i.busy || i.streamOn || i.streamFlushPending {
 		return i.buildChatLocked(cols)
 	}
-	key, cacheable := i.chatCacheKeyLocked(cols)
-	if cacheable && i.chatCacheValid && i.chatCacheKey == key {
+	key := i.chatCacheKeyLocked(cols)
+	if i.chatCacheValid && i.chatCacheKey == key {
 		return append([]string(nil), i.chatCache...)
 	}
 	chat := i.buildChatLocked(cols)
-	if cacheable {
-		i.chatCache = append(i.chatCache[:0], chat...)
-		i.chatCacheKey = key
-		i.chatCacheValid = true
-	} else {
-		i.chatCacheValid = false
-	}
+	key = i.chatCacheKeyLocked(cols)
+	i.chatCache = append(i.chatCache[:0], chat...)
+	i.chatCacheKey = key
+	i.chatCacheValid = true
 	return chat
 }
 
-func (i *Interactive) chatCacheKeyLocked(cols int) (chatCacheKey, bool) {
+func (i *Interactive) chatCacheKeyLocked(cols int) chatCacheKey {
 	var rev uint64
 	if i.agent != nil {
 		rev = i.agent.Revision()
 	}
 	showVer := len(i.view.Messages) == 0 && !i.streamOn && len(i.toolOrder) == 0 && !i.welcomeStart.IsZero() && time.Since(i.welcomeStart) < welcomeVersionDuration
 	return chatCacheKey{
-		cols:            cols,
-		agentRev:        rev,
-		statusOK:        i.statusOK,
-		statusErr:       i.statusErr,
-		help:            strings.Join(i.helpBlock, "\n"),
-		extNotes:        strings.Join(i.extNotes, "\n"),
-		extStatuses:     i.extensionStatusesKeyLocked(),
-		extWidgets:      i.extensionWidgetsKeyLocked(),
-		reloadErrors:    strings.Join(i.reloadErrors, "\n"),
-		updateAvailable: i.updateInfo.Available,
-		updateCurrent:   i.updateInfo.Current,
-		updateLatest:    i.updateInfo.Latest,
-		updateURL:       i.updateInfo.URL,
-		welcomeShowVer:  showVer,
-		expandAll:       i.view.ExpandAll,
-		tailLimit:       i.view.TailLimit,
-		viewCacheRev:    i.view.RenderCacheRevision,
-	}, true
+		cols:                 cols,
+		agentRev:             rev,
+		statusOK:             i.statusOK,
+		statusErr:            i.statusErr,
+		help:                 strings.Join(i.helpBlock, "\n"),
+		extNotes:             strings.Join(i.extNotes, "\n"),
+		extStatuses:          i.extensionStatusesKeyLocked(),
+		extWidgets:           i.extensionWidgetsKeyLocked(),
+		reloadErrors:         strings.Join(i.reloadErrors, "\n"),
+		updateAvailable:      i.updateInfo.Available,
+		updateCurrent:        i.updateInfo.Current,
+		updateLatest:         i.updateInfo.Latest,
+		updateURL:            i.updateInfo.URL,
+		welcomeShowVer:       showVer,
+		expandAll:            i.view.ExpandAll,
+		tailLimit:            i.view.TailLimit,
+		renderedMessageCount: len(i.view.Messages),
+		viewCacheRev:         i.view.RenderCacheRevision,
+	}
 }
 
 func sortedNestedOuterKeys[T any](groups map[string]map[string]T) []string {
@@ -1566,7 +1568,7 @@ func (i *Interactive) extensionChromeLinesAtLocked(cols int, rightBarActive bool
 }
 
 func (i *Interactive) stableChatRowsLocked(cols int) []string {
-	key, _ := i.chatCacheKeyLocked(cols)
+	key := i.chatCacheKeyLocked(cols)
 	if i.stableChatCacheValid && i.stableChatCacheKey == key {
 		return append([]string(nil), i.stableChatCache...)
 	}
@@ -1589,7 +1591,8 @@ func (i *Interactive) stableChatRowsLocked(cols int) []string {
 	i.mu.Unlock()
 	rows := renderView.Build(cols)
 	i.mu.Lock()
-	if i.view.MessagesRevision == renderView.MessagesRevision {
+	if i.view.MessagesRevision == renderView.MessagesRevision &&
+		i.view.RenderCacheRevision == renderView.RenderCacheRevision {
 		i.view.AdoptRenderCacheFrom(renderView)
 	}
 
@@ -2002,7 +2005,7 @@ func (i *Interactive) redraw() {
 		// is repainted clean, matching what the user expects after
 		// dismissing a picker. Clear() is keepScrollback-aware and
 		// emits \x1b[3J there.
-		i.requestRendererClear()
+		i.rend.Clear()
 	}
 	i.prevOverlayOpen = overlayOpen
 	if len(suggest) > 0 {
@@ -5586,9 +5589,11 @@ func (i *Interactive) applyThemeNow(name string) {
 		i.statusErr = ""
 		i.mu.Unlock()
 	}
+	i.mu.Lock()
 	i.cfg.Theme = th
 	i.view.Theme = th
 	i.view.InvalidateRenderCache()
+	i.mu.Unlock()
 	i.ed.Prompt = th.AccentBar(th.Accent)
 	i.applyInputCursorColor()
 	i.spin.Configure(th)

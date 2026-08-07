@@ -3,6 +3,7 @@ package modes
 import (
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/bnema/zut/packages/core"
@@ -16,23 +17,23 @@ func TestLatestFrameSchedulerKeepsNewestRequest(t *testing.T) {
 	release := make(chan struct{})
 	type renderedFrame struct {
 		req     renderRequest
-		version int
+		version int64
 	}
 	frames := make(chan renderedFrame, 4)
 	done := make(chan struct{})
 	var startedOnce sync.Once
-	latestVersion := 0
+	var latestVersion atomic.Int64
 	go func() {
 		s.run(func(req renderRequest) {
-			frames <- renderedFrame{req: req, version: latestVersion}
+			frames <- renderedFrame{req: req, version: latestVersion.Load()}
 			startedOnce.Do(func() { close(started) })
 			<-release
 		})
 		close(done)
 	}()
 
-	latestVersion = 1
-	if !s.request(false) {
+	latestVersion.Store(1)
+	if !s.request(false, false) {
 		t.Fatal("initial render request was rejected")
 	}
 	first := <-frames
@@ -41,8 +42,8 @@ func TestLatestFrameSchedulerKeepsNewestRequest(t *testing.T) {
 		t.Fatal("ordinary request unexpectedly requested a clear")
 	}
 	for n := 0; n < 1000; n++ {
-		latestVersion = n + 2
-		if !s.request(false) {
+		latestVersion.Store(int64(n + 2))
+		if !s.request(false, false) {
 			t.Fatal("request rejected before shutdown")
 		}
 	}
@@ -88,6 +89,45 @@ func TestStableChatCacheTracksViewInvalidation(t *testing.T) {
 	}
 }
 
+func TestStableChatCacheRevealsMessageAfterStreamFlush(t *testing.T) {
+	const finalText = "final message revealed after paced flush"
+
+	agent := &core.Agent{}
+	agent.SetMessages([]provider.Message{
+		{
+			Role:    provider.RoleUser,
+			Content: []provider.Content{provider.TextBlock{Text: "prompt"}},
+		},
+		{
+			Role:    provider.RoleAssistant,
+			Content: []provider.Content{provider.TextBlock{Text: finalText}},
+		},
+	})
+	i := &Interactive{
+		agent:              agent,
+		view:               &tui.View{Theme: tui.Dark},
+		renderOutsideLock:  true,
+		streamFlushPending: true,
+	}
+
+	revision := agent.Revision()
+	i.mu.Lock()
+	before := strings.Join(i.cachedChatLocked(80), "\n")
+	i.streamFlushPending = false
+	after := strings.Join(i.cachedChatLocked(80), "\n")
+	i.mu.Unlock()
+
+	if got := agent.Revision(); got != revision {
+		t.Fatalf("stream flush changed the transcript revision: got %d, want %d", got, revision)
+	}
+	if strings.Contains(before, finalText) {
+		t.Fatal("stable cache revealed the final message while stream flush was pending")
+	}
+	if !strings.Contains(after, finalText) {
+		t.Fatal("stable cache did not reveal the final message after stream flush")
+	}
+}
+
 func TestInteractiveToolProgressStormDoesNotInvalidate(t *testing.T) {
 	i := &Interactive{
 		dirty:     make(chan struct{}, 1),
@@ -129,8 +169,8 @@ func TestInteractiveToolProgressStormDoesNotInvalidate(t *testing.T) {
 	if got := i.toolCalls["storm"].Result; got != result {
 		t.Fatalf("completed tool result was not retained: got %d bytes", len(got))
 	}
-	if i.toolCalls["storm"].Revision == 0 {
-		t.Fatal("completed tool result did not advance its render revision")
+	if got := i.toolCalls["storm"].Revision; got != 2 {
+		t.Fatalf("completed tool result revision: got %d, want 2", got)
 	}
 
 	view := &tui.View{Theme: tui.Dark, ExpandAll: false, ToolCalls: []tui.ToolCallView{*i.toolCalls["storm"]}}

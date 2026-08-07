@@ -10,18 +10,20 @@ import (
 // reads the newest synchronized interactive state when it wakes, so a burst
 // replaces the one pending request instead of queueing stale snapshots.
 type renderRequest struct {
-	clear bool
-	theme *tui.Theme
+	clear      bool
+	invalidate bool
+	theme      *tui.Theme
 }
 
 type latestFrameScheduler struct {
 	wake chan struct{}
 	done chan struct{}
 
-	mu      sync.Mutex
-	clear   bool
-	theme   *tui.Theme
-	stopped bool
+	mu         sync.Mutex
+	clear      bool
+	invalidate bool
+	theme      *tui.Theme
+	stopped    bool
 }
 
 func newLatestFrameScheduler() *latestFrameScheduler {
@@ -31,13 +33,14 @@ func newLatestFrameScheduler() *latestFrameScheduler {
 	}
 }
 
-func (s *latestFrameScheduler) request(clear bool) bool {
+func (s *latestFrameScheduler) request(clear, invalidate bool) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.stopped {
 		return false
 	}
 	s.clear = s.clear || clear
+	s.invalidate = s.invalidate || invalidate
 	select {
 	case s.wake <- struct{}{}:
 	default:
@@ -67,8 +70,9 @@ func (s *latestFrameScheduler) next() (renderRequest, bool) {
 	if s.stopped {
 		return renderRequest{}, false
 	}
-	req := renderRequest{clear: s.clear, theme: s.theme}
+	req := renderRequest{clear: s.clear, invalidate: s.invalidate, theme: s.theme}
 	s.clear = false
+	s.invalidate = false
 	s.theme = nil
 	return req, true
 }
@@ -84,6 +88,8 @@ func (s *latestFrameScheduler) run(render func(renderRequest)) {
 	}
 }
 
+// stop waits for the in-flight render callback to finish. Callers must not
+// invoke it while holding i.mu: the callback may need to acquire i.mu.
 func (s *latestFrameScheduler) stop() {
 	s.mu.Lock()
 	if !s.stopped {

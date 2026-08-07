@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -36,12 +37,10 @@ func TestViewCacheInvalidatesToolOutputExpansionAndWidth(t *testing.T) {
 	}
 
 	wide, _ := view.BuildWithAnchors(120)
-	if len(wide) >= len(expanded) {
-		// The wide render may have the same row count for this fixture, but it
-		// must still be rebuilt for the new wrapping width.
-		if strings.Join(wide, "\n") == strings.Join(expanded, "\n") {
-			t.Fatal("resize reused rows from the old width")
-		}
+	// The wide render may have the same row count for this fixture, but it
+	// must still be rebuilt for the new wrapping width.
+	if strings.Join(wide, "\n") == strings.Join(expanded, "\n") {
+		t.Fatal("resize reused rows from the old width")
 	}
 
 	view.ExpandAll = false
@@ -49,10 +48,53 @@ func TestViewCacheInvalidatesToolOutputExpansionAndWidth(t *testing.T) {
 		CallID:  "call-1",
 		Content: []provider.Content{provider.TextBlock{Text: cacheTestResult("new marker")}},
 	}}
+	view.Messages = append(view.Messages, provider.Message{
+		Role:    provider.RoleUser,
+		Content: []provider.Content{provider.TextBlock{Text: "third message"}},
+	})
 	view.MessagesRevision = 2
 	updated, _ := view.BuildWithAnchors(40)
 	if !strings.Contains(strings.Join(updated, "\n"), "new marker") {
 		t.Fatal("tool output revision reused stale cached rows")
+	}
+}
+
+func TestViewRevisionCacheIsBoundToTailLimit(t *testing.T) {
+	messages := make([]provider.Message, 20)
+	for i := range messages {
+		messages[i] = provider.Message{
+			Role:    provider.RoleUser,
+			Content: []provider.Content{provider.TextBlock{Text: fmt.Sprintf("message %d", i)}},
+		}
+	}
+	view := &View{Theme: Dark, Messages: messages, MessagesRevision: 1, TailLimit: 5}
+	view.Build(80)
+	if view.messageCacheStart != len(messages)-view.TailLimit {
+		t.Fatalf("message cache start=%d, want %d", view.messageCacheStart, len(messages)-view.TailLimit)
+	}
+	if len(view.messageCache) > view.TailLimit {
+		t.Fatalf("message cache length=%d exceeds tail limit %d", len(view.messageCache), view.TailLimit)
+	}
+
+	view.Build(80)
+	if len(view.messageCache) > view.TailLimit {
+		t.Fatalf("message cache grew on a cache hit: length=%d", len(view.messageCache))
+	}
+}
+
+func TestRenderLiveToolResultCollapseUsesRenderedLineCount(t *testing.T) {
+	var text strings.Builder
+	for i := 0; i < 13; i++ {
+		text.WriteString(strings.Repeat("x", 17))
+		text.WriteByte('\n')
+	}
+	view := &View{Theme: Dark}
+	full := view.renderToolText(text.String(), 20, Dark.ToolOut, "", 1)
+	collapsed := view.renderLiveToolResult(text.String(), 20, Dark.ToolOut, "")
+	joined := strings.Join(collapsed, "\n")
+	wantTotal := fmt.Sprintf("%d total", len(full))
+	if !strings.Contains(joined, wantTotal) {
+		t.Fatalf("collapse footer omitted rendered total %q: %s", wantTotal, joined)
 	}
 }
 

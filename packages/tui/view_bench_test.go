@@ -24,7 +24,7 @@ func BenchmarkViewBuildWithAnchorsToolStorm(b *testing.B) {
 					for n := 0; n < b.N; n++ {
 						view := base
 						if temperature == "cold" {
-							view = benchmarkToolStormView(expanded)
+							view.InvalidateRenderCache()
 						}
 						lines, anchors := view.BuildWithAnchors(width)
 						if len(lines) == 0 || len(anchors) == 0 {
@@ -49,9 +49,16 @@ func BenchmarkViewBuildWithAnchorsLiveToolStorm(b *testing.B) {
 					MessagesRevision: 1,
 					ToolCalls:        benchmarkLiveTools(8, 96),
 				}
+				liveResults := make([]string, len(view.ToolCalls))
+				for i := range liveResults {
+					liveResults[i] = benchmarkResult(96, i)
+				}
 				b.ReportAllocs()
 				b.ResetTimer()
 				for n := 0; n < b.N; n++ {
+					call := &view.ToolCalls[n%len(view.ToolCalls)]
+					call.Revision++
+					call.Result = liveResults[n%len(liveResults)]
 					lines, anchors := view.BuildWithAnchors(width)
 					if len(lines) == 0 || len(anchors) == 0 {
 						b.Fatal("live tool storm produced no rows or anchors")
