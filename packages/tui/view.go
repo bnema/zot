@@ -104,6 +104,15 @@ type View struct {
 	Theme      Theme
 	ImageProto ImageProtocol // how to render inline images in this terminal
 	Messages   []provider.Message
+	// MessagesRevision is supplied by the owning transcript when available.
+	// Append-only revisions let Build reuse prior message rows without
+	// hashing every existing payload. Zero keeps the standalone hash cache
+	// behaviour for callers that do not have a revision source.
+	MessagesRevision uint64
+	// RenderCacheRevision changes whenever a visual rendering dependency
+	// changes. Interactive mode includes it in its stable transcript key so
+	// the outer cache cannot bypass View's own theme/layout cache checks.
+	RenderCacheRevision uint64
 	// toolPaths maps tool_use_id to the "path" argument of the call, if
 	// any, so tool_result rendering can pick the right syntax language.
 	// Rebuilt on each Build().
@@ -168,11 +177,19 @@ type View struct {
 	// doesn't re-markdown every message on every frame. Keyed by a
 	// struct of (content hash, width, expandAll) — any of those
 	// changing invalidates the entry. Messages are append-only after
-	// they finalise so keeping the cache across turns is safe.
+	// they finalise so keeping the cache across turns is safe. The
+	// revision-indexed cache additionally carries visual configuration
+	// dependencies so resize/theme/compact changes cannot go stale.
 	//
-	// Streaming/in-flight work (v.Streaming, v.ToolCalls) is never
-	// cached because it changes every delta.
-	renderCache map[msgCacheKey][]string
+	// Streaming/in-flight work is cached per tool call. Interactive mode
+	// advances ToolCallView.Revision for each visible update, so unchanged
+	// tool results do not need to hash their payload on every frame.
+	renderCache          map[msgCacheKey][]string
+	liveRenderCache      map[liveToolCacheKey][]string
+	messageCache         []messageRenderCacheEntry
+	messageCacheRevision uint64
+	messageCacheLen      int
+	toolPathRevision     uint64
 
 	// TailLimit caps how many messages from the END of Messages are
 	// rendered. Messages older than the limit emit a zero-row slice
@@ -198,7 +215,36 @@ type msgCacheKey struct {
 	// — even one that spans many assistant/tool message round-trips
 	// in the underlying API — renders under one header instead of a
 	// new one per assistant message.
-	turnOpen bool
+	turnOpen    bool
+	flatTools   bool
+	compactMode bool
+	compactUser bool
+	imageProto  ImageProtocol
+	theme       uint64
+}
+
+type messageRenderCacheEntry struct {
+	width       int
+	expandAll   bool
+	turnOpen    bool
+	flatTools   bool
+	compactMode bool
+	compactUser bool
+	imageProto  ImageProtocol
+	theme       uint64
+	lines       []string
+	valid       bool
+}
+
+type liveToolCacheKey struct {
+	revision   uint64
+	content    uint64
+	width      int
+	expandAll  bool
+	flatTools  bool
+	compact    bool
+	imageProto ImageProtocol
+	theme      uint64
 }
 
 // InvalidateRenderCache drops all cached message renders. The tui
@@ -206,7 +252,80 @@ type msgCacheKey struct {
 // /clear, session swap) since messages can be replaced in place and
 // a content-hash miss alone doesn't reclaim the old entries.
 func (v *View) InvalidateRenderCache() {
+	v.RenderCacheRevision++
 	v.renderCache = nil
+	v.liveRenderCache = nil
+	v.messageCache = nil
+	v.messageCacheRevision = 0
+	v.messageCacheLen = 0
+	v.toolPathRevision = 0
+}
+
+// CloneForRender returns an immutable render snapshot. Its mutable cache
+// maps are copied so a renderer owner can build outside the interactive
+// state mutex without racing the next snapshot.
+func (v *View) CloneForRender() *View {
+	clone := *v
+	clone.Messages = append([]provider.Message(nil), v.Messages...)
+	clone.ToolCalls = append([]ToolCallView(nil), v.ToolCalls...)
+	clone.StartupContextPaths = append([]string(nil), v.StartupContextPaths...)
+	clone.StartupExtensionNames = append([]string(nil), v.StartupExtensionNames...)
+	clone.StartupSkillNames = append([]string(nil), v.StartupSkillNames...)
+	clone.toolPaths = cloneStringMap(v.toolPaths)
+	clone.toolStartLines = cloneIntMap(v.toolStartLines)
+	clone.toolCallLabels = cloneStringMap(v.toolCallLabels)
+	clone.liveBodyHigh = cloneIntMap(v.liveBodyHigh)
+	if v.renderCache != nil {
+		clone.renderCache = make(map[msgCacheKey][]string, len(v.renderCache))
+		for key, lines := range v.renderCache {
+			clone.renderCache[key] = lines
+		}
+	}
+	if v.liveRenderCache != nil {
+		clone.liveRenderCache = make(map[liveToolCacheKey][]string, len(v.liveRenderCache))
+		for key, lines := range v.liveRenderCache {
+			clone.liveRenderCache[key] = lines
+		}
+	}
+	clone.messageCache = append([]messageRenderCacheEntry(nil), v.messageCache...)
+	return &clone
+}
+
+func cloneStringMap(src map[string]string) map[string]string {
+	if src == nil {
+		return nil
+	}
+	dst := make(map[string]string, len(src))
+	for key, value := range src {
+		dst[key] = value
+	}
+	return dst
+}
+
+func cloneIntMap(src map[string]int) map[string]int {
+	if src == nil {
+		return nil
+	}
+	dst := make(map[string]int, len(src))
+	for key, value := range src {
+		dst[key] = value
+	}
+	return dst
+}
+
+// AdoptRenderCacheFrom transfers caches produced from a render snapshot
+// back to the owning view. Callers must ensure the transcript revision is
+// still current before adopting them.
+func (v *View) AdoptRenderCacheFrom(snapshot *View) {
+	v.renderCache = snapshot.renderCache
+	v.liveRenderCache = snapshot.liveRenderCache
+	v.messageCache = snapshot.messageCache
+	v.messageCacheRevision = snapshot.messageCacheRevision
+	v.messageCacheLen = snapshot.messageCacheLen
+	v.toolPaths = snapshot.toolPaths
+	v.toolStartLines = snapshot.toolStartLines
+	v.toolCallLabels = snapshot.toolCallLabels
+	v.toolPathRevision = snapshot.toolPathRevision
 }
 
 // ToolCollapsePreview is the number of lines shown before a long tool
@@ -219,13 +338,17 @@ const (
 
 // ToolCallView is a pending tool invocation plus optional result.
 type ToolCallView struct {
-	ID      string
-	Name    string
-	Args    string // rendered argument summary
-	Preview string // side-effect-free result shown before confirmation
-	Result  string // rendered result preview (truncated)
-	Error   bool
-	Done    bool
+	ID   string
+	Name string
+	// Revision is advanced by the owning interactive state whenever a
+	// visible field changes. A non-zero revision lets the live render cache
+	// avoid rescanning a large result string on every redraw.
+	Revision uint64
+	Args     string // rendered argument summary
+	Preview  string // side-effect-free result shown before confirmation
+	Result   string // rendered result preview (truncated)
+	Error    bool
+	Done     bool
 
 	// Streaming is true while the model is still typing the tool
 	// call's JSON arguments. The TUI renders a live preview of any
@@ -265,6 +388,10 @@ func (v *View) Build(width int) []string {
 // so native scrolling stays stable while a turn streams.
 func (v *View) BuildLive(width int) []string {
 	v.prepareLiveBodyHeights()
+	if v.liveRenderCache == nil {
+		v.liveRenderCache = make(map[liveToolCacheKey][]string)
+	}
+	themeKey := toolThemeKey(v.Theme)
 	var out []string
 	if v.StreamingActive && strings.TrimSpace(v.Streaming) != "" {
 		const indent = "  "
@@ -294,7 +421,7 @@ func (v *View) BuildLive(width int) []string {
 			out = append(out, "")
 		}
 		insertedToolGap = true
-		out = append(out, v.renderToolCall(tc, width)...)
+		out = append(out, v.renderToolCallCached(tc, width, themeKey)...)
 	}
 	if v.Err != "" {
 		out = append(out, v.renderErr(width)...)
@@ -360,9 +487,23 @@ func (v *View) renderStartupResources(width int) []string {
 // scroll to a specific turn (the /jump dialog) use the anchor slice
 // to map a message index back to a row offset.
 func (v *View) BuildWithAnchors(width int) ([]string, []MessageAnchor) {
-	v.refreshToolPaths()
+	themeKey := toolThemeKey(v.Theme)
+	if v.MessagesRevision != 0 && v.messageCacheRevision != 0 && v.messageCacheRevision != v.MessagesRevision && len(v.Messages) <= v.messageCacheLen {
+		v.messageCache = nil
+	}
+	if v.MessagesRevision != 0 {
+		v.messageCacheRevision = v.MessagesRevision
+		v.messageCacheLen = len(v.Messages)
+	}
+	if v.MessagesRevision == 0 || v.toolPathRevision != v.MessagesRevision {
+		v.refreshToolPaths()
+		v.toolPathRevision = v.MessagesRevision
+	}
 	if v.renderCache == nil {
 		v.renderCache = make(map[msgCacheKey][]string)
+	}
+	if v.liveRenderCache == nil {
+		v.liveRenderCache = make(map[liveToolCacheKey][]string)
 	}
 	v.prepareLiveBodyHeights()
 	// Drop high-water entries for calls that are gone or finalised so
@@ -422,7 +563,7 @@ func (v *View) BuildWithAnchors(width int) ([]string, []MessageAnchor) {
 				break
 			}
 		}
-		lines := v.renderMessageCached(m, width, turnOpen)
+		lines := v.renderMessageCached(idx, m, width, turnOpen, themeKey)
 		rendered[idx] = lines
 		total += len(lines) + 1 // +1 for the blank separator row
 	}
@@ -487,7 +628,7 @@ func (v *View) BuildWithAnchors(width int) ([]string, []MessageAnchor) {
 		if finalised[tc.ID] {
 			continue
 		}
-		out = append(out, v.renderToolCall(tc, width)...)
+		out = append(out, v.renderToolCallCached(tc, width, themeKey)...)
 		out = append(out, "")
 	}
 	if v.Err != "" {
@@ -536,12 +677,31 @@ func (v *View) refreshToolPaths() {
 // been rendered before. The slice returned is shared — callers must
 // not mutate it; Build() only ever appends to its own `out` so the
 // shared slice is safe.
-func (v *View) renderMessageCached(m provider.Message, width int, turnOpen bool) []string {
+func (v *View) renderMessageCached(idx int, m provider.Message, width int, turnOpen bool, themeKey uint64) []string {
+	if v.MessagesRevision != 0 {
+		if idx < len(v.messageCache) {
+			entry := v.messageCache[idx]
+			if entry.valid && entry.width == width && entry.expandAll == v.ExpandAll && entry.turnOpen == turnOpen && entry.flatTools == v.FlatTools && entry.compactMode == v.CompactMode && entry.compactUser == v.CompactUser && entry.imageProto == v.ImageProto && entry.theme == themeKey {
+				return entry.lines
+			}
+		}
+		lines := v.renderMessage(m, width, turnOpen)
+		if idx >= len(v.messageCache) {
+			v.messageCache = append(v.messageCache, make([]messageRenderCacheEntry, idx-len(v.messageCache)+1)...)
+		}
+		v.messageCache[idx] = messageRenderCacheEntry{width: width, expandAll: v.ExpandAll, turnOpen: turnOpen, flatTools: v.FlatTools, compactMode: v.CompactMode, compactUser: v.CompactUser, imageProto: v.ImageProto, theme: themeKey, lines: lines, valid: true}
+		return lines
+	}
 	key := msgCacheKey{
-		hash:      hashMessage(m),
-		width:     width,
-		expandAll: v.ExpandAll,
-		turnOpen:  turnOpen,
+		hash:        hashMessage(m),
+		width:       width,
+		expandAll:   v.ExpandAll,
+		turnOpen:    turnOpen,
+		flatTools:   v.FlatTools,
+		compactMode: v.CompactMode,
+		compactUser: v.CompactUser,
+		imageProto:  v.ImageProto,
+		theme:       themeKey,
 	}
 	if v.renderCache != nil {
 		if lines, ok := v.renderCache[key]; ok {
@@ -842,7 +1002,123 @@ func (v *View) RenderToolCall(tc ToolCallView, width int) []string {
 	if v.liveBodyHigh == nil {
 		v.liveBodyHigh = make(map[string]int)
 	}
-	return v.renderToolCall(tc, width)
+	return v.renderToolCallCached(tc, width, toolThemeKey(v.Theme))
+}
+
+func (v *View) renderToolCallCached(tc ToolCallView, width int, themeKey uint64) []string {
+	if v.liveRenderCache == nil {
+		v.liveRenderCache = make(map[liveToolCacheKey][]string)
+	}
+	key := liveToolCacheKey{
+		revision:   tc.Revision,
+		content:    hashLiveTool(tc),
+		width:      width,
+		expandAll:  v.ExpandAll,
+		flatTools:  v.FlatTools,
+		compact:    v.CompactMode,
+		imageProto: v.ImageProto,
+		theme:      themeKey,
+	}
+	if lines, ok := v.liveRenderCache[key]; ok {
+		return lines
+	}
+	lines := v.renderToolCall(tc, width)
+	if len(v.liveRenderCache) > 512 {
+		for k := range v.liveRenderCache {
+			delete(v.liveRenderCache, k)
+			break
+		}
+	}
+	v.liveRenderCache[key] = lines
+	return lines
+}
+
+func hashLiveTool(tc ToolCallView) uint64 {
+	if tc.Revision != 0 {
+		return 0
+	}
+	h := fnv64aInit
+	for _, s := range []string{tc.ID, tc.Name, tc.Args, tc.Preview, tc.Result, tc.RawJSONBuf, tc.LivePath} {
+		h = fnv64aWrite(h, []byte(s))
+		h = fnv64aWriteByte(h, 0)
+	}
+	if tc.Error {
+		h = fnv64aWriteByte(h, 'e')
+	}
+	if tc.Done {
+		h = fnv64aWriteByte(h, 'd')
+	}
+	if tc.Streaming {
+		h = fnv64aWriteByte(h, 's')
+	}
+	return h
+}
+
+func toolThemeKey(theme Theme) uint64 {
+	h := fnv64aInit
+	for _, s := range []string{
+		theme.SyntaxBaseStyle,
+		theme.Syntax.Keyword,
+		theme.Syntax.KeywordConstant,
+		theme.Syntax.KeywordDeclaration,
+		theme.Syntax.KeywordNamespace,
+		theme.Syntax.KeywordReserved,
+		theme.Syntax.KeywordType,
+		theme.Syntax.NameBuiltin,
+		theme.Syntax.NameFunction,
+		theme.Syntax.NameClass,
+		theme.Syntax.NameDecorator,
+		theme.Syntax.LiteralString,
+		theme.Syntax.LiteralStringEscape,
+		theme.Syntax.LiteralNumber,
+		theme.Syntax.Comment,
+		theme.Syntax.CommentPreproc,
+		theme.Syntax.Operator,
+		theme.Syntax.Punctuation,
+		theme.Syntax.Text,
+	} {
+		h = fnv64aWrite(h, []byte(s))
+		h = fnv64aWriteByte(h, 0)
+	}
+	for _, c := range []TerminalColor{
+		theme.FG, theme.Muted, theme.Accent, theme.User, theme.UserBubbleBG,
+		theme.UserBubbleFG, theme.Assistant, theme.Tool, theme.ToolOut,
+		theme.Error, theme.Warning, theme.Spinner, theme.ThinkingMax,
+		theme.SelectionBG, theme.SelectionFG, theme.Terminal.Foreground,
+		theme.Terminal.Background,
+	} {
+		h = hashThemeColor(h, c)
+	}
+	if theme.Background != nil {
+		h = hashThemeColor(h, *theme.Background)
+	}
+	for _, c := range theme.Terminal.Palette {
+		h = hashThemeColor(h, c)
+	}
+	for _, value := range []bool{
+		theme.Inherited,
+		theme.Terminal.HasForeground,
+		theme.Terminal.HasBackground,
+		theme.Terminal.TrueColor,
+		theme.Terminal.Light,
+		theme.Terminal.SchemeKnown,
+	} {
+		if value {
+			h = fnv64aWriteByte(h, 1)
+		} else {
+			h = fnv64aWriteByte(h, 0)
+		}
+	}
+	return h
+}
+
+func hashThemeColor(h uint64, c TerminalColor) uint64 {
+	h = fnv64aWriteByte(h, byte(c.Mode))
+	h = fnv64aWriteByte(h, byte(c.Index))
+	h = fnv64aWriteByte(h, byte(c.R))
+	h = fnv64aWriteByte(h, byte(c.G))
+	h = fnv64aWriteByte(h, byte(c.B))
+	return h
 }
 
 func (v *View) renderToolCall(tc ToolCallView, width int) []string {
@@ -979,6 +1255,13 @@ func (v *View) renderToolCall(tc ToolCallView, width int) []string {
 // confirmation preview immediately gets the same colors, numbered gutters,
 // and syntax highlighting as its final tool result.
 func (v *View) renderLiveToolResult(text string, width int, color TerminalColor, sourcePath string) []string {
+	if !v.ExpandAll {
+		total := estimateToolTextLines(text, width)
+		if total > ToolCollapseLines {
+			lines := v.renderToolText(previewToolText(text, width), width, color, sourcePath, 1)
+			return v.collapseToolBodyWithTotal(lines, false, total)
+		}
+	}
 	return v.renderToolText(text, width, color, sourcePath, 1)
 }
 
@@ -1473,19 +1756,34 @@ func (v *View) renderToolResultContent(blocks []provider.Content, width int, col
 	var body []string
 	hasImage := false
 	for _, b := range blocks {
+		if _, ok := b.(provider.ImageBlock); ok {
+			hasImage = true
+			break
+		}
+	}
+	total := 0
+	for _, b := range blocks {
 		switch bb := b.(type) {
 		case provider.TextBlock:
 			bodyWidth := toolBoxBodyRenderWidth(width)
 			if v.FlatTools || v.CompactMode {
 				bodyWidth = flatToolBodyRenderWidth(width)
 			}
-			body = append(body, v.renderToolText(bb.Text, bodyWidth, color, sourcePath, startLine)...)
+			estimated := estimateToolTextLines(bb.Text, bodyWidth)
+			total += estimated
+			text := bb.Text
+			// A collapsed result only exposes its first ten rendered rows.
+			// Render a bounded source preview in that case; syntax
+			// highlighting and wrapping the omitted tail is wasted work.
+			if !v.ExpandAll && !hasImage && estimated > ToolCollapseLines {
+				text = previewToolText(text, bodyWidth)
+			}
+			body = append(body, v.renderToolText(text, bodyWidth, color, sourcePath, startLine)...)
 		case provider.ImageBlock:
-			hasImage = true
 			body = append(body, v.renderImageBlock(bb, width)...)
 		}
 	}
-	return v.collapseToolBody(body, hasImage)
+	return v.collapseToolBodyWithTotal(body, hasImage, total)
 }
 
 // collapseToolBody trims lines to the configured preview size when the
@@ -1493,20 +1791,75 @@ func (v *View) renderToolResultContent(blocks []provider.Content, width int, col
 // expand" footer. Image blocks never collapse — they're short in text
 // rows but represent real content the user wants to see.
 func (v *View) collapseToolBody(lines []string, hasImage bool) []string {
+	return v.collapseToolBodyWithTotal(lines, hasImage, len(lines))
+}
+
+func (v *View) collapseToolBodyWithTotal(lines []string, hasImage bool, total int) []string {
 	if v.ExpandAll || hasImage {
 		return lines
 	}
-	if len(lines) <= ToolCollapseLines {
+	if total < len(lines) {
+		total = len(lines)
+	}
+	if total <= ToolCollapseLines {
 		return lines
 	}
-	kept := lines[:ToolCollapsePreview]
-	hidden := len(lines) - ToolCollapsePreview
-	total := len(lines)
+	kept := lines
+	if len(kept) > ToolCollapsePreview {
+		kept = kept[:ToolCollapsePreview]
+	}
+	hidden := total - ToolCollapsePreview
 	footer := fmt.Sprintf("    ... (%d more lines, %d total, ctrl+o to expand)", hidden, total)
 	footer = v.Theme.FGColor(v.Theme.Muted, footer)
 	out := append([]string(nil), kept...)
 	out = append(out, "")
 	return append(out, footer)
+}
+
+func estimateToolTextLines(text string, width int) int {
+	if width < 1 {
+		width = 1
+	}
+	total := 0
+	for _, line := range strings.Split(text, "\n") {
+		cells := runewidth.StringWidth(line)
+		if cells == 0 {
+			total++
+			continue
+		}
+		total += (cells + width - 1) / width
+	}
+	if total == 0 {
+		return 1
+	}
+	return total
+}
+
+func previewToolText(text string, width int) string {
+	if width < 1 {
+		width = 1
+	}
+	maxChars := width * (ToolCollapsePreview + 2)
+	if maxChars < 256 {
+		maxChars = 256
+	}
+	if maxChars > 8192 {
+		maxChars = 8192
+	}
+	end := 0
+	for count := 0; end < len(text) && count < maxChars; count++ {
+		_, size := utf8.DecodeRuneInString(text[end:])
+		if size == 0 {
+			break
+		}
+		end += size
+	}
+	preview := text[:end]
+	lines := strings.SplitAfter(preview, "\n")
+	if len(lines) > ToolCollapsePreview+2 {
+		preview = strings.Join(lines[:ToolCollapsePreview+2], "")
+	}
+	return preview
 }
 
 // renderToolText renders a text block inside a tool result. If the
