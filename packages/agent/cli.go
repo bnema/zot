@@ -931,10 +931,18 @@ func runPrintMode(ctx context.Context, args Args, version string) error {
 	if err := reloadResourcesAfterStartupPre(ctx, args, extMgr, r.Sandbox, ag); err != nil {
 		return err
 	}
+	var persistCompaction func([]provider.Message) error
+	if sess != nil {
+		persistCompaction = sess.AppendCompaction
+	}
 	started := time.Now()
-	usage, err := modes.RunPrint(ctx, ag, prompt, nil, os.Stdout)
+	usage, recovery, err := modes.RunPrintWithContextRecovery(ctx, ag, prompt, nil, os.Stdout, persistCompaction)
 	elapsed := time.Since(started)
-	WriteNewTranscript(ag, sess, start)
+	transcriptStart := start
+	if recovery.Compacted {
+		transcriptStart = recovery.OutputStart
+	}
+	WriteNewTranscript(ag, sess, transcriptStart)
 	if err != nil {
 		return err
 	}
@@ -999,8 +1007,16 @@ func runStreamMode(ctx context.Context, args Args, version string) error {
 	if err := reloadResourcesAfterStartupPre(ctx, args, extMgr, r.Sandbox, ag); err != nil {
 		return err
 	}
-	err = modes.RunStream(ctx, ag, prompt, nil, os.Stdout)
-	WriteNewTranscript(ag, sess, start)
+	var persistCompaction func([]provider.Message) error
+	if sess != nil {
+		persistCompaction = sess.AppendCompaction
+	}
+	recovery, err := modes.RunStreamWithContextRecovery(ctx, ag, prompt, nil, os.Stdout, os.Stderr, persistCompaction)
+	transcriptStart := start
+	if recovery.Compacted {
+		transcriptStart = recovery.OutputStart
+	}
+	WriteNewTranscript(ag, sess, transcriptStart)
 	return err
 }
 
@@ -1106,8 +1122,16 @@ func runJSONMode(ctx context.Context, args Args, version string) error {
 		_ = enc.Encode(map[string]any{"type": "error", "message": err.Error()})
 		return err
 	}
-	err = modes.RunJSON(ctx, ag, prompt, nil, os.Stdout)
-	WriteNewTranscript(ag, sess, start)
+	var persistCompaction func([]provider.Message) error
+	if sess != nil {
+		persistCompaction = sess.AppendCompaction
+	}
+	recovery, err := modes.RunJSONWithContextRecovery(ctx, ag, prompt, nil, os.Stdout, persistCompaction)
+	transcriptStart := start
+	if recovery.Compacted {
+		transcriptStart = recovery.OutputStart
+	}
+	WriteNewTranscript(ag, sess, transcriptStart)
 	return err
 }
 

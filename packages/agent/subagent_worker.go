@@ -436,44 +436,15 @@ func canonicalWorkerEvent(typ string) string {
 
 const subagentContextLimitMessage = "request exceeds the model context window; narrow the task or reduce gathered context"
 
-// promptWithContextRecovery appends prompt and runs it once. When the provider
-// rejects that request for exceeding its context limit, it compacts the current
-// transcript and continues the already-appended prompt exactly once.
-//
-// The returned index marks the first message that can contribute to the turn
-// result or be appended after a compaction checkpoint. Compact replaces the
-// transcript, so callers must not reuse the index captured before Prompt.
+// promptWithContextRecovery preserves the worker's existing helper boundary
+// while delegating its one-shot overflow recovery to modes. The returned index
+// is the first message to include in the result or append after a persisted
+// compaction checkpoint.
 func promptWithContextRecovery(ctx context.Context, ag *core.Agent, prompt string, sink func(core.AgentEvent), persistCompaction func([]provider.Message) error) (outputStart int, err error) {
-	outputStart = len(ag.Messages())
-	if err = ag.Prompt(ctx, prompt, nil, sink); err == nil || ctx.Err() != nil || !provider.IsContextOverflowError(err) {
-		return outputStart, err
-	}
-
-	messages := ag.Messages()
-	if len(messages) <= 1 {
-		// The only message is the failed prompt. Summarizing it would replace
-		// the user's task with an LLM-generated paraphrase, so report the
-		// provider's limit and ask the caller to narrow the task instead.
-		return outputStart, err
-	}
-	keepTail := min(4, len(messages)-1)
-	if _, compactErr := ag.Compact(ctx, keepTail, nil); compactErr != nil {
-		return outputStart, fmt.Errorf("compact transcript after initial overflow: %w", compactErr)
-	}
-
-	compacted := ag.Messages()
-	if persistCompaction != nil {
-		if persistErr := persistCompaction(compacted); persistErr != nil {
-			// Keep the original history plus the user's pending task so the
-			// outer transcript flush can persist that task without committing
-			// an in-memory compaction that the session did not receive.
-			ag.SetMessages(messages)
-			return outputStart, fmt.Errorf("persist compacted transcript: %w", persistErr)
-		}
-	}
-
-	outputStart = len(compacted)
-	return outputStart, ag.Continue(ctx, sink)
+	result, err := modes.PromptWithContextRecovery(ctx, ag, prompt, nil, sink, modes.ContextRecoveryOptions{
+		PersistCompaction: persistCompaction,
+	})
+	return result.OutputStart, err
 }
 
 func finalAssistantText(messages []provider.Message) string {

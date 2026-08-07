@@ -22,6 +22,15 @@ func RunStream(ctx context.Context, ag *core.Agent, prompt string, images []prov
 // RunStreamWithDiag is RunStream with an explicit diagnostics writer
 // for tool activity (tests pass a buffer).
 func RunStreamWithDiag(ctx context.Context, ag *core.Agent, prompt string, images []provider.ImageBlock, out, diag io.Writer) error {
+	_, err := RunStreamWithContextRecovery(ctx, ag, prompt, images, out, diag, nil)
+	return err
+}
+
+// RunStreamWithContextRecovery is RunStreamWithDiag with an optional
+// checkpoint writer for a one-shot context-overflow compaction. OutputStart
+// identifies the transcript suffix that callers must persist after a
+// successful checkpoint.
+func RunStreamWithContextRecovery(ctx context.Context, ag *core.Agent, prompt string, images []provider.ImageBlock, out, diag io.Writer, persistCompaction func([]provider.Message) error) (ContextRecoveryResult, error) {
 	if diag == nil {
 		diag = io.Discard
 	}
@@ -101,15 +110,19 @@ func RunStreamWithDiag(ctx context.Context, ag *core.Agent, prompt string, image
 		}
 	}
 
-	if err := ag.Prompt(ctx, prompt, images, sink); err != nil {
-		return err
+	recovery, err := PromptWithContextRecovery(ctx, ag, prompt, images, sink, ContextRecoveryOptions{
+		PersistCompaction:            persistCompaction,
+		SuppressInitialOverflowEvent: true,
+	})
+	if err != nil {
+		return recovery, err
 	}
 	if runErr != nil {
-		return runErr
+		return recovery, runErr
 	}
 	if wroteText && !lastWasNL {
 		_, _ = fmt.Fprint(out, "\n")
 		flush()
 	}
-	return nil
+	return recovery, nil
 }
