@@ -646,7 +646,7 @@ func TestResolveEnvOnlyBedrockDiscoveredWithoutConfig(t *testing.T) {
 	t.Setenv("AWS_BEARER_TOKEN_BEDROCK", "test-bedrock-token")
 	t.Setenv("AWS_REGION", "us-east-1")
 	// Make sure no other provider's env credential pre-empts bedrock.
-	for _, k := range []string{"ANTHROPIC_API_KEY", "ANTHROPIC_OAUTH_TOKEN", "OPENAI_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY", "DEEPSEEK_API_KEY", "KIMI_API_KEY", "MOONSHOT_API_KEY"} {
+	for _, k := range []string{"ANTHROPIC_API_KEY", "ANTHROPIC_OAUTH_TOKEN", "OPENAI_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY", "DEEPSEEK_API_KEY", "KIMI_API_KEY", "MOONSHOT_API_KEY", "XIAOMI_API_KEY", "OPENCODE_API_KEY"} {
 		t.Setenv(k, "")
 	}
 

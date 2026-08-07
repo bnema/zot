@@ -1,6 +1,7 @@
 package modes
 
 import (
+	"errors"
 	"testing"
 
 	"github.com/bnema/zut/packages/provider"
@@ -33,51 +34,202 @@ func TestNormalizeAutoCompactThreshold(t *testing.T) {
 
 func TestShouldAutoContinueAfterCompaction(t *testing.T) {
 	tests := []struct {
-		name string
-		msgs []provider.Message
-		want bool
+		name         string
+		origin       compactContinuationOrigin
+		statusActive bool
+		stop         provider.StopReason
+		turnErr      error
+		msgs         []provider.Message
+		want         compactContinuationReason
 	}{
 		{
-			name: "completed text answer",
+			name:   "completed text answer",
+			origin: compactOriginAfterTurnThreshold,
+			stop:   provider.StopEnd,
 			msgs: []provider.Message{{
 				Role:    provider.RoleAssistant,
 				Content: []provider.Content{provider.TextBlock{Text: "done"}},
 			}},
-			want: false,
+			want: compactContinuationNone,
 		},
 		{
-			name: "reasoning only",
+			name:   "reasoning only is structural",
+			origin: compactOriginAfterTurnThreshold,
+			stop:   provider.StopEnd,
 			msgs: []provider.Message{{
 				Role:    provider.RoleAssistant,
 				Content: []provider.Content{provider.ReasoningBlock{Summary: "still working"}},
 			}},
-			want: true,
+			want: compactContinuationStructuralTail,
 		},
 		{
-			name: "tool call",
+			name:   "tool call is structural",
+			origin: compactOriginAfterTurnThreshold,
+			stop:   provider.StopEnd,
 			msgs: []provider.Message{{
 				Role:    provider.RoleAssistant,
 				Content: []provider.Content{provider.ToolCallBlock{Name: "read"}},
 			}},
-			want: true,
+			want: compactContinuationStructuralTail,
 		},
 		{
-			name: "user tail",
+			name:   "user tail is structural",
+			origin: compactOriginAfterTurnThreshold,
+			stop:   provider.StopEnd,
 			msgs: []provider.Message{{
 				Role:    provider.RoleUser,
 				Content: []provider.Content{provider.TextBlock{Text: "continue"}},
 			}},
-			want: true,
+			want: compactContinuationStructuralTail,
 		},
-		{name: "empty", want: false},
+		{
+			name:   "next will inspect is status rescue",
+			origin: compactOriginAfterTurnThreshold,
+			stop:   provider.StopEnd,
+			msgs: []provider.Message{{
+				Role:    provider.RoleAssistant,
+				Content: []provider.Content{provider.TextBlock{Text: "Next I will inspect the remaining call sites."}},
+			}},
+			want: compactContinuationStatusRescue,
+		},
+		{
+			name:   "ill now run tests is status rescue",
+			origin: compactOriginAfterTurnThreshold,
+			stop:   provider.StopEnd,
+			msgs: []provider.Message{{
+				Role:    provider.RoleAssistant,
+				Content: []provider.Content{provider.TextBlock{Text: "I’ll now run the targeted tests."}},
+			}},
+			want: compactContinuationStatusRescue,
+		},
+		{
+			name:   "need to continue at sentence end is status rescue",
+			origin: compactOriginAfterTurnThreshold,
+			stop:   provider.StopEnd,
+			msgs: []provider.Message{{
+				Role:    provider.RoleAssistant,
+				Content: []provider.Content{provider.TextBlock{Text: "I need to continue."}},
+			}},
+			want: compactContinuationStatusRescue,
+		},
+		{
+			name:   "embedded phrase is not status rescue",
+			origin: compactOriginAfterTurnThreshold,
+			stop:   provider.StopEnd,
+			msgs: []provider.Message{{
+				Role:    provider.RoleAssistant,
+				Content: []provider.Content{provider.TextBlock{Text: "The mini will now absorb this conceptual example."}},
+			}},
+			want: compactContinuationNone,
+		},
+		{
+			name:   "generic next step prose is not status rescue",
+			origin: compactOriginAfterTurnThreshold,
+			stop:   provider.StopEnd,
+			msgs: []provider.Message{{
+				Role:    provider.RoleAssistant,
+				Content: []provider.Content{provider.TextBlock{Text: "The next step in this algorithm is normalization."}},
+			}},
+			want: compactContinuationNone,
+		},
+		{
+			name:   "empty",
+			origin: compactOriginAfterTurnThreshold,
+			stop:   provider.StopEnd,
+			want:   compactContinuationNone,
+		},
+		{
+			name:   "aborted status is not rescue",
+			origin: compactOriginAfterTurnThreshold,
+			stop:   provider.StopAborted,
+			msgs: []provider.Message{{
+				Role:    provider.RoleAssistant,
+				Content: []provider.Content{provider.TextBlock{Text: "Next I will inspect the remaining call sites."}},
+			}},
+			want: compactContinuationNone,
+		},
+		{
+			name:    "error status is not rescue",
+			origin:  compactOriginAfterTurnThreshold,
+			stop:    provider.StopEnd,
+			turnErr: errors.New("provider failed"),
+			msgs: []provider.Message{{
+				Role:    provider.RoleAssistant,
+				Content: []provider.Content{provider.TextBlock{Text: "Next I will inspect the remaining call sites."}},
+			}},
+			want: compactContinuationNone,
+		},
+		{
+			name:   "manual does not admit initial status rescue",
+			origin: compactOriginManual,
+			stop:   provider.StopEnd,
+			msgs: []provider.Message{{
+				Role:    provider.RoleAssistant,
+				Content: []provider.Content{provider.TextBlock{Text: "Next I will inspect the remaining call sites."}},
+			}},
+			want: compactContinuationNone,
+		},
+		{
+			name:   "pre-turn does not admit initial status rescue",
+			origin: compactOriginPreTurnThreshold,
+			stop:   provider.StopEnd,
+			msgs: []provider.Message{{
+				Role:    provider.RoleAssistant,
+				Content: []provider.Content{provider.TextBlock{Text: "Next I will inspect the remaining call sites."}},
+			}},
+			want: compactContinuationNone,
+		},
+		{
+			name:   "recovery does not admit initial status rescue",
+			origin: compactOriginRecovery,
+			stop:   provider.StopEnd,
+			msgs: []provider.Message{{
+				Role:    provider.RoleAssistant,
+				Content: []provider.Content{provider.TextBlock{Text: "Next I will inspect the remaining call sites."}},
+			}},
+			want: compactContinuationNone,
+		},
+		{
+			name:         "active rescue may classify its own follow-up",
+			origin:       compactOriginManual,
+			statusActive: true,
+			stop:         provider.StopEnd,
+			msgs: []provider.Message{{
+				Role:    provider.RoleAssistant,
+				Content: []provider.Content{provider.TextBlock{Text: "Then I will inspect the remaining call sites."}},
+			}},
+			want: compactContinuationStatusRescue,
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := shouldAutoContinueAfterCompaction(tt.msgs); got != tt.want {
-				t.Fatalf("shouldAutoContinueAfterCompaction() = %t, want %t", got, tt.want)
+			if got := classifyCompactionContinuation(tt.origin, tt.statusActive, tt.stop, tt.turnErr, tt.msgs); got != tt.want {
+				t.Fatalf("classifyCompactionContinuation() = %d, want %d", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestAutoCompactContinuationIsHiddenFromTranscriptButPersisted(t *testing.T) {
+	hidden := provider.Message{
+		Role:    provider.RoleUser,
+		Content: []provider.Content{provider.TextBlock{Text: autoCompactContinuationPrompt}},
+		Meta:    map[string]string{autoCompactContinueMetaKey: "true"},
+	}
+	msgs := []provider.Message{
+		{Role: provider.RoleUser, Content: []provider.Content{provider.TextBlock{Text: "visible"}}},
+		hidden,
+	}
+	if !isHiddenTranscriptMessage(hidden) {
+		t.Fatal("auto-compaction continuation should be hidden from transcript views")
+	}
+	filtered := filterHiddenTranscriptMessages(msgs)
+	if len(filtered) != 1 || filtered[0].Content[0].(provider.TextBlock).Text != "visible" {
+		t.Fatalf("filtered transcript = %#v, want only visible message", filtered)
+	}
+	if got := hidden.Meta[autoCompactContinueMetaKey]; got != "true" {
+		t.Fatalf("persisted continuation metadata = %q, want true", got)
 	}
 }
 

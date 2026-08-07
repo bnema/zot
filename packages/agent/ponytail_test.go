@@ -34,7 +34,7 @@ func TestPonytailSystemAddendumIsCompact(t *testing.T) {
 	if len(addendum) > 2000 {
 		t.Fatalf("Ponytail system addendum is %d bytes, want at most 2000", len(addendum))
 	}
-	for _, want := range []string{"YAGNI", "standard library", "validation", "ordinary conversation"} {
+	for _, want := range []string{"YAGNI", "standard library", "validation", "ordinary conversation", "active multi-step implementation task", "required work and validation", "specific decision that requires the user"} {
 		if !strings.Contains(addendum, want) {
 			t.Fatalf("Ponytail system addendum missing %q:\n%s", want, addendum)
 		}

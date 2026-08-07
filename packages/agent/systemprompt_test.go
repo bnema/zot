@@ -16,4 +16,9 @@ func TestBuildSystemPromptAddsCompactionHandoffToCustomPrompt(t *testing.T) {
 	if count := strings.Count(prompt, compactedSummaryHandoffInstruction); count != 1 {
 		t.Fatalf("compaction handoff count = %d, want 1:\n%s", count, prompt)
 	}
+	for _, want := range []string{"most recent unresolved user request", "newer user request", "without waiting for the user to type \"continue\""} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("compaction handoff missing %q:\n%s", want, prompt)
+		}
+	}
 }
