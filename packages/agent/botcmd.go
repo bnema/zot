@@ -16,6 +16,7 @@ import (
 
 	"github.com/bnema/zut/packages/agent/modes/bot"
 	"github.com/bnema/zut/packages/agent/modes/telegram"
+	"github.com/bnema/zut/packages/agent/subagents"
 	"github.com/bnema/zut/packages/core"
 	"github.com/bnema/zut/packages/provider"
 	"golang.org/x/term"
@@ -212,6 +213,9 @@ func botRun(spec *botSpec, rawTail []string, version string) error {
 	if err != nil {
 		return err
 	}
+	// Messages arrive from an external channel without a per-request
+	// confirmation surface, so bot runs never receive native web search.
+	args.WebSearchPolicy = subagents.WebSearchDeny
 
 	// Bot mode always requires credentials (can't pop a /login dialog).
 	resolved, err := Resolve(args, true)

@@ -10,6 +10,32 @@ import (
 	"time"
 )
 
+func (f *Supervisor) resolveWebSearchPolicy(req SpawnRequest) WebSearchPolicy {
+	// Inherit is valid only as the request's unresolved value. Unknown values
+	// are not another way to inherit the parent's capability.
+	switch req.WebSearchPolicy {
+	case WebSearchInherit, WebSearchDeny, WebSearchAllow:
+	default:
+		return WebSearchDeny
+	}
+
+	f.mu.Lock()
+	parent := f.cfg.WebSearchPolicy
+	allowed := f.cfg.Policy.allowedTool("web_search")
+	f.mu.Unlock()
+
+	// A child can never exceed its parent capability or the supervisor policy.
+	if parent != WebSearchAllow || !allowed || req.WebSearchPolicy == WebSearchDeny {
+		return WebSearchDeny
+	}
+	if req.Subagent != "" {
+		// Named profiles need an additional explicit opt-in. Passing an allow
+		// value in SpawnRequest cannot substitute for the profile's tools list.
+		return NamedWebSearchPolicy(req.Tools)
+	}
+	return WebSearchAllow
+}
+
 func (f *Supervisor) validateSpawnRequest(req SpawnRequest) error {
 	if err := f.validateSpawnOptions(req); err != nil {
 		return err

@@ -41,6 +41,7 @@ type Agent struct {
 	Timeout           time.Duration
 	HeartbeatInterval time.Duration
 	Tools             []string
+	WebSearchPolicy   WebSearchPolicy
 
 	// Model and Provider, when non-empty, override the child
 	// subprocess's model resolution. BaseURL and InsecureTLS carry

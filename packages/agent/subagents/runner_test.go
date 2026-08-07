@@ -194,6 +194,22 @@ func TestSubagentWorkerArgs(t *testing.T) {
 	}
 }
 
+func TestDefaultChildArgsPropagatesWebSearchPolicy(t *testing.T) {
+	allow := defaultChildArgs("zut", &Agent{Task: "task", WebSearchPolicy: WebSearchAllow}, "/session", "/inbox")
+	idx := indexOf(allow, "--web-search-policy")
+	if idx < 0 || safeAt(allow, idx+1) != "allow" {
+		t.Fatalf("allow argv = %v", allow)
+	}
+
+	// A legacy/hand-built Agent has no resolved parent policy and must not
+	// inherit the child process's default-enabled normal CLI setting.
+	deny := defaultChildArgs("zut", &Agent{Task: "task"}, "/session", "/inbox")
+	idx = indexOf(deny, "--web-search-policy")
+	if idx < 0 || safeAt(deny, idx+1) != "deny" {
+		t.Fatalf("deny argv = %v", deny)
+	}
+}
+
 func TestResolveSubagentExecutableUsesCurrentWhenAvailable(t *testing.T) {
 	got, err := resolveSubagentExecutable(context.Background(), "/current/bin/zut", "/old/bin/zut", func(_ context.Context, candidate string) (string, error) {
 		if candidate == "/current/bin/zut" {

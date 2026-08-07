@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/bnema/zut/packages/agent/skills"
+	"github.com/bnema/zut/packages/agent/subagents"
 	"github.com/bnema/zut/packages/agent/tools"
 	"github.com/bnema/zut/packages/core"
 	"github.com/bnema/zut/packages/provider"
@@ -25,6 +26,27 @@ func (s bundledSkillSource) NewExtensionTool(ExtensionToolInfo) core.Tool {
 	return nil
 }
 func (s bundledSkillSource) Skills() []*skills.Skill { return s.bundled }
+
+type webSearchConflictSource struct{}
+
+func (webSearchConflictSource) Tools() []ExtensionToolInfo {
+	return []ExtensionToolInfo{{Extension: "test", Name: "web_search"}}
+}
+func (webSearchConflictSource) NewExtensionTool(ExtensionToolInfo) core.Tool {
+	return &tools.ReadTool{}
+}
+
+type unorderedExtensionSource struct{}
+
+func (unorderedExtensionSource) Tools() []ExtensionToolInfo {
+	return []ExtensionToolInfo{
+		{Extension: "test", Name: "zeta"},
+		{Extension: "test", Name: "alpha"},
+	}
+}
+func (unorderedExtensionSource) NewExtensionTool(ExtensionToolInfo) core.Tool {
+	return &tools.ReadTool{}
+}
 
 func TestMergeExtensionToolsCreatesSkillToolWhenDiscoveryFoundNoSkills(t *testing.T) {
 	r := Resolved{
@@ -62,6 +84,40 @@ func TestMergeExtensionToolsRespectsDisabledSkillDiscovery(t *testing.T) {
 	}
 }
 
+func TestMergeExtensionToolsReservesWebSearchName(t *testing.T) {
+	r := Resolved{ToolRegistry: make(core.Registry)}
+	r.MergeExtensionTools(webSearchConflictSource{})
+	if _, ok := r.ToolRegistry["web_search"]; ok {
+		t.Fatal("extension replaced reserved native web_search name")
+	}
+}
+
+func TestMergeExtensionToolsKeepsDeterministicNativeSummaryOrder(t *testing.T) {
+	r := Resolved{
+		CWD:          t.TempDir(),
+		ToolRegistry: buildToolRegistry(Args{}, t.TempDir(), nil, false, false, false),
+	}
+	r.MergeExtensionTools(unorderedExtensionSource{})
+
+	var names []string
+	for _, summary := range r.ToolSummary {
+		names = append(names, summary.Name)
+	}
+	want := "read,write,edit,bash,create_worktree,web_search,alpha,zeta"
+	if got := strings.Join(names, ","); got != want {
+		t.Fatalf("merged tool summary order = %q, want %q", got, want)
+	}
+
+	r.MergeExtensionTools(unorderedExtensionSource{})
+	names = names[:0]
+	for _, summary := range r.ToolSummary {
+		names = append(names, summary.Name)
+	}
+	if got := strings.Join(names, ","); got != want {
+		t.Fatalf("reloaded tool summary order = %q, want %q", got, want)
+	}
+}
+
 func TestMergeExtensionToolsRetainsPonytailPromptAddendum(t *testing.T) {
 	r := Resolved{
 		CWD:           t.TempDir(),
@@ -94,6 +150,9 @@ func TestBuildToolRegistryIncludesLSPAndWriteDiagnostics(t *testing.T) {
 	if !ok || worktree.CWD != root || worktree.Sandbox != sandbox {
 		t.Fatalf("default registry worktree tool = %#v", registry["create_worktree"])
 	}
+	if _, ok := registry["web_search"].(*tools.WebSearchTool); !ok {
+		t.Fatalf("default registry web_search = %#v", registry["web_search"])
+	}
 	write, ok := registry["write"].(*tools.WriteTool)
 	if !ok || write.LSP == nil || !write.LSPDiagnostics {
 		t.Fatalf("write tool LSP wiring = %#v", write)
@@ -102,12 +161,31 @@ func TestBuildToolRegistryIncludesLSPAndWriteDiagnostics(t *testing.T) {
 	if !ok || edit.LSP == nil || edit.LSPDiagnostics {
 		t.Fatalf("edit tool LSP wiring = %#v", edit)
 	}
-	if disabled := buildToolRegistry(Args{}, root, tools.NewSandbox(root), false, true, true); len(disabled) != 5 {
-		t.Fatalf("LSP-disabled registry has %d tools, want 5", len(disabled))
+	if disabled := buildToolRegistry(Args{}, root, tools.NewSandbox(root), false, true, true); len(disabled) != 6 {
+		t.Fatalf("LSP-disabled registry has %d tools, want 6", len(disabled))
 	}
 	readOnly := buildToolRegistry(Args{Tools: []string{"read"}}, root, tools.NewSandbox(root), true, true, true)
 	if read, ok := readOnly["read"].(*tools.ReadTool); !ok || read == nil {
 		t.Fatalf("read-only registry = %#v", readOnly)
+	}
+	if _, ok := readOnly["web_search"]; ok {
+		t.Fatalf("explicit non-matching tools list retained web search: %#v", readOnly)
+	}
+	webOnly := buildToolRegistry(Args{Tools: []string{"web_search"}}, root, tools.NewSandbox(root), true, true, true)
+	if web, ok := webOnly["web_search"].(*tools.WebSearchTool); !ok || web == nil || len(webOnly) != 1 {
+		t.Fatalf("web-search-only registry = %#v", webOnly)
+	}
+	workerMissingPolicy := buildToolRegistry(Args{Mode: ModeSubagentWorker}, root, tools.NewSandbox(root), false, false, false)
+	if _, ok := workerMissingPolicy["web_search"]; ok {
+		t.Fatal("worker registry enabled web_search without an explicit propagated allow")
+	}
+	workerAllowed := buildToolRegistry(Args{Mode: ModeSubagentWorker, WebSearchPolicy: subagents.WebSearchAllow}, root, tools.NewSandbox(root), false, false, false)
+	if _, ok := workerAllowed["web_search"].(*tools.WebSearchTool); !ok {
+		t.Fatalf("worker propagated allow registry = %#v", workerAllowed)
+	}
+	workerCapped := buildToolRegistry(Args{Mode: ModeSubagentWorker, ToolsSet: true, Tools: []string{"read"}, WebSearchPolicy: subagents.WebSearchAllow}, root, tools.NewSandbox(root), false, false, false)
+	if _, ok := workerCapped["web_search"]; ok {
+		t.Fatalf("worker tool list ceiling was bypassed: %#v", workerCapped)
 	}
 	worktreeOnly := buildToolRegistry(Args{Tools: []string{"create_worktree"}}, root, tools.NewSandbox(root), true, true, true)
 	if worktree, ok := worktreeOnly["create_worktree"].(*tools.CreateWorktreeTool); !ok || worktree == nil || len(worktreeOnly) != 1 {
@@ -115,12 +193,12 @@ func TestBuildToolRegistryIncludesLSPAndWriteDiagnostics(t *testing.T) {
 	}
 }
 
-func TestToolSummariesIncludeCreateWorktree(t *testing.T) {
+func TestToolSummariesIncludeCreateWorktreeAndWebSearch(t *testing.T) {
 	root := t.TempDir()
 	registry := buildToolRegistry(Args{}, root, tools.NewSandbox(root), false, false, false)
 
 	summaries := toolSummaries(registry, Args{})
-	want := []string{"read", "write", "edit", "bash", "create_worktree"}
+	want := []string{"read", "write", "edit", "bash", "create_worktree", "web_search"}
 	if len(summaries) != len(want) {
 		t.Fatalf("tool summaries = %#v, want %v", summaries, want)
 	}
@@ -895,5 +973,85 @@ func assertDefaultTransportStillSecure(t *testing.T) {
 	}
 	if tr.TLSClientConfig != nil && tr.TLSClientConfig.InsecureSkipVerify {
 		t.Fatal("http.DefaultTransport must not be made insecure")
+	}
+}
+
+func TestResolveWebSearchRegistryRespectsConfigAndExplicitCLI(t *testing.T) {
+	t.Setenv("ZUT_HOME", t.TempDir())
+	disabled := false
+	if err := SaveConfig(Config{WebSearchEnabled: &disabled}); err != nil {
+		t.Fatal(err)
+	}
+	args := Args{CWD: t.TempDir(), Provider: "ollama", Model: "any-local-model"}
+	resolved, err := Resolve(args, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := resolved.ToolRegistry["web_search"]; ok {
+		t.Fatal("persisted opt-out left web_search in the registry")
+	}
+
+	args.ToolsSet = true
+	args.Tools = []string{"web_search"}
+	resolved, err = Resolve(args, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := resolved.ToolRegistry["web_search"]; !ok {
+		t.Fatal("explicit --tools web_search did not override persisted opt-out")
+	}
+
+	args.PermissionSet = &tools.PermissionSet{}
+	resolved, err = Resolve(args, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := resolved.ToolRegistry["web_search"]; ok {
+		t.Fatal("packaged-agent PermissionSet received web_search")
+	}
+}
+
+func TestResolveWebSearchPolicy(t *testing.T) {
+	disabled := false
+	cases := []struct {
+		name    string
+		args    Args
+		cfg     Config
+		cfgErr  error
+		profile *subagents.Profile
+		want    subagents.WebSearchPolicy
+	}{
+		{name: "legacy config", want: subagents.WebSearchAllow},
+		{name: "persisted opt out", cfg: Config{WebSearchEnabled: &disabled}, want: subagents.WebSearchDeny},
+		{name: "explicit CLI allow overrides opt out", args: Args{ToolsSet: true, Tools: []string{"web_search"}}, cfg: Config{WebSearchEnabled: &disabled}, want: subagents.WebSearchAllow},
+		{name: "explicit empty CLI list denies", args: Args{ToolsSet: true}, want: subagents.WebSearchDeny},
+		{name: "explicit nonmatching CLI list denies", args: Args{ToolsSet: true, Tools: []string{"read"}}, want: subagents.WebSearchDeny},
+		{name: "no tools denies", args: Args{NoTools: true}, want: subagents.WebSearchDeny},
+		{name: "packaged agent denies", args: Args{PermissionSet: &tools.PermissionSet{}}, want: subagents.WebSearchDeny},
+		{name: "internal policy denies", args: Args{WebSearchPolicy: subagents.WebSearchDeny}, want: subagents.WebSearchDeny},
+		{name: "internal policy allows", args: Args{WebSearchPolicy: subagents.WebSearchAllow}, cfg: Config{WebSearchEnabled: &disabled}, want: subagents.WebSearchAllow},
+		{name: "normal explicit empty list narrows internal allow", args: Args{ToolsSet: true, WebSearchPolicy: subagents.WebSearchAllow}, want: subagents.WebSearchDeny},
+		{name: "worker missing policy denies despite legacy config", args: Args{Mode: ModeSubagentWorker}, want: subagents.WebSearchDeny},
+		{name: "worker explicit inherit denies", args: Args{Mode: ModeSubagentWorker, WebSearchPolicy: subagents.WebSearchInherit}, want: subagents.WebSearchDeny},
+		{name: "worker invalid policy denies", args: Args{Mode: ModeSubagentWorker, WebSearchPolicy: subagents.WebSearchPolicy(99)}, want: subagents.WebSearchDeny},
+		{name: "worker propagated deny remains denied", args: Args{Mode: ModeSubagentWorker, WebSearchPolicy: subagents.WebSearchDeny}, want: subagents.WebSearchDeny},
+		{name: "worker propagated allow", args: Args{Mode: ModeSubagentWorker, WebSearchPolicy: subagents.WebSearchAllow}, cfg: Config{WebSearchEnabled: &disabled}, want: subagents.WebSearchAllow},
+		{name: "worker explicit empty list caps allow", args: Args{Mode: ModeSubagentWorker, ToolsSet: true, WebSearchPolicy: subagents.WebSearchAllow}, want: subagents.WebSearchDeny},
+		{name: "worker nonmatching list caps allow", args: Args{Mode: ModeSubagentWorker, ToolsSet: true, Tools: []string{"read"}, WebSearchPolicy: subagents.WebSearchAllow}, want: subagents.WebSearchDeny},
+		{name: "worker matching list preserves allow", args: Args{Mode: ModeSubagentWorker, ToolsSet: true, Tools: []string{"read", "web_search"}, WebSearchPolicy: subagents.WebSearchAllow}, want: subagents.WebSearchAllow},
+		{name: "worker no tools caps allow", args: Args{Mode: ModeSubagentWorker, NoTools: true, WebSearchPolicy: subagents.WebSearchAllow}, want: subagents.WebSearchDeny},
+		{name: "worker permission set caps allow", args: Args{Mode: ModeSubagentWorker, PermissionSet: &tools.PermissionSet{}, WebSearchPolicy: subagents.WebSearchAllow}, want: subagents.WebSearchDeny},
+		{name: "config load failure denies inherited policy", cfgErr: fmt.Errorf("broken config"), want: subagents.WebSearchDeny},
+		{name: "named profile requires explicit tool", args: Args{WebSearchPolicy: subagents.WebSearchAllow}, profile: &subagents.Profile{Tools: []string{"read"}}, want: subagents.WebSearchDeny},
+		{name: "named profile allows explicit tool", args: Args{WebSearchPolicy: subagents.WebSearchAllow}, profile: &subagents.Profile{Tools: []string{"read", "web_search"}}, want: subagents.WebSearchAllow},
+		{name: "named profile cannot rescue worker inherit", args: Args{Mode: ModeSubagentWorker}, profile: &subagents.Profile{Tools: []string{"web_search"}}, want: subagents.WebSearchDeny},
+		{name: "named profile cannot bypass worker tool list", args: Args{Mode: ModeSubagentWorker, ToolsSet: true, Tools: []string{"read"}, WebSearchPolicy: subagents.WebSearchAllow}, profile: &subagents.Profile{Tools: []string{"web_search"}}, want: subagents.WebSearchDeny},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := resolveWebSearchPolicy(tc.args, tc.cfg, tc.cfgErr, tc.profile); got != tc.want {
+				t.Fatalf("policy = %v, want %v", got, tc.want)
+			}
+		})
 	}
 }

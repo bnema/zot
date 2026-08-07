@@ -33,46 +33,47 @@ import (
 // by encoding/json's permissive decoder when an older meta.json is
 // loaded; we don't need to keep them in the struct.
 type agentMeta struct {
-	ID               string        `json:"id"`
-	Task             string        `json:"task"`
-	OriginalTask     string        `json:"original_task,omitempty"`
-	Dir              string        `json:"dir"`
-	RepositoryRoot   string        `json:"repository_root,omitempty"`
-	Started          time.Time     `json:"started"`
-	ParentID         string        `json:"parent_id,omitempty"`
-	BatchID          string        `json:"batch_id,omitempty"`
-	RootSessionID    string        `json:"root_session_id,omitempty"`
-	Model            string        `json:"model,omitempty"`
-	Provider         string        `json:"provider,omitempty"`
-	BaseURL          string        `json:"base_url,omitempty"`
-	InsecureTLS      bool          `json:"insecure_tls,omitempty"`
-	Reasoning        string        `json:"reasoning,omitempty"`
-	FastMode         *bool         `json:"fast_mode,omitempty"`
-	Subagent         string        `json:"subagent,omitempty"`
-	WorkspaceMode    WorkspaceMode `json:"workspace_mode,omitempty"`
-	WorkspacePath    string        `json:"workspace_path,omitempty"`
-	WorkspaceBase    string        `json:"workspace_base,omitempty"`
-	WorkspaceCapture CaptureMode   `json:"workspace_capture,omitempty"`
-	MaxTurns         int           `json:"max_turns,omitempty"`
-	Timeout          time.Duration `json:"timeout,omitempty"`
-	Tools            []string      `json:"tools,omitempty"`
-	Status           Status        `json:"status,omitempty"`
-	Activity         string        `json:"activity,omitempty"`
-	Finished         time.Time     `json:"finished,omitempty"`
-	Error            string        `json:"error,omitempty"`
-	ProcessState     ProcessState  `json:"process_state,omitempty"`
-	TurnState        TurnState     `json:"turn_state,omitempty"`
-	CurrentTurnID    string        `json:"current_turn_id,omitempty"`
-	Attempt          int           `json:"attempt,omitempty"`
-	ProcessPID       int           `json:"process_pid,omitempty"`
-	UpdatedAt        time.Time     `json:"updated_at,omitempty"`
-	LastActivity     time.Time     `json:"last_activity,omitempty"`
-	ResultRef        string        `json:"result_ref,omitempty"`
-	PatchRef         string        `json:"patch_ref,omitempty"`
-	ChangedFiles     []string      `json:"changed_files,omitempty"`
-	InboxPath        string        `json:"inbox_path"`
-	EventLogPath     string        `json:"event_log_path"`
-	SessionPath      string        `json:"session_path"`
+	ID               string          `json:"id"`
+	Task             string          `json:"task"`
+	OriginalTask     string          `json:"original_task,omitempty"`
+	Dir              string          `json:"dir"`
+	RepositoryRoot   string          `json:"repository_root,omitempty"`
+	Started          time.Time       `json:"started"`
+	ParentID         string          `json:"parent_id,omitempty"`
+	BatchID          string          `json:"batch_id,omitempty"`
+	RootSessionID    string          `json:"root_session_id,omitempty"`
+	Model            string          `json:"model,omitempty"`
+	Provider         string          `json:"provider,omitempty"`
+	BaseURL          string          `json:"base_url,omitempty"`
+	InsecureTLS      bool            `json:"insecure_tls,omitempty"`
+	Reasoning        string          `json:"reasoning,omitempty"`
+	FastMode         *bool           `json:"fast_mode,omitempty"`
+	Subagent         string          `json:"subagent,omitempty"`
+	WorkspaceMode    WorkspaceMode   `json:"workspace_mode,omitempty"`
+	WorkspacePath    string          `json:"workspace_path,omitempty"`
+	WorkspaceBase    string          `json:"workspace_base,omitempty"`
+	WorkspaceCapture CaptureMode     `json:"workspace_capture,omitempty"`
+	MaxTurns         int             `json:"max_turns,omitempty"`
+	Timeout          time.Duration   `json:"timeout,omitempty"`
+	Tools            []string        `json:"tools,omitempty"`
+	WebSearchPolicy  WebSearchPolicy `json:"web_search_policy,omitempty"`
+	Status           Status          `json:"status,omitempty"`
+	Activity         string          `json:"activity,omitempty"`
+	Finished         time.Time       `json:"finished,omitempty"`
+	Error            string          `json:"error,omitempty"`
+	ProcessState     ProcessState    `json:"process_state,omitempty"`
+	TurnState        TurnState       `json:"turn_state,omitempty"`
+	CurrentTurnID    string          `json:"current_turn_id,omitempty"`
+	Attempt          int             `json:"attempt,omitempty"`
+	ProcessPID       int             `json:"process_pid,omitempty"`
+	UpdatedAt        time.Time       `json:"updated_at,omitempty"`
+	LastActivity     time.Time       `json:"last_activity,omitempty"`
+	ResultRef        string          `json:"result_ref,omitempty"`
+	PatchRef         string          `json:"patch_ref,omitempty"`
+	ChangedFiles     []string        `json:"changed_files,omitempty"`
+	InboxPath        string          `json:"inbox_path"`
+	EventLogPath     string          `json:"event_log_path"`
+	SessionPath      string          `json:"session_path"`
 
 	// SessionID, when non-empty, scopes the agent to a particular
 	// host zut session: the dashboard only shows agents whose
@@ -91,6 +92,7 @@ func metaPath(stateDir string) string { return filepath.Join(stateDir, "meta.jso
 // half-parsable file that fails Reload.
 func writeAgentMeta(stateDir string, a *Agent) error {
 	fastMode := a.FastMode
+	webSearchPolicy := childWebSearchPolicy(a.WebSearchPolicy, a.Subagent, a.Tools)
 	a.mu.Lock()
 	status := a.status
 	activity := a.activity
@@ -136,6 +138,7 @@ func writeAgentMeta(stateDir string, a *Agent) error {
 		MaxTurns:         a.MaxTurns,
 		Timeout:          a.Timeout,
 		Tools:            append([]string(nil), a.Tools...),
+		WebSearchPolicy:  webSearchPolicy,
 		Status:           status,
 		Activity:         activity,
 		Finished:         finished,
@@ -431,6 +434,7 @@ func (f *Supervisor) buildDetachedAgent(m agentMeta) *Agent {
 		MaxTurns:         m.MaxTurns,
 		Timeout:          m.Timeout,
 		Tools:            append([]string(nil), m.Tools...),
+		WebSearchPolicy:  childWebSearchPolicy(m.WebSearchPolicy, m.Subagent, m.Tools),
 		Attempt:          m.Attempt,
 		ProcessPID:       m.ProcessPID,
 		InboxPath:        m.InboxPath,
@@ -771,7 +775,8 @@ func (f *Supervisor) resume(ctx context.Context, id string, resuming bool) (*Age
 		WorkspaceMode: existing.WorkspaceMode, WorkspacePath: existing.WorkspacePath,
 		WorkspaceBase: existing.WorkspaceBase, WorkspaceCapture: existing.WorkspaceCapture,
 		MaxTurns: existing.MaxTurns, Timeout: existing.Timeout, Tools: append([]string(nil), existing.Tools...),
-		CurrentTurnID: existingSnapshot.CurrentTurnID, Attempt: existingSnapshot.Attempt,
+		WebSearchPolicy: childWebSearchPolicy(existing.WebSearchPolicy, existing.Subagent, existing.Tools),
+		CurrentTurnID:   existingSnapshot.CurrentTurnID, Attempt: existingSnapshot.Attempt,
 		SessionID: existing.SessionID,
 		InboxPath: inboxPath, EventLogPath: existing.EventLogPath,
 		SessionPath: existing.SessionPath,
@@ -858,6 +863,7 @@ func (f *Supervisor) resume(ctx context.Context, id string, resuming bool) (*Age
 		Attempt:           m.Attempt,
 		HeartbeatInterval: f.cfg.Policy.HeartbeatInterval,
 		Tools:             append([]string(nil), m.Tools...),
+		WebSearchPolicy:   childWebSearchPolicy(m.WebSearchPolicy, m.Subagent, m.Tools),
 		InboxPath:         m.InboxPath,
 		EventLogPath:      m.EventLogPath,
 		SessionPath:       m.SessionPath,

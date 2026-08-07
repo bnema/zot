@@ -211,3 +211,36 @@ func TestConfigSettingsStorePersistsInheritedTheme(t *testing.T) {
 		t.Fatalf("theme = %q, want inherited", cfg.Theme)
 	}
 }
+
+func TestConfigWebSearchEnabledForCLIDefaultsToTrue(t *testing.T) {
+	cfg := Config{}
+	if !cfg.WebSearchEnabledForCLI() {
+		t.Fatal("web search should default to enabled when the config field is absent")
+	}
+	disabled := false
+	cfg.WebSearchEnabled = &disabled
+	if cfg.WebSearchEnabledForCLI() {
+		t.Fatal("explicitly disabled web search setting was ignored")
+	}
+}
+
+func TestConfigSettingsStorePersistsWebSearch(t *testing.T) {
+	t.Setenv("ZUT_HOME", t.TempDir())
+	if err := SaveConfig(Config{Theme: "dark"}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := (configSettingsStore{}).SetWebSearchEnabled(false); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.WebSearchEnabled == nil || *cfg.WebSearchEnabled {
+		t.Fatal("web_search_enabled was not persisted as disabled")
+	}
+	if cfg.Theme != "dark" {
+		t.Fatalf("unrelated config changed: theme = %q, want dark", cfg.Theme)
+	}
+}

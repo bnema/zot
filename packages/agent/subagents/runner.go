@@ -59,21 +59,22 @@ type execRunner struct {
 // entirely and let the child resolve a default the same way a normal
 // `zut` invocation does.
 type subagentWorkerArgsOpts struct {
-	Exe         string
-	Dir         string
-	SessionPath string
-	InboxPath   string
-	Task        string
-	Model       string
-	Provider    string
-	BaseURL     string
-	InsecureTLS bool
-	Reasoning   string
-	FastMode    bool
-	FastModeSet bool
-	Subagent    string
-	MaxTurns    int
-	Tools       []string
+	Exe             string
+	Dir             string
+	SessionPath     string
+	InboxPath       string
+	Task            string
+	Model           string
+	Provider        string
+	BaseURL         string
+	InsecureTLS     bool
+	Reasoning       string
+	FastMode        bool
+	FastModeSet     bool
+	Subagent        string
+	MaxTurns        int
+	Tools           []string
+	WebSearchPolicy WebSearchPolicy
 }
 
 // defaultChildArgs builds the argv execRunner uses when its Command
@@ -96,21 +97,22 @@ func defaultChildArgs(exe string, a *Agent, sessionPath, inboxPath string) []str
 		task = ""
 	}
 	return subagentWorkerArgs(subagentWorkerArgsOpts{
-		Exe:         exe,
-		Dir:         a.Dir,
-		SessionPath: sessionPath,
-		InboxPath:   inboxPath,
-		Task:        task,
-		Model:       a.Model,
-		Provider:    a.Provider,
-		BaseURL:     a.BaseURL,
-		InsecureTLS: a.InsecureTLS,
-		Reasoning:   a.Reasoning,
-		FastMode:    a.FastMode,
-		FastModeSet: true,
-		Subagent:    a.Subagent,
-		MaxTurns:    a.MaxTurns,
-		Tools:       a.Tools,
+		Exe:             exe,
+		Dir:             a.Dir,
+		SessionPath:     sessionPath,
+		InboxPath:       inboxPath,
+		Task:            task,
+		Model:           a.Model,
+		Provider:        a.Provider,
+		BaseURL:         a.BaseURL,
+		InsecureTLS:     a.InsecureTLS,
+		Reasoning:       a.Reasoning,
+		FastMode:        a.FastMode,
+		FastModeSet:     true,
+		Subagent:        a.Subagent,
+		MaxTurns:        a.MaxTurns,
+		Tools:           a.Tools,
+		WebSearchPolicy: a.WebSearchPolicy,
 	})
 }
 
@@ -152,6 +154,11 @@ func subagentWorkerArgs(opts subagentWorkerArgsOpts) []string {
 	if opts.MaxTurns > 0 {
 		args = append(args, "--max-turns", fmt.Sprint(opts.MaxTurns))
 	}
+	webSearchPolicy := childWebSearchPolicy(opts.WebSearchPolicy, opts.Subagent, opts.Tools)
+	// Always propagate the final capability decision, including deny, so a
+	// child with no ordinary --tools list cannot re-enable web search from its
+	// own persisted configuration.
+	args = append(args, "--web-search-policy", webSearchPolicy.String())
 	if len(opts.Tools) > 0 {
 		args = append(args, "--tools", strings.Join(opts.Tools, ","))
 	}

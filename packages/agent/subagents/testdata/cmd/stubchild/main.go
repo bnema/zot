@@ -33,13 +33,17 @@ import (
 
 func main() {
 	var (
-		inboxPath   string
-		sessionPath string
-		cwd         string
+		inboxPath       string
+		sessionPath     string
+		cwd             string
+		webSearchPolicy string
 	)
 	flag.StringVar(&inboxPath, "subagent-worker", "", "inbox socket path")
 	flag.StringVar(&sessionPath, "session", "", "session file path")
 	flag.StringVar(&cwd, "cwd", "", "working directory")
+	// Accepted only to keep the fixture aligned with the real child argv;
+	// the stub does not construct a tool registry.
+	flag.StringVar(&webSearchPolicy, "web-search-policy", "", "web search capability policy")
 	flag.Parse()
 
 	if inboxPath == "" {

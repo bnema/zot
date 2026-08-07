@@ -3,6 +3,7 @@ package modes
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -11,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/bnema/zut/packages/agent/extensions"
@@ -75,6 +77,19 @@ type InteractiveConfig struct {
 	// PonytailEnabled mirrors the persisted default-on coding-guidance
 	// setting at startup. nil/missing means enabled.
 	PonytailEnabled *bool
+
+	// WebSearchEnabled mirrors the persisted default-on web-search setting.
+	// nil/missing means enabled for normal interactive sessions.
+	WebSearchEnabled *bool
+
+	// WebSearchToolAllowed is the immutable invocation-level capability ceiling.
+	// false means --no-tools, --tools, or a packaged PermissionSet excludes it.
+	WebSearchToolAllowed *bool
+
+	// WebSearchInvocationOverride is true when an explicit --tools list includes
+	// web_search. That invocation-level opt-in takes precedence over the
+	// persisted setting, so the settings row is informational for this session.
+	WebSearchInvocationOverride bool
 
 	// AutoSubagentsToolAllowed is nil for normal sessions and false when the
 	// launch-time --no-tools/--tools policy excludes subagent spawning.
@@ -186,6 +201,13 @@ type InteractiveConfig struct {
 	// RefreshTools re-resolves the live agent registry after a setting
 	// changes the main session's tool availability. Optional for embedders.
 	RefreshTools func() error
+
+	// SetWebSearchAvailable updates session-wide execution and generic-child
+	// ceilings after a live registry commit or fail-closed revocation. It can
+	// run while agentMu and i.mu are held, so callbacks must not re-enter
+	// Interactive or wait on either lock. The CLI callback only updates its
+	// web-search guard and supervisor policy.
+	SetWebSearchAvailable func(bool)
 
 	// RefreshPrompt re-resolves the complete live prompt and tool registry
 	// after a prompt-affecting setting changes. Optional for embedders.
@@ -471,6 +493,10 @@ type ponytailSettingsStore interface {
 	SetPonytailEnabled(enabled bool) error
 }
 
+type webSearchSettingsStore interface {
+	SetWebSearchEnabled(enabled bool) error
+}
+
 type Interactive struct {
 	cfg  InteractiveConfig
 	view *tui.View
@@ -482,6 +508,10 @@ type Interactive struct {
 	// agentMu serializes live registry replacement with side-dialog
 	// snapshots, whose copied-agent constructor reads the registry field.
 	agentMu sync.Mutex
+	// webSearchPolicyGeneration invalidates a resolve that began before a
+	// session policy transition. The final registry commit compares its captured
+	// value while agentMu and mu serialize it with live-agent replacement.
+	webSearchPolicyGeneration atomic.Uint64
 	// managedAutoSubagentsAddenda records exact prompt blocks appended by
 	// auto-subagents. Disable only removes these owned occurrences, leaving
 	// identical text that came from the user's base prompt untouched.
@@ -3678,7 +3708,10 @@ func (i *Interactive) ApplySessionAgent(ag *core.Agent, providerName, model stri
 	if ag == nil {
 		return
 	}
+	i.agentMu.Lock()
+	defer i.agentMu.Unlock()
 	i.mu.Lock()
+	i.prepareReplacementAgentLocked(ag)
 	i.agent = ag
 	i.cfg.Provider = providerName
 	i.cfg.Model = model
@@ -3732,7 +3765,10 @@ func (i *Interactive) applyChangedCWD(ag *core.Agent, provider, model, cwd strin
 	profiles, _ := subagents.Discover(cwd, home)
 	subagentsAddendum := subagents.SystemPromptAddendum(profiles)
 
+	i.agentMu.Lock()
+	defer i.agentMu.Unlock()
 	i.mu.Lock()
+	i.prepareReplacementAgentLocked(ag)
 	i.agent = ag
 	i.cfg.CWD = cwd
 	i.cfg.SubagentsSystemAddendum = subagentsAddendum
@@ -4167,6 +4203,10 @@ func (i *Interactive) openSettingsDialog() {
 		ponytailHint = "requires persistent settings and live prompt refresh support"
 	}
 
+	webSearchEnabled := i.webSearchEffectiveEnabled()
+	webSearchDisabled := !i.webSearchSettingsAvailable()
+	webSearchHint := i.webSearchUnavailableHint()
+
 	fastMode := i.cfg.FastMode != nil && *i.cfg.FastMode
 	fastModeHint := "OpenAI service tier"
 	if !provider.SupportsFastMode(i.cfg.Provider) {
@@ -4313,6 +4353,14 @@ func (i *Interactive) openSettingsDialog() {
 			value:    ponytailEnabled,
 			disabled: ponytailDisabled,
 			hint:     ponytailHint,
+		},
+		{
+			key:      "web_search_enabled",
+			label:    "web search",
+			desc:     "search DuckDuckGo for bounded public-web sources; sends queries to the public backend",
+			value:    webSearchEnabled,
+			disabled: webSearchDisabled,
+			hint:     webSearchHint,
 		},
 		{
 			key:   "fast_mode",
@@ -4661,6 +4709,125 @@ func (i *Interactive) ponytailSettingsAvailable() bool {
 	return persistent && i.cfg.RefreshPrompt != nil
 }
 
+func (i *Interactive) webSearchEnabled() bool {
+	return i.cfg.WebSearchEnabled == nil || *i.cfg.WebSearchEnabled
+}
+
+func (i *Interactive) webSearchToolAllowed() bool {
+	return i.cfg.WebSearchToolAllowed == nil || *i.cfg.WebSearchToolAllowed
+}
+
+func (i *Interactive) webSearchEffectiveEnabled() bool {
+	return i.webSearchToolAllowed() && (i.cfg.WebSearchInvocationOverride || i.webSearchEnabled())
+}
+
+func (i *Interactive) webSearchSettingsAvailable() bool {
+	_, persistent := i.cfg.SettingsStore.(webSearchSettingsStore)
+	return i.webSearchToolAllowed() && !i.cfg.WebSearchInvocationOverride && persistent && i.cfg.RefreshTools != nil
+}
+
+func (i *Interactive) webSearchUnavailableHint() string {
+	if !i.webSearchToolAllowed() {
+		return "unavailable in this session due to the launch-time tool capability ceiling"
+	}
+	if i.cfg.WebSearchInvocationOverride {
+		return "enabled for this session by explicit --tools web_search; the persisted setting applies to invocations without --tools"
+	}
+	if !i.webSearchSettingsAvailable() {
+		return "requires persistent settings and live tool refresh support"
+	}
+	return ""
+}
+
+func (i *Interactive) setWebSearchAvailable(available bool) {
+	// Advance before publishing the new gate/child ceiling. A resolver that
+	// captured the prior generation can no longer commit after this transition.
+	// Callers may hold agentMu and i.mu; the callback must complete without
+	// calling back into Interactive or requiring either lock.
+	i.webSearchPolicyGeneration.Add(1)
+	if i.cfg.SetWebSearchAvailable != nil {
+		i.cfg.SetWebSearchAvailable(available)
+	}
+}
+
+func (i *Interactive) applyWebSearchSettingToggle(key string, value bool) {
+	previous := i.webSearchEnabled()
+	store, persistent := i.cfg.SettingsStore.(webSearchSettingsStore)
+	if !i.webSearchSettingsAvailable() || !persistent {
+		i.resetSettingsToggle(key, i.webSearchEffectiveEnabled())
+		i.mu.Lock()
+		i.statusOK = ""
+		i.statusErr = "web search unavailable: " + i.webSearchUnavailableHint()
+		i.mu.Unlock()
+		return
+	}
+	if err := store.SetWebSearchEnabled(value); err != nil {
+		i.resetSettingsToggle(key, previous)
+		i.mu.Lock()
+		i.statusOK = ""
+		i.statusErr = "settings: " + err.Error()
+		i.mu.Unlock()
+		return
+	}
+	val := value
+	i.cfg.WebSearchEnabled = &val
+	// Revoke and advance the policy generation for both directions. Enabling
+	// remains fail-closed until the freshly resolved registry commits, while a
+	// stale resolve from before this persisted transition is rejected.
+	i.stripWebSearchTool()
+	if err := i.cfg.RefreshTools(); err != nil {
+		// Refresh failure leaves the old registry's state unknown. Revoke both
+		// live execution and generic-child inheritance before rollback.
+		i.stripWebSearchTool()
+		errMsg := "settings: web search tool refresh: " + err.Error()
+		if rollbackErr := store.SetWebSearchEnabled(previous); rollbackErr != nil {
+			failClosed := false
+			i.cfg.WebSearchEnabled = &failClosed
+			i.resetSettingsToggle(key, false)
+			errMsg += "; rollback persistence: " + rollbackErr.Error()
+		} else {
+			previousVal := previous
+			i.cfg.WebSearchEnabled = &previousVal
+			i.resetSettingsToggle(key, previous)
+			if refreshErr := i.cfg.RefreshTools(); refreshErr != nil {
+				errMsg += "; rollback refresh: " + refreshErr.Error()
+				i.stripWebSearchTool()
+			}
+		}
+		i.mu.Lock()
+		i.statusOK = ""
+		i.statusErr = errMsg
+		i.mu.Unlock()
+		return
+	}
+	i.mu.Lock()
+	i.statusOK = "web search " + onOff(value)
+	i.statusErr = ""
+	i.mu.Unlock()
+}
+
+// stripWebSearchTool removes the callable web_search entry from the live
+// registry without asking the resolver to run again. It is the fail-closed
+// fallback when persistence rollback fails after a refresh failure.
+func (i *Interactive) stripWebSearchTool() {
+	// Revoke first so a stale tool snapshotted by core cannot execute while
+	// the advertised registry is being replaced.
+	i.setWebSearchAvailable(false)
+	i.agentMu.Lock()
+	defer i.agentMu.Unlock()
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	if i.agent == nil {
+		return
+	}
+	tools := i.agent.ToolsSnapshot()
+	if _, ok := tools["web_search"]; !ok {
+		return
+	}
+	delete(tools, "web_search")
+	i.agent.SetTools(tools)
+}
+
 func (i *Interactive) applySettingToggle(key string, value bool) {
 	// Every setting toggle forces a full repaint at the end — same
 	// effect as the user pressing Ctrl+L — so any per-setting visual
@@ -4736,6 +4903,13 @@ func (i *Interactive) applySettingToggle(key string, value bool) {
 		i.statusOK = "AI terminal titles " + onOff(value)
 		i.statusErr = ""
 		i.mu.Unlock()
+	case "web_search_enabled":
+		apply := func() { i.applyWebSearchSettingToggle(key, value) }
+		if i.cfg.SessionTransition != nil {
+			i.cfg.SessionTransition(apply)
+		} else {
+			apply()
+		}
 	case "ponytail_enabled":
 		previous := i.ponytailEnabled()
 		store, available := i.cfg.SettingsStore.(ponytailSettingsStore)
@@ -6416,7 +6590,9 @@ func (i *Interactive) swapModelUnserialized(prov, model string, builder func(str
 	if i.agent != nil && i.agent != ag {
 		_ = tools.CloseLSPManagers(i.agent.ToolsSnapshot())
 	}
+	i.agentMu.Lock()
 	i.mu.Lock()
+	i.prepareReplacementAgentLocked(ag)
 	i.agent = ag
 	i.cfg.Provider = p
 	i.cfg.Model = md
@@ -6430,12 +6606,13 @@ func (i *Interactive) swapModelUnserialized(prov, model string, builder func(str
 	// identical messages will reuse the existing entries. Nothing
 	// to invalidate.
 	i.mu.Unlock()
+	i.agentMu.Unlock()
 	// The new agent was built off the base tool registry, so any
 	// dynamically-registered tools need to be reattached. The apply
 	// helpers are no-ops when their feature is inactive, so the
 	// cross-provider path still works on a vanilla setup.
 	i.applyAutoSubagentsTool(i.autoSubagentsEnabled())
-	i.applyTelegramTools(i.telegramBridge != nil && i.telegramBridge.Active())
+	i.applyTelegramTools(i.telegramBridge != nil)
 	if i.cfg.PersistModel != nil {
 		i.cfg.PersistModel(p, md)
 	}
@@ -6450,26 +6627,32 @@ func (i *Interactive) handleAuthEvent(ev auth.Event) {
 	case "error":
 		i.dialog.ShowResult(false, ev.Message)
 	case "success":
-		// Rebuild the agent with the fresh credential.
-		ag, prov, model, err := i.cfg.BuildAgent()
-		if err != nil {
-			i.dialog.ShowResult(false, err.Error())
-			return
-		}
-		commitLogin := func() {
+		// Keep the credential-driven resolve and its final replacement in the
+		// same transition as settings/session changes. Otherwise a build that
+		// started under the old web-search policy could commit afterward.
+		var buildErr error
+		buildAndCommitLogin := func() {
+			ag, prov, model, err := i.cfg.BuildAgent()
+			if err != nil {
+				buildErr = err
+				return
+			}
+			i.agentMu.Lock()
 			i.mu.Lock()
 			oldAgent := i.agent
+			i.prepareReplacementAgentLocked(ag)
 			i.agent = ag
 			i.cfg.Provider = prov
 			i.cfg.Model = model
 			i.statusErr = ""
 			i.statusOK = "logged in to " + ev.Provider + " via " + ev.Method
 			i.mu.Unlock()
+			i.agentMu.Unlock()
 			if oldAgent != nil {
 				_ = tools.CloseLSPManagers(oldAgent.ToolsSnapshot())
 			}
 			i.applyAutoSubagentsTool(i.autoSubagentsEnabled())
-			i.applyTelegramTools(i.telegramBridge != nil && i.telegramBridge.Active())
+			i.applyTelegramTools(i.telegramBridge != nil)
 			// Authentication can change the provider used by the live
 			// agent. Persist it on the active session just like /model.
 			if i.cfg.PersistModel != nil {
@@ -6477,9 +6660,13 @@ func (i *Interactive) handleAuthEvent(ev auth.Event) {
 			}
 		}
 		if i.cfg.SessionTransition != nil {
-			i.cfg.SessionTransition(commitLogin)
+			i.cfg.SessionTransition(buildAndCommitLogin)
 		} else {
-			commitLogin()
+			buildAndCommitLogin()
+		}
+		if buildErr != nil {
+			i.dialog.ShowResult(false, buildErr.Error())
+			return
 		}
 		i.dialog.ShowResult(true, "")
 	}
@@ -7384,10 +7571,28 @@ func (i *Interactive) handleEvent(ev core.AgentEvent) {
 	}
 }
 
+// WebSearchPolicyGeneration returns the generation a resolver must present at
+// its final interactive commit. Policy transitions advance it before changing
+// the gate or generic-child ceiling.
+func (i *Interactive) WebSearchPolicyGeneration() uint64 {
+	return i.webSearchPolicyGeneration.Load()
+}
+
 // ApplyAgentPromptConfig commits a resolved prompt and tool registry only if
-// ag is still the live interactive agent. It serializes the identity check
-// with agent replacement and swaps both values atomically in core.Agent.
+// ag is still the live interactive agent. Callers without a long-running
+// resolve use the current policy generation.
 func (i *Interactive) ApplyAgentPromptConfig(ag *core.Agent, system string, tools core.Registry) (core.Registry, bool) {
+	return i.applyAgentPromptConfig(ag, system, tools, 0, false)
+}
+
+// ApplyAgentPromptConfigAtWebSearchGeneration additionally rejects a registry
+// resolved before a web-search policy transition. This final check is made in
+// the same critical section as live-agent replacement and the core prompt swap.
+func (i *Interactive) ApplyAgentPromptConfigAtWebSearchGeneration(ag *core.Agent, system string, tools core.Registry, generation uint64) (core.Registry, bool) {
+	return i.applyAgentPromptConfig(ag, system, tools, generation, true)
+}
+
+func (i *Interactive) applyAgentPromptConfig(ag *core.Agent, system string, tools core.Registry, generation uint64, checkGeneration bool) (core.Registry, bool) {
 	if ag == nil {
 		return nil, false
 	}
@@ -7398,10 +7603,38 @@ func (i *Interactive) ApplyAgentPromptConfig(ag *core.Agent, system string, tool
 	defer i.agentMu.Unlock()
 	i.mu.Lock()
 	defer i.mu.Unlock()
-	if i.agent != ag {
+	if i.agent != ag || checkGeneration && i.webSearchPolicyGeneration.Load() != generation {
 		return nil, false
 	}
-	return ag.SetPromptConfig(system, tools), true
+	if i.telegramBridge != nil {
+		// Telegram prompts arrive over an external messaging channel without a
+		// per-request confirmation surface. Keep the normal interactive
+		// registry from reintroducing web_search from the moment the bridge is
+		// attached, including while its startup handshake is in flight.
+		delete(tools, "web_search")
+	}
+	oldTools := ag.SetPromptConfig(system, tools)
+	_, webSearchAvailable := tools["web_search"]
+	i.setWebSearchAvailable(webSearchAvailable)
+	return oldTools, true
+}
+
+// prepareReplacementAgentLocked applies session-wide capability policy before
+// ag becomes visible to prompt submission. The caller holds agentMu and i.mu.
+func (i *Interactive) prepareReplacementAgentLocked(ag *core.Agent) {
+	if ag == nil {
+		i.setWebSearchAvailable(false)
+		return
+	}
+	registry := ag.ToolsSnapshot()
+	if i.telegramBridge != nil {
+		// External Telegram prompts may arrive as soon as the replacement is
+		// published, so post-swap cleanup is too late.
+		delete(registry, "web_search")
+		ag.SetTools(registry)
+	}
+	_, webSearchAvailable := registry["web_search"]
+	i.setWebSearchAvailable(webSearchAvailable && i.telegramBridge == nil)
 }
 
 // DeferUntilIdle runs work immediately when the interactive agent is idle,
@@ -7622,7 +7855,7 @@ func (i *Interactive) telegramConnect() {
 		i.invalidate()
 		return
 	}
-	i.telegramBridge = &telegram.Bridge{
+	bridge := &telegram.Bridge{
 		Client: telegram.NewClient(cfg.BotToken),
 		Config: cfg,
 		Save: func(next telegram.Config) error {
@@ -7630,16 +7863,28 @@ func (i *Interactive) telegramConnect() {
 		},
 		Host: &telegramHost{iv: i},
 	}
-	if err := i.telegramBridge.Start(i.runCtx); err != nil {
+	i.mu.Lock()
+	i.telegramBridge = bridge
+	i.mu.Unlock()
+	// Strip web_search before the bridge's startup handshake can accept a
+	// Telegram update. ApplyAgentPromptConfig also keeps it stripped from
+	// concurrent refreshes while this bridge pointer is attached.
+	i.applyTelegramTools(true)
+	if err := bridge.Start(i.runCtx); err != nil {
+		i.mu.Lock()
 		i.telegramBridge = nil
+		i.mu.Unlock()
+		refreshErr := i.refreshToolsAfterTelegram()
 		i.mu.Lock()
 		i.statusErr = "telegram connect failed: " + err.Error()
+		if refreshErr != nil {
+			i.statusErr += "; tool refresh: " + refreshErr.Error()
+		}
 		i.mu.Unlock()
 		i.invalidate()
 		return
 	}
-	i.applyTelegramTools(true)
-	state := i.telegramBridge.State()
+	state := bridge.State()
 	label := "telegram connected"
 	if state.Username != "" {
 		label += " as @" + state.Username
@@ -7664,13 +7909,43 @@ func (i *Interactive) telegramDisconnect() {
 		i.invalidate()
 		return
 	}
-	i.telegramBridge.Stop()
-	i.applyTelegramTools(false)
+	bridge := i.telegramBridge
+	bridge.Stop()
 	i.mu.Lock()
-	i.statusOK = "telegram disconnected"
-	i.statusErr = ""
+	// Clear the pointer before rebuilding the normal registry. This both
+	// allows web_search back into the refresh and marks the bridge inactive
+	// for any concurrent prompt-config commit.
+	i.telegramBridge = nil
+	i.mu.Unlock()
+	refreshErr := i.refreshToolsAfterTelegram()
+	i.mu.Lock()
+	if refreshErr != nil {
+		i.statusOK = ""
+		i.statusErr = "telegram disconnect tool refresh: " + refreshErr.Error()
+	} else {
+		i.statusOK = "telegram disconnected"
+		i.statusErr = ""
+	}
 	i.mu.Unlock()
 	i.invalidate()
+}
+
+// refreshToolsAfterTelegram restores normal tools only through a successful
+// resolver refresh. Failure removes Telegram-only tools but leaves web_search
+// revoked in the live registry, stale snapshots, and generic-child policy.
+func (i *Interactive) refreshToolsAfterTelegram() error {
+	if i.cfg.RefreshTools == nil {
+		i.stripWebSearchTool()
+		i.applyTelegramTools(false)
+		return errors.New("live tool refresh is unavailable")
+	}
+	if err := i.cfg.RefreshTools(); err != nil {
+		i.stripWebSearchTool()
+		i.applyTelegramTools(false)
+		return err
+	}
+	i.applyTelegramTools(false)
+	return nil
 }
 
 // telegramSenderAdapter wraps the bridge so the tools package can
@@ -8003,9 +8278,14 @@ func (i *Interactive) applyAutoSubagentsTool(active bool) {
 // agent so the model only sees them while the bridge is connected.
 // Snapshots and mutates the live tool registry so any extension or
 // /reload-ext additions made while Telegram is connected survive a
-// later /telegram disconnect (we only add or strip the two telegram
-// entries, never the rest).
+// later /telegram disconnect. The two Telegram entries are always replaced;
+// web_search is additionally stripped only while the external bridge is active.
 func (i *Interactive) applyTelegramTools(active bool) {
+	if active {
+		// The child ceiling must be in place even when no live main agent exists,
+		// and before Bridge.Start can accept an external prompt.
+		i.setWebSearchAvailable(false)
+	}
 	i.agentMu.Lock()
 	defer i.agentMu.Unlock()
 	i.mu.Lock()
@@ -8017,6 +8297,11 @@ func (i *Interactive) applyTelegramTools(active bool) {
 	next := core.Registry{}
 	for name, t := range current {
 		if name == "telegram_send_image" || name == "telegram_send_file" {
+			continue
+		}
+		if active && name == "web_search" {
+			// External Telegram prompts have no per-request confirmation
+			// surface, so V1 does not expose native web search while paired.
 			continue
 		}
 		next[name] = t
@@ -8031,6 +8316,8 @@ func (i *Interactive) applyTelegramTools(active bool) {
 		}
 	}
 	i.agent.SetTools(next)
+	_, webSearchAvailable := next["web_search"]
+	i.setWebSearchAvailable(webSearchAvailable && !active)
 }
 
 // telegramStatus writes a one-liner describing the bridge state.

@@ -30,6 +30,7 @@ import (
 	"sync"
 
 	"github.com/bnema/zut/packages/agent"
+	"github.com/bnema/zut/packages/agent/subagents"
 	agenttools "github.com/bnema/zut/packages/agent/tools"
 	"github.com/bnema/zut/packages/core"
 	"github.com/bnema/zut/packages/provider"
@@ -75,8 +76,10 @@ type Config struct {
 	// BaseURL overrides the provider base url (for tests / proxies).
 	BaseURL string
 
-	// Tools is the list of tools to enable. Nil/empty = all built-in
-	// tools (read, write, edit, bash, create_worktree, lsp). Pass an empty-but-non-nil slice
+	// Tools is the list of tools to enable. Nil/empty = all ordinary built-in
+	// tools (read, write, edit, bash, create_worktree, lsp). web_search is
+	// excluded unless this list explicitly contains "web_search". Pass an
+	// empty-but-non-nil slice
 	// (e.g. []string{}) plus NoTools=true to disable everything.
 	Tools []string
 
@@ -107,6 +110,13 @@ type Runtime struct {
 // New constructs a Runtime from cfg. Returns an error if no
 // credential is available for the requested provider.
 func New(cfg Config) (*Runtime, error) {
+	webSearchPolicy := subagents.WebSearchDeny
+	for _, name := range cfg.Tools {
+		if name == "web_search" {
+			webSearchPolicy = subagents.WebSearchAllow
+			break
+		}
+	}
 	args := agent.Args{
 		Mode:               agent.ModeJSON, // headless
 		Provider:           cfg.Provider,
@@ -121,6 +131,7 @@ func New(cfg Config) (*Runtime, error) {
 		MaxSteps:           cfg.MaxSteps,
 		Tools:              cfg.Tools,
 		NoTools:            cfg.NoTools,
+		WebSearchPolicy:    webSearchPolicy,
 		NoSess:             true, // SDK callers manage persistence themselves
 	}
 	if args.MaxSteps == 0 {

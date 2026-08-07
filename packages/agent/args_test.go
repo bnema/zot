@@ -1,6 +1,10 @@
 package agent
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/bnema/zut/packages/agent/subagents"
+)
 
 func TestParseArgsSubagentAndReasoning(t *testing.T) {
 	args, err := ParseArgs([]string{"--subagent-worker", "/tmp/in.sock", "--subagent", "reviewer", "--reasoning", "high", "task"})
@@ -84,5 +88,70 @@ func TestParseArgsStream(t *testing.T) {
 	}
 	if args.Mode != ModeStream || args.Prompt != "hi" {
 		t.Fatalf("Mode=%q Prompt=%q", args.Mode, args.Prompt)
+	}
+}
+
+func TestParseArgsWebSearchPolicyIsWorkerOnlyRegardlessOfOrder(t *testing.T) {
+	for _, argv := range [][]string{
+		{"--web-search-policy", "allow"},
+		{"--web-search-policy", "allow", "--subagent-worker", "/tmp/in.sock", "--print"},
+		{"--subagent-worker", "/tmp/in.sock", "--web-search-policy", "deny", "--json"},
+	} {
+		if _, err := ParseArgs(argv); err == nil {
+			t.Fatalf("ordinary CLI mode accepted internal policy from %q", argv)
+		}
+	}
+
+	for _, tc := range []struct {
+		name   string
+		argv   []string
+		policy subagents.WebSearchPolicy
+	}{
+		{
+			name:   "policy before worker",
+			argv:   []string{"--web-search-policy", "allow", "--subagent-worker", "/tmp/in.sock", "--tools", "web_search"},
+			policy: subagents.WebSearchAllow,
+		},
+		{
+			name:   "policy after worker",
+			argv:   []string{"--print", "--subagent-worker", "/tmp/in.sock", "--web-search-policy", "deny"},
+			policy: subagents.WebSearchDeny,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			worker, err := ParseArgs(tc.argv)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if worker.Mode != ModeSubagentWorker || worker.WebSearchPolicy != tc.policy {
+				t.Fatalf("worker policy args = %#v", worker)
+			}
+		})
+	}
+}
+
+func TestParseArgsTracksExplicitToolListProvenance(t *testing.T) {
+	absent, err := ParseArgs(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if absent.ToolsSet || len(absent.Tools) != 0 {
+		t.Fatalf("absent --tools = %#v", absent)
+	}
+
+	empty, err := ParseArgs([]string{"--tools", ""})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !empty.ToolsSet || len(empty.Tools) != 0 {
+		t.Fatalf("empty --tools = %#v", empty)
+	}
+
+	selected, err := ParseArgs([]string{"--tools", "read, web_search"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !selected.ToolsSet || len(selected.Tools) != 2 || selected.Tools[1] != "web_search" {
+		t.Fatalf("selected --tools = %#v", selected)
 	}
 }

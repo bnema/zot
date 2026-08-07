@@ -5,7 +5,9 @@
 //	mcp__<server>__<tool>
 //
 // The double underscore separates the server name from the tool name,
-// avoiding collisions with zut's built-in tools (read, write, edit, bash, lsp, skill).
+// avoiding collisions with zut's built-in tools (read, write, edit, bash,
+// lsp, web_search, skill). The web_search name is reserved even when the
+// built-in is disabled.
 package main
 
 import (

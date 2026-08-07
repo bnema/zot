@@ -2,6 +2,65 @@ package subagents
 
 import "time"
 
+// WebSearchPolicy is the capability decision propagated from a host agent to
+// a subagent worker. Inherit is used only before a supervisor resolves the
+// child decision; persisted and launched workers use Allow or Deny so their
+// capability does not change with a later config edit.
+type WebSearchPolicy uint8
+
+const (
+	WebSearchInherit WebSearchPolicy = iota
+	WebSearchDeny
+	WebSearchAllow
+)
+
+func (p WebSearchPolicy) Allows() bool { return p == WebSearchAllow }
+
+// childPolicy turns an unresolved or corrupt policy into an explicit deny.
+// Inherit is useful while a supervisor is resolving a spawn request, but it
+// must never cross the worker boundary because the child may otherwise apply
+// its own default-enabled configuration.
+func (p WebSearchPolicy) childPolicy() WebSearchPolicy {
+	if p == WebSearchAllow {
+		return WebSearchAllow
+	}
+	return WebSearchDeny
+}
+
+func (p WebSearchPolicy) String() string {
+	switch p {
+	case WebSearchAllow:
+		return "allow"
+	case WebSearchDeny:
+		return "deny"
+	case WebSearchInherit:
+		return "inherit"
+	default:
+		// Unknown values must not serialize as inherit: that would let a
+		// worker fall back to its own default and potentially regain access.
+		return "deny"
+	}
+}
+
+func childWebSearchPolicy(policy WebSearchPolicy, subagent string, toolNames []string) WebSearchPolicy {
+	if subagent != "" && NamedWebSearchPolicy(toolNames) != WebSearchAllow {
+		return WebSearchDeny
+	}
+	return policy.childPolicy()
+}
+
+// NamedWebSearchPolicy requires a named profile to opt in explicitly. An
+// omitted or empty profile tools list therefore denies web search without
+// changing the default selection of the other built-in tools.
+func NamedWebSearchPolicy(toolNames []string) WebSearchPolicy {
+	for _, name := range toolNames {
+		if name == "web_search" {
+			return WebSearchAllow
+		}
+	}
+	return WebSearchDeny
+}
+
 // ProcessState describes the lifetime of the supervised child process. It is
 // intentionally independent from TurnState: an alive worker can be idle
 // between turns, and a disconnected supervisor does not imply that the

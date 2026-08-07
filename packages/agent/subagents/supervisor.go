@@ -62,6 +62,12 @@ type Config struct {
 	// child subprocesses use the same OpenAI service-tier setting.
 	FastMode bool
 
+	// WebSearchPolicy is the already-resolved capability of the parent
+	// session. Generic children may inherit it only when the subagent policy
+	// also permits web_search; named profiles resolve their own explicit
+	// tools opt-in at SpawnReq.
+	WebSearchPolicy WebSearchPolicy
+
 	// BaseURL and InsecureTLS are the effective provider connection
 	// settings inherited by newly spawned children. They are copied to
 	// each Agent and persisted so a reload/resume does not silently fall
@@ -224,6 +230,22 @@ func (f *Supervisor) FastMode() bool {
 	return f.cfg.FastMode
 }
 
+// SetWebSearchPolicy updates the parent capability used for subsequently
+// spawned generic children. Existing agents retain their persisted decision.
+func (f *Supervisor) SetWebSearchPolicy(policy WebSearchPolicy) {
+	f.mu.Lock()
+	f.cfg.WebSearchPolicy = policy
+	f.mu.Unlock()
+}
+
+// WebSearchPolicy reports the parent capability used for new generic
+// children.
+func (f *Supervisor) WebSearchPolicy() WebSearchPolicy {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.cfg.WebSearchPolicy
+}
+
 // SetProvider updates the provider used by subsequently spawned children.
 // Existing agents keep their persisted provider selection.
 func (f *Supervisor) SetProvider(provider string) {
@@ -320,6 +342,11 @@ type SpawnRequest struct {
 	// disables fast mode for this child; nil inherits Config.FastMode.
 	FastMode *bool
 	Subagent string // optional named markdown profile
+
+	// WebSearchPolicy is an internal child capability override. Generic
+	// requests normally inherit the supervisor's parent decision; named
+	// requests use Allow only when their profile explicitly lists web_search.
+	WebSearchPolicy WebSearchPolicy
 
 	// ParentID is metadata used for per-parent scheduling limits. A
 	// non-empty RequesterAgentID identifies an untrusted child request;
@@ -450,6 +477,7 @@ func (f *Supervisor) SpawnReq(ctx context.Context, req SpawnRequest) (*Agent, er
 	if len(tools) == 0 && len(f.cfg.Policy.AllowedTools) > 0 {
 		tools = append([]string(nil), f.cfg.Policy.AllowedTools...)
 	}
+	webSearchPolicy := f.resolveWebSearchPolicy(req)
 
 	a := &Agent{
 		ID:                id,
@@ -477,6 +505,7 @@ func (f *Supervisor) SpawnReq(ctx context.Context, req SpawnRequest) (*Agent, er
 		Timeout:           timeout,
 		HeartbeatInterval: f.cfg.Policy.HeartbeatInterval,
 		Tools:             tools,
+		WebSearchPolicy:   webSearchPolicy,
 		InboxPath:         inboxPath,
 		EventLogPath:      logPath,
 		SessionPath:       sessionPath,
