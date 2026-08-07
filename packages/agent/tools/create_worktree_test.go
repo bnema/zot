@@ -60,6 +60,19 @@ func TestCreateWorktreeBootstrapsDefaultAtRepositoryRoot(t *testing.T) {
 	if got := gitTestOutput(t, repo, "config", "--local", "--get", worktreeConfigKey); got != defaultWorktreeRoot {
 		t.Fatalf("saved worktree root = %q, want %q", got, defaultWorktreeRoot)
 	}
+	followupArgs := mustJSON(t, map[string]string{
+		"branch":         "feature/default-followup",
+		"bootstrap_root": defaultWorktreeRoot,
+	})
+	if _, err := tool.Preview(context.Background(), followupArgs); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tool.Execute(context.Background(), followupArgs, nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(repo, defaultWorktreeRoot, "feature", "default-followup")); err != nil {
+		t.Fatalf("configured default root was not reused: %v", err)
+	}
 }
 
 func TestCreateWorktreeRequiresBootstrapForUnconfiguredRepository(t *testing.T) {
@@ -93,7 +106,39 @@ func TestCreateWorktreeRequiresBootstrapForUnconfiguredRepository(t *testing.T) 
 	}
 }
 
-func TestCreateWorktreeRejectsBootstrapRootWhenDefaultRootExists(t *testing.T) {
+func TestCreateWorktreeAcceptsDefaultBootstrapRootWhenDefaultRootExists(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git is required")
+	}
+	repo := initWorktreeTestRepo(t)
+	if err := os.Mkdir(filepath.Join(repo, defaultWorktreeRoot), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	tool := newCreateWorktreeTestTool(repo)
+	args := mustJSON(t, map[string]string{
+		"branch":         "feature/existing-default-root",
+		"bootstrap_root": defaultWorktreeRoot,
+	})
+
+	if _, err := tool.Preview(context.Background(), args); err != nil {
+		t.Fatal(err)
+	}
+	result, err := tool.Execute(context.Background(), args, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(repo, defaultWorktreeRoot, "feature", "existing-default-root")); err != nil {
+		t.Fatalf("worktree was not created: %v", err)
+	}
+	if source, _ := result.Details.(map[string]any)["root_source"].(string); source != "existing .worktrees directory" {
+		t.Fatalf("root source = %q", source)
+	}
+	if got := gitTestOutputAllowExit(t, repo, "config", "--local", "--get", worktreeConfigKey); got.exitCode != 1 {
+		t.Fatalf("existing default root saved config: %#v", got)
+	}
+}
+
+func TestCreateWorktreeRejectsConflictingBootstrapRootWhenDefaultRootExists(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git is required")
 	}
@@ -114,6 +159,30 @@ func TestCreateWorktreeRejectsBootstrapRootWhenDefaultRootExists(t *testing.T) {
 		t.Fatalf("conflicting bootstrap saved config: %#v", got)
 	}
 	if got := gitTestOutputAllowExit(t, repo, "show-ref", "--verify", "--quiet", "refs/heads/feature/conflicting-bootstrap"); got.exitCode != 1 {
+		t.Fatalf("conflicting bootstrap created branch: %#v", got)
+	}
+}
+
+func TestCreateWorktreeRejectsConflictingBootstrapRootWhenRootIsConfigured(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git is required")
+	}
+	repo := initWorktreeTestRepo(t)
+	gitTestOutput(t, repo, "config", "--local", worktreeConfigKey, defaultWorktreeRoot)
+	tool := newCreateWorktreeTestTool(repo)
+	args := mustJSON(t, map[string]string{
+		"branch":         "feature/conflicting-configured-bootstrap",
+		"bootstrap_root": t.TempDir(),
+	})
+
+	if _, err := tool.Preview(context.Background(), args); err == nil || !strings.Contains(err.Error(), "already configured") {
+		t.Fatalf("preview error = %v, want configured-root error", err)
+	}
+	_, err := tool.Execute(context.Background(), args, nil)
+	if err == nil || !strings.Contains(err.Error(), "already configured") {
+		t.Fatalf("error = %v, want configured-root error", err)
+	}
+	if got := gitTestOutputAllowExit(t, repo, "show-ref", "--verify", "--quiet", "refs/heads/feature/conflicting-configured-bootstrap"); got.exitCode != 1 {
 		t.Fatalf("conflicting bootstrap created branch: %#v", got)
 	}
 }
@@ -153,7 +222,14 @@ func TestCreateWorktreeBootstrapsExternalRootWithoutChangingGitignore(t *testing
 	if state, _ := result.Details.(map[string]any)["state"].(string); state != "created" {
 		t.Fatalf("state = %q, want created", state)
 	}
-	followup, err := tool.Execute(context.Background(), json.RawMessage(`{"branch":"feature/external-followup"}`), nil)
+	followupArgs := mustJSON(t, map[string]string{
+		"branch":         "feature/external-followup",
+		"bootstrap_root": externalRoot,
+	})
+	if _, err := tool.Preview(context.Background(), followupArgs); err != nil {
+		t.Fatal(err)
+	}
+	followup, err := tool.Execute(context.Background(), followupArgs, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

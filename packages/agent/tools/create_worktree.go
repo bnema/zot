@@ -255,9 +255,6 @@ func (t *CreateWorktreeTool) plan(ctx context.Context, raw json.RawMessage) (cre
 		return createWorktreePlan{}, fmt.Errorf("create_worktree: read local worktree configuration: %w", err)
 	}
 	bootstrapRoot := strings.TrimSpace(args.BootstrapRoot)
-	if configured && bootstrapRoot != "" {
-		return createWorktreePlan{}, errors.New("create_worktree: worktree root is already configured; change the local Git configuration explicitly before bootstrapping again")
-	}
 
 	rootSource := "existing .worktrees directory"
 	configValue := ""
@@ -268,6 +265,23 @@ func (t *CreateWorktreeTool) plan(ctx context.Context, raw json.RawMessage) (cre
 		worktreeRoot, defaultRoot, err = resolveConfiguredWorktreeRoot(repoRoot, configuredRoot)
 		if err != nil {
 			return createWorktreePlan{}, err
+		}
+		if bootstrapRoot != "" {
+			requestedRoot, requestedDefault, _, err := resolveBootstrapWorktreeRoot(repoRoot, bootstrapRoot)
+			if err != nil {
+				return createWorktreePlan{}, err
+			}
+			configuredCanonical, err := canonicalOrParent(worktreeRoot)
+			if err != nil {
+				return createWorktreePlan{}, fmt.Errorf("create_worktree: resolve configured worktree root: %w", err)
+			}
+			requestedCanonical, err := canonicalOrParent(requestedRoot)
+			if err != nil {
+				return createWorktreePlan{}, fmt.Errorf("create_worktree: resolve bootstrap_root: %w", err)
+			}
+			if defaultRoot != requestedDefault || configuredCanonical != requestedCanonical {
+				return createWorktreePlan{}, errors.New("create_worktree: worktree root is already configured; change the local Git configuration explicitly before bootstrapping again")
+			}
 		}
 		rootSource = "local Git config"
 	} else {
@@ -280,7 +294,7 @@ func (t *CreateWorktreeTool) plan(ctx context.Context, raw json.RawMessage) (cre
 			return bootstrapRequiredPlan(branch, repoRoot), nil
 		}
 		if exists {
-			if bootstrapRoot != "" {
+			if bootstrapRoot != "" && bootstrapRoot != defaultWorktreeRoot {
 				return createWorktreePlan{}, errors.New("create_worktree: worktree root is already established; omit bootstrap_root")
 			}
 			worktreeRoot = defaultPath
