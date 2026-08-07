@@ -19,6 +19,7 @@ func TestAutoSubagentsSystemPromptTogglesProfileManifestWithDelegationGuidance(t
 		cfg: InteractiveConfig{
 			AutoSubagentsSystemAddendum: "auto-subagents guidance",
 			SubagentsSystemAddendum:     "[subagents_list]\n- reviewer\n[/subagents_list]",
+			Supervisor:                  &subagents.Supervisor{},
 		},
 	}
 
@@ -47,6 +48,7 @@ func TestAutoSubagentsTogglePreservesMatchingBasePromptBlocks(t *testing.T) {
 		cfg: InteractiveConfig{
 			AutoSubagentsSystemAddendum: guidance,
 			SubagentsSystemAddendum:     manifest,
+			Supervisor:                  &subagents.Supervisor{},
 		},
 	}
 
