@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -251,6 +252,31 @@ func TestPrepareSessionResumePreservesLegacyMissingMetadata(t *testing.T) {
 	}
 	if got := firstMessageText(candidate.messages); got != "resumed transcript" {
 		t.Fatalf("legacy candidate transcript = %q, want resumed transcript", got)
+	}
+}
+
+func TestPrepareSessionResumePreservesCompactHandoffMetadata(t *testing.T) {
+	path := syntheticSession(t, "stored-provider", "stored-model", provider.Usage{})
+	session, _, err := core.OpenSession(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handoff := json.RawMessage(`{"version":1,"reason":"status_rescue","rescue_attempts":1}`)
+	if err := session.UpdateCompactHandoff(handoff); err != nil {
+		t.Fatal(err)
+	}
+	if err := session.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	current := core.NewAgent(nil, "current-model", "", nil)
+	candidate, err := prepareSessionResume(path, current, "stored-provider", "stored-model", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer candidate.session.Close()
+	if got := string(candidate.session.Meta.CompactHandoff); got != string(handoff) {
+		t.Fatalf("candidate compact handoff = %q, want %q", got, handoff)
 	}
 }
 

@@ -57,6 +57,11 @@ type SessionMeta struct {
 	Version  string    `json:"version"`
 	Title    string    `json:"title,omitempty"`
 
+	// CompactHandoff is opaque host-managed state for a live compaction
+	// continuation. It is session metadata, never provider context.
+	// Missing or invalid values are handled by the owning host as no handoff.
+	CompactHandoff json.RawMessage `json:"compact_handoff,omitempty"`
+
 	// Parent is the ID of the session this one was forked from, or
 	// empty for top-level sessions. The tree picker walks parents
 	// upward and sibling files (same cwd dir, same parent ID)
@@ -1198,6 +1203,28 @@ func (s *Session) UpdateModel(providerName, model string) error {
 	return nil
 }
 
+// UpdateCompactHandoff records opaque host-owned compaction-handoff state in
+// a new metadata row. A nil or JSON null value clears the state. The core
+// session layer deliberately does not interpret the payload.
+func (s *Session) UpdateCompactHandoff(state json.RawMessage) error {
+	if s == nil {
+		return nil
+	}
+	if len(state) > 0 && !json.Valid(state) {
+		return errors.New("compact handoff state is not valid JSON")
+	}
+	if strings.TrimSpace(string(state)) == "null" {
+		state = nil
+	}
+	previous := append(json.RawMessage(nil), s.Meta.CompactHandoff...)
+	s.Meta.CompactHandoff = append(json.RawMessage(nil), state...)
+	if err := s.writeLine(sessionLine{Type: "meta", Meta: &s.Meta}); err != nil {
+		s.Meta.CompactHandoff = previous
+		return fmt.Errorf("update compact handoff: %w", err)
+	}
+	return nil
+}
+
 // UpdateTitle records a session title without adding anything to the
 // conversation transcript. The title is kept in memory as well so the live
 // session can restore it when the user switches sessions in the TUI.
@@ -1269,7 +1296,7 @@ func (s *Session) Close() error {
 	}
 	flushErr := s.buf.Flush()
 	closeErr := s.writer.Close()
-	if s.freshFile && s.messagesAppended == 0 && len(s.ExtensionState) == 0 {
+	if s.freshFile && s.messagesAppended == 0 && len(s.ExtensionState) == 0 && len(s.Meta.CompactHandoff) == 0 {
 		// Best-effort cleanup. We deliberately don't propagate the
 		// remove error: if it fails (file already gone, perms changed)
 		// the worst case is one stale empty file in the listing.

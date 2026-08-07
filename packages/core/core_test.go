@@ -256,6 +256,46 @@ func TestSessionRetainsExtensionStateWithoutMessages(t *testing.T) {
 	}
 }
 
+func TestSessionCompactHandoffRoundTripAndClear(t *testing.T) {
+	sess, err := NewSession(t.TempDir(), "/tmp/project", "anthropic", "claude", "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	state := json.RawMessage(`{"version":1,"reason":"status_rescue","rescue_attempts":1}`)
+	if err := sess.UpdateCompactHandoff(state); err != nil {
+		t.Fatal(err)
+	}
+	if got := string(sess.Meta.CompactHandoff); got != string(state) {
+		t.Fatalf("live compact handoff = %q, want %q", got, state)
+	}
+	if err := sess.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	reopened, _, err := OpenSession(sess.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := string(reopened.Meta.CompactHandoff); got != string(state) {
+		t.Fatalf("reopened compact handoff = %q, want %q", got, state)
+	}
+	if err := reopened.UpdateCompactHandoff(nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := reopened.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	reopened, _, err = OpenSession(sess.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+	if len(reopened.Meta.CompactHandoff) != 0 {
+		t.Fatalf("cleared compact handoff = %q, want empty", reopened.Meta.CompactHandoff)
+	}
+}
+
 func TestCostAdd(t *testing.T) {
 	var c CostTracker
 	c.Add(provider.Usage{InputTokens: 100, OutputTokens: 50, ReasoningTokens: 20, ReasoningTokensKnown: true, CostUSD: 0.01})
