@@ -14,6 +14,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/bnema/zut/packages/agent/extensions"
 	"github.com/bnema/zut/packages/agent/extproto"
@@ -497,6 +499,38 @@ type webSearchSettingsStore interface {
 	SetWebSearchEnabled(enabled bool) error
 }
 
+type compactContinuationOrigin uint8
+
+type compactContinuationRequest struct {
+	origin    compactContinuationOrigin
+	force     bool
+	lastStop  provider.StopReason
+	turnError error
+}
+
+const (
+	compactOriginManual compactContinuationOrigin = iota
+	compactOriginPreTurnThreshold
+	compactOriginAfterTurnThreshold
+	compactOriginRecovery
+)
+
+type compactContinuationReason uint8
+
+const (
+	compactContinuationNone compactContinuationReason = iota
+	compactContinuationStructuralTail
+	compactContinuationForcedLength
+	compactContinuationStatusRescue
+)
+
+const maxStatusRescueContinuations = 2
+
+type compactContinuationState struct {
+	reason         compactContinuationReason
+	rescueAttempts int
+}
+
 type Interactive struct {
 	cfg  InteractiveConfig
 	view *tui.View
@@ -624,6 +658,11 @@ type Interactive struct {
 	// flight. Surfaced in the status bar so the user can tell a
 	// condense pass from a regular assistant turn.
 	autoCompacting bool
+
+	// compactContinuation records the private reason and bounded rescue
+	// budget for the live compaction handoff. It is never persisted or
+	// inferred from rendered transcript rows.
+	compactContinuation compactContinuationState
 
 	// updateInfo is the result of the async update check. Zero value
 	// while the check hasn't completed or nothing is available.
@@ -3044,8 +3083,15 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 			i.invalidate()
 			return false
 		}
-		if i.busy && i.cancelTurn != nil {
-			i.cancelTurn()
+		i.mu.Lock()
+		busyCancel := i.busy && i.cancelTurn != nil
+		cancelTurn := i.cancelTurn
+		if busyCancel {
+			i.resetCompactContinuationLocked()
+		}
+		i.mu.Unlock()
+		if busyCancel {
+			cancelTurn()
 			// If a confirm dialog is pending, refuse it so the agent
 			// goroutine unblocks and the context cancellation can
 			// actually take effect.
@@ -3358,9 +3404,13 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 			}
 			clearSubmittedInput()
 			if ag != nil && !compacting {
+				i.mu.Lock()
+				i.resetCompactContinuationLocked()
 				ag.QueueMessage(text)
+				i.mu.Unlock()
 			} else {
 				i.mu.Lock()
+				i.resetCompactContinuationLocked()
 				i.queued = append(i.queued, text)
 				i.mu.Unlock()
 			}
@@ -3864,8 +3914,10 @@ func (i *Interactive) SubmitOrQueue(text string, images []provider.ImageBlock) {
 		// Compaction uses the host queue because it has no active agent loop
 		// to drain Agent.QueueMessage entries.
 		if i.agent != nil && !i.compacting {
+			i.resetCompactContinuationLocked()
 			i.agent.QueueMessage(text)
 		} else {
+			i.resetCompactContinuationLocked()
 			i.queued = append(i.queued, text)
 		}
 		i.mu.Unlock()
@@ -3893,6 +3945,9 @@ func (i *Interactive) CancelTurn() {
 	cancel := i.cancelTurn
 	i.mu.Unlock()
 	if cancel != nil {
+		i.mu.Lock()
+		i.resetCompactContinuationLocked()
+		i.mu.Unlock()
 		cancel()
 		i.confirmDialog.CancelAll("turn cancelled")
 	}
@@ -5657,6 +5712,7 @@ func (i *Interactive) runSlash(ctx context.Context, cmd string) (done bool) {
 		i.scrollOffset = 0
 		i.extNotes = nil
 		i.reloadErrors = nil
+		i.resetCompactContinuationLocked()
 		i.view.InvalidateRenderCache()
 		i.mu.Unlock()
 	case "/help":
@@ -5736,7 +5792,7 @@ func (i *Interactive) runSlash(ctx context.Context, cmd string) (done bool) {
 	case "/skills":
 		i.openSkillsDialog()
 	case "/compact":
-		i.runCompact(ctx, false, false)
+		i.runCompact(ctx, compactContinuationRequest{origin: compactOriginManual})
 	case "/study":
 		// Canned prompt that tells the agent to read every file
 		// in some target so its later turns have the whole thing
@@ -5756,9 +5812,13 @@ func (i *Interactive) runSlash(ctx context.Context, cmd string) (done bool) {
 		i.mu.Unlock()
 		if busy {
 			if ag != nil && !compacting {
+				i.mu.Lock()
+				i.resetCompactContinuationLocked()
 				ag.QueueMessage(studyPrompt)
+				i.mu.Unlock()
 			} else {
 				i.mu.Lock()
+				i.resetCompactContinuationLocked()
 				i.queued = append(i.queued, studyPrompt)
 				i.mu.Unlock()
 			}
@@ -6059,6 +6119,7 @@ func (i *Interactive) doLogout(target string) {
 			_ = tools.CloseLSPManagers(i.agent.ToolsSnapshot())
 		}
 		i.agent = nil
+		i.resetCompactContinuationLocked()
 		i.statusOK = "logged out of " + strings.Join(providers, ", ") + ". type /login to sign back in."
 	} else {
 		i.statusOK = "logged out of " + strings.Join(providers, ", ")
@@ -6244,6 +6305,9 @@ func (i *Interactive) cancelAndWaitForIdle() {
 		return
 	}
 	if cancel != nil {
+		i.mu.Lock()
+		i.resetCompactContinuationLocked()
+		i.mu.Unlock()
 		cancel()
 	}
 	// ConfirmToolCall waits on its response channel rather than the turn
@@ -6308,8 +6372,10 @@ func (i *Interactive) submitOrQueuePrompt(ctx context.Context, prompt string) {
 		// goroutine cannot publish idle and inspect an empty queue between
 		// this check and the append.
 		if i.compacting {
+			i.resetCompactContinuationLocked()
 			i.queued = append(i.queued, prompt)
 		} else {
+			i.resetCompactContinuationLocked()
 			i.agent.QueueMessage(prompt)
 		}
 		i.mu.Unlock()
@@ -6682,7 +6748,13 @@ func (i *Interactive) clearPendingCompactTurnLocked() {
 	i.pendingPostCompactNote = ""
 }
 
-const autoCompactContinuationPrompt = `Context was compacted while work was in progress. Continue the user's most recent active request now; do not wait for them to type "continue". Re-read the context summary and kept recent messages, treating active constraints and preferences there as still in force, including delegation/subagent instructions. If a newer request supersedes earlier plans in the summary, follow the newer request. If there is truly nothing left to do, say so briefly instead of inventing work.`
+// resetCompactContinuationLocked clears the private handoff state. The
+// caller must hold i.mu.
+func (i *Interactive) resetCompactContinuationLocked() {
+	i.compactContinuation = compactContinuationState{}
+}
+
+const autoCompactContinuationPrompt = `Context was compacted while work was in progress. Continue the user's most recent active request now; do not wait for them to type "continue". Inspect the context summary and kept recent messages, treating active constraints and preferences there as still in force, including delegation/subagent instructions. If a newer request supersedes earlier plans in the summary, follow the newer request. A progress report, plan update, or statement of future work is not completion: if required work remains, take the next concrete action now. Only finish when the request is actually complete or when a specific user decision is required. If nothing remains, give a brief truthful completion; do not invent work or force a tool call.`
 
 // startAutoCompactContinuation adds an internal user turn that tells the
 // model to resume the task after threshold compaction. Provider requests
@@ -6692,9 +6764,7 @@ const autoCompactContinuationPrompt = `Context was compacted while work was in p
 func (i *Interactive) startAutoCompactContinuation(parent context.Context) {
 	i.mu.Lock()
 	ag := i.agent
-	i.mu.Unlock()
 	if ag == nil {
-		i.mu.Lock()
 		i.busy = false
 		pendingIdleWork := i.takePendingIdleWorkLocked()
 		i.mu.Unlock()
@@ -6702,11 +6772,28 @@ func (i *Interactive) startAutoCompactContinuation(parent context.Context) {
 		i.invalidate()
 		return
 	}
-	if ag.QueuedMessageCount() == 0 {
-		ag.AppendUserContext(autoCompactContinuationPrompt, map[string]string{
-			autoCompactContinueMetaKey: "true",
-		})
+	// The caller selected the continuation while holding i.mu. Keep that
+	// ordering through the hidden append so an explicitly queued user prompt
+	// cannot be overtaken by an old-task handoff. Forced truncation is the
+	// existing exception: it keeps priority and the queued prompt runs after it.
+	if i.compactContinuation.reason != compactContinuationForcedLength && len(i.queued) > 0 {
+		next := i.queued[0]
+		i.queued = i.queued[1:]
+		i.resetCompactContinuationLocked()
+		i.mu.Unlock()
+		i.startTurn(parent, next)
+		return
 	}
+	if i.compactContinuation.reason != compactContinuationForcedLength && ag.QueuedMessageCount() > 0 {
+		i.resetCompactContinuationLocked()
+		i.mu.Unlock()
+		i.startTurnRequest(parent, "", nil, true, false)
+		return
+	}
+	ag.AppendUserContext(autoCompactContinuationPrompt, map[string]string{
+		autoCompactContinueMetaKey: "true",
+	})
+	i.mu.Unlock()
 	i.startTurnRequest(parent, "", nil, true, false)
 }
 
@@ -6717,9 +6804,10 @@ func (i *Interactive) startAutoCompactContinuation(parent context.Context) {
 // When auto is true the spinner message is pinned to "condensing
 // history" and the status bar surfaces "(auto)" next to the context
 // percentage so it's obvious the system triggered this, not the user.
-// forceAutoContinue tells the post-compact hand-off to resume even if the
+// request.force tells the post-compact hand-off to resume even if the
 // transcript tail has visible assistant text, for example after StopLength.
-func (i *Interactive) runCompact(parent context.Context, auto bool, forceAutoContinue bool) {
+func (i *Interactive) runCompact(parent context.Context, request compactContinuationRequest) {
+	auto := request.origin != compactOriginManual
 	if i.agent == nil {
 		i.mu.Lock()
 		i.statusErr = "not logged in. type /login first."
@@ -6739,6 +6827,9 @@ func (i *Interactive) runCompact(parent context.Context, auto bool, forceAutoCon
 		i.activity.kind = activityCompactingHistory
 	}
 	i.cancelTurn = cancel
+	if request.origin == compactOriginManual || request.origin == compactOriginRecovery {
+		i.resetCompactContinuationLocked()
+	}
 	i.statusErr = ""
 	i.statusOK = ""
 	// Do NOT set streamOn: the summary text should not be visible
@@ -6753,7 +6844,13 @@ func (i *Interactive) runCompact(parent context.Context, auto bool, forceAutoCon
 		// Sink discards deltas — we don't stream the summary to the UI.
 		sink := func(delta string) {}
 		msgsBefore := i.agent.Messages()
-		autoContinue := auto && (forceAutoContinue || shouldAutoContinueAfterCompaction(msgsBefore))
+		i.mu.Lock()
+		statusRescueActive := i.compactContinuation.reason == compactContinuationStatusRescue
+		i.mu.Unlock()
+		continuationReason := classifyCompactionContinuation(request.origin, statusRescueActive, request.lastStop, request.turnError, msgsBefore)
+		if request.force {
+			continuationReason = compactContinuationForcedLength
+		}
 		// Keep the usual recent tail when possible, but never let it cover
 		// the whole transcript. A short session can still be at 70–90% of
 		// a model's window because one prompt or tool result is large; the
@@ -6794,6 +6891,7 @@ func (i *Interactive) runCompact(parent context.Context, auto bool, forceAutoCon
 			}
 			i.queued = nil // drop queue on cancel
 			i.clearPendingCompactTurnLocked()
+			i.resetCompactContinuationLocked()
 			if i.agent != nil {
 				i.agent.DrainQueuedMessages()
 			}
@@ -6802,6 +6900,7 @@ func (i *Interactive) runCompact(parent context.Context, auto bool, forceAutoCon
 			i.statusOK = ""
 			i.queued = nil // drop queue on error
 			i.clearPendingCompactTurnLocked()
+			i.resetCompactContinuationLocked()
 			if i.agent != nil {
 				i.agent.DrainQueuedMessages()
 			}
@@ -6839,17 +6938,35 @@ func (i *Interactive) runCompact(parent context.Context, auto bool, forceAutoCon
 				i.pendingCompactImages = nil
 				i.hasPendingCompactPrompt = false
 				hasNext = true
-			case forceAutoContinue && autoContinue:
+			case continuationReason == compactContinuationForcedLength:
+				// Forced truncated-output continuation keeps its existing
+				// priority over an explicitly queued prompt.
+				i.compactContinuation = compactContinuationState{reason: continuationReason}
 				continueAutomatically = true
 			case len(i.queued) > 0:
 				next, i.queued = i.queued[0], i.queued[1:]
 				hasNext = true
-			case autoContinue:
-				// A successful threshold compaction must hand control back to
-				// unfinished work. Completed text answers still settle normally
-				// unless the caller knows the text was truncated and forces this
-				// continuation.
+				i.resetCompactContinuationLocked()
+			case continuationReason == compactContinuationStructuralTail || continuationReason == compactContinuationStatusRescue:
+				if continuationReason == compactContinuationStatusRescue {
+					attempts := 1
+					if i.compactContinuation.reason == compactContinuationStatusRescue {
+						attempts = i.compactContinuation.rescueAttempts + 1
+					}
+					if attempts > maxStatusRescueContinuations {
+						i.resetCompactContinuationLocked()
+						break
+					}
+					i.compactContinuation = compactContinuationState{
+						reason:         continuationReason,
+						rescueAttempts: attempts,
+					}
+				} else {
+					i.compactContinuation = compactContinuationState{reason: continuationReason}
+				}
 				continueAutomatically = true
+			default:
+				i.resetCompactContinuationLocked()
 			}
 		}
 		// Keep the host busy until the hand-off decision is committed under
@@ -7039,6 +7156,9 @@ func (i *Interactive) startTurnRequest(parent context.Context, prompt string, im
 	// The condense flow re-fires the user's queued prompt for us, so
 	// we just hand it off and exit.
 	i.mu.Lock()
+	if !continueExisting {
+		i.resetCompactContinuationLocked()
+	}
 	needsPreCompact := !overflowRecoveryAttempted && !i.autoCompacting && i.shouldAutoCompactLocked()
 	if needsPreCompact {
 		// Reserve the compaction hand-off before releasing i.mu. A completion
@@ -7059,7 +7179,7 @@ func (i *Interactive) startTurnRequest(parent context.Context, prompt string, im
 		i.pendingPostCompactNote = "context auto-compacted; sending your last message"
 		i.mu.Unlock()
 		i.invalidate()
-		i.runCompact(parent, true, false)
+		i.runCompact(parent, compactContinuationRequest{origin: compactOriginPreTurnThreshold})
 		return
 	}
 	i.mu.Unlock()
@@ -7199,6 +7319,10 @@ func (i *Interactive) startTurnRequest(parent context.Context, prompt string, im
 		}
 		i.mu.Lock()
 		awaitingPre := i.awaitingStartupPre
+		// A newer explicit prompt may have cleared the handoff while the
+		// completed turn was being flushed. Re-read it under the mutex before
+		// deciding whether this continuation may spend another rescue attempt.
+		statusRescueActive := i.compactContinuation.reason == compactContinuationStatusRescue
 		// Pop the next queued message, if any, and relaunch.
 		var next string
 		var hasNext bool
@@ -7224,6 +7348,20 @@ func (i *Interactive) startTurnRequest(parent context.Context, prompt string, im
 		}
 		continueQueued := !awaitingPre && !hasNext && agentQueued > 0 && err == nil && ctx.Err() == nil
 		shouldAutoCompact := !awaitingPre && !hasNext && agentQueued == 0 && err == nil && ctx.Err() == nil && i.shouldAutoCompactLocked()
+		continueStatusRescue := false
+		if statusRescueActive && !awaitingPre && !hasNext && !continueQueued && !shouldAutoCompact && err == nil && ctx.Err() == nil && lastStop == provider.StopEnd && lastTurnErr == nil {
+			followUpMessages := i.agent.Messages()
+			reason := classifyCompactionContinuation(compactOriginManual, true, lastStop, lastTurnErr, followUpMessages)
+			if reason == compactContinuationStatusRescue && i.compactContinuation.rescueAttempts < maxStatusRescueContinuations {
+				i.compactContinuation.rescueAttempts++
+				continueStatusRescue = true
+			} else {
+				i.resetCompactContinuationLocked()
+			}
+		}
+		if !continueStatusRescue && (ctx.Err() != nil || err != nil || awaitingPre || hasNext || continueQueued || offer || recoverContextOverflow || (!shouldAutoCompact && !statusRescueActive)) {
+			i.resetCompactContinuationLocked()
+		}
 		// The agent run can finish before the paced final text reaches the
 		// transcript. A compaction replaces that transcript, so it must never
 		// race the still-live stream frame; otherwise stale deltas can repaint
@@ -7232,7 +7370,7 @@ func (i *Interactive) startTurnRequest(parent context.Context, prompt string, im
 			i.resetStreamingStateLocked()
 		}
 		alertReason := mainAlertReason(ctx, err, lastTurnErr, lastStop, awaitingPre, hasNext || agentQueued > 0, offer, recoverContextOverflow, shouldAutoCompact)
-		i.busy = hasNext || continueQueued || recoverContextOverflow || shouldAutoCompact
+		i.busy = hasNext || continueQueued || continueStatusRescue || recoverContextOverflow || shouldAutoCompact
 		i.mu.Unlock()
 		if alertReason != "" {
 			i.scheduleMainAlert(alertReason)
@@ -7251,12 +7389,19 @@ func (i *Interactive) startTurnRequest(parent context.Context, prompt string, im
 			i.startTurn(parent, next)
 		case continueQueued:
 			i.startTurnRequest(parent, "", nil, true, false)
+		case continueStatusRescue:
+			i.startAutoCompactContinuation(parent)
 		case offer:
 			i.openRescueDialog(rescueProv, rescueFprov, rescueModel, rescueWhy, prompt, rescueImgs)
 		case recoverContextOverflow:
-			i.runCompact(parent, true, false)
+			i.runCompact(parent, compactContinuationRequest{origin: compactOriginRecovery})
 		case shouldAutoCompact:
-			i.runCompact(parent, true, lastStop == provider.StopLength)
+			i.runCompact(parent, compactContinuationRequest{
+				origin:    compactOriginAfterTurnThreshold,
+				force:     lastStop == provider.StopLength,
+				lastStop:  lastStop,
+				turnError: lastTurnErr,
+			})
 		}
 	}()
 }
@@ -7372,11 +7517,27 @@ func shouldAutoCompact(inputTokens, contextWindow, thresholdPercent int) bool {
 	return float64(inputTokens)/float64(contextWindow) >= float64(thresholdPercent)/100
 }
 
-// shouldAutoContinueAfterCompaction reports whether the transcript tail looks
-// unfinished. A complete assistant text answer should not cause an extra
-// model turn merely because its context was compacted; tool calls, reasoning-
-// only replies, and non-assistant tails still need the model to resume.
-func shouldAutoContinueAfterCompaction(msgs []provider.Message) bool {
+// classifyCompactionContinuation chooses a private handoff reason from the
+// successful turn tail. Structural unfinished-tail handling is independent of
+// the status matcher. A status rescue is admitted only for an after-turn
+// threshold compaction or an already-active status handoff, and only after a
+// normal successful end.
+func classifyCompactionContinuation(origin compactContinuationOrigin, statusRescueActive bool, stop provider.StopReason, turnErr error, msgs []provider.Message) compactContinuationReason {
+	if origin != compactOriginManual && structuralCompactionContinuation(msgs) {
+		return compactContinuationStructuralTail
+	}
+	if (origin != compactOriginAfterTurnThreshold && !statusRescueActive) || stop != provider.StopEnd || turnErr != nil {
+		return compactContinuationNone
+	}
+	if likelyForwardWorkStatus(msgs) {
+		return compactContinuationStatusRescue
+	}
+	return compactContinuationNone
+}
+
+// structuralCompactionContinuation preserves the pre-existing unfinished-tail
+// behavior without consulting the status matcher.
+func structuralCompactionContinuation(msgs []provider.Message) bool {
 	if len(msgs) == 0 {
 		return false
 	}
@@ -7400,6 +7561,89 @@ func shouldAutoContinueAfterCompaction(msgs []provider.Message) bool {
 		}
 	}
 	return !hasText
+}
+
+// likelyForwardWorkStatus is deliberately narrow. It recognizes only clear
+// first-person future-work commitments and never treats generic plan prose as
+// a host control signal.
+func likelyForwardWorkStatus(msgs []provider.Message) bool {
+	if len(msgs) == 0 {
+		return false
+	}
+	last := msgs[len(msgs)-1]
+	if last.Role != provider.RoleAssistant {
+		return false
+	}
+	var text strings.Builder
+	for _, content := range last.Content {
+		block, ok := content.(provider.TextBlock)
+		if !ok {
+			if _, hasTool := content.(provider.ToolCallBlock); hasTool {
+				return false
+			}
+			continue
+		}
+		if strings.TrimSpace(block.Text) == "" {
+			continue
+		}
+		if text.Len() > 0 {
+			text.WriteByte(' ')
+		}
+		text.WriteString(block.Text)
+	}
+	if text.Len() == 0 {
+		return false
+	}
+	normalized := strings.ToLower(strings.Join(strings.Fields(text.String()), " "))
+	normalized = strings.NewReplacer("’", "'", "‘", "'", "`", "'").Replace(normalized)
+	for _, phrase := range []string{
+		"next i will",
+		"next, i will",
+		"i'll now",
+		"i will now",
+		"i am going to",
+		"i need to continue",
+		"then i will",
+		"then, i will",
+		"i will proceed",
+	} {
+		if containsFutureWorkPhrase(normalized, phrase) {
+			return true
+		}
+	}
+	return false
+}
+
+func containsFutureWorkPhrase(text, phrase string) bool {
+	for offset := 0; offset < len(text); {
+		index := strings.Index(text[offset:], phrase)
+		if index < 0 {
+			return false
+		}
+		index += offset
+		end := index + len(phrase)
+		if !wordRuneBefore(text, index) && !wordRuneAfter(text, end) {
+			return true
+		}
+		offset = end
+	}
+	return false
+}
+
+func wordRuneBefore(text string, index int) bool {
+	if index == 0 {
+		return false
+	}
+	rune_, _ := utf8.DecodeLastRuneInString(text[:index])
+	return unicode.IsLetter(rune_) || unicode.IsDigit(rune_) || rune_ == '_'
+}
+
+func wordRuneAfter(text string, index int) bool {
+	if index == len(text) {
+		return false
+	}
+	rune_, _ := utf8.DecodeRuneInString(text[index:])
+	return unicode.IsLetter(rune_) || unicode.IsDigit(rune_) || rune_ == '_'
 }
 
 // shouldAutoCompactLocked reports whether the last turn pushed context
@@ -7622,6 +7866,7 @@ func (i *Interactive) applyAgentPromptConfig(ag *core.Agent, system string, tool
 // prepareReplacementAgentLocked applies session-wide capability policy before
 // ag becomes visible to prompt submission. The caller holds agentMu and i.mu.
 func (i *Interactive) prepareReplacementAgentLocked(ag *core.Agent) {
+	i.resetCompactContinuationLocked()
 	if ag == nil {
 		i.setWebSearchAvailable(false)
 		return
