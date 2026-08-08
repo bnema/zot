@@ -73,6 +73,9 @@ type subagentWorkerArgsOpts struct {
 	FastModeSet     bool
 	Subagent        string
 	MaxTurns        int
+	LifetimeTurns   int
+	RunTurns        int
+	CountersSet     bool
 	Tools           []string
 	WebSearchPolicy WebSearchPolicy
 }
@@ -108,6 +111,9 @@ func defaultChildArgs(exe string, a *Agent, sessionPath, inboxPath string) []str
 		FastModeSet:     true,
 		Subagent:        a.Subagent,
 		MaxTurns:        a.MaxTurns,
+		LifetimeTurns:   a.LifetimeTurnsValue(),
+		RunTurns:        a.CurrentRunTurnsValue(),
+		CountersSet:     true,
 		Tools:           a.Tools,
 		WebSearchPolicy: a.WebSearchPolicy,
 	})
@@ -150,6 +156,12 @@ func subagentWorkerArgs(opts subagentWorkerArgsOpts) []string {
 	}
 	if opts.MaxTurns > 0 {
 		args = append(args, "--max-turns", fmt.Sprint(opts.MaxTurns))
+	}
+	if opts.CountersSet {
+		args = append(args,
+			"--subagent-lifetime-turns", fmt.Sprint(opts.LifetimeTurns),
+			"--subagent-run-turns", fmt.Sprint(opts.RunTurns),
+		)
 	}
 	webSearchPolicy := childWebSearchPolicy(opts.WebSearchPolicy, opts.Subagent, opts.Tools)
 	// Always propagate the final capability decision, including deny, so a
@@ -397,7 +409,9 @@ func (r *execRunner) Run(ctx context.Context, sink Sink) error {
 				if trimmed != "" && !truncated {
 					if ev, ok := parseEventLine(trimmed); ok {
 						appendLog(ev)
-						updateAgentFromEvent(r.agent, ev)
+						if persistErr := updateAgentFromEvent(r.agent, ev); persistErr != nil {
+							sink.Transcript("error: metadata persistence failed: " + persistErr.Error())
+						}
 						applyEventToSink(ev, sink)
 						// Fan prompt-level task completions up to any
 						// subscriber on the supervised Agent. The child
@@ -594,9 +608,41 @@ func parseEventLine(line string) (Event, bool) {
 	}, true
 }
 
-func updateAgentFromEvent(a *Agent, ev Event) {
+func eventMatchesPendingResume(a *Agent, ev Event) bool {
 	if a == nil {
-		return
+		return false
+	}
+	commandID, _ := ev.Data["command_id"].(string)
+	if commandID == "" {
+		return true // protocol-v1 events predate command identities
+	}
+	expected := a.resumePromptCommandID()
+	return expected == "" || expected == commandID
+}
+
+func eventCounter(data map[string]any, key string) (int, bool) {
+	value, ok := data[key]
+	if !ok {
+		return 0, false
+	}
+	switch value := value.(type) {
+	case int:
+		return value, true
+	case int64:
+		return int(value), true
+	case float64:
+		return int(value), value == float64(int(value))
+	case json.Number:
+		parsed, err := value.Int64()
+		return int(parsed), err == nil
+	default:
+		return 0, false
+	}
+}
+
+func updateAgentFromEvent(a *Agent, ev Event) error {
+	if a == nil {
+		return nil
 	}
 	now := ev.Time
 	if now.IsZero() {
@@ -604,25 +650,56 @@ func updateAgentFromEvent(a *Agent, ev Event) {
 	}
 	a.markActivity(now)
 	persist := false
+	notifyIdle := false
 	switch ev.Type {
 	case EventAgentReady, "agent_ready":
 		a.setProcessState(ProcessAlive)
-		a.setTurnState(TurnIdle, ev.TurnID)
+		if lifetime, ok := eventCounter(ev.Data, "lifetime_turns"); ok {
+			if currentRun, currentOK := eventCounter(ev.Data, "current_run_turns"); currentOK {
+				a.setTurnCounts(lifetime, currentRun)
+			}
+		}
+		// A resumed worker may have a durable initial follow-up in its argv.
+		// Keep it queued until the worker emits its own turn.started event;
+		// treating readiness as idle here could dispatch another queued prompt
+		// concurrently with that initial turn.
+		if prompt, _ := a.ResumePromptInfo(); prompt == "" && a.TurnState() != TurnQueued {
+			a.setTurnState(TurnIdle, ev.TurnID)
+			notifyIdle = true
+		}
 		persist = true
 	case EventAgentHeartbeat, "agent_heartbeat":
 		a.setProcessState(ProcessAlive)
 		persist = true
-	case EventTurnStarted, "turn_start":
-		turnID := ev.TurnID
-		if turnID == "" {
-			if step, ok := ev.Data["step"].(float64); ok {
-				turnID = fmt.Sprintf("turn-%d", int(step))
-			}
+	case EventTurnStarted:
+		if !isDelegatedTurnStart(ev) {
+			// Provider/model-loop turn starts are nested inside one worker
+			// message turn and are activity only.
+			a.setProcessState(ProcessAlive)
+			break
 		}
+		if !eventMatchesPendingResume(a, ev) {
+			break
+		}
+		turnID := eventTurnID(ev)
 		a.setProcessState(ProcessAlive)
+		if lifetime, ok := eventCounter(ev.Data, "lifetime_turns"); ok {
+			if currentRun, currentOK := eventCounter(ev.Data, "current_run_turns"); currentOK {
+				a.setTurnCounts(lifetime, currentRun)
+			} else {
+				a.incrementTurnCounts()
+			}
+		} else {
+			a.incrementTurnCounts()
+		}
 		a.setTurnState(TurnRunning, turnID)
 		a.clearResumePrompt()
 		persist = true
+	case "turn_start":
+		// Provider/model-loop turn starts are nested inside one worker message
+		// turn. They are activity only and must not consume or reset the
+		// worker's lifetime or current-run budget.
+		a.setProcessState(ProcessAlive)
 	case EventTurnResult, "turn_result":
 		if result, err := decodeTurnResultEvent(ev, a.ID, a.maxOutputBytes, a.maxOutputLines); err == nil {
 			a.setResult(result)
@@ -653,17 +730,36 @@ func updateAgentFromEvent(a *Agent, ev Event) {
 		a.setTurnState(TurnFailed, ev.TurnID)
 		persist = true
 	case EventAgentIdle, "agent_idle":
+		if lifetime, ok := eventCounter(ev.Data, "lifetime_turns"); ok {
+			if currentRun, currentOK := eventCounter(ev.Data, "current_run_turns"); currentOK {
+				a.setTurnCounts(lifetime, currentRun)
+			}
+		}
 		a.setTurnState(TurnIdle, ev.TurnID)
+		notifyIdle = true
 		persist = true
 	case EventAgentExited, "agent_exited", "agent_stopped":
 		a.setProcessState(ProcessExited)
 		persist = true
+	case "error":
+		if code, _ := ev.Data["code"].(string); code == "turn_rejected" && eventMatchesPendingResume(a, ev) {
+			if a.rejectActiveResumePrompt() {
+				reason, _ := ev.Data["reason"].(string)
+				if reason == "max_turns" {
+					a.setTurnState(TurnFailed, ev.TurnID)
+				} else {
+					a.setTurnState(TurnIdle, ev.TurnID)
+					notifyIdle = true
+				}
+				persist = true
+			}
+		}
 	case "turn_end":
 		// Provider/tool-loop turn_end events (for example stop=tool_use)
 		// do not carry the daemon's prompt step and are not terminal for
 		// the delegated task. They remain in the event log, but must not
 		// overwrite the delegated turn state or trigger persistence.
-		if _, ok := ev.Data["step"].(float64); !ok {
+		if !isDelegatedTurnEnd(ev) {
 			break
 		}
 		if message, _ := ev.Data["error"].(string); message != "" {
@@ -674,8 +770,15 @@ func updateAgentFromEvent(a *Agent, ev Event) {
 		persist = true
 	}
 	if persist && a.persistFn != nil {
-		a.persistFn(a)
+		if err := a.persistFn(a); err != nil {
+			a.recordPersistenceError(err)
+			return err
+		}
 	}
+	if notifyIdle {
+		a.notifyTurnIdle()
+	}
+	return nil
 }
 
 // notifyPromptTurnEnd calls Agent.OnTurnEnd only for the subagent
@@ -686,7 +789,10 @@ func notifyPromptTurnEnd(a *Agent, ev Event) {
 	if a == nil || ev.Type != "turn_end" {
 		return
 	}
-	step, ok := ev.Data["step"].(float64)
+	if !isDelegatedTurnEnd(ev) {
+		return
+	}
+	step, ok := eventCounter(ev.Data, "step")
 	if !ok {
 		return
 	}
@@ -700,7 +806,7 @@ func notifyPromptTurnEnd(a *Agent, ev Event) {
 		return
 	}
 	a.mu.Unlock()
-	go fn(int(step), errMsg)
+	go fn(step, errMsg)
 }
 
 // applyEventToSink translates an Event into Sink updates. Only a

@@ -127,6 +127,16 @@ func (c *blockingWriteConn) Close() error {
 	return c.Conn.Close()
 }
 
+type cancelAfterWriteConn struct {
+	net.Conn
+	cancel context.CancelFunc
+}
+
+func (c *cancelAfterWriteConn) Write(data []byte) (int, error) {
+	c.cancel()
+	return len(data), nil
+}
+
 type notifyingContext struct {
 	context.Context
 	doneCalled chan struct{}
@@ -136,6 +146,19 @@ type notifyingContext struct {
 func (c *notifyingContext) Done() <-chan struct{} {
 	c.once.Do(func() { close(c.doneCalled) })
 	return c.Context.Done()
+}
+
+func TestInboxSendContextTreatsCompleteWriteBeforeCancellationAsDelivered(t *testing.T) {
+	local, remote := net.Pipe()
+	defer remote.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	inbox := NewInbox("unused")
+	inbox.conn = &cancelAfterWriteConn{Conn: local, cancel: cancel}
+	defer inbox.Close()
+
+	if err := inbox.sendBytesContext(ctx, []byte("follow-up\n")); err != nil {
+		t.Fatalf("complete write after cancellation = %v, want success", err)
+	}
 }
 
 func TestInboxSendContextCancelsBlockedWrite(t *testing.T) {

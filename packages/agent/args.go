@@ -139,8 +139,13 @@ type Args struct {
 	// --subagent-worker.
 	SubagentWorker string
 
-	// SubagentMaxTurns limits prompt-level turns in worker mode.
+	// SubagentMaxTurns limits message turns in one worker run.
 	SubagentMaxTurns int
+	// SubagentLifetimeTurns and SubagentRunTurns are supervisor-provided
+	// counters used to resume a worker without losing observability or its
+	// current-run budget. They are internal worker flags, not user policy.
+	SubagentLifetimeTurns int
+	SubagentRunTurns      int
 
 	// Subagent selects a named markdown profile for a subagent child.
 	// It is intentionally an internal child flag; the parent subagent tool
@@ -371,6 +376,26 @@ func ParseArgs(in []string) (Args, error) {
 				return a, fmt.Errorf("--max-turns must be a positive integer")
 			}
 			a.SubagentMaxTurns = n
+		case "--subagent-lifetime-turns":
+			v, err := want(&i, arg)
+			if err != nil {
+				return a, err
+			}
+			var n int
+			if _, err := fmt.Sscanf(v, "%d", &n); err != nil || n < 0 {
+				return a, fmt.Errorf("--subagent-lifetime-turns must be a non-negative integer")
+			}
+			a.SubagentLifetimeTurns = n
+		case "--subagent-run-turns":
+			v, err := want(&i, arg)
+			if err != nil {
+				return a, err
+			}
+			var n int
+			if _, err := fmt.Sscanf(v, "%d", &n); err != nil || n < 0 {
+				return a, fmt.Errorf("--subagent-run-turns must be a non-negative integer")
+			}
+			a.SubagentRunTurns = n
 		default:
 			if strings.HasPrefix(arg, "-") && arg != "-" {
 				return a, fmt.Errorf("unknown flag %q", arg)

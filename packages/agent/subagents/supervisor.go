@@ -543,6 +543,7 @@ func (f *Supervisor) SpawnReq(ctx context.Context, req SpawnRequest) (*Agent, er
 	}
 	a.ctx, a.cancel = runCtx, cancel
 	a.persistFn = f.persistAgent
+	a.setOnTurnIdle(func() { f.dispatchQueuedResume(a) })
 	a.workspaceCleanup = func() error { return workspace.Cleanup(context.Background()) }
 	a.workspaceCapture = func() (WorkspaceCapture, error) { return workspace.Capture(context.Background()) }
 	a.runner = f.cfg.NewRunner(a)
@@ -1075,6 +1076,8 @@ type AgentSnapshot struct {
 	ProcessState    ProcessState
 	TurnState       TurnState
 	CurrentTurnID   string
+	LifetimeTurns   int
+	CurrentRunTurns int
 	Attempt         int
 	Activity        string
 	Started         time.Time
@@ -1136,6 +1139,8 @@ func (a *Agent) Snapshot() AgentSnapshot {
 	processState := a.processState
 	turnState := a.turnState
 	currentTurnID := a.currentTurnID
+	lifetimeTurns := a.LifetimeTurns
+	currentRunTurns := a.CurrentRunTurns
 	attempt := a.Attempt
 	lastActivity := a.lastActivity
 	updatedAt := a.updatedAt
@@ -1148,7 +1153,7 @@ func (a *Agent) Snapshot() AgentSnapshot {
 	return AgentSnapshot{
 		ID: a.ID, Task: a.Task, Dir: a.Dir,
 		Status: status, ProcessState: processState, TurnState: turnState,
-		CurrentTurnID: currentTurnID, Attempt: attempt, Activity: activity,
+		CurrentTurnID: currentTurnID, LifetimeTurns: lifetimeTurns, CurrentRunTurns: currentRunTurns, Attempt: attempt, Activity: activity,
 		Started: a.Started, Finished: finished, CreatedAt: a.Started, UpdatedAt: updatedAt, LastActivity: lastActivity,
 		Err: errStr, Tail: tail, Lines: lines,
 		LastAssistant: lastAssistant, Result: result, ResultRef: resultRef,

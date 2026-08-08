@@ -383,11 +383,68 @@ func TestDefaultChildArgsResumeUsesFollowUpPrompt(t *testing.T) {
 	}
 }
 
+func TestReadyDoesNotMarkInitialDelegatedTurnIdle(t *testing.T) {
+	a := &Agent{Task: "initial delegated task"}
+	a.setTurnState(TurnQueued, "")
+
+	if err := updateAgentFromEvent(a, NewEvent(EventAgentReady, map[string]any{"lifetime_turns": 0, "current_run_turns": 0})); err != nil {
+		t.Fatal(err)
+	}
+	if got := a.TurnState(); got != TurnQueued {
+		t.Fatalf("ready changed turn state to %s, want %s", got, TurnQueued)
+	}
+	if err := updateAgentFromEvent(a, NewEvent(EventTurnStarted, map[string]any{
+		"turn_id":           "turn-1",
+		"lifetime_turns":    1,
+		"current_run_turns": 1,
+	})); err != nil {
+		t.Fatal(err)
+	}
+	if got := a.TurnState(); got != TurnRunning {
+		t.Fatalf("turn.started changed turn state to %s, want %s", got, TurnRunning)
+	}
+}
+
+func TestUpdateAgentFromEventIgnoresStaleRejectedFollowUp(t *testing.T) {
+	a := &Agent{}
+	a.setResumePrompt("current prompt", time.Now())
+	if err := updateAgentFromEvent(a, NewEvent("error", map[string]any{
+		"code": "turn_rejected", "reason": "busy", "command_id": "stale-command",
+	})); err != nil {
+		t.Fatal(err)
+	}
+	if prompt, _ := a.ResumePromptInfo(); prompt != "current prompt" {
+		t.Fatalf("stale rejection changed active prompt to %q", prompt)
+	}
+}
+
+func TestUpdateAgentFromEventRecoversRejectedFollowUp(t *testing.T) {
+	a := &Agent{}
+	a.setResumePrompt("retry me", time.Now())
+	a.setTurnState(TurnQueued, "turn-1")
+	if err := updateAgentFromEvent(a, NewEvent("error", map[string]any{
+		"code":   "turn_rejected",
+		"reason": "busy",
+	})); err != nil {
+		t.Fatal(err)
+	}
+	if got := a.TurnState(); got != TurnIdle {
+		t.Fatalf("rejected turn state = %s, want %s", got, TurnIdle)
+	}
+	if prompt, _ := a.ResumePromptInfo(); prompt != "" {
+		t.Fatalf("rejected prompt remained active: %q", prompt)
+	}
+	queued := a.resumePromptQueueSnapshot()
+	if len(queued) != 1 || queued[0].Prompt != "retry me" {
+		t.Fatalf("rejected prompt queue = %+v, want retry me", queued)
+	}
+}
+
 func TestUpdateAgentFromEventIgnoresProviderToolLoopTurnEnd(t *testing.T) {
 	a := &Agent{}
 	a.setTurnState(TurnRunning, "turn-1")
 	persisted := 0
-	a.persistFn = func(*Agent) { persisted++ }
+	a.persistFn = func(*Agent) error { persisted++; return nil }
 
 	updateAgentFromEvent(a, NewEvent("turn_end", map[string]any{"stop": "tool_use"}))
 
@@ -405,7 +462,7 @@ func TestUpdateAgentFromEventIgnoresProviderToolLoopTurnEnd(t *testing.T) {
 func TestUpdateAgentFromEventPersistsTerminalTurnEndWithStep(t *testing.T) {
 	a := &Agent{}
 	persisted := 0
-	a.persistFn = func(*Agent) { persisted++ }
+	a.persistFn = func(*Agent) error { persisted++; return nil }
 
 	updateAgentFromEvent(a, NewEvent("turn_end", map[string]any{"step": float64(2), "error": "boom"}))
 
@@ -478,6 +535,58 @@ func TestSetOnTurnEndReplaysPendingNoticesInArrivalOrder(t *testing.T) {
 		if got[i] != want[i] {
 			t.Errorf("replayed notice %d = %+v, want %+v", i, got[i], want[i])
 		}
+	}
+}
+
+func TestUpdateAgentFromEventDoesNotCountProviderTurnStarts(t *testing.T) {
+	a := &Agent{}
+	a.setTurnCounts(4, 2)
+	a.setTurnState(TurnRunning, "turn-1")
+	persisted := 0
+	a.persistFn = func(*Agent) error { persisted++; return nil }
+
+	updateAgentFromEvent(a, NewEvent(EventTurnStarted, map[string]any{"step": float64(7), "nested_turn": true}))
+
+	if got := a.LifetimeTurnsValue(); got != 4 {
+		t.Fatalf("lifetime turns = %d, want 4", got)
+	}
+	if got := a.CurrentRunTurnsValue(); got != 2 {
+		t.Fatalf("current-run turns = %d, want 2", got)
+	}
+	if got := a.TurnState(); got != TurnRunning {
+		t.Fatalf("turn state = %s, want %s", got, TurnRunning)
+	}
+	if persisted != 0 {
+		t.Fatalf("provider turn start persisted %d times, want 0", persisted)
+	}
+}
+
+func TestUpdateAgentFromEventPersistsCanonicalTurnCounters(t *testing.T) {
+	stateDir := t.TempDir()
+	a := &Agent{ID: "counter-agent", stateDir: stateDir}
+	a.persistFn = func(agent *Agent) error {
+		if err := writeAgentMeta(stateDir, agent); err != nil {
+			t.Errorf("write agent metadata: %v", err)
+			return err
+		}
+		return nil
+	}
+
+	updateAgentFromEvent(a, NewEvent(EventTurnStarted, map[string]any{
+		"turn_id":           "turn-3",
+		"lifetime_turns":    3,
+		"current_run_turns": 1,
+	}))
+
+	meta, err := readAgentMeta(stateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if meta.LifetimeTurns != 3 || meta.CurrentRunTurns != 1 {
+		t.Fatalf("persisted counters = (%d, %d), want (3, 1)", meta.LifetimeTurns, meta.CurrentRunTurns)
+	}
+	if got := a.Snapshot(); got.LifetimeTurns != 3 || got.CurrentRunTurns != 1 {
+		t.Fatalf("snapshot counters = (%d, %d), want (3, 1)", got.LifetimeTurns, got.CurrentRunTurns)
 	}
 }
 

@@ -7,6 +7,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 // Agent is one supervised task. Public fields are immutable after
@@ -15,6 +17,12 @@ import (
 type turnEndNotice struct {
 	step   int
 	errMsg string
+}
+
+type queuedResumePrompt struct {
+	Prompt     string    `json:"prompt"`
+	AcceptedAt time.Time `json:"accepted_at"`
+	CommandID  string    `json:"command_id,omitempty"`
 }
 
 type Agent struct {
@@ -36,6 +44,14 @@ type Agent struct {
 	WorkspaceBase    string
 	WorkspaceCapture CaptureMode
 	MaxTurns         int
+
+	// LifetimeTurns counts every accepted message turn for this worker across
+	// all explicit runs. CurrentRunTurns resets only when an explicit
+	// subagent_resume follow-up starts a new run; retries, model loops,
+	// compaction, and cancellation do not reset it.
+	LifetimeTurns   int
+	CurrentRunTurns int
+
 	// Timeout is the effective per-agent lifetime, persisted so a resumed
 	// worker keeps the timeout selected at its spawn boundary.
 	Timeout           time.Duration
@@ -80,12 +96,15 @@ type Agent struct {
 	// Not persisted — every Resume sets it explicitly.
 	Resuming bool
 
-	// resumePromptText is an optional manager follow-up passed to a resumed
-	// child as its initial prompt. It remains in durable metadata until the
-	// child reports turn.started, so a host exit while the worker is queued
-	// cannot lose it. Access it through ResumePromptInfo.
-	resumePromptText string
-	resumePromptAt   time.Time
+	// resumePromptText is the manager follow-up currently handed to the
+	// child. It remains in durable metadata until the child reports
+	// turn.started, so a host exit while the worker is queued cannot lose it.
+	// Additional follow-ups accepted while the child is busy stay in
+	// resumePromptQueue until the next agent idle turn.
+	resumePromptText  string
+	resumePromptAt    time.Time
+	resumePromptID    string
+	resumePromptQueue []queuedResumePrompt
 
 	// InboxPath is the unix socket the child agent listens on for
 	// follow-up prompts and control messages. The supervisor opens
@@ -142,10 +161,12 @@ type Agent struct {
 	outputTruncated  bool
 	maxOutputBytes   int
 	maxOutputLines   int
-	persistFn        func(*Agent)
+	persistFn        func(*Agent) error
+	persistMu        sync.Mutex
 	stateDir         string
 	workspaceCleanup func() error
 	workspaceCapture func() (WorkspaceCapture, error)
+	onTurnIdle       func()
 
 	// OnTurnEnd, if set, fires once per prompt-level turn_end event
 	// emitted by the subagent daemon wrapper. Provider/tool-loop
@@ -228,6 +249,66 @@ func (a *Agent) AttemptValue() int {
 	a.lifecycleMu.Lock()
 	defer a.lifecycleMu.Unlock()
 	return a.Attempt
+}
+
+// LifetimeTurnsValue returns the number of accepted message turns across all
+// explicit runs of this worker.
+func (a *Agent) LifetimeTurnsValue() int {
+	a.lifecycleMu.Lock()
+	defer a.lifecycleMu.Unlock()
+	return a.LifetimeTurns
+}
+
+// CurrentRunTurnsValue returns the number of accepted message turns in the
+// current explicit run.
+func (a *Agent) CurrentRunTurnsValue() int {
+	a.lifecycleMu.Lock()
+	defer a.lifecycleMu.Unlock()
+	return a.CurrentRunTurns
+}
+
+func (a *Agent) setTurnCounts(lifetime, currentRun int) {
+	if lifetime < 0 {
+		lifetime = 0
+	}
+	if currentRun < 0 {
+		currentRun = 0
+	}
+	a.lifecycleMu.Lock()
+	a.LifetimeTurns = lifetime
+	a.CurrentRunTurns = currentRun
+	a.updatedAt = time.Now()
+	a.lifecycleMu.Unlock()
+}
+
+func (a *Agent) incrementTurnCounts() (lifetime, currentRun int) {
+	a.lifecycleMu.Lock()
+	a.LifetimeTurns++
+	a.CurrentRunTurns++
+	a.updatedAt = time.Now()
+	lifetime = a.LifetimeTurns
+	currentRun = a.CurrentRunTurns
+	a.lifecycleMu.Unlock()
+	return lifetime, currentRun
+}
+
+func (a *Agent) resetCurrentRunTurns() (previous int) {
+	a.lifecycleMu.Lock()
+	previous = a.CurrentRunTurns
+	a.CurrentRunTurns = 0
+	a.updatedAt = time.Now()
+	a.lifecycleMu.Unlock()
+	return previous
+}
+
+func (a *Agent) setCurrentRunTurns(currentRun int) {
+	if currentRun < 0 {
+		currentRun = 0
+	}
+	a.lifecycleMu.Lock()
+	a.CurrentRunTurns = currentRun
+	a.updatedAt = time.Now()
+	a.lifecycleMu.Unlock()
 }
 
 // ProcessPIDValue returns the current worker pid, when known.
@@ -406,7 +487,14 @@ func (a *Agent) setResumePrompt(prompt string, acceptedAt time.Time) (string, ti
 	previousPrompt, previousAcceptedAt := a.resumePromptText, a.resumePromptAt
 	a.resumePromptText = prompt
 	a.resumePromptAt = acceptedAt
+	a.resumePromptID = uuid.NewString()
 	return previousPrompt, previousAcceptedAt
+}
+
+func (a *Agent) resumePromptCommandID() string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.resumePromptID
 }
 
 func (a *Agent) clearResumePrompt() bool {
@@ -417,7 +505,104 @@ func (a *Agent) clearResumePrompt() bool {
 	}
 	a.resumePromptText = ""
 	a.resumePromptAt = time.Time{}
+	a.resumePromptID = ""
 	return true
+}
+
+func (a *Agent) queueResumePrompt(prompt string, acceptedAt time.Time) {
+	a.mu.Lock()
+	a.resumePromptQueue = append(a.resumePromptQueue, queuedResumePrompt{Prompt: prompt, AcceptedAt: acceptedAt, CommandID: uuid.NewString()})
+	a.mu.Unlock()
+}
+
+func (a *Agent) removeQueuedResumePrompt(prompt string, acceptedAt time.Time) bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	for i := len(a.resumePromptQueue) - 1; i >= 0; i-- {
+		queued := a.resumePromptQueue[i]
+		if queued.Prompt == prompt && queued.AcceptedAt.Equal(acceptedAt) {
+			a.resumePromptQueue = append(a.resumePromptQueue[:i], a.resumePromptQueue[i+1:]...)
+			return true
+		}
+	}
+	return false
+}
+
+func (a *Agent) resumePromptQueueSnapshot() []queuedResumePrompt {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return append([]queuedResumePrompt(nil), a.resumePromptQueue...)
+}
+
+func (a *Agent) hasQueuedResumePrompt() bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return len(a.resumePromptQueue) != 0
+}
+
+// startQueuedResumePrompt moves the oldest active follow-up into the
+// in-flight prompt slot. The caller must persist the returned state before
+// delivering the command so a host exit cannot lose the prompt.
+func (a *Agent) startQueuedResumePrompt() (string, time.Time, string, bool) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.resumePromptText != "" || len(a.resumePromptQueue) == 0 {
+		return "", time.Time{}, "", false
+	}
+	queued := a.resumePromptQueue[0]
+	a.resumePromptQueue = a.resumePromptQueue[1:]
+	a.resumePromptText = queued.Prompt
+	a.resumePromptAt = queued.AcceptedAt
+	a.resumePromptID = queued.CommandID
+	if a.resumePromptID == "" {
+		a.resumePromptID = uuid.NewString()
+	}
+	return queued.Prompt, queued.AcceptedAt, a.resumePromptID, true
+}
+
+func (a *Agent) restoreResumePromptToQueue(prompt string, acceptedAt time.Time) bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.resumePromptText != prompt || !a.resumePromptAt.Equal(acceptedAt) {
+		return false
+	}
+	commandID := a.resumePromptID
+	if commandID == "" {
+		commandID = uuid.NewString()
+	}
+	a.resumePromptText = ""
+	a.resumePromptAt = time.Time{}
+	a.resumePromptID = ""
+	a.resumePromptQueue = append([]queuedResumePrompt{{Prompt: prompt, AcceptedAt: acceptedAt, CommandID: commandID}}, a.resumePromptQueue...)
+	return true
+}
+
+func (a *Agent) rejectActiveResumePrompt() bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.resumePromptText == "" {
+		return false
+	}
+	a.resumePromptQueue = append([]queuedResumePrompt{{Prompt: a.resumePromptText, AcceptedAt: a.resumePromptAt, CommandID: a.resumePromptID}}, a.resumePromptQueue...)
+	a.resumePromptText = ""
+	a.resumePromptAt = time.Time{}
+	a.resumePromptID = ""
+	return true
+}
+
+func (a *Agent) setOnTurnIdle(fn func()) {
+	a.mu.Lock()
+	a.onTurnIdle = fn
+	a.mu.Unlock()
+}
+
+func (a *Agent) notifyTurnIdle() {
+	a.mu.Lock()
+	fn := a.onTurnIdle
+	a.mu.Unlock()
+	if fn != nil {
+		fn()
+	}
 }
 
 func (a *Agent) SetOnTurnEnd(fn func(step int, errMsg string)) {
@@ -431,6 +616,18 @@ func (a *Agent) SetOnTurnEnd(fn func(step int, errMsg string)) {
 			fn(notice.step, notice.errMsg)
 		}
 	}
+}
+
+func (a *Agent) recordPersistenceError(err error) {
+	if a == nil || err == nil {
+		return
+	}
+	a.mu.Lock()
+	a.lastErr = fmt.Errorf("subagent metadata persistence: %w", err)
+	if a.status != StatusDone && a.status != StatusFailed && a.status != StatusKilled {
+		a.activity = "metadata error: " + truncate(err.Error(), 120)
+	}
+	a.mu.Unlock()
 }
 
 func (a *Agent) setActivity(msg string) {

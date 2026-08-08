@@ -112,9 +112,12 @@ func (b *Inbox) sendBytesContext(ctx context.Context, data []byte) error {
 		}
 		defer conn.SetWriteDeadline(time.Time{})
 	}
-	if _, err := conn.Write(data); err != nil {
-		// Drop the connection so the next call redials. The previous error is
-		// more informative than the redial's would be, so surface this one.
+	n, writeErr := conn.Write(data)
+	if writeErr != nil {
+		// Drop the connection so the next call redials. Once any bytes have
+		// crossed the socket boundary, the outcome is ambiguous; returning the
+		// caller's context error would invite a duplicate command with a new
+		// identity.
 		stopCancel()
 		b.mu.Lock()
 		if b.conn == conn {
@@ -122,20 +125,33 @@ func (b *Inbox) sendBytesContext(ctx context.Context, data []byte) error {
 			b.conn = nil
 		}
 		b.mu.Unlock()
+		if n > 0 {
+			return fmt.Errorf("%w: wrote %d of %d bytes: %v", ErrDeliveryUnknown, n, len(data), writeErr)
+		}
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return ctxErr
 		}
-		return err
+		return writeErr
+	}
+	if n != len(data) {
+		stopCancel()
+		b.mu.Lock()
+		if b.conn == conn {
+			_ = b.conn.Close()
+			b.conn = nil
+		}
+		b.mu.Unlock()
+		return fmt.Errorf("%w: wrote %d of %d bytes", ErrDeliveryUnknown, n, len(data))
 	}
 	if !stopCancel() {
-		// Cancellation closed this connection after the write completed. Drop it
-		// so the next command redials instead of reusing a closed stream.
+		// Cancellation closed this connection after the complete command was
+		// written. The worker can parse the newline-delimited command, so the
+		// delivery succeeded even though the context is now canceled.
 		b.mu.Lock()
 		if b.conn == conn {
 			b.conn = nil
 		}
 		b.mu.Unlock()
-		return ctx.Err()
 	}
 	return nil
 }
@@ -178,6 +194,12 @@ func (b *Inbox) Close() error {
 // opened its listener. Callers can retry after a short backoff;
 // the TUI surfaces it as "agent <id> not listening yet".
 var ErrNotReady = errors.New("subagent: agent inbox not ready")
+
+// ErrDeliveryUnknown means a command write made progress but did not finish.
+// Callers must not replace the command with a fresh identity: the worker may
+// have received enough bytes to parse it, so retries must reuse the same
+// message id and be handled idempotently.
+var ErrDeliveryUnknown = errors.New("subagent: command delivery unknown")
 
 // dialUnixContext retries a Unix-socket connection briefly so the happy path
 // "child just started, supervisor sends right away" works without forcing the

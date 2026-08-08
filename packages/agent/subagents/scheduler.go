@@ -2,6 +2,7 @@ package subagents
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -184,7 +185,13 @@ func (f *Supervisor) schedule() {
 		a.activity = "starting"
 		a.mu.Unlock()
 		a.setProcessState(ProcessStarting)
-		a.setTurnState(TurnIdle, "")
+		prompt, _ := a.ResumePromptInfo()
+		initialTurn := (!a.Resuming && strings.TrimSpace(a.Task) != "") || prompt != ""
+		if initialTurn {
+			a.setTurnState(TurnQueued, "")
+		} else {
+			a.setTurnState(TurnIdle, "")
+		}
 		a.incrementAttempt()
 
 		f.active++
@@ -374,13 +381,17 @@ func (f *Supervisor) releaseCapacity(a *Agent) {
 	f.schedule()
 }
 
-func (f *Supervisor) persistAgent(a *Agent) {
+func (f *Supervisor) persistAgent(a *Agent) error {
 	if a == nil {
-		return
+		return errors.New("subagents: nil agent")
 	}
 	stateDir := a.stateDirectory(f.cfg.Root)
-	if _, err := os.Stat(stateDir); err != nil {
-		return
+	if err := writeAgentMeta(stateDir, a); err != nil {
+		// Lifecycle callbacks cannot all return an error to their caller. Keep
+		// the failure visible in the agent snapshot instead of silently
+		// allowing a queued prompt or counter to disappear on restart.
+		a.recordPersistenceError(err)
+		return err
 	}
-	_ = writeAgentMeta(stateDir, a)
+	return nil
 }
