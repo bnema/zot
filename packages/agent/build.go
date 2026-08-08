@@ -857,20 +857,21 @@ func Resolve(args Args, requireCred bool) (Resolved, error) {
 		append_ = append(append_, skillAddendum)
 	}
 	interactiveMode := args.Mode == "" || args.Mode == ModeInteractive
-	if selectedProfile == nil && interactiveMode && cfg.AutoSubagentsEnabled != nil && *cfg.AutoSubagentsEnabled {
-		if autoSubagentsToolAllowed(args) {
-			homeDir, _ := os.UserHomeDir()
-			profiles, _ := subagents.Discover(args.CWD, homeDir)
-			if subagentsAddendum := subagents.SystemPromptAddendum(profiles); subagentsAddendum != "" {
-				append_ = append(append_, subagentsAddendum)
-			}
+	primaryInteractive := selectedProfile == nil && interactiveMode
+	if primaryInteractive && autoSubagentsToolAllowed(args) {
+		homeDir, _ := os.UserHomeDir()
+		profiles, _ := subagents.Discover(args.CWD, homeDir)
+		if subagentsAddendum := subagents.SystemPromptAddendum(profiles); subagentsAddendum != "" {
+			append_ = append(append_, subagentsAddendum)
 		}
+	}
+	if primaryInteractive && cfg.AutoSubagentsEnabled != nil && *cfg.AutoSubagentsEnabled {
 		append_ = append(append_, AutoSubagentsSystemAddendumFor(
 			autoSubagentsToolAllowed(args),
 			autoSubagentsStopToolAllowed(args),
 			autoSubagentsResumeToolAllowed(args),
 		))
-	} else if selectedProfile == nil && interactiveMode && autoSubagentsAnyToolAllowed(args) {
+	} else if primaryInteractive && autoSubagentsAnyToolAllowed(args) {
 		append_ = append(append_, OnDemandSubagentsSystemAddendum)
 	}
 	if selectedProfile != nil && selectedProfile.SystemPromptMode != "replace" && selectedProfile.SystemPrompt != "" {
