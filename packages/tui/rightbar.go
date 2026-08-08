@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"io"
 	"sort"
 	"strings"
 )
@@ -372,12 +373,9 @@ func joinRightBar(th Theme, main, rightBar string, mainWidth, rightBarWidth int,
 	return main + separator + rightBar
 }
 
-// DrawRightBar renders an already-laid-out visible chat slice and sticky
-// bottom block in a fixed frame with a persistent right bar. The normal
-// DrawLog path deliberately uses terminal scrollback; a persistent side rail
-// needs a fixed viewport so updates can repaint its columns without leaving
-// stale rows behind. Interactive mode still owns chat scrolling and passes
-// the selected visible slice here.
+// DrawRightBar renders the complete transcript through DrawLog, then
+// composites the persistent rail over the visible viewport. The flow cache
+// remains authoritative so appended chat still enters native scrollback.
 func (r *Renderer) DrawRightBar(chat, bottom, rightBar []string, cursorBottomRow, cursorCol int) {
 	r.drawRightBar(chat, bottom, rightBar, cursorBottomRow, cursorCol, false)
 }
@@ -394,50 +392,102 @@ func (r *Renderer) drawRightBar(chat, bottom, rightBar []string, cursorBottomRow
 	}
 	mainWidth, rightBarWidth, ok := RightBarColumns(r.cols)
 	if !ok {
+		r.DrawLog(chat, bottom, cursorBottomRow, cursorCol)
 		return
 	}
+
 	if len(bottom) == 0 {
 		bottom = []string{""}
 	}
-	if len(rightBar) < r.rows {
-		padded := make([]string, r.rows)
-		copy(padded, rightBar)
-		rightBar = padded
-	} else if len(rightBar) > r.rows {
-		rightBar = rightBar[:r.rows]
-	}
 
-	main := make([]string, 0, len(chat)+len(bottom)+1)
-	main = append(main, chat...)
-	main = append(main, bottom...)
-	main = append(main, "") // mirror DrawLog's renderer-owned bottom margin
-	cursorRow := len(chat) + cursorBottomRow
-	if len(main) > r.rows {
-		trim := len(main) - r.rows
-		main = main[trim:]
-		cursorRow -= trim
-	}
-	if len(main) < r.rows {
-		padding := make([]string, r.rows-len(main))
-		main = append(padding, main...)
-		cursorRow += len(padding)
-	}
+	// Keep DrawLog's final blank margin unobstructed, matching the normal flow
+	// renderer and the previous right-bar layout.
+	frameRows := max(0, r.rows-1)
+	barLines := make([]string, frameRows)
+	copy(barLines, rightBar)
 
-	frame := make([]string, r.rows)
-	for row := range frame {
-		frame[row] = joinRightBar(r.theme, main[row], rightBar[row], mainWidth, rightBarWidth, dimSeparator)
+	barChanged := !r.rightBarActive || r.rightBarMainCols != mainWidth ||
+		r.rightBarDimmed != dimSeparator || !sameLines(barLines, r.rightBarLines)
+	contentUnchanged := r.logRawContentUnchanged(chat, bottom, mainWidth)
+	flowUnchanged := contentUnchanged && cursorBottomRow == r.cursorRow && cursorCol == r.cursorCol
+	if flowUnchanged && !barChanged {
+		return
 	}
+	if !contentUnchanged && r.rightBarActive {
+		// Remove viewport chrome before DrawLog can naturally scroll a row into
+		// history. Otherwise every appended transcript row captures a stale
+		// copy of the rail in native terminal scrollback.
+		r.clearRightBarOverlay()
+	}
+	r.drawLog(chat, bottom, cursorBottomRow, cursorCol, mainWidth)
+	if contentUnchanged && !barChanged {
+		// Cursor-only updates do not disturb the composited rail.
+		return
+	}
+	r.writeRightBarOverlay(barLines, mainWidth, rightBarWidth, dimSeparator)
+	r.rightBarActive = true
+	r.rightBarLines = append(r.rightBarLines[:0], barLines...)
+	r.rightBarMainCols = mainWidth
+	r.rightBarDimmed = dimSeparator
+}
 
-	// Draw() owns the fixed-frame cache. Reset the flow-mode cache so a
-	// later fallback to DrawLog starts with a full repaint instead of trying
-	// to diff against logical rows from before the rail was enabled. Mark the
-	// transition separately so that repaint does not clear scrollback.
-	r.logChat = nil
-	r.logBottom = nil
-	r.logLines = nil
-	r.logViewportTop = 0
-	r.logHardwareRow = 0
-	r.logInit = false
-	r.logNeedsFullRepaint = true
-	r.Draw(frame, cursorRow, cursorCol)
+// clearRightBarOverlay removes viewport chrome before DrawLog expands back to
+// the terminal width. Restoring the tracked flow cursor keeps DrawLog's
+// hardware-row model valid across the intermediate absolute writes.
+func (r *Renderer) clearRightBarOverlay() {
+	if !r.rightBarActive {
+		return
+	}
+	remaining := r.cols - r.rightBarMainCols
+	if remaining > 0 {
+		blank := strings.Repeat(" ", remaining)
+		var w strings.Builder
+		w.WriteString(SeqSynchronizedOn)
+		w.WriteString(SeqHideCursor)
+		for row := 0; row < max(0, r.rows-1); row++ {
+			w.WriteString(MoveTo(row+1, r.rightBarMainCols+1))
+			w.WriteString("\x1b[0m")
+			w.WriteString(blank)
+		}
+		r.appendTrackedLogCursor(&w, r.rightBarMainCols)
+		w.WriteString(SeqSynchronizedOff)
+		_, _ = io.WriteString(r.out, w.String())
+	}
+	r.rightBarActive = false
+	r.rightBarLines = nil
+	r.rightBarMainCols = 0
+	r.rightBarDimmed = false
+}
+
+func (r *Renderer) writeRightBarOverlay(rightBar []string, mainWidth, rightBarWidth int, dimSeparator bool) {
+	var w strings.Builder
+	w.WriteString(SeqSynchronizedOn)
+	w.WriteString(SeqHideCursor)
+	for row, line := range rightBar {
+		w.WriteString(MoveTo(row+1, mainWidth+1))
+		w.WriteString("\x1b[0m")
+		w.WriteString(joinRightBar(r.theme, "", line, 0, rightBarWidth, dimSeparator))
+	}
+	r.appendTrackedLogCursor(&w, mainWidth)
+	w.WriteString(SeqSynchronizedOff)
+	_, _ = io.WriteString(r.out, w.String())
+}
+
+func (r *Renderer) appendTrackedLogCursor(w *strings.Builder, contentCols int) {
+	if !r.logInit || r.cursorRow < 0 {
+		return
+	}
+	row := len(r.logChat) + r.cursorRow - r.logViewportTop
+	if row < 0 || row >= r.rows {
+		return
+	}
+	cursorCol := r.cursorCol
+	if cursorCol < 0 {
+		cursorCol = 0
+	}
+	if cursorCol >= contentCols {
+		cursorCol = contentCols - 1
+	}
+	w.WriteString(MoveTo(row+1, cursorCol+1))
+	w.WriteString(SeqShowCursor)
 }

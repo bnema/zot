@@ -42,16 +42,24 @@ type Renderer struct {
 	logLines  []string
 	// Raw logical rows let DrawLog reject an unchanged frame before
 	// truncating and repainting every transcript row.
-	logRawChat          []string
-	logRawBottom        []string
-	logRawCols          int
-	logRawRows          int
-	logRawBackground    string
-	logRawHasThemeBG    bool
-	logViewportTop      int
-	logHardwareRow      int
-	logInit             bool
-	logNeedsFullRepaint bool
+	logRawChat        []string
+	logRawBottom      []string
+	logRawCols        int
+	logRawRows        int
+	logRawContentCols int
+	logRawBackground  string
+	logRawHasThemeBG  bool
+	logViewportTop    int
+	logHardwareRow    int
+	logInit           bool
+
+	// The right bar is a viewport overlay on top of the main-screen flow
+	// renderer. Keeping its cache separate prevents persistent chrome from
+	// replacing the transcript's logical buffer and native scrollback.
+	rightBarActive   bool
+	rightBarLines    []string
+	rightBarMainCols int
+	rightBarDimmed   bool
 
 	// keepScrollback is true when we must NOT emit \x1b[3J
 	// (erase-in-display 3, "clear scrollback").
@@ -130,6 +138,9 @@ func (r *Renderer) Resize(cols, rows int) {
 		r.logViewportTop = 0
 		r.logHardwareRow = 0
 		r.logInit = false
+		r.rightBarActive = false
+		r.rightBarLines = nil
+		r.rightBarMainCols = 0
 		if r.out != nil {
 			if r.keepScrollback {
 				// A resize is a discrete user action, like Ctrl+L: the
@@ -166,6 +177,9 @@ func (r *Renderer) Clear() {
 	r.logViewportTop = 0
 	r.logHardwareRow = 0
 	r.logInit = false
+	r.rightBarActive = false
+	r.rightBarLines = nil
+	r.rightBarMainCols = 0
 	if r.keepScrollback {
 		// On VS Code's xterm.js the transcript is taller than the
 		// viewport, so an in-place clear (home + erase-to-end) only
@@ -264,6 +278,7 @@ func truncateToWidth(s string, cols int) string {
 	var out strings.Builder
 	out.Grow(len(s))
 	seen := 0
+	osc8Active := false
 	runes := []rune(s)
 	for i := 0; i < len(runes); {
 		r := runes[i]
@@ -282,8 +297,41 @@ func truncateToWidth(s string, cols int) string {
 			}
 			continue
 		}
+		// OSC string escape (BEL or ST terminated): zero-width and atomic.
+		if r == 0x1b && i+1 < len(runes) && runes[i+1] == ']' {
+			start := i
+			i += 2
+			for i < len(runes) {
+				c := runes[i]
+				i++
+				if c == 0x07 {
+					break
+				}
+				if c == 0x1b && i < len(runes) && runes[i] == '\\' {
+					i++
+					break
+				}
+			}
+			osc8Closer := start+5 < i && runes[start+2] == '8' && runes[start+3] == ';' && runes[start+4] == ';' &&
+				((runes[start+5] == 0x07 && i == start+6) ||
+					(start+6 < i && runes[start+5] == 0x1b && runes[start+6] == '\\' && i == start+7))
+			if seen < cols || osc8Closer {
+				for _, c := range runes[start:i] {
+					out.WriteRune(c)
+				}
+				if runes[start+2] == '8' {
+					osc8Active = !osc8Closer
+				}
+			}
+			continue
+		}
 		rw := runewidthRune(r)
 		if seen+rw > cols {
+			if osc8Active {
+				// The remaining text is omitted, so close a hyperlink
+				// whose opener was already emitted before the boundary.
+				out.WriteString("\x1b]8;;\x07")
+			}
 			// Flush any trailing ANSI escapes (resets, erase-to-EOL)
 			// so background colors and cleanup sequences survive.
 			for i < len(runes) {
@@ -297,6 +345,31 @@ func truncateToWidth(s string, cols int) string {
 						i++
 						if c >= 0x40 && c <= 0x7e {
 							break
+						}
+					}
+				} else if runes[i] == 0x1b && i+1 < len(runes) && runes[i+1] == ']' {
+					// Do not append a new OSC sequence after the visible
+					// boundary: an OSC 8 opener would leak hyperlink state
+					// into the next terminal row. A matching OSC 8 closer is
+					// retained so a link opened before the boundary is closed.
+					keep := i+5 < len(runes) && runes[i+2] == '8' && runes[i+3] == ';' && runes[i+4] == ';' &&
+						(runes[i+5] == 0x07 || (i+6 < len(runes) && runes[i+5] == 0x1b && runes[i+6] == '\\'))
+					start := i
+					i += 2
+					for i < len(runes) {
+						c := runes[i]
+						i++
+						if c == 0x07 {
+							break
+						}
+						if c == 0x1b && i < len(runes) && runes[i] == '\\' {
+							i++
+							break
+						}
+					}
+					if keep {
+						for _, c := range runes[start:i] {
+							out.WriteRune(c)
 						}
 					}
 				} else {
@@ -432,26 +505,34 @@ func (r *Renderer) Draw(lines []string, cursorRow, cursorCol int) {
 //
 // cursorBottomRow/cursorCol are offsets into bottom, not the full frame.
 func (r *Renderer) DrawLog(chat, bottom []string, cursorBottomRow, cursorCol int) {
+	if r.rightBarActive {
+		r.clearRightBarOverlay()
+	}
+	r.drawLog(chat, bottom, cursorBottomRow, cursorCol, r.cols)
+}
+
+// drawLog is DrawLog's owning flow implementation. contentCols may reserve
+// terminal columns for a separately composited viewport overlay.
+func (r *Renderer) drawLog(chat, bottom []string, cursorBottomRow, cursorCol, contentCols int) bool {
 	if r.cols == 0 || r.rows == 0 {
-		return
+		return false
+	}
+	if contentCols <= 0 || contentCols > r.cols {
+		contentCols = r.cols
 	}
 	if len(bottom) == 0 {
 		bottom = []string{""}
 	}
-	if r.logInit && len(r.logLines) > 0 &&
-		cursorBottomRow == r.cursorRow && cursorCol == r.cursorCol &&
-		r.logRawCols == r.cols && r.logRawRows == r.rows && r.logRawBackground == r.backgroundStyle &&
-		r.logRawHasThemeBG == (r.theme.Background != nil) &&
-		sameLines(chat, r.logRawChat) && sameLines(bottom, r.logRawBottom) {
-		return
+	if r.logRawFrameUnchanged(chat, bottom, cursorBottomRow, cursorCol, contentCols) {
+		return false
 	}
 	chatFrame := make([]string, len(chat))
 	for i, line := range chat {
-		chatFrame[i] = paintBackgroundRow(truncateToWidth(line, r.cols), r.cols, r.backgroundStyle)
+		chatFrame[i] = paintBackgroundRow(truncateToWidth(line, contentCols), contentCols, r.backgroundStyle)
 	}
 	bottomFrame := make([]string, len(bottom))
 	for i, line := range bottom {
-		bottomFrame[i] = paintBackgroundRow(truncateToWidth(line, r.cols), r.cols, r.backgroundStyle)
+		bottomFrame[i] = paintBackgroundRow(truncateToWidth(line, contentCols), contentCols, r.backgroundStyle)
 	}
 
 	// Always reserve one real row below the editor/status band. This is
@@ -463,7 +544,7 @@ func (r *Renderer) DrawLog(chat, bottom []string, cursorBottomRow, cursorCol int
 	lines = append(lines, chatFrame...)
 	lines = append(lines, bottomFrame...)
 	for range bottomMarginRows {
-		lines = append(lines, paintBackgroundRow("", r.cols, r.backgroundStyle))
+		lines = append(lines, paintBackgroundRow("", contentCols, r.backgroundStyle))
 	}
 	// In main-screen flow mode zut normally emits only its logical
 	// content rows and leaves the rest of the terminal viewport alone.
@@ -473,7 +554,7 @@ func (r *Renderer) DrawLog(chat, bottom []string, cursorBottomRow, cursorCol int
 	// default transparent case.
 	if r.theme.Background != nil {
 		for len(lines) < r.rows {
-			lines = append(lines, paintBackgroundRow("", r.cols, r.backgroundStyle))
+			lines = append(lines, paintBackgroundRow("", contentCols, r.backgroundStyle))
 		}
 	}
 	if len(lines) == 0 {
@@ -495,8 +576,9 @@ func (r *Renderer) DrawLog(chat, bottom []string, cursorBottomRow, cursorCol int
 	// that never blinks, because we keep "showing" it before the
 	// terminal can blink it off. Bailing out here lets the OS run
 	// its blink cycle.
-	if r.logInit && cursorBottomRow == r.cursorRow && cursorCol == r.cursorCol && sameLines(lines, r.logLines) {
-		return
+	if r.logInit && r.logRawContentCols == contentCols &&
+		cursorBottomRow == r.cursorRow && cursorCol == r.cursorCol && sameLines(lines, r.logLines) {
+		return false
 	}
 
 	var w strings.Builder
@@ -590,8 +672,15 @@ func (r *Renderer) DrawLog(chat, bottom []string, cursorBottomRow, cursorCol int
 		}
 		moveToLogicalRow(cursorTargetRow)
 		w.WriteString("\r")
-		if cursorCol > 0 {
-			w.WriteString("\x1b[" + itoa(cursorCol) + "C")
+		physicalCursorCol := cursorCol
+		if physicalCursorCol < 0 {
+			physicalCursorCol = 0
+		}
+		if physicalCursorCol >= contentCols {
+			physicalCursorCol = contentCols - 1
+		}
+		if physicalCursorCol > 0 {
+			w.WriteString("\x1b[" + itoa(physicalCursorCol) + "C")
 		}
 		w.WriteString(SeqShowCursor)
 	}
@@ -605,12 +694,10 @@ func (r *Renderer) DrawLog(chat, bottom []string, cursorBottomRow, cursorCol int
 	wasInitialized := r.logInit
 	full := !wasInitialized || len(r.logLines) == 0
 	if full {
-		// Returning from the fixed right-bar frame needs a full viewport
-		// repaint, but it must not discard terminal scrollback merely because
-		// the renderer's flow cache is intentionally empty.
-		writeFull(true, !wasInitialized && !r.logNeedsFullRepaint)
+		// A cache invalidation may require a full viewport repaint after flow
+		// has started, but only the initial paint may discard old scrollback.
+		writeFull(true, !wasInitialized)
 		r.logInit = true
-		r.logNeedsFullRepaint = false
 	} else {
 		firstChanged := -1
 		lastChanged := -1
@@ -827,10 +914,24 @@ func (r *Renderer) DrawLog(chat, bottom []string, cursorBottomRow, cursorCol int
 	r.logRawBottom = append(r.logRawBottom[:0], bottom...)
 	r.logRawCols = r.cols
 	r.logRawRows = r.rows
+	r.logRawContentCols = contentCols
 	r.logRawBackground = r.backgroundStyle
 	r.logRawHasThemeBG = r.theme.Background != nil
 	r.cursorRow = cursorBottomRow
 	r.cursorCol = cursorCol
+	return true
+}
+
+func (r *Renderer) logRawFrameUnchanged(chat, bottom []string, cursorBottomRow, cursorCol, contentCols int) bool {
+	return cursorBottomRow == r.cursorRow && cursorCol == r.cursorCol &&
+		r.logRawContentUnchanged(chat, bottom, contentCols)
+}
+
+func (r *Renderer) logRawContentUnchanged(chat, bottom []string, contentCols int) bool {
+	return r.logInit && len(r.logLines) > 0 &&
+		r.logRawCols == r.cols && r.logRawRows == r.rows && r.logRawContentCols == contentCols &&
+		r.logRawBackground == r.backgroundStyle && r.logRawHasThemeBG == (r.theme.Background != nil) &&
+		sameLines(chat, r.logRawChat) && sameLines(bottom, r.logRawBottom)
 }
 
 // sameLines reports whether two []string have the exact same

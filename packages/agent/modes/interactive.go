@@ -2222,11 +2222,6 @@ func (i *Interactive) redraw() {
 	i.subagentActivityActive = !dashboardActive && len(subagentLines) > 0
 
 	chatRows := rows - len(bottom)
-	if rightBarActive {
-		// DrawRightBar keeps the renderer-owned bottom margin inside the
-		// fixed frame, so reserve that row before selecting visible chat.
-		chatRows--
-	}
 	if chatRows < 1 {
 		chatRows = 1
 	}
