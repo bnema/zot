@@ -598,6 +598,7 @@ func resumePromptAcknowledged(events []Event, acceptedAt time.Time) bool {
 func replayEventsIntoAgent(a *Agent, evs []Event) {
 	terminal := false
 	for _, ev := range evs {
+		replayEventTranscript(a, ev)
 		switch ev.Type {
 		case EventTurnStarted, "turn_start":
 			turnID := ev.TurnID
@@ -627,8 +628,6 @@ func replayEventsIntoAgent(a *Agent, evs []Event) {
 			a.status = StatusDone
 			a.activity = "done (offline)"
 			a.mu.Unlock()
-		case "assistant_message", "user_message", "stdout", "stderr", "error":
-			replayEventTranscript(a, ev)
 		case "agent_stopped":
 			terminal = true
 			reason, _ := ev.Data["reason"].(string)
@@ -677,7 +676,14 @@ func replayTranscriptIntoAgent(a *Agent, evs []Event) {
 }
 
 func replayEventTranscript(a *Agent, ev Event) {
+	if isAssistantStreamBoundary(ev.Type) {
+		a.resetStreamingAssistant()
+	}
 	switch ev.Type {
+	case "message.delta":
+		if delta, _ := ev.Data["delta"].(string); delta != "" {
+			a.appendAssistantDelta(delta)
+		}
 	case "assistant_message", "user_message":
 		var text []string
 		if c, ok := ev.Data["content"].([]any); ok {

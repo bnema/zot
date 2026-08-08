@@ -125,6 +125,10 @@ subagent://<id>/result
 subagent://<id>/patch
 ```
 
+`events.jsonl` is appended as the worker emits events, including partial `message.delta` output. The dashboard and `subagent://<id>/history` replay those deltas, so output received before a worker finishes remains recoverable rather than waiting for a final assistant message.
+
+When a subagent deadline expires, the supervisor requests worker shutdown and allows the configured grace period for the worker to cancel its turn and write its session and result. The terminal result remains a failure with error code `deadline_exceeded`, preserves any output already received, and directs the caller to its history. If the worker does not stop during that grace period, the supervisor forcefully cancels it to preserve the timeout limit.
+
 Use `/subagents resume-session <id>` to continue the existing session without replaying its original task. Use `/subagents restart-task <id>` only when intentionally starting the stored task again. Cancellation requests graceful shutdown first, then forcefully cancels after the configured grace period.
 
 When auto-subagents is enabled and permitted by launch-time policy, the model can manage workers with `subagent_status`, `subagent_stop`, and `subagent_resume`. Call `subagent_status` with `{}` to list workers visible to the active supervisor session, or pass `{"agent_id":"<id-or-unique-prefix>"}` to query one worker. Queries use in-process snapshots and never wait for a worker turn or process to finish; repeated calls or state inspection are not completion signals. The JSON response contains the worker id, a normalized lifecycle state (`starting`, `running`, `completed`, `failed`, `cancelled`, or `detached`), the underlying `process_state` and `turn_state`, start/update/finish timestamps, a bounded first-line task summary, and terminal-result metadata/reference when available. It intentionally omits prompts, transcripts, result output, credentials, provider settings, and filesystem paths.

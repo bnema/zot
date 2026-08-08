@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -52,6 +53,11 @@ type execRunner struct {
 	// would litter the user's repo — every agent's Dir points
 	// at it directly.
 	SessionPath string
+
+	// GracePeriod is the time a deadline-expired worker gets to handle an
+	// inbox shutdown and write its session/result before the process group is
+	// force-killed. Zero uses the standard ten-second cancellation grace.
+	GracePeriod time.Duration
 }
 
 // subagentWorkerArgsOpts captures every dynamic input to subagentWorkerArgs.
@@ -302,7 +308,14 @@ func (r *execRunner) Run(ctx context.Context, sink Sink) error {
 		args = defaultChildArgs(exe, r.agent, sessionPath, inboxPath)
 	}
 
-	cmd := exec.CommandContext(ctx, args[0], args[1:]...)
+	// Do not bind the process directly to ctx: CommandContext sends an
+	// immediate SIGKILL at the deadline, which prevents the worker from
+	// handling cancellation and persisting the session it has built so far.
+	// A deadline watcher below requests the worker's graceful inbox shutdown
+	// first, then force-stops it only after the bounded grace period. Use a
+	// non-canceling CommandContext so configureWorkerProcess can retain its
+	// Cmd.Cancel fallback without tying it to the worker lifetime context.
+	cmd := exec.CommandContext(context.Background(), args[0], args[1:]...)
 	cmd.Dir = r.agent.Dir
 	cmd.Env = append(workerEnvironment(r.agent.Provider),
 		"ZUT_SUBAGENT_AGENT_ID="+r.agent.ID,
@@ -352,6 +365,10 @@ func (r *execRunner) Run(ctx context.Context, sink Sink) error {
 	if r.agent.persistFn != nil {
 		r.agent.persistFn(r.agent)
 	}
+
+	runnerDone := make(chan struct{})
+	defer close(runnerDone)
+	go r.stopOnContextDone(ctx, cmd, runnerDone)
 
 	var logErrMu sync.Mutex
 	var logErr error
@@ -460,12 +477,16 @@ func (r *execRunner) Run(ctx context.Context, sink Sink) error {
 	if ee, ok := err.(*exec.ExitError); ok {
 		exit = ee.ExitCode()
 	}
-	if err != nil && ctx.Err() != nil {
-		appendLog(NewEvent("agent_stopped", map[string]any{"reason": "cancelled"}))
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		reason := "cancelled"
+		if errors.Is(ctxErr, context.DeadlineExceeded) {
+			reason = "deadline"
+		}
+		appendLog(NewEvent("agent_stopped", map[string]any{"reason": reason}))
 		if logErr := firstLogErr(); logErr != nil {
 			return fmt.Errorf("subagent event log: %w", logErr)
 		}
-		return ctx.Err()
+		return ctxErr
 	}
 	if err != nil {
 		appendLog(NewEvent("agent_stopped", map[string]any{"reason": "exit", "code": exit, "error": err.Error()}))
@@ -480,6 +501,48 @@ func (r *execRunner) Run(ctx context.Context, sink Sink) error {
 	}
 	sink.Activity("done")
 	return nil
+}
+
+// stopOnContextDone stops a worker when its run context ends. A deadline gets
+// one bounded chance to process an inbox shutdown and persist its session;
+// explicit cancellation force-stops immediately so Run cannot remain blocked.
+func (r *execRunner) stopOnContextDone(ctx context.Context, cmd *exec.Cmd, runnerDone <-chan struct{}) {
+	select {
+	case <-runnerDone:
+		return
+	case <-ctx.Done():
+	}
+	if !errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		if cmd.Cancel != nil {
+			_ = cmd.Cancel()
+			return
+		}
+		_ = killProcessGroup(cmd)
+		return
+	}
+
+	grace := r.GracePeriod
+	if grace <= 0 {
+		grace = 10 * time.Second
+	}
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), grace)
+	defer cancel()
+	if r.agent != nil && r.agent.inbox != nil {
+		_ = r.agent.inbox.SendCommandContext(shutdownCtx, NewCommand(
+			CommandAgentShutdown, r.agent.ID, r.agent.CurrentTurnID(), AgentShutdownPayload{},
+		))
+	}
+
+	select {
+	case <-runnerDone:
+		return
+	case <-shutdownCtx.Done():
+	}
+	if cmd.Cancel != nil {
+		_ = cmd.Cancel()
+		return
+	}
+	_ = killProcessGroup(cmd)
 }
 
 func workerEnvironment(provider string) []string {
@@ -703,6 +766,15 @@ func notifyPromptTurnEnd(a *Agent, ev Event) {
 	go fn(int(step), errMsg)
 }
 
+func isAssistantStreamBoundary(eventType string) bool {
+	switch eventType {
+	case EventTurnStarted, "turn_start", EventTurnResult, "turn_result", EventTurnFailed, "turn_failed", "turn_end":
+		return true
+	default:
+		return false
+	}
+}
+
 // applyEventToSink translates an Event into Sink updates. Only a
 // few event types are interpreted; the rest still land in the
 // durable log via the caller.
@@ -710,6 +782,17 @@ func applyEventToSink(ev Event, sink Sink) {
 	type roleSink interface {
 		userMessage(string)
 		assistantMessage(string)
+	}
+	type streamingSink interface {
+		assistantDelta(string)
+	}
+	type streamResetSink interface {
+		resetStreamingAssistant()
+	}
+	if isAssistantStreamBoundary(ev.Type) {
+		if streaming, ok := sink.(streamResetSink); ok {
+			streaming.resetStreamingAssistant()
+		}
 	}
 	appendMessage := func(text string, assistant bool) {
 		if text == "" {
@@ -731,6 +814,14 @@ func applyEventToSink(ev Event, sink Sink) {
 	}
 
 	switch ev.Type {
+	case "message.delta":
+		if delta, _ := ev.Data["delta"].(string); delta != "" {
+			if streaming, ok := sink.(streamingSink); ok {
+				streaming.assistantDelta(delta)
+			} else {
+				sink.Transcript(delta)
+			}
+		}
 	case "assistant_message", "user_message":
 		var text []string
 		if c, ok := ev.Data["content"].([]any); ok {

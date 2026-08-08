@@ -58,6 +58,106 @@ func TestCredentialStdinHelperProcess(t *testing.T) {
 	os.Exit(0)
 }
 
+// TestMessageDeltaStreamsAndReplaysWithoutDuplicatingFinalMessage verifies
+// that the durable event stream has the same visible result while live and
+// after history replay.
+func TestMessageDeltaStreamsAndReplaysWithoutDuplicatingFinalMessage(t *testing.T) {
+	events := []Event{
+		NewEvent("message.delta", map[string]any{"delta": "partial "}),
+		NewEvent("message.delta", map[string]any{"delta": "answer"}),
+		NewEvent("assistant_message", map[string]any{"content": []any{
+			map[string]any{"type": "text", "text": "partial answer"},
+		}}),
+	}
+
+	live := &Agent{transcriptLoaded: true}
+	for _, event := range events {
+		applyEventToSink(event, agentSink{a: live})
+	}
+	if got := strings.Join(live.Transcript(), "\n"); got != "partial answer" {
+		t.Fatalf("live transcript = %q, want final assistant message once", got)
+	}
+	if got := live.Snapshot().LastAssistant; got != "partial answer" {
+		t.Fatalf("live assistant output = %q, want %q", got, "partial answer")
+	}
+
+	replayed := &Agent{transcriptLoaded: true}
+	for _, event := range events {
+		replayEventTranscript(replayed, event)
+	}
+	if got := strings.Join(replayed.Transcript(), "\n"); got != "partial answer" {
+		t.Fatalf("replayed transcript = %q, want final assistant message once", got)
+	}
+}
+
+func TestMessageDeltaBoundsLiveProjection(t *testing.T) {
+	a := &Agent{maxOutputBytes: 32, maxOutputLines: 100, transcriptLoaded: true}
+	applyEventToSink(NewEvent("message.delta", map[string]any{"delta": strings.Repeat("x", 64)}), agentSink{a: a})
+	applyEventToSink(NewEvent("message.delta", map[string]any{"delta": "discarded"}), agentSink{a: a})
+
+	a.mu.Lock()
+	streamed := a.streamingAssistantText
+	truncated := a.streamingAssistantTruncated
+	a.mu.Unlock()
+	if !truncated {
+		t.Fatal("streamed output was not marked truncated")
+	}
+	if got := len([]byte(streamed)); got > 32 {
+		t.Fatalf("streamed output length = %d, want at most 32", got)
+	}
+	snapshot := a.Snapshot()
+	if got := snapshot.LastAssistant; got != streamed {
+		t.Fatalf("live assistant output = %q, want bounded stream %q", got, streamed)
+	}
+	if !snapshot.OutputTruncated {
+		t.Fatal("snapshot did not expose truncated streamed output")
+	}
+
+	events := []Event{
+		NewEvent(EventMessageDelta, map[string]any{"delta": "first partial"}),
+		NewEvent("turn_end", map[string]any{"stop": "cancelled"}),
+		NewEvent(EventMessageDelta, map[string]any{"delta": "second partial"}),
+	}
+	want := "first partial\nsecond partial"
+	assertProjection := func(t *testing.T, agent *Agent) {
+		t.Helper()
+		if got := strings.Join(agent.Transcript(), "\n"); got != want {
+			t.Fatalf("transcript = %q, want %q", got, want)
+		}
+		agent.mu.Lock()
+		truncated := agent.streamingAssistantTruncated
+		agent.mu.Unlock()
+		if truncated {
+			t.Fatal("fresh second-turn stream was incorrectly truncated")
+		}
+	}
+
+	live := &Agent{maxOutputBytes: 100, maxOutputLines: 100, transcriptLoaded: true}
+	for _, event := range events {
+		applyEventToSink(event, agentSink{a: live})
+	}
+	assertProjection(t, live)
+
+	replayed := &Agent{maxOutputBytes: 100, maxOutputLines: 100, transcriptLoaded: true}
+	replayTranscriptIntoAgent(replayed, events)
+	assertProjection(t, replayed)
+
+	legacy := &Agent{maxOutputBytes: 100, maxOutputLines: 100, transcriptLoaded: true}
+	replayEventsIntoAgent(legacy, events)
+	assertProjection(t, legacy)
+
+	truncatedTurn := &Agent{maxOutputBytes: 16, maxOutputLines: 100, transcriptLoaded: true}
+	applyEventToSink(NewEvent(EventMessageDelta, map[string]any{"delta": strings.Repeat("x", 64)}), agentSink{a: truncatedTurn})
+	applyEventToSink(NewEvent("turn_end", map[string]any{"stop": "cancelled"}), agentSink{a: truncatedTurn})
+	truncatedTurn.mu.Lock()
+	streamText := truncatedTurn.streamingAssistantText
+	streamTruncated := truncatedTurn.streamingAssistantTruncated
+	truncatedTurn.mu.Unlock()
+	if streamText != "" || streamTruncated {
+		t.Fatalf("stream state after turn boundary = (%q, %v), want empty and not truncated", streamText, streamTruncated)
+	}
+}
+
 func TestWorkerEnvironmentRedactsProviderSecrets(t *testing.T) {
 	t.Setenv("OPENAI_API_KEY", "openai-secret")
 	t.Setenv("CUSTOM_PROVIDER_API_KEY", "custom-secret")

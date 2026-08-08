@@ -72,8 +72,20 @@ func main() {
 
 	// Initial task lives in the positional. Process it as the first
 	// user turn so the supervisor's "initial task" path is exercised.
+	initialTurnOpen := false
 	if task := flag.Arg(0); task != "" {
-		runTurn(emit, task, 0)
+		if os.Getenv("ZUT_STUB_BLOCK_INITIAL") == "1" {
+			initialTurnOpen = true
+			emit("turn_start", map[string]any{"step": 0})
+			emit("user_message", map[string]any{
+				"content": []any{
+					map[string]any{"type": "text", "text": task},
+				},
+			})
+			emit("message.delta", map[string]any{"delta": "partial answer"})
+		} else {
+			runTurn(emit, task, 0)
+		}
 	}
 
 	turn := 1
@@ -91,10 +103,17 @@ func main() {
 				if parseErr == nil {
 					switch command.Type {
 					case subagents.CommandAgentShutdown:
+						if initialTurnOpen {
+							emit("turn_end", map[string]any{"stop": "cancelled"})
+							initialTurnOpen = false
+						}
 						emit("agent_stopped", map[string]any{"reason": "shutdown"})
 						_ = c.Close()
 						return
 					case subagents.CommandTurnCancel:
+						if initialTurnOpen {
+							initialTurnOpen = false
+						}
 						emit("turn_end", map[string]any{"stop": "cancelled"})
 					case subagents.CommandTurnStart:
 						var payload subagents.TurnStartPayload
