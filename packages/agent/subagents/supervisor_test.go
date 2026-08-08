@@ -163,6 +163,105 @@ func TestStopCancelsRunningAgent(t *testing.T) {
 	}
 }
 
+func TestStopByRootSessionLeavesOtherSessionsRunning(t *testing.T) {
+	started := make(chan string, 2)
+	stopped := make(chan string, 2)
+	f := newTestSupervisor(t, func(a *Agent) Runner {
+		return RunnerFunc(func(ctx context.Context, _ Sink) error {
+			started <- a.ID
+			<-ctx.Done()
+			stopped <- a.ID
+			return ctx.Err()
+		})
+	})
+	t.Cleanup(f.StopAll)
+
+	f.SetActiveSession("session-a")
+	a, err := f.Spawn(context.Background(), "session A task")
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.SetActiveSession("session-b")
+	b, err := f.Spawn(context.Background(), "session B task")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for range 2 {
+		<-started
+	}
+	if err := f.StopByRootSession("session-a"); err != nil {
+		t.Fatal(err)
+	}
+	if got := <-stopped; got != a.ID {
+		t.Fatalf("stopped agent = %q, want session A agent %q", got, a.ID)
+	}
+	select {
+	case got := <-stopped:
+		t.Fatalf("session cleanup also stopped %q", got)
+	default:
+	}
+	if got := b.Status(); got != StatusRunning {
+		t.Fatalf("session B status = %s, want running", got)
+	}
+}
+
+func TestSupervisorShutdownCommandsIdentifyOrigin(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		origin ShutdownOrigin
+		stop   func(*Supervisor, *Agent) error
+	}{
+		{name: "targeted", origin: ShutdownOriginTargeted, stop: func(f *Supervisor, a *Agent) error { return f.Stop(a.ID) }},
+		{name: "session", origin: ShutdownOriginSession, stop: func(f *Supervisor, _ *Agent) error { return f.StopByRootSession("session-a") }},
+		{name: "process", origin: ShutdownOriginProcess, stop: func(f *Supervisor, _ *Agent) error { return f.StopAllContext(context.Background()) }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			started := make(chan struct{})
+			commands := make(chan Envelope, 1)
+			f := newTestSupervisor(t, func(a *Agent) Runner {
+				return RunnerFunc(func(ctx context.Context, _ Sink) error {
+					listener, err := Listen(a.InboxPath)
+					if err != nil {
+						return err
+					}
+					defer listener.Close()
+					close(started)
+					select {
+					case line := <-listener.Lines():
+						command, err := ParseCommand(line)
+						if err != nil {
+							return err
+						}
+						commands <- command
+						return nil
+					case <-ctx.Done():
+						return ctx.Err()
+					}
+				})
+			})
+			f.SetActiveSession("session-a")
+			a, err := f.Spawn(context.Background(), "origin test")
+			if err != nil {
+				t.Fatal(err)
+			}
+			<-started
+			if err := tc.stop(f, a); err != nil {
+				t.Fatal(err)
+			}
+			command := <-commands
+			var payload AgentShutdownPayload
+			if err := command.DecodePayload(&payload); err != nil {
+				t.Fatal(err)
+			}
+			if payload.Origin != tc.origin {
+				t.Fatalf("shutdown origin = %q, want %q", payload.Origin, tc.origin)
+			}
+			a.Wait()
+		})
+	}
+}
+
 func TestStopContextCallerCancellationDoesNotEndGracePeriod(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("subagent inbox transport uses Unix-domain sockets")

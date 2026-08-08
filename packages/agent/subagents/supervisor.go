@@ -776,17 +776,17 @@ func waitForDetachedWorker(ctx context.Context, path string, timeout time.Durati
 // shutdown command through the durable inbox instead of pretending no
 // process exists.
 func (f *Supervisor) Stop(id string) error {
-	return f.stop(context.Background(), id)
+	return f.stop(context.Background(), id, ShutdownOriginTargeted)
 }
 
 // StopContext is Stop with a context that can interrupt detached-worker
 // shutdown and its graceful and force-stop waits. The context is not held
 // under the supervisor operation lock while those waits run.
 func (f *Supervisor) StopContext(ctx context.Context, id string) error {
-	return f.stop(ctx, id)
+	return f.stop(ctx, id, ShutdownOriginTargeted)
 }
 
-func (f *Supervisor) stop(ctx context.Context, id string) error {
+func (f *Supervisor) stop(ctx context.Context, id string, origin ShutdownOrigin) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -820,7 +820,7 @@ func (f *Supervisor) stop(ctx context.Context, id string) error {
 		// The detached worker may take the full grace period to exit. Do not
 		// serialize unrelated supervisor operations for that entire wait.
 		f.operationMu.Unlock()
-		return f.stopDetached(ctx, a, path, inbox, pid)
+		return f.stopDetached(ctx, a, path, inbox, pid, origin)
 	}
 	a.status = StatusKilled
 	a.activity = "canceling"
@@ -870,7 +870,7 @@ func (f *Supervisor) stop(ctx context.Context, id string) error {
 	}
 	graceful := false
 	if a.inbox != nil {
-		err := a.inbox.SendCommandContext(ctx, NewCommand(CommandAgentShutdown, a.ID, a.CurrentTurnID(), AgentShutdownPayload{}))
+		err := a.inbox.SendCommandContext(ctx, NewCommand(CommandAgentShutdown, a.ID, a.CurrentTurnID(), AgentShutdownPayload{Origin: origin.Sanitized()}))
 		if err == nil {
 			graceful = true
 		}
@@ -910,7 +910,7 @@ func (f *Supervisor) stop(ctx context.Context, id string) error {
 	return nil
 }
 
-func (f *Supervisor) stopDetached(ctx context.Context, a *Agent, path string, inbox *Inbox, pid int) error {
+func (f *Supervisor) stopDetached(ctx context.Context, a *Agent, path string, inbox *Inbox, pid int, origin ShutdownOrigin) error {
 	if inbox == nil {
 		return nil
 	}
@@ -923,7 +923,7 @@ func (f *Supervisor) stopDetached(ctx context.Context, a *Agent, path string, in
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if err := inbox.SendCommandContext(ctx, NewCommand(CommandAgentShutdown, a.ID, a.CurrentTurnID(), AgentShutdownPayload{})); err != nil {
+	if err := inbox.SendCommandContext(ctx, NewCommand(CommandAgentShutdown, a.ID, a.CurrentTurnID(), AgentShutdownPayload{Origin: origin.Sanitized()})); err != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return ctxErr
 		}
@@ -976,6 +976,51 @@ func (f *Supervisor) markDetachedKilled(a *Agent) {
 	a.closeDone()
 }
 
+// StopByRootSession stops and waits for every agent owned by rootSessionID.
+// It leaves the supervisor lifetime and agents from other sessions running.
+func (f *Supervisor) StopByRootSession(rootSessionID string) error {
+	return f.StopByRootSessionContext(context.Background(), rootSessionID)
+}
+
+// StopByRootSessionContext is the context-aware form of StopByRootSession.
+func (f *Supervisor) StopByRootSessionContext(ctx context.Context, rootSessionID string) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	rootSessionID = strings.TrimSpace(rootSessionID)
+	if rootSessionID == "" {
+		return errors.New("subagents: root session id is required")
+	}
+	agents := f.List()
+	owned := make([]*Agent, 0, len(agents))
+	for _, a := range agents {
+		if a.RootSessionID == rootSessionID {
+			owned = append(owned, a)
+		}
+	}
+	return f.stopAgents(ctx, owned, ShutdownOriginSession)
+}
+
+func (f *Supervisor) stopAgents(ctx context.Context, agents []*Agent, origin ShutdownOrigin) error {
+	var firstErr error
+	for _, a := range agents {
+		if err := f.stop(ctx, a.ID, origin); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	for _, a := range agents {
+		select {
+		case <-a.done:
+		case <-ctx.Done():
+			if firstErr == nil {
+				firstErr = ctx.Err()
+			}
+			return firstErr
+		}
+	}
+	return firstErr
+}
+
 // StopAll cancels every running agent. Used on shutdown.
 func (f *Supervisor) StopAll() {
 	_ = f.stopAll(context.Background())
@@ -991,29 +1036,12 @@ func (f *Supervisor) stopAll(ctx context.Context) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	agents := f.List()
-	var firstErr error
-	for _, a := range agents {
-		if err := f.stop(ctx, a.ID); err != nil && firstErr == nil {
-			firstErr = err
-		}
-	}
 	defer func() {
 		if f.lifetimeCancel != nil {
 			f.lifetimeCancel()
 		}
 	}()
-	for _, a := range agents {
-		select {
-		case <-a.done:
-		case <-ctx.Done():
-			if firstErr == nil {
-				firstErr = ctx.Err()
-			}
-			return firstErr
-		}
-	}
-	return firstErr
+	return f.stopAgents(ctx, f.List(), ShutdownOriginProcess)
 }
 
 // Remove tears down the per-agent state for a terminated agent. It

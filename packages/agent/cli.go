@@ -2281,10 +2281,16 @@ func runInteractive(ctx context.Context, args Args, version string) (runErr erro
 	if sess != nil && subagentsMgr != nil {
 		subagentsMgr.SetActiveSession(sess.ID)
 	}
-	// Best-effort shutdown on interactive exit: stop all running
-	// agents so they don't outlive their parent zut.
+	// Best-effort shutdown on normal interactive exit: stop only workers
+	// owned by the active host session. Other session scopes can share this
+	// supervisor and must remain alive.
 	if subagentsMgr != nil {
-		defer subagentsMgr.StopAll()
+		defer func() {
+			rootSessionID := subagentsMgr.ActiveSession()
+			if rootSessionID != "" {
+				_ = subagentsMgr.StopByRootSession(rootSessionID)
+			}
+		}()
 	}
 
 	var startupSkills []*skills.Skill
