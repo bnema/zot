@@ -912,6 +912,21 @@ func stripANSI(s string) string {
 			}
 			continue
 		}
+		if runes[i] == 0x1b && i+1 < len(runes) && runes[i+1] == ']' {
+			i += 2
+			for i < len(runes) {
+				if runes[i] == 0x07 {
+					i++
+					break
+				}
+				if runes[i] == 0x1b && i+1 < len(runes) && runes[i+1] == '\\' {
+					i += 2
+					break
+				}
+				i++
+			}
+			continue
+		}
 		out = append(out, runes[i])
 		i++
 	}
