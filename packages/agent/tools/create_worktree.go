@@ -19,11 +19,12 @@ import (
 )
 
 const (
-	worktreesIgnoreEntry         = "/.worktrees/"
-	defaultWorktreeRoot          = ".worktrees"
-	worktreeConfigKey            = "zut.worktrees.path"
-	maxCreateWorktreeGitOutput   = 64 * 1024
-	maxCreateWorktreeIgnoreBytes = 1 << 20
+	worktreesIgnoreEntry           = "/.worktrees/"
+	worktreesUnanchoredIgnoreEntry = ".worktrees/"
+	defaultWorktreeRoot            = ".worktrees"
+	worktreeConfigKey              = "zut.worktrees.path"
+	maxCreateWorktreeGitOutput     = 64 * 1024
+	maxCreateWorktreeIgnoreBytes   = 1 << 20
 )
 
 var createWorktreeOperationMu sync.Mutex
@@ -358,7 +359,7 @@ func (t *CreateWorktreeTool) plan(ctx context.Context, raw json.RawMessage) (cre
 		if err != nil {
 			return createWorktreePlan{}, fmt.Errorf("create_worktree: read .gitignore: %w", err)
 		}
-		ignoreAction = "already contains " + worktreesIgnoreEntry
+		ignoreAction = "already ignores " + defaultWorktreeRoot + "/"
 		if ignore.changed {
 			ignoreAction = "add " + worktreesIgnoreEntry
 		}
@@ -818,7 +819,8 @@ func newWorktreesIgnoreUpdate(path string) (worktreesIgnoreUpdate, error) {
 		return worktreesIgnoreUpdate{}, err
 	}
 	for _, line := range strings.Split(string(contents), "\n") {
-		if strings.TrimSuffix(line, "\r") == worktreesIgnoreEntry {
+		switch strings.TrimSuffix(line, "\r") {
+		case worktreesIgnoreEntry, worktreesUnanchoredIgnoreEntry:
 			return worktreesIgnoreUpdate{path: path, before: contents, existed: existed, mode: mode}, nil
 		}
 	}
