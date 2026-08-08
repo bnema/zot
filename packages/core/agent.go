@@ -31,6 +31,11 @@ type Agent struct {
 	// rejects it for providers that do not support that contract.
 	FastMode bool
 
+	// ContextWindow is the effective input context capacity retained from
+	// model resolution. Hosts use it for proactive compaction even when the
+	// model was synthesized for an open-catalog provider.
+	ContextWindow int
+
 	// MaxTokens caps the model's output tokens per turn. Zero leaves
 	// the field unset on the provider request, letting each provider
 	// apply its own default (which can be conservative, e.g. Bedrock

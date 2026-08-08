@@ -942,7 +942,12 @@ func runPrintMode(ctx context.Context, args Args, version string) error {
 	if recovery.Compacted {
 		transcriptStart = recovery.OutputStart
 	}
-	WriteNewTranscript(ag, sess, transcriptStart)
+	if persistErr := WriteNewTranscript(ag, sess, transcriptStart); persistErr != nil {
+		if err != nil {
+			return errors.Join(err, persistErr)
+		}
+		return persistErr
+	}
 	if err != nil {
 		return err
 	}
@@ -1016,7 +1021,12 @@ func runStreamMode(ctx context.Context, args Args, version string) error {
 	if recovery.Compacted {
 		transcriptStart = recovery.OutputStart
 	}
-	WriteNewTranscript(ag, sess, transcriptStart)
+	if persistErr := WriteNewTranscript(ag, sess, transcriptStart); persistErr != nil {
+		if err != nil {
+			return errors.Join(err, persistErr)
+		}
+		return persistErr
+	}
 	return err
 }
 
@@ -1131,7 +1141,12 @@ func runJSONMode(ctx context.Context, args Args, version string) error {
 	if recovery.Compacted {
 		transcriptStart = recovery.OutputStart
 	}
-	WriteNewTranscript(ag, sess, transcriptStart)
+	if persistErr := WriteNewTranscript(ag, sess, transcriptStart); persistErr != nil {
+		if err != nil {
+			return errors.Join(err, persistErr)
+		}
+		return persistErr
+	}
 	return err
 }
 
@@ -1881,7 +1896,10 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 		// than the public callback, which would acquire the read lock held
 		// by this transition.
 		if oldSess != nil {
-			writeNewTranscriptLocked(currentAg, oldSess, sessBaselineMsgs)
+			if err := writeNewTranscriptLocked(currentAg, oldSess, sessBaselineMsgs); err != nil {
+				persistMu.Unlock()
+				return fmt.Errorf("flush current session: %w", err)
+			}
 		}
 		currentMessageCount := len(currentAg.Messages())
 		currentCost := currentAg.Cost()
@@ -2116,7 +2134,12 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 		var newStates map[string]json.RawMessage
 		persistMu.Lock()
 		if sess != nil {
-			writeNewTranscriptLocked(currentAg, sess, sessBaselineMsgs)
+			if err := writeNewTranscriptLocked(currentAg, sess, sessBaselineMsgs); err != nil {
+				persistMu.Unlock()
+				_ = newSess.Close()
+				rollback()
+				return fmt.Errorf("flush current session: %w", err)
+			}
 			_ = sess.Close()
 		}
 		sess = newSess
@@ -2424,7 +2447,10 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 			if sess == nil {
 				return
 			}
-			writeNewTranscriptLocked(currentAg, sess, sessBaselineMsgs)
+			if err := writeNewTranscriptLocked(currentAg, sess, sessBaselineMsgs); err != nil {
+				iv.ReportError(fmt.Errorf("flush session: %w", err))
+				return
+			}
 			sessBaselineMsgs = len(currentAg.Messages())
 		},
 		SessionTransition: newSessionTransition(&sessionTransitionMu),
@@ -2544,8 +2570,11 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 		if finalAg != nil {
 			persistMu.Lock()
 			if sess != nil {
-				writeNewTranscriptLocked(finalAg, sess, sessBaselineMsgs)
-				sessBaselineMsgs = len(finalAg.Messages())
+				if err := writeNewTranscriptLocked(finalAg, sess, sessBaselineMsgs); err != nil {
+					fmt.Fprintf(os.Stderr, "flush session: %v\n", err)
+				} else {
+					sessBaselineMsgs = len(finalAg.Messages())
+				}
 				_ = sess.Close()
 				sess = nil
 			}
@@ -2573,8 +2602,11 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 	if finalAg := iv.Agent(); finalAg != nil {
 		persistMu.Lock()
 		if sess != nil {
-			writeNewTranscriptLocked(finalAg, sess, sessBaselineMsgs)
-			sessBaselineMsgs = len(finalAg.Messages())
+			if err := writeNewTranscriptLocked(finalAg, sess, sessBaselineMsgs); err != nil {
+				runErr = errors.Join(runErr, fmt.Errorf("flush session: %w", err))
+			} else {
+				sessBaselineMsgs = len(finalAg.Messages())
+			}
 		}
 		persistMu.Unlock()
 	}
@@ -2671,24 +2703,29 @@ func pickSession(root, cwd string) (string, error) {
 // agent's transcript to the session. Used by callers that don't hold
 // the persistMu (non-interactive print/json modes which run a single
 // turn under their own goroutine).
-func WriteNewTranscript(ag *core.Agent, sess *core.Session, from int) {
-	writeNewTranscriptLocked(ag, sess, from)
+func WriteNewTranscript(ag *core.Agent, sess *core.Session, from int) error {
+	return writeNewTranscriptLocked(ag, sess, from)
 }
 
 // writeNewTranscriptLocked is the same as WriteNewTranscript. The
 // suffix marks that interactive callers must hold persistMu when
 // invoking it so concurrent appends from the agent loop don't race
 // with this catch-up flush.
-func writeNewTranscriptLocked(ag *core.Agent, sess *core.Session, from int) {
+func writeNewTranscriptLocked(ag *core.Agent, sess *core.Session, from int) error {
 	if sess == nil || ag == nil {
-		return
+		return nil
 	}
 	msgs := ag.Messages()
 	for i := from; i < len(msgs); i++ {
-		_ = sess.AppendMessage(msgs[i])
+		if err := sess.AppendMessage(msgs[i]); err != nil {
+			return fmt.Errorf("append transcript message %d: %w", i, err)
+		}
 	}
 	cum := ag.Cost()
-	_ = sess.AppendUsage(cum, cum)
+	if err := sess.AppendUsage(cum, cum); err != nil {
+		return fmt.Errorf("append transcript usage: %w", err)
+	}
+	return nil
 }
 
 func readAllStdin() (string, error) {
