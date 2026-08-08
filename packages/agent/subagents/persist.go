@@ -22,6 +22,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 // agentMeta is the durable identity record for one agent. Only fields
@@ -844,9 +846,9 @@ func (f *Supervisor) ResumeWithPrompt(ctx context.Context, id, prompt string) (*
 			// Keep the prompt durable and let the idle transition deliver it in
 			// order after the current message turn finishes.
 			acceptedAt := f.cfg.Now()
-			existing.queueResumePrompt(prompt, acceptedAt)
+			commandID := existing.queueResumePrompt(prompt, acceptedAt)
 			if err := f.persistAgent(existing); err != nil {
-				existing.removeQueuedResumePrompt(prompt, acceptedAt)
+				existing.removeQueuedResumePrompt(commandID)
 				f.operationMu.Unlock()
 				return nil, fmt.Errorf("subagent: persist queued follow-up for %s: %w", existing.ID, err)
 			}
@@ -863,7 +865,7 @@ func (f *Supervisor) ResumeWithPrompt(ctx context.Context, id, prompt string) (*
 		// must not enqueue another turn in the small interval before the worker
 		// reports its turn.start event. Persist the prompt first so a host exit
 		// before that event can resume and redeliver it.
-		previousPrompt, previousPromptAt := existing.setResumePrompt(prompt, f.cfg.Now())
+		previousPrompt := existing.setResumePrompt(prompt, f.cfg.Now())
 		existing.setTurnState(TurnQueued, turnID)
 		inbox := existing.inbox
 		command := NewCommand(CommandTurnStart, existing.ID, turnID, TurnStartPayload{Prompt: prompt, NewRun: true})
@@ -871,7 +873,7 @@ func (f *Supervisor) ResumeWithPrompt(ctx context.Context, id, prompt string) (*
 		if err := f.persistAgent(existing); err != nil {
 			existing.setTurnState(TurnIdle, turnID)
 			existing.setCurrentRunTurns(previousRunTurns)
-			existing.setResumePrompt(previousPrompt, previousPromptAt)
+			existing.restoreResumePrompt(previousPrompt)
 			f.operationMu.Unlock()
 			return nil, fmt.Errorf("subagent: persist follow-up for %s: %w", existing.ID, err)
 		}
@@ -887,7 +889,7 @@ func (f *Supervisor) ResumeWithPrompt(ctx context.Context, id, prompt string) (*
 					existing.rejectActiveResumePrompt()
 					retryUnknown = true
 				} else {
-					existing.setResumePrompt(previousPrompt, previousPromptAt)
+					existing.restoreResumePrompt(previousPrompt)
 				}
 				if persistErr := f.persistAgent(existing); persistErr != nil {
 					err = fmt.Errorf("%w; persist recovery: %v", err, persistErr)
@@ -897,7 +899,7 @@ func (f *Supervisor) ResumeWithPrompt(ctx context.Context, id, prompt string) (*
 			if retryUnknown {
 				// The command keeps its durable identity. A retry is safe whether
 				// the worker parsed the first write or only received a prefix.
-				f.dispatchQueuedResume(existing)
+				f.dispatchQueuedResume(ctx, existing)
 			}
 			return nil, fmt.Errorf("subagent: send follow-up to %s: %w", existing.ID, err)
 		}
@@ -908,11 +910,26 @@ func (f *Supervisor) ResumeWithPrompt(ctx context.Context, id, prompt string) (*
 	return f.resume(ctx, id, true, prompt)
 }
 
+// dispatchQueuedResumeWithTimeout keeps the idle callback bounded. Unlike a
+// manager request, an idle transition has no caller context to propagate.
+func (f *Supervisor) dispatchQueuedResumeWithTimeout(a *Agent) {
+	timeout := f.cfg.Policy.ReconnectTimeout
+	if timeout <= 0 {
+		timeout = 5 * time.Second
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	f.dispatchQueuedResume(ctx, a)
+}
+
 // dispatchQueuedResume delivers the oldest follow-up accepted during an
 // active turn after the worker reports that its inbox can accept a new turn.
 // The operation lock serializes this transition with manager resume calls and
 // the agent's durable prompt state prevents a host exit from losing it.
-func (f *Supervisor) dispatchQueuedResume(a *Agent) {
+func (f *Supervisor) dispatchQueuedResume(ctx context.Context, a *Agent) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	if a == nil {
 		return
 	}
@@ -941,7 +958,7 @@ func (f *Supervisor) dispatchQueuedResume(a *Agent) {
 	}
 	f.operationMu.Unlock()
 
-	if err := inbox.SendCommand(command); err == nil {
+	if err := inbox.SendCommandContext(ctx, command); err == nil {
 		return
 	}
 
@@ -953,7 +970,12 @@ func (f *Supervisor) dispatchQueuedResume(a *Agent) {
 		if a.restoreResumePromptToQueue(prompt, acceptedAt) {
 			a.setCurrentRunTurns(previousRunTurns)
 			a.setTurnState(TurnIdle, turnID)
-			f.persistAgent(a)
+			if persistErr := f.persistAgent(a); persistErr != nil {
+				// persistAgent records the failure on the agent. Keep the explicit
+				// check here because this recovery write is the only durable copy
+				// of the restored queue head.
+				a.recordPersistenceError(persistErr)
+			}
 		}
 	}
 	f.operationMu.Unlock()
@@ -1026,23 +1048,33 @@ func (f *Supervisor) resume(ctx context.Context, id string, resuming bool, resum
 	fastMode := existing.FastMode
 	lifetimeTurns := existing.LifetimeTurnsValue()
 	currentRunTurns := existing.CurrentRunTurnsValue()
-	pendingResumePrompt, pendingResumePromptAt := existing.ResumePromptInfo()
+	pendingResume := existing.resumePromptState()
+	pendingResumePrompt, pendingResumePromptAt, pendingResumePromptID := pendingResume.Prompt, pendingResume.AcceptedAt, pendingResume.CommandID
 	pendingResumeQueue := existing.resumePromptQueueSnapshot()
+	if pendingResumePrompt != "" && pendingResumePromptID == "" {
+		pendingResumePromptID = uuid.NewString()
+	}
 	if resumePrompt != "" {
 		currentRunTurns = 0
 		if pendingResumePrompt == "" {
 			pendingResumePrompt = resumePrompt
 			pendingResumePromptAt = now
+			pendingResumePromptID = uuid.NewString()
 		} else {
-			pendingResumeQueue = append(pendingResumeQueue, queuedResumePrompt{Prompt: resumePrompt, AcceptedAt: now})
+			pendingResumeQueue = append(pendingResumeQueue, queuedResumePrompt{Prompt: resumePrompt, AcceptedAt: now, CommandID: uuid.NewString()})
 		}
 	}
 	if resuming && resumePrompt == "" && pendingResumePrompt == "" && len(pendingResumeQueue) > 0 {
 		// A host can exit after accepting an active-worker follow-up but before
 		// dispatching it. Make the first durable queued prompt the resumed
 		// worker's initial turn rather than leaving the queue stranded.
-		pendingResumePrompt = pendingResumeQueue[0].Prompt
-		pendingResumePromptAt = pendingResumeQueue[0].AcceptedAt
+		queued := pendingResumeQueue[0]
+		pendingResumePrompt = queued.Prompt
+		pendingResumePromptAt = queued.AcceptedAt
+		pendingResumePromptID = queued.CommandID
+		if pendingResumePromptID == "" {
+			pendingResumePromptID = uuid.NewString()
+		}
 		pendingResumeQueue = pendingResumeQueue[1:]
 	}
 	if resuming && pendingResumePrompt != "" {
@@ -1073,7 +1105,7 @@ func (f *Supervisor) resume(ctx context.Context, id string, resuming bool, resum
 		SessionPath:    existing.SessionPath,
 		ResumePrompt:   pendingResumePrompt,
 		ResumePromptAt: pendingResumePromptAt,
-		ResumePromptID: existing.resumePromptCommandID(),
+		ResumePromptID: pendingResumePromptID,
 		ResumeQueue:    pendingResumeQueue,
 	}
 
@@ -1192,7 +1224,7 @@ func (f *Supervisor) resume(ctx context.Context, id string, resuming bool, resum
 	}
 	a.ctx, a.cancel = runCtx, cancel
 	a.persistFn = f.persistAgent
-	a.setOnTurnIdle(func() { f.dispatchQueuedResume(a) })
+	a.setOnTurnIdle(func() { f.dispatchQueuedResumeWithTimeout(a) })
 	a.workspaceCleanup = func() error { return workspace.Cleanup(context.Background()) }
 	a.workspaceCapture = func() (WorkspaceCapture, error) { return workspace.Capture(context.Background()) }
 	a.runner = f.cfg.NewRunner(a)

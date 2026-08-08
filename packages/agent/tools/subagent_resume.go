@@ -50,7 +50,7 @@ const subagentResumeSchema = `{
 func (t *SubagentResumeTool) Name() string { return "subagent_resume" }
 
 func (t *SubagentResumeTool) Description() string {
-	return "Start a fresh-budget follow-up for a sub-agent, queue it if the worker is active, or restart a stopped one with its prior session context preserved."
+	return "Continue a sub-agent with a fresh turn budget and its retained session; deliver immediately when idle, queue while active, or restart a stopped worker."
 }
 
 func (t *SubagentResumeTool) Schema() json.RawMessage {

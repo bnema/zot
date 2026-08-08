@@ -423,8 +423,9 @@ func TestUpdateAgentFromEventRecoversRejectedFollowUp(t *testing.T) {
 	a.setResumePrompt("retry me", time.Now())
 	a.setTurnState(TurnQueued, "turn-1")
 	if err := updateAgentFromEvent(a, NewEvent("error", map[string]any{
-		"code":   "turn_rejected",
-		"reason": "busy",
+		"code":       "turn_rejected",
+		"reason":     "busy",
+		"command_id": a.resumePromptCommandID(),
 	})); err != nil {
 		t.Fatal(err)
 	}
@@ -587,6 +588,62 @@ func TestUpdateAgentFromEventPersistsCanonicalTurnCounters(t *testing.T) {
 	}
 	if got := a.Snapshot(); got.LifetimeTurns != 3 || got.CurrentRunTurns != 1 {
 		t.Fatalf("snapshot counters = (%d, %d), want (3, 1)", got.LifetimeTurns, got.CurrentRunTurns)
+	}
+}
+
+func TestRecordPersistenceErrorPreservesFirstFailure(t *testing.T) {
+	a := &Agent{}
+	a.recordPersistenceError(fmt.Errorf("first failure"))
+	a.recordPersistenceError(fmt.Errorf("later failure"))
+	if got := a.Snapshot().Err; !strings.Contains(got, "first failure") || strings.Contains(got, "later failure") {
+		t.Fatalf("recorded persistence error = %q, want only first failure", got)
+	}
+}
+
+func TestRestoreResumePromptPreservesCommandIdentity(t *testing.T) {
+	a := &Agent{}
+	a.setResumePrompt("old prompt", time.Now())
+	oldID := a.resumePromptCommandID()
+	previous := a.setResumePrompt("new prompt", time.Now())
+	a.restoreResumePrompt(previous)
+	if got := a.resumePromptCommandID(); got != oldID {
+		t.Fatalf("restored command ID = %q, want %q", got, oldID)
+	}
+}
+
+func TestEventMatchesPendingResumeRejectsIdentityLessRejection(t *testing.T) {
+	a := &Agent{resumePromptID: "command-1"}
+	if eventMatchesPendingResume(a, Event{Type: "error", Data: map[string]any{"code": "turn_rejected"}}) {
+		t.Fatal("identity-less turn rejection matched a pending prompt")
+	}
+	if !eventMatchesPendingResume(a, Event{Type: EventTurnStarted, Data: map[string]any{}}) {
+		t.Fatal("identity-less legacy turn.started did not match a pending prompt")
+	}
+	if !eventMatchesPendingResume(a, Event{Type: "error", Data: map[string]any{"code": "turn_rejected", "command_id": "command-1"}}) {
+		t.Fatal("matching turn rejection did not match a pending prompt")
+	}
+}
+
+func TestEventCounterRejectsNegativeFractionalAndOverflowValues(t *testing.T) {
+	cases := []struct {
+		name  string
+		value any
+		ok    bool
+	}{
+		{name: "valid integer", value: float64(3), ok: true},
+		{name: "negative integer", value: int64(-1)},
+		{name: "fractional float", value: 1.5},
+		{name: "negative float", value: -1.0},
+		{name: "fractional json number", value: json.Number("1.5")},
+		{name: "overflow float", value: float64(^uint(0) >> 1)},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := eventCounter(map[string]any{"counter": tc.value}, "counter")
+			if ok != tc.ok {
+				t.Fatalf("eventCounter ok = %t, want %t (value %v, got %d)", ok, tc.ok, tc.value, got)
+			}
+		})
 	}
 }
 

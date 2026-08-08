@@ -543,7 +543,7 @@ func (f *Supervisor) SpawnReq(ctx context.Context, req SpawnRequest) (*Agent, er
 	}
 	a.ctx, a.cancel = runCtx, cancel
 	a.persistFn = f.persistAgent
-	a.setOnTurnIdle(func() { f.dispatchQueuedResume(a) })
+	a.setOnTurnIdle(func() { f.dispatchQueuedResumeWithTimeout(a) })
 	a.workspaceCleanup = func() error { return workspace.Cleanup(context.Background()) }
 	a.workspaceCapture = func() (WorkspaceCapture, error) { return workspace.Capture(context.Background()) }
 	a.runner = f.cfg.NewRunner(a)

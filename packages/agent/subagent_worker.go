@@ -252,6 +252,13 @@ func runSubagentWorkerMode(ctx context.Context, args Args, version string) error
 			em.emit("turn.result", map[string]any{"status": "failed", "turn_id": turnID, "error": errPayload})
 			em.emit("turn.failed", map[string]any{"turn_id": turnID, "error": errPayload})
 			em.emit("turn_end", map[string]any{"step": step, "turn_id": turnID, "error": errPayload["message"]})
+			// Max-turn rejection ends the current run, but the worker remains
+			// alive and can accept a queued follow-up as a fresh run.
+			em.emit("agent.idle", map[string]any{
+				"turn_id":           turnID,
+				"lifetime_turns":    lifetime,
+				"current_run_turns": currentRun,
+			})
 			return
 		}
 		turnID := fmt.Sprintf("turn-%d", step)

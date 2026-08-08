@@ -25,6 +25,12 @@ type queuedResumePrompt struct {
 	CommandID  string    `json:"command_id,omitempty"`
 }
 
+type resumePromptSnapshot struct {
+	Prompt     string
+	AcceptedAt time.Time
+	CommandID  string
+}
+
 type Agent struct {
 	ID      string
 	Task    string
@@ -481,14 +487,39 @@ func (a *Agent) ResumePromptInfo() (string, time.Time) {
 	return a.resumePromptText, a.resumePromptAt
 }
 
-func (a *Agent) setResumePrompt(prompt string, acceptedAt time.Time) (string, time.Time) {
+func (a *Agent) setResumePrompt(prompt string, acceptedAt time.Time) resumePromptSnapshot {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	previousPrompt, previousAcceptedAt := a.resumePromptText, a.resumePromptAt
+	previous := resumePromptSnapshot{
+		Prompt:     a.resumePromptText,
+		AcceptedAt: a.resumePromptAt,
+		CommandID:  a.resumePromptID,
+	}
 	a.resumePromptText = prompt
 	a.resumePromptAt = acceptedAt
 	a.resumePromptID = uuid.NewString()
-	return previousPrompt, previousAcceptedAt
+	return previous
+}
+
+func (a *Agent) restoreResumePrompt(previous resumePromptSnapshot) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.resumePromptText = previous.Prompt
+	a.resumePromptAt = previous.AcceptedAt
+	a.resumePromptID = previous.CommandID
+	if a.resumePromptText != "" && a.resumePromptID == "" {
+		a.resumePromptID = uuid.NewString()
+	}
+}
+
+func (a *Agent) resumePromptState() resumePromptSnapshot {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return resumePromptSnapshot{
+		Prompt:     a.resumePromptText,
+		AcceptedAt: a.resumePromptAt,
+		CommandID:  a.resumePromptID,
+	}
 }
 
 func (a *Agent) resumePromptCommandID() string {
@@ -509,18 +540,22 @@ func (a *Agent) clearResumePrompt() bool {
 	return true
 }
 
-func (a *Agent) queueResumePrompt(prompt string, acceptedAt time.Time) {
+func (a *Agent) queueResumePrompt(prompt string, acceptedAt time.Time) string {
+	commandID := uuid.NewString()
 	a.mu.Lock()
-	a.resumePromptQueue = append(a.resumePromptQueue, queuedResumePrompt{Prompt: prompt, AcceptedAt: acceptedAt, CommandID: uuid.NewString()})
+	a.resumePromptQueue = append(a.resumePromptQueue, queuedResumePrompt{Prompt: prompt, AcceptedAt: acceptedAt, CommandID: commandID})
 	a.mu.Unlock()
+	return commandID
 }
 
-func (a *Agent) removeQueuedResumePrompt(prompt string, acceptedAt time.Time) bool {
+func (a *Agent) removeQueuedResumePrompt(commandID string) bool {
+	if commandID == "" {
+		return false
+	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	for i := len(a.resumePromptQueue) - 1; i >= 0; i-- {
-		queued := a.resumePromptQueue[i]
-		if queued.Prompt == prompt && queued.AcceptedAt.Equal(acceptedAt) {
+		if a.resumePromptQueue[i].CommandID == commandID {
 			a.resumePromptQueue = append(a.resumePromptQueue[:i], a.resumePromptQueue[i+1:]...)
 			return true
 		}
@@ -623,7 +658,9 @@ func (a *Agent) recordPersistenceError(err error) {
 		return
 	}
 	a.mu.Lock()
-	a.lastErr = fmt.Errorf("subagent metadata persistence: %w", err)
+	if a.lastErr == nil {
+		a.lastErr = fmt.Errorf("subagent metadata persistence: %w", err)
+	}
 	if a.status != StatusDone && a.status != StatusFailed && a.status != StatusKilled {
 		a.activity = "metadata error: " + truncate(err.Error(), 120)
 	}

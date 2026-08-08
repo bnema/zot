@@ -38,3 +38,28 @@ func TestResumePromptAcknowledgementIgnoresNestedTurnStart(t *testing.T) {
 		t.Fatal("nested turn.started acknowledged a pending delegated prompt")
 	}
 }
+
+func TestResumePromptAcknowledgementIgnoresStaleMatchingUserMessage(t *testing.T) {
+	acceptedAt := time.Now()
+	prompt := "follow-up prompt"
+	user := NewEvent("user_message", map[string]any{
+		"content": []any{map[string]any{"type": "text", "text": prompt}},
+	})
+	user.Time = acceptedAt.Add(-time.Millisecond)
+	started := NewEvent(EventTurnStarted, map[string]any{"lifetime_turns": 2, "current_run_turns": 1})
+	if resumePromptAcknowledged([]Event{user, started}, prompt, acceptedAt) {
+		t.Fatal("stale matching user message acknowledged a pending prompt")
+	}
+}
+
+func TestResumePromptAcknowledgementIgnoresAmbiguousUserMessage(t *testing.T) {
+	acceptedAt := time.Now().Add(-time.Second)
+	prompt := "follow-up prompt"
+	user := NewEvent("user_message", map[string]any{
+		"content": []any{map[string]any{"type": "text", "text": "older prompt"}},
+	})
+	started := NewEvent(EventTurnStarted, map[string]any{"lifetime_turns": 2, "current_run_turns": 1})
+	if resumePromptAcknowledged([]Event{user, started}, prompt, acceptedAt) {
+		t.Fatal("ambiguous user message acknowledged a pending prompt")
+	}
+}

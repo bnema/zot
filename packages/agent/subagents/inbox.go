@@ -119,12 +119,7 @@ func (b *Inbox) sendBytesContext(ctx context.Context, data []byte) error {
 		// caller's context error would invite a duplicate command with a new
 		// identity.
 		stopCancel()
-		b.mu.Lock()
-		if b.conn == conn {
-			_ = b.conn.Close()
-			b.conn = nil
-		}
-		b.mu.Unlock()
+		b.dropConnection(conn)
 		if n > 0 {
 			return fmt.Errorf("%w: wrote %d of %d bytes: %v", ErrDeliveryUnknown, n, len(data), writeErr)
 		}
@@ -135,12 +130,7 @@ func (b *Inbox) sendBytesContext(ctx context.Context, data []byte) error {
 	}
 	if n != len(data) {
 		stopCancel()
-		b.mu.Lock()
-		if b.conn == conn {
-			_ = b.conn.Close()
-			b.conn = nil
-		}
-		b.mu.Unlock()
+		b.dropConnection(conn)
 		return fmt.Errorf("%w: wrote %d of %d bytes", ErrDeliveryUnknown, n, len(data))
 	}
 	if !stopCancel() {
@@ -154,6 +144,15 @@ func (b *Inbox) sendBytesContext(ctx context.Context, data []byte) error {
 		b.mu.Unlock()
 	}
 	return nil
+}
+
+func (b *Inbox) dropConnection(conn net.Conn) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.conn == conn {
+		_ = b.conn.Close()
+		b.conn = nil
+	}
 }
 
 func (b *Inbox) acquireSend(ctx context.Context) (chan struct{}, error) {

@@ -1173,6 +1173,9 @@ func (s *Session) Sync() error {
 	if s == nil || s.writer == nil {
 		return nil
 	}
+	if err := s.buf.Flush(); err != nil {
+		return err
+	}
 	return s.writer.Sync()
 }
 

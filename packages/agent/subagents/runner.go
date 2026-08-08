@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -614,7 +615,11 @@ func eventMatchesPendingResume(a *Agent, ev Event) bool {
 	}
 	commandID, _ := ev.Data["command_id"].(string)
 	if commandID == "" {
-		return true // protocol-v1 events predate command identities
+		// Protocol-v1 turn.started events predate command identities, but a
+		// commandless rejection cannot be safely associated with the current
+		// pending prompt and must not consume it.
+		code, _ := ev.Data["code"].(string)
+		return code != "turn_rejected"
 	}
 	expected := a.resumePromptCommandID()
 	return expected == "" || expected == commandID
@@ -625,16 +630,42 @@ func eventCounter(data map[string]any, key string) (int, bool) {
 	if !ok {
 		return 0, false
 	}
+	maxInt := int(^uint(0) >> 1)
+	valid := func(value int64) (int, bool) {
+		if value < 0 || value > int64(maxInt) {
+			return 0, false
+		}
+		return int(value), true
+	}
 	switch value := value.(type) {
 	case int:
+		if value < 0 {
+			return 0, false
+		}
 		return value, true
 	case int64:
+		return valid(value)
+	case uint:
+		if uint64(value) > uint64(maxInt) {
+			return 0, false
+		}
+		return int(value), true
+	case uint64:
+		if value > uint64(maxInt) {
+			return 0, false
+		}
 		return int(value), true
 	case float64:
-		return int(value), value == float64(int(value))
+		if value < 0 || math.Trunc(value) != value || value >= float64(maxInt)+1 {
+			return 0, false
+		}
+		return int(value), true
 	case json.Number:
 		parsed, err := value.Int64()
-		return int(parsed), err == nil
+		if err != nil {
+			return 0, false
+		}
+		return valid(parsed)
 	default:
 		return 0, false
 	}

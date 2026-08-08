@@ -90,8 +90,13 @@ func TestResumeWithPromptQueuesFollowUpsForActiveWorker(t *testing.T) {
 	if persisted.ResumePrompt != "" || len(persisted.ResumeQueue) != 2 {
 		t.Fatalf("active follow-ups persisted as prompt %q queue %d, want empty prompt and queue 2", persisted.ResumePrompt, len(persisted.ResumeQueue))
 	}
+	if firstID, secondID := persisted.ResumeQueue[0].CommandID, persisted.ResumeQueue[1].CommandID; firstID == "" || secondID == "" || firstID == secondID {
+		t.Fatalf("queued follow-up command IDs = %q, %q; want distinct non-empty IDs", firstID, secondID)
+	}
 
-	updateAgentFromEvent(a, NewEvent(EventAgentIdle, map[string]any{"turn_id": "turn-1"}))
+	if err := updateAgentFromEvent(a, NewEvent(EventAgentIdle, map[string]any{"turn_id": "turn-1"})); err != nil {
+		t.Fatalf("apply first idle event: %v", err)
+	}
 	select {
 	case command := <-commands:
 		var payload TurnStartPayload
@@ -108,10 +113,14 @@ func TestResumeWithPromptQueuesFollowUpsForActiveWorker(t *testing.T) {
 		t.Fatalf("turn state after first queued delivery = %s, want %s", got, TurnQueued)
 	}
 
-	updateAgentFromEvent(a, NewEvent(EventTurnStarted, map[string]any{
+	if err := updateAgentFromEvent(a, NewEvent(EventTurnStarted, map[string]any{
 		"turn_id": "turn-2", "step": float64(2), "lifetime_turns": 2, "current_run_turns": 1,
-	}))
-	updateAgentFromEvent(a, NewEvent(EventAgentIdle, map[string]any{"turn_id": "turn-2"}))
+	})); err != nil {
+		t.Fatalf("apply second turn started event: %v", err)
+	}
+	if err := updateAgentFromEvent(a, NewEvent(EventAgentIdle, map[string]any{"turn_id": "turn-2"})); err != nil {
+		t.Fatalf("apply second idle event: %v", err)
+	}
 	select {
 	case command := <-commands:
 		var payload TurnStartPayload
@@ -128,6 +137,9 @@ func TestResumeWithPromptQueuesFollowUpsForActiveWorker(t *testing.T) {
 	}
 	if persisted.ResumePrompt != secondFollowUp || len(persisted.ResumeQueue) != 0 {
 		t.Fatalf("second follow-up persistence = prompt %q queue %d, want prompt %q and empty queue", persisted.ResumePrompt, len(persisted.ResumeQueue), secondFollowUp)
+	}
+	if persisted.ResumePromptID == "" {
+		t.Fatal("promoted follow-up lost its command ID")
 	}
 	if err := f.Stop(a.ID); err != nil {
 		t.Fatal(err)

@@ -25,11 +25,6 @@ func classifyTurnEvent(ev Event) turnEventClass {
 	case "turn_start":
 		return turnEventNested
 	case EventTurnStarted:
-		if _, lifetimeOK := eventCounter(ev.Data, "lifetime_turns"); lifetimeOK {
-			if _, currentOK := eventCounter(ev.Data, "current_run_turns"); currentOK {
-				return turnEventDelegated
-			}
-		}
 		// v1 turn.started without counters is the delegated boundary. A
 		// current worker marks nested canonical events explicitly above.
 		return turnEventDelegated
