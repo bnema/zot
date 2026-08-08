@@ -644,7 +644,9 @@ func Resolve(args Args, requireCred bool) (Resolved, error) {
 			if !CredentialAvailable(other) {
 				continue
 			}
-			c, m, a, err := ResolveCredentialFull(other, args.APIKey)
+			// An explicit launch key belongs to the initially selected provider;
+			// automatic fallback must never reuse it for another provider.
+			c, m, a, err := ResolveCredentialFull(other, "")
 			provName = other
 			cred, method, accountID, credErr = c, m, a, err
 			break
@@ -857,7 +859,21 @@ func Resolve(args Args, requireCred bool) (Resolved, error) {
 		append_ = append(append_, skillAddendum)
 	}
 	interactiveMode := args.Mode == "" || args.Mode == ModeInteractive
-	if selectedProfile == nil && interactiveMode && cfg.AutoSubagentsEnabled != nil && *cfg.AutoSubagentsEnabled {
+	if selectedProfile == nil && args.Orchestrate {
+		// Headless orchestration owns its prompt contract rather than inheriting
+		// the interactive setting. Discover and append the compact manifest once;
+		// child profile bodies remain private to the selected child.
+		homeDir, _ := os.UserHomeDir()
+		profiles, _ := subagents.Discover(args.CWD, homeDir)
+		if subagentsAddendum := subagents.SystemPromptAddendum(profiles); subagentsAddendum != "" {
+			append_ = append(append_, subagentsAddendum)
+		}
+		append_ = append(append_, AutoSubagentsSystemAddendumFor(
+			autoSubagentsToolAllowed(args),
+			autoSubagentsStopToolAllowed(args),
+			autoSubagentsResumeToolAllowed(args),
+		))
+	} else if selectedProfile == nil && interactiveMode && cfg.AutoSubagentsEnabled != nil && *cfg.AutoSubagentsEnabled {
 		if autoSubagentsToolAllowed(args) {
 			homeDir, _ := os.UserHomeDir()
 			profiles, _ := subagents.Discover(args.CWD, homeDir)

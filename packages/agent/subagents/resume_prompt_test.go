@@ -71,8 +71,19 @@ func TestResumeWithPromptQueuesFollowUpsForActiveWorker(t *testing.T) {
 		firstFollowUp  = "Check the parser behavior."
 		secondFollowUp = "Then check the error handling."
 	)
-	if _, err := f.ResumeWithPrompt(context.Background(), a.ID, firstFollowUp); err != nil {
+	tracker := NewCompletionTracker()
+	if _, err := f.ResumeWithPromptBefore(context.Background(), a.ID, firstFollowUp, func(agent *Agent, prompt string) func() {
+		return tracker.TrackFutureTurn(agent, prompt, true)
+	}); err != nil {
 		t.Fatalf("queue first active follow-up: %v", err)
+	}
+	if a.OnTurnEnd == nil {
+		t.Fatal("active resume did not register its turn callback before queueing")
+	}
+	a.OnTurnEnd(2, "")
+	batch, err := tracker.WaitIdle(context.Background())
+	if err != nil || len(batch) != 1 || batch[0].Task != firstFollowUp {
+		t.Fatalf("active resume completion = (%+v, %v), want one %q completion", batch, err, firstFollowUp)
 	}
 	if _, err := f.ResumeWithPrompt(context.Background(), a.ID, secondFollowUp); err != nil {
 		t.Fatalf("queue second active follow-up: %v", err)
@@ -202,7 +213,10 @@ func TestResumeWithPromptDeliversFollowUpToIdleWorker(t *testing.T) {
 	a.setTurnCounts(4, 2)
 
 	const followUp = "I applied your review. What do you think now?"
-	continued, err := f.ResumeWithPrompt(context.Background(), a.ID, followUp)
+	tracker := NewCompletionTracker()
+	continued, err := f.ResumeWithPromptBefore(context.Background(), a.ID, followUp, func(agent *Agent, prompt string) func() {
+		return tracker.TrackFutureTurn(agent, prompt, true)
+	})
 	if err != nil {
 		t.Fatalf("continue idle worker: %v", err)
 	}
@@ -236,10 +250,17 @@ func TestResumeWithPromptDeliversFollowUpToIdleWorker(t *testing.T) {
 		if !payload.NewRun {
 			t.Fatal("idle follow-up did not request a fresh run budget")
 		}
+		if a.OnTurnEnd == nil {
+			t.Fatal("idle resume callback was not installed before prompt delivery")
+		}
+		a.OnTurnEnd(5, "")
 	case <-time.After(time.Second):
 		t.Fatal("idle worker did not receive the follow-up")
 	}
-
+	batch, err := tracker.WaitIdle(context.Background())
+	if err != nil || len(batch) != 1 || batch[0].Task != followUp {
+		t.Fatalf("idle resume completion = (%+v, %v), want one %q completion", batch, err, followUp)
+	}
 	persisted, err := readAgentMeta(filepath.Join(root, "agents", a.ID))
 	if err != nil {
 		t.Fatal(err)
