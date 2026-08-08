@@ -66,12 +66,16 @@ func TestExecRunnerDeadlineGracefullyStopsWorkerAndPreservesStreamedOutput(t *te
 	t.Setenv("ZUT_STUB_BLOCK_INITIAL", "1")
 
 	root := t.TempDir()
+	inboxPath, err := inboxSocketPath(root, "deadline-test")
+	if err != nil {
+		t.Fatalf("inboxSocketPath: %v", err)
+	}
 	a := &Agent{
 		ID:           "deadline-test",
 		Task:         "long-running task",
 		Dir:          root,
 		SessionPath:  filepath.Join(root, "session.jsonl"),
-		InboxPath:    filepath.Join(root, "inbox.sock"),
+		InboxPath:    inboxPath,
 		EventLogPath: filepath.Join(root, "events.jsonl"),
 	}
 	a.inbox = NewInbox(a.InboxPath)
@@ -145,12 +149,16 @@ func TestExecRunnerCancelsBlockedWorker(t *testing.T) {
 	t.Setenv("ZUT_STUB_BLOCK_INITIAL", "1")
 
 	root := t.TempDir()
+	inboxPath, err := inboxSocketPath(root, "cancel-test")
+	if err != nil {
+		t.Fatalf("inboxSocketPath: %v", err)
+	}
 	a := &Agent{
 		ID:           "cancel-test",
 		Task:         "blocked task",
 		Dir:          root,
 		SessionPath:  filepath.Join(root, "session.jsonl"),
-		InboxPath:    filepath.Join(root, "inbox.sock"),
+		InboxPath:    inboxPath,
 		EventLogPath: filepath.Join(root, "events.jsonl"),
 	}
 	a.inbox = NewInbox(a.InboxPath)

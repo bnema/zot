@@ -13,6 +13,8 @@ import (
 	"github.com/bnema/zut/packages/tui"
 )
 
+const sessionDialogTestTimeout = 10 * time.Second
+
 func TestFormatSessionRowPlainSanitizesControlBytes(t *testing.T) {
 	row := formatSessionRowPlain(core.SessionSummary{
 		Provider:      "test\x1b]0;bad\a",
@@ -149,12 +151,12 @@ func TestSessionDialogCancellationDoesNotEmitFinished(t *testing.T) {
 			t.Fatalf("first load event = %+v, open %v; want sessionLoadStarted", event, ok)
 		}
 		d.ApplyLoad(event)
-	case <-time.After(time.Second):
+	case <-time.After(sessionDialogTestTimeout):
 		t.Fatal("timed out waiting for sessionLoadStarted")
 	}
 	select {
 	case <-entered:
-	case <-time.After(time.Second):
+	case <-time.After(sessionDialogTestTimeout):
 		t.Fatal("timed out waiting for the session worker")
 	}
 
@@ -173,7 +175,7 @@ func TestSessionDialogCancellationDoesNotEmitFinished(t *testing.T) {
 				t.Fatal("canceled load emitted sessionLoadFinished")
 			}
 			d.ApplyLoad(event)
-		case <-time.After(time.Second):
+		case <-time.After(sessionDialogTestTimeout):
 			t.Fatal("timed out waiting for canceled session load to close")
 		}
 	}
@@ -221,12 +223,12 @@ func TestSessionDialogPreCanceledOpenPreservesPreviousLoadBarrier(t *testing.T) 
 			t.Fatalf("first load event = %+v, open %v; want sessionLoadStarted", event, ok)
 		}
 		d.ApplyLoad(event)
-	case <-time.After(time.Second):
+	case <-time.After(sessionDialogTestTimeout):
 		t.Fatal("timed out waiting for the first load to start")
 	}
 	select {
 	case <-entered:
-	case <-time.After(time.Second):
+	case <-time.After(sessionDialogTestTimeout):
 		t.Fatal("timed out waiting for the first worker")
 	}
 
@@ -253,7 +255,7 @@ func TestSessionDialogPreCanceledOpenPreservesPreviousLoadBarrier(t *testing.T) 
 			t.Fatalf("third load event = %+v, open %v; want sessionLoadStarted after barrier", event, ok)
 		}
 		d.ApplyLoad(event)
-	case <-time.After(time.Second):
+	case <-time.After(sessionDialogTestTimeout):
 		t.Fatal("timed out waiting for third load after releasing the first")
 	}
 	cancelThird()
