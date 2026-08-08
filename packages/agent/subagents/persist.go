@@ -226,18 +226,10 @@ func writeAgentMeta(stateDir string, a *Agent) error {
 		return fmt.Errorf("subagent meta rename: %w", err)
 	}
 	removeTemp = false
-	// Sync the containing directory so the rename itself survives a host
-	// crash, not just the bytes in the temporary file.
-	dir, err := os.Open(stateDir)
-	if err != nil {
-		return fmt.Errorf("subagents meta directory open: %w", err)
-	}
-	if err := dir.Sync(); err != nil {
-		_ = dir.Close()
+	// Sync the containing directory where the platform supports it so the
+	// rename itself survives a host crash, not just the temporary file bytes.
+	if err := syncDirectory(stateDir); err != nil {
 		return fmt.Errorf("subagents meta directory sync: %w", err)
-	}
-	if err := dir.Close(); err != nil {
-		return fmt.Errorf("subagents meta directory close: %w", err)
 	}
 	return nil
 }
