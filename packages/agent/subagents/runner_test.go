@@ -5,11 +5,58 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
 )
+
+func TestDeadlineShutdownCommandIdentifiesOrigin(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("subagent inbox transport uses Unix-domain sockets")
+	}
+	path := filepath.Join(shortSocketDir(t), "deadline.sock")
+	listener, err := Listen(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+
+	a := &Agent{ID: "deadline-agent", InboxPath: path, inbox: NewInbox(path)}
+	defer a.inbox.Close()
+	r := &execRunner{agent: a, GracePeriod: time.Second}
+	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	defer cancel()
+	runnerDone := make(chan struct{})
+	watcherDone := make(chan struct{})
+	go func() {
+		r.stopOnContextDone(ctx, &exec.Cmd{}, runnerDone)
+		close(watcherDone)
+	}()
+
+	var command Envelope
+	select {
+	case line := <-listener.Lines():
+		command, err = ParseCommand(line)
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("deadline shutdown command was not received")
+	}
+	close(runnerDone)
+	<-watcherDone
+
+	var payload AgentShutdownPayload
+	if err := command.DecodePayload(&payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload.Origin != ShutdownOriginDeadline {
+		t.Fatalf("shutdown origin = %q, want %q", payload.Origin, ShutdownOriginDeadline)
+	}
+}
 
 // TestSubagentWorkerArgs locks in the exact flag set the subprocess
 // runner uses to start a subagent agent in daemon mode. Past

@@ -544,7 +544,7 @@ func (r *execRunner) stopOnContextDone(ctx context.Context, cmd *exec.Cmd, runne
 	defer cancel()
 	if r.agent != nil && r.agent.inbox != nil {
 		_ = r.agent.inbox.SendCommandContext(shutdownCtx, NewCommand(
-			CommandAgentShutdown, r.agent.ID, r.agent.CurrentTurnID(), AgentShutdownPayload{},
+			CommandAgentShutdown, r.agent.ID, r.agent.CurrentTurnID(), AgentShutdownPayload{Origin: ShutdownOriginDeadline},
 		))
 	}
 

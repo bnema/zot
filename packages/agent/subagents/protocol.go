@@ -564,7 +564,28 @@ func cloneRaw(value json.RawMessage) json.RawMessage {
 // protocol without forcing a receiver to use them. Receivers can always use
 // Envelope.Payload to retain fields added in later versions.
 type AgentPingPayload struct{}
-type AgentShutdownPayload struct{}
+
+type ShutdownOrigin string
+
+const (
+	ShutdownOriginTargeted ShutdownOrigin = "targeted"
+	ShutdownOriginSession  ShutdownOrigin = "session"
+	ShutdownOriginDeadline ShutdownOrigin = "deadline"
+	ShutdownOriginProcess  ShutdownOrigin = "process"
+)
+
+func (o ShutdownOrigin) Sanitized() ShutdownOrigin {
+	switch o {
+	case ShutdownOriginTargeted, ShutdownOriginSession, ShutdownOriginDeadline, ShutdownOriginProcess:
+		return o
+	default:
+		return ""
+	}
+}
+
+type AgentShutdownPayload struct {
+	Origin ShutdownOrigin `json:"origin,omitempty"`
+}
 type AgentReadyPayload struct {
 	// Version is the worker/application version. WorkerVersion is the
 	// unambiguous spelling for new producers.
@@ -628,6 +649,7 @@ type TurnFailedPayload struct {
 	Error *ProtocolError `json:"error,omitempty"`
 }
 type AgentExitedPayload struct {
-	Code   int    `json:"code,omitempty"`
-	Reason string `json:"reason,omitempty"`
+	Code   int            `json:"code,omitempty"`
+	Reason string         `json:"reason,omitempty"`
+	Origin ShutdownOrigin `json:"origin,omitempty"`
 }

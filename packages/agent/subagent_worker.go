@@ -233,12 +233,13 @@ func runSubagentWorkerMode(ctx context.Context, args Args, version string) (runE
 			lifetime: args.SubagentLifetimeTurns,
 			current:  args.SubagentRunTurns,
 		}
-		turnWG       sync.WaitGroup
-		closing      bool
-		turnPending  bool
-		seenCommands = make(map[string]struct{})
-		shutdown     = make(chan struct{})
-		shutdownOnce sync.Once
+		turnWG         sync.WaitGroup
+		closing        bool
+		turnPending    bool
+		seenCommands   = make(map[string]struct{})
+		shutdown       = make(chan struct{})
+		shutdownOnce   sync.Once
+		shutdownOrigin subagents.ShutdownOrigin
 	)
 	maxOutputBytes, maxOutputLines := workerOutputLimits()
 
@@ -404,11 +405,14 @@ func runSubagentWorkerMode(ctx context.Context, args Args, version string) (runE
 		turnWG.Wait()
 	}
 
-	requestShutdown := func() {
+	requestShutdown := func(origin subagents.ShutdownOrigin) {
 		mu.Lock()
 		closing = true
 		mu.Unlock()
-		shutdownOnce.Do(func() { close(shutdown) })
+		shutdownOnce.Do(func() {
+			shutdownOrigin = origin.Sanitized()
+			close(shutdown)
+		})
 	}
 
 	// Initial task: run before processing the inbox so the agent
@@ -434,7 +438,7 @@ func runSubagentWorkerMode(ctx context.Context, args Args, version string) (runE
 			// alive indefinitely while the host waits for its socket to
 			// disappear.
 			waitForActiveTurn(true)
-			em.emit("agent.exited", map[string]any{"reason": "shutdown"})
+			em.emit("agent.exited", shutdownExitPayload(shutdownOrigin))
 			return nil
 		case msg, ok := <-ln.Lines():
 			if !ok {
@@ -449,7 +453,12 @@ func runSubagentWorkerMode(ctx context.Context, args Args, version string) (runE
 			}
 			switch command.Type {
 			case subagents.CommandAgentShutdown:
-				requestShutdown()
+				var payload subagents.AgentShutdownPayload
+				if err := command.DecodePayload(&payload); err != nil {
+					em.emit("error", map[string]any{"message": "invalid agent.shutdown payload"})
+					continue
+				}
+				requestShutdown(payload.Origin)
 			case subagents.CommandTurnCancel:
 				mu.Lock()
 				if cancelFn != nil {
@@ -654,6 +663,14 @@ func firstLine(text string) string {
 
 func boundedResultSummary(text string) string {
 	return boundedResultOutput(firstLine(text), 4*1024, 1)
+}
+
+func shutdownExitPayload(origin subagents.ShutdownOrigin) map[string]any {
+	payload := map[string]any{"reason": "shutdown"}
+	if origin = origin.Sanitized(); origin != "" {
+		payload["origin"] = origin
+	}
+	return payload
 }
 
 func workerOutputLimits() (maxBytes, maxLines int) {

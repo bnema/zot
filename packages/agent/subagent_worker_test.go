@@ -19,6 +19,17 @@ import (
 	"github.com/bnema/zut/packages/provider"
 )
 
+func TestShutdownExitPayloadIncludesOnlyKnownOrigin(t *testing.T) {
+	payload := shutdownExitPayload(subagents.ShutdownOriginSession)
+	if payload["reason"] != "shutdown" || payload["origin"] != subagents.ShutdownOriginSession {
+		t.Fatalf("known shutdown payload = %#v", payload)
+	}
+	payload = shutdownExitPayload(subagents.ShutdownOrigin("private detail"))
+	if _, ok := payload["origin"]; ok {
+		t.Fatalf("unknown shutdown origin was persisted: %#v", payload)
+	}
+}
+
 // TestWorkerOutputLimitsUseSupervisorPolicy verifies that the child reads
 // the effective output caps propagated by the supervisor and retains safe
 // defaults for standalone workers.

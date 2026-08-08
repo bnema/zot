@@ -233,6 +233,24 @@ func TestProtocolEmptyAndMalformedInputs(t *testing.T) {
 	}
 }
 
+func TestAgentShutdownPayloadRoundTripsKnownOrigin(t *testing.T) {
+	for _, origin := range []ShutdownOrigin{
+		ShutdownOriginTargeted,
+		ShutdownOriginSession,
+		ShutdownOriginDeadline,
+		ShutdownOriginProcess,
+	} {
+		e := NewCommand(CommandAgentShutdown, "agent-1", "turn-1", AgentShutdownPayload{Origin: origin})
+		var decoded AgentShutdownPayload
+		if err := e.DecodePayload(&decoded); err != nil {
+			t.Fatalf("decode %q shutdown payload: %v", origin, err)
+		}
+		if decoded.Origin != origin {
+			t.Fatalf("shutdown origin = %q, want %q", decoded.Origin, origin)
+		}
+	}
+}
+
 func TestProtocolResultShape(t *testing.T) {
 	result := TurnResultPayload{
 		Status:       "succeeded",
