@@ -155,7 +155,7 @@ func TestAutoSubagentsToolRegistrationHonorsLaunchPolicy(t *testing.T) {
 		dirty: make(chan struct{}, 1),
 	}
 
-	iv.applyAutoSubagentsTool(true)
+	iv.applyAutoSubagentsTool()
 	if _, ok := iv.agent.Tools["subagent_spawn"]; ok {
 		t.Fatal("subagent_spawn registered despite launch-time policy")
 	}
@@ -220,7 +220,7 @@ func TestAutoSubagentsToolRegistrationHonorsSeparateLaunchPolicies(t *testing.T)
 				dirty: make(chan struct{}, 1),
 			}
 
-			iv.applyAutoSubagentsTool(true)
+			iv.applyAutoSubagentsTool()
 			_, gotSpawn := iv.agent.Tools["subagent_spawn"]
 			_, gotStatus := iv.agent.Tools["subagent_status"]
 			_, gotStop := iv.agent.Tools["subagent_stop"]
@@ -229,6 +229,32 @@ func TestAutoSubagentsToolRegistrationHonorsSeparateLaunchPolicies(t *testing.T)
 				t.Fatalf("registered tools spawn=%v status=%v stop=%v resume=%v, want spawn=%v status=%v stop=%v resume=%v", gotSpawn, gotStatus, gotStop, gotResume, tc.wantSpawn, tc.wantStatus, tc.wantStop, tc.wantResume)
 			}
 		})
+	}
+}
+
+func TestAutoSubagentsDisabledKeepsToolsForExplicitUserRequests(t *testing.T) {
+	enabled := false
+	allowed := true
+	supervisor := subagents.New(subagents.Config{Root: t.TempDir(), RepoRoot: t.TempDir()})
+	t.Cleanup(supervisor.StopAll)
+	iv := NewInteractive(InteractiveConfig{
+		Agent:                       &core.Agent{Tools: core.Registry{}},
+		AutoSubagentsEnabled:        &enabled,
+		AutoSubagentsToolAllowed:    &allowed,
+		AutoSubagentsSystemAddendum: "primary-agent orchestrator",
+		Supervisor:                  supervisor,
+	})
+
+	spawn, ok := iv.agent.ToolsSnapshot()["subagent_spawn"].(*tools.SubagentSpawnTool)
+	if !ok {
+		t.Fatal("subagent_spawn is unavailable when automatic subagents are disabled")
+	}
+	if spawn.Enabled == nil || !spawn.Enabled() {
+		t.Fatal("subagent_spawn is disabled when a user explicitly requests delegation")
+	}
+	system, _ := iv.agent.PromptConfig()
+	if strings.Contains(system, "primary-agent orchestrator") {
+		t.Fatalf("disabled automatic subagents retained the orchestrator contract: %q", system)
 	}
 }
 

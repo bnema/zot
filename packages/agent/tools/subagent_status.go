@@ -84,7 +84,7 @@ func (t *SubagentStatusTool) Execute(ctx context.Context, raw json.RawMessage, _
 		return protocolToolError(prefix + ": subagent supervisor not available in this mode")
 	}
 	if t.Enabled == nil || !t.Enabled() {
-		return protocolToolError(prefix + ": auto-subagents is disabled. Ask the user to enable it from /settings before querying workers.")
+		return protocolToolError(prefix + ": subagent status is unavailable in this mode")
 	}
 
 	var args subagentStatusArgs

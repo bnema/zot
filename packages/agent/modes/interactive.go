@@ -179,11 +179,14 @@ type InteractiveConfig struct {
 	// ExtensionThemes returns themes bundled with loaded extensions.
 	ExtensionThemes func() []tui.ThemeOption
 
-	// AutoSubagentsSystemAddendum is the system-prompt block that gets
-	// appended/stripped when the user toggles auto-subagents at runtime.
-	// Plumbed in from the cli so this package doesn't have to import
-	// agent (cycle).
+	// AutoSubagentsSystemAddendum is the strict orchestrator block that gets
+	// appended when the user enables auto-subagents at runtime. Plumbed in from
+	// the cli so this package doesn't have to import agent (cycle).
 	AutoSubagentsSystemAddendum string
+
+	// OnDemandSubagentsSystemAddendum limits delegation to explicit user
+	// requests while auto-subagents is disabled.
+	OnDemandSubagentsSystemAddendum string
 
 	// SubagentsSystemAddendum is the metadata-only [subagents_list]
 	// block that is added or removed together with auto-subagents.
@@ -974,9 +977,7 @@ func NewInteractive(cfg InteractiveConfig) *Interactive {
 		baseURL, _, err := cfg.LlamaCPPConfig()
 		i.llamaConfigured = err == nil && baseURL != ""
 	}
-	if cfg.AutoSubagentsEnabled != nil && *cfg.AutoSubagentsEnabled {
-		i.managedAutoSubagentsAddenda = autoSubagentsAddenda(cfg)
-	}
+	i.managedAutoSubagentsAddenda = autoSubagentsAddenda(cfg, cfg.AutoSubagentsEnabled != nil && *cfg.AutoSubagentsEnabled)
 	if cfg.Agent != nil {
 		i.agent = cfg.Agent
 		i.view.Messages = filterHiddenTranscriptMessages(cfg.Agent.Messages())
@@ -1003,9 +1004,7 @@ func NewInteractive(cfg InteractiveConfig) *Interactive {
 		i.titleRealPromptSeen = i.sessionTitle != "" || hasRealUserPrompt(i.view.Messages)
 		i.titleGenerationStarted = i.titleRealPromptSeen
 	}
-	if cfg.AutoSubagentsEnabled != nil && *cfg.AutoSubagentsEnabled {
-		i.applyAutoSubagentsTool(true)
-	}
+	i.applyAutoSubagentsTool()
 	return i
 }
 
@@ -4018,11 +4017,7 @@ func (i *Interactive) applyChangedCWD(ag *core.Agent, provider, model, cwd strin
 	i.agent = ag
 	i.cfg.CWD = cwd
 	i.cfg.SubagentsSystemAddendum = subagentsAddendum
-	if i.autoSubagentsEnabledLocked() {
-		i.managedAutoSubagentsAddenda = autoSubagentsAddenda(i.cfg)
-	} else {
-		i.managedAutoSubagentsAddenda = nil
-	}
+	i.managedAutoSubagentsAddenda = autoSubagentsAddenda(i.cfg, i.autoSubagentsEnabledLocked())
 	i.cfg.StartupContextPaths = append([]string(nil), startupContextPaths...)
 	i.view.StartupContextPaths = nil
 	i.view.InvalidateRenderCache()
@@ -5244,14 +5239,12 @@ func (i *Interactive) applySettingToggle(key string, value bool) {
 				return
 			}
 		}
-		// Add/remove the auto-subagent tools on the live agent so the
-		// model's tools[] list reflects the toggle on the next turn.
-		// Without this the tools stay advertised after a disable and
-		// the model keeps trying to call them.
-		i.applyAutoSubagentsTool(value)
-		// Also swap the system-prompt addendum in/out so the model
-		// knows to use the tools proactively (or stops referencing them
-		// after a disable).
+		// The subagent tools remain available for explicit user requests.
+		// Swap only the system-prompt guidance between strict orchestration and
+		// on-demand delegation.
+		i.applyAutoSubagentsTool()
+		// Also swap the system-prompt addendum so the model knows whether it
+		// should orchestrate proactively or delegate only on user request.
 		i.applyAutoSubagentsSystemPrompt(value)
 		i.mu.Lock()
 		i.statusOK = "auto-subagents " + onOff(value)
@@ -6909,7 +6902,7 @@ func (i *Interactive) swapModelUnserialized(prov, model string, builder func(str
 	// dynamically-registered tools need to be reattached. The apply
 	// helpers are no-ops when their feature is inactive, so the
 	// cross-provider path still works on a vanilla setup.
-	i.applyAutoSubagentsTool(i.autoSubagentsEnabled())
+	i.applyAutoSubagentsTool()
 	i.applyTelegramTools(i.telegramBridge != nil)
 	if i.cfg.PersistModel != nil {
 		i.cfg.PersistModel(p, md)
@@ -6952,7 +6945,7 @@ func (i *Interactive) handleAuthEvent(ev auth.Event) {
 			if oldAgent != nil {
 				_ = tools.CloseLSPManagers(oldAgent.ToolsSnapshot())
 			}
-			i.applyAutoSubagentsTool(i.autoSubagentsEnabled())
+			i.applyAutoSubagentsTool()
 			i.applyTelegramTools(i.telegramBridge != nil)
 			// Authentication can change the provider used by the live
 			// agent. Persist it on the active session just like /model.
@@ -8847,8 +8840,18 @@ func truncateForSummary(s string, n int) string {
 }
 
 // autoSubagentsAddenda returns the prompt blocks owned by the auto-subagents
-// toggle, in the same order Resolve appends them to a new agent.
-func autoSubagentsAddenda(cfg InteractiveConfig) []string {
+// setting, in the same order Resolve appends them to a new agent.
+func autoSubagentsAddenda(cfg InteractiveConfig, orchestrating bool) []string {
+	if !orchestrating {
+		if cfg.Supervisor == nil || !autoSubagentsAnyToolAllowedConfig(cfg) {
+			return nil
+		}
+		if addendum := strings.TrimSpace(cfg.OnDemandSubagentsSystemAddendum); addendum != "" {
+			return []string{addendum}
+		}
+		return nil
+	}
+
 	addenda := make([]string, 0, 2)
 	if cfg.Supervisor != nil && autoSubagentsToolAllowedConfig(cfg) {
 		if addendum := strings.TrimSpace(cfg.SubagentsSystemAddendum); addendum != "" {
@@ -8859,15 +8862,6 @@ func autoSubagentsAddenda(cfg InteractiveConfig) []string {
 		addenda = append(addenda, addendum)
 	}
 	return addenda
-}
-
-func containsAutoSubagentsAddendum(addenda []string, want string) bool {
-	for _, addendum := range addenda {
-		if addendum == want {
-			return true
-		}
-	}
-	return false
 }
 
 // removeLastAutoSubagentsAddendum removes one occurrence of a block known to
@@ -8881,33 +8875,16 @@ func removeLastAutoSubagentsAddendum(system, addendum string) (string, bool) {
 	return system[:idx] + system[idx+len(addendum):], true
 }
 
-// applyAutoSubagentsSystemPrompt appends (active=true) or strips
-// (active=false) the auto-subagents prompt blocks on the running agent.
-// The profile manifest and delegation guidance are managed together so
-// toggling auto-subagents never leaves the model with names but no tool.
-func (i *Interactive) applyAutoSubagentsSystemPrompt(active bool) {
+// applyAutoSubagentsSystemPrompt swaps the prompt blocks owned by the
+// auto-subagents setting on the running agent. The profile manifest belongs
+// only to strict orchestration; disabled mode keeps on-demand guidance.
+func (i *Interactive) applyAutoSubagentsSystemPrompt(orchestrating bool) {
 	// i.mu is sufficient here: this path updates the existing agent's system
 	// prompt and managed addenda in place; it does not replace the agent or
 	// its tool registry, so agentMu is not required.
 	i.mu.Lock()
 	defer i.mu.Unlock()
 	if i.agent == nil {
-		return
-	}
-	addenda := autoSubagentsAddenda(i.cfg)
-	if active {
-		sys, _ := i.agent.PromptConfig()
-		for _, addendum := range addenda {
-			if containsAutoSubagentsAddendum(i.managedAutoSubagentsAddenda, addendum) {
-				continue
-			}
-			if sys != "" && !strings.HasSuffix(sys, "\n\n") {
-				sys += "\n\n"
-			}
-			sys += addendum
-			i.managedAutoSubagentsAddenda = append(i.managedAutoSubagentsAddenda, addendum)
-		}
-		i.agent.SetSystemPrompt(sys)
 		return
 	}
 
@@ -8919,16 +8896,33 @@ func (i *Interactive) applyAutoSubagentsSystemPrompt(active bool) {
 		changed = changed || removed
 	}
 	i.managedAutoSubagentsAddenda = nil
-	if changed {
-		i.agent.SetSystemPrompt(strings.TrimRight(sys, "\n") + "\n")
+
+	addenda := autoSubagentsAddenda(i.cfg, orchestrating)
+	if changed && len(addenda) > 0 {
+		sys = strings.TrimRight(sys, "\n")
 	}
+	for _, addendum := range addenda {
+		if sys != "" {
+			sys += "\n\n"
+		}
+		sys += addendum
+		i.managedAutoSubagentsAddenda = append(i.managedAutoSubagentsAddenda, addendum)
+		changed = true
+	}
+	if !changed {
+		return
+	}
+	if len(addenda) == 0 {
+		sys = strings.TrimRight(sys, "\n") + "\n"
+	}
+	i.agent.SetSystemPrompt(sys)
 }
 
-// applyAutoSubagentsTool registers (active=true) or removes (active=false)
-// the auto-subagent tools on the running agent so the model only sees them
-// when /settings -> auto-subagents is enabled. Mirrors applyTelegramTools'
-// snapshot+mutate pattern so extension tools and /reload-ext additions
-// survive a toggle.
+// applyAutoSubagentsTool registers the canonical subagent tools whenever
+// launch-time policy permits them. Auto-subagents controls prompt behavior,
+// while the tools remain available for explicit user-requested delegation.
+// Mirrors applyTelegramTools' snapshot+mutate pattern so extension tools and
+// /reload-ext additions survive a settings change.
 func (i *Interactive) autoSubagentsAvailable() bool {
 	return i.cfg.Supervisor != nil && autoSubagentsAnyToolAllowedConfig(i.cfg)
 }
@@ -8994,17 +8988,11 @@ func (i *Interactive) autoSubagentsResumeToolAllowed() bool {
 	return autoSubagentsResumeToolAllowedConfig(i.cfg)
 }
 
-func (i *Interactive) autoSubagentsEnabled() bool {
-	i.mu.Lock()
-	defer i.mu.Unlock()
-	return i.autoSubagentsEnabledLocked()
-}
-
 func (i *Interactive) autoSubagentsEnabledLocked() bool {
 	return i.cfg.AutoSubagentsEnabled != nil && *i.cfg.AutoSubagentsEnabled && i.autoSubagentsAvailable()
 }
 
-func (i *Interactive) applyAutoSubagentsTool(active bool) {
+func (i *Interactive) applyAutoSubagentsTool() {
 	i.agentMu.Lock()
 	defer i.agentMu.Unlock()
 	i.mu.Lock()
@@ -9020,11 +9008,11 @@ func (i *Interactive) applyAutoSubagentsTool(active bool) {
 		}
 		next[name] = t
 	}
-	if active && i.autoSubagentsAvailable() {
+	if i.autoSubagentsAvailable() {
 		if i.autoSubagentsToolAllowed() {
 			canonical := &tools.SubagentSpawnTool{
 				Supervisor:       i.cfg.Supervisor,
-				Enabled:          func() bool { return i.autoSubagentsEnabled() },
+				Enabled:          func() bool { return true },
 				DefaultModel:     func() string { return i.cfg.Model },
 				DefaultProvider:  func() string { return i.cfg.Provider },
 				DefaultReasoning: func() string { return i.cfg.Reasoning },
@@ -9036,14 +9024,14 @@ func (i *Interactive) applyAutoSubagentsTool(active bool) {
 		if i.autoSubagentsStatusToolAllowed() {
 			statusTool := &tools.SubagentStatusTool{
 				Supervisor: i.cfg.Supervisor,
-				Enabled:    func() bool { return i.autoSubagentsEnabled() },
+				Enabled:    func() bool { return true },
 			}
 			next[statusTool.Name()] = statusTool
 		}
 		if i.autoSubagentsStopToolAllowed() {
 			stopTool := &tools.SubagentStopTool{
 				Supervisor:      i.cfg.Supervisor,
-				Enabled:         func() bool { return i.autoSubagentsEnabled() },
+				Enabled:         func() bool { return true },
 				OnStopRequested: i.TrackStoppedSubagentWorker,
 			}
 			next[stopTool.Name()] = stopTool
@@ -9051,7 +9039,7 @@ func (i *Interactive) applyAutoSubagentsTool(active bool) {
 		if i.autoSubagentsResumeToolAllowed() {
 			resumeTool := &tools.SubagentResumeTool{
 				Supervisor: i.cfg.Supervisor,
-				Enabled:    func() bool { return i.autoSubagentsEnabled() },
+				Enabled:    func() bool { return true },
 				OnResumed:  i.TrackResumedSubagentWorker,
 			}
 			next[resumeTool.Name()] = resumeTool

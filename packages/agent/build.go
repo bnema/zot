@@ -863,6 +863,8 @@ func Resolve(args Args, requireCred bool) (Resolved, error) {
 			autoSubagentsStopToolAllowed(args),
 			autoSubagentsResumeToolAllowed(args),
 		))
+	} else if selectedProfile == nil && interactiveMode && autoSubagentsAnyToolAllowed(args) {
+		append_ = append(append_, OnDemandSubagentsSystemAddendum)
 	}
 	if selectedProfile != nil && selectedProfile.SystemPromptMode != "replace" && selectedProfile.SystemPrompt != "" {
 		append_ = append(append_, selectedProfile.SystemPrompt)

@@ -14,12 +14,14 @@ import (
 )
 
 func TestAutoSubagentsSystemPromptTogglesProfileManifestWithDelegationGuidance(t *testing.T) {
+	const onDemand = "delegate only on an explicit user request"
 	iv := &Interactive{
 		agent: &core.Agent{System: "base system"},
 		cfg: InteractiveConfig{
-			AutoSubagentsSystemAddendum: "auto-subagents guidance",
-			SubagentsSystemAddendum:     "[subagents_list]\n- reviewer\n[/subagents_list]",
-			Supervisor:                  &subagents.Supervisor{},
+			AutoSubagentsSystemAddendum:     "auto-subagents guidance",
+			OnDemandSubagentsSystemAddendum: onDemand,
+			SubagentsSystemAddendum:         "[subagents_list]\n- reviewer\n[/subagents_list]",
+			Supervisor:                      &subagents.Supervisor{},
 		},
 	}
 
@@ -36,6 +38,9 @@ func TestAutoSubagentsSystemPromptTogglesProfileManifestWithDelegationGuidance(t
 	iv.applyAutoSubagentsSystemPrompt(false)
 	if strings.Contains(iv.agent.System, "[subagents_list]") || strings.Contains(iv.agent.System, "auto-subagents guidance") {
 		t.Fatalf("disabled system prompt retained subagent blocks: %q", iv.agent.System)
+	}
+	if !strings.Contains(iv.agent.System, onDemand) {
+		t.Fatalf("disabled system prompt omitted on-demand delegation guidance: %q", iv.agent.System)
 	}
 }
 

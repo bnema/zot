@@ -68,7 +68,7 @@ func (t *SubagentResumeTool) Execute(ctx context.Context, raw json.RawMessage, _
 		return protocolToolError(prefix + ": subagent supervisor not available in this mode")
 	}
 	if t.Enabled == nil || !t.Enabled() {
-		return protocolToolError(prefix + ": auto-subagents is disabled. Ask the user to enable it from /settings before managing workers.")
+		return protocolToolError(prefix + ": subagent management is unavailable in this mode")
 	}
 
 	var args subagentResumeArgs
