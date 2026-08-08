@@ -110,6 +110,14 @@ func (a *Agent) compact(ctx context.Context, keepTail int, textSink func(delta s
 			if eventSink != nil {
 				eventSink(EvTextDelta{Delta: e.Delta})
 			}
+		case provider.EventUsage:
+			cum := a.addUsage(e.Usage)
+			if eventSink != nil {
+				eventSink(EvUsage{Usage: e.Usage, Cumulative: cum})
+			}
+			if a.OnUsage != nil {
+				a.OnUsage(cum)
+			}
 		case provider.EventDone:
 			if e.Err != nil {
 				return "", e.Err

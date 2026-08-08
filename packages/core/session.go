@@ -359,6 +359,17 @@ func readSessionSnapshot(ctx context.Context, path string) (SessionSnapshot, err
 			}
 			snapshot.Messages = compacted
 			generation++
+			cumulative, err := hydrateCompactionUsage(line)
+			if err != nil {
+				return fmt.Errorf("line %d: invalid compaction usage: %w", lineNo, err)
+			}
+			if cumulative != nil {
+				rawCheckpoints = append(rawCheckpoints, rawCheckpoint{
+					messageCount: len(snapshot.Messages),
+					cumulative:   *cumulative,
+					generation:   generation,
+				})
+			}
 
 		case "usage":
 			var row struct {
@@ -524,6 +535,16 @@ func ReadSessionHistory(path string) (SessionHistory, error) {
 			}
 			appendCurrent()
 			current = rawSegment{compacted: true, messages: compacted}
+			cumulative, err := hydrateCompactionUsage(line)
+			if err != nil {
+				return fmt.Errorf("line %d: invalid compaction usage: %w", lineNo, err)
+			}
+			if cumulative != nil {
+				current.checkpoints = append(current.checkpoints, rawCheckpoint{
+					messageCount: len(current.messages),
+					cumulative:   *cumulative,
+				})
+			}
 
 		case "usage":
 			var row struct {
@@ -1198,6 +1219,27 @@ func (s *Session) AppendCompaction(messages []provider.Message) error {
 	return nil
 }
 
+// AppendCompactionWithUsage atomically records a replacement transcript and
+// its cumulative usage in one JSONL row. Workers use this after compaction so
+// a persistence failure cannot leave a resumable session with only part of the
+// continued turn or without its matching usage checkpoint.
+func (s *Session) AppendCompactionWithUsage(messages []provider.Message, cumulative provider.Usage) error {
+	if s == nil {
+		return nil
+	}
+	compactionMessages := messages
+	if err := s.writeLine(sessionLine{
+		Type:       "compaction",
+		Messages:   &compactionMessages,
+		Usage:      &cumulative,
+		Cumulative: &cumulative,
+	}); err != nil {
+		return err
+	}
+	s.messagesAppended++
+	return nil
+}
+
 // UpdateModel records a provider/model switch in the session file.
 // The reader keeps the most recent meta entry, so the session resumes
 // with the updated model.
@@ -1298,6 +1340,14 @@ func (s *Session) AppendExtensionState(extension string, state json.RawMessage) 
 	return nil
 }
 
+// Flush writes buffered session data to the append handle.
+func (s *Session) Flush() error {
+	if s == nil {
+		return nil
+	}
+	return s.buf.Flush()
+}
+
 // Close flushes and closes the session file. If the session was
 // freshly created in this process and never had any messages
 // appended (the user opened zut, looked around, and exited without
@@ -1307,7 +1357,7 @@ func (s *Session) Close() error {
 	if s == nil {
 		return nil
 	}
-	flushErr := s.buf.Flush()
+	flushErr := s.Flush()
 	closeErr := s.writer.Close()
 	if s.freshFile && s.messagesAppended == 0 && len(s.ExtensionState) == 0 && len(s.Meta.CompactHandoff) == 0 {
 		// Best-effort cleanup. We deliberately don't propagate the
@@ -1340,6 +1390,16 @@ func (s *Session) writeLine(row sessionLine) error {
 // provider.Content is an interface; encoding/json drops type information.
 // We persist messages by reading the raw "message" object back and
 // rebuilding Content from discriminated fields.
+
+func hydrateCompactionUsage(lineBytes []byte) (*provider.Usage, error) {
+	var row struct {
+		Cumulative *provider.Usage `json:"cumulative"`
+	}
+	if err := json.Unmarshal(lineBytes, &row); err != nil {
+		return nil, err
+	}
+	return row.Cumulative, nil
+}
 
 func hydrateCompaction(lineBytes []byte) ([]provider.Message, error) {
 	var row struct {

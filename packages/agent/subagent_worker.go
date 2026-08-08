@@ -86,7 +86,7 @@ func (b *workerTurnBudget) start(maxTurns int, newRun bool) (step, lifetime, cur
 	return b.sequence, b.lifetime, b.current, true
 }
 
-func runSubagentWorkerMode(ctx context.Context, args Args, version string) error {
+func runSubagentWorkerMode(ctx context.Context, args Args, version string) (runErr error) {
 	if args.SubagentWorker == "" {
 		return fmt.Errorf("--subagent-worker requires a socket path")
 	}
@@ -104,6 +104,10 @@ func runSubagentWorkerMode(ctx context.Context, args Args, version string) error
 		args.inheritedAccountID = inherited.AccountID
 	}
 
+	cfg, err := loadSubagentWorkerConfig()
+	if err != nil {
+		return err
+	}
 	r, err := Resolve(args, true)
 	if err != nil {
 		return err
@@ -145,9 +149,19 @@ func runSubagentWorkerMode(ctx context.Context, args Args, version string) error
 				sessionPersistence.record(err)
 			}
 		}
-		defer sess.Close()
+		ag.OnUsage = func(usage provider.Usage) {
+			if err := sess.AppendUsage(usage, usage); err != nil {
+				sessionPersistence.record(err)
+			}
+		}
+		defer func() { runErr = joinSessionCloseError(runErr, sess) }()
 	}
 	announceSession(extMgr, sess)
+
+	// Resolve retains metadata for catalog models and for valid synthesized
+	// local/routed/open-catalog models. The active agent also survives a session
+	// resume that rebuilt it for a different provider/model pair.
+	contextWindow := ag.ContextWindow
 
 	// Open the inbox listener BEFORE emitting agent_ready so the
 	// supervisor can dial through on the very first send. The
@@ -289,19 +303,41 @@ func runSubagentWorkerMode(ctx context.Context, args Args, version string) error
 			em.emit(ev.Type(), data)
 		}
 
+		baseline := workerTranscriptState{
+			messages: ag.Messages(),
+			cost:     ag.Cost(),
+			lastTurn: ag.LastTurnUsage(),
+		}
 		var persistCompaction func([]provider.Message) error
 		if sess != nil {
-			persistCompaction = sess.AppendCompaction
+			// Buffer the checkpoint until the continued turn completes. The final
+			// transcript and cumulative usage are then persisted in one JSONL row.
+			persistCompaction = func([]provider.Message) error {
+				return c.Err()
+			}
 		}
-		start, err := promptWithContextRecovery(c, ag, prompt, sink, persistCompaction)
-		if sess != nil && ag.OnMessageAppended == nil {
-			WriteNewTranscript(ag, sess, start)
+		recovery, err := promptWithContextRecovery(c, ag, prompt, sink, modes.ContextRecoveryOptions{
+			PersistCompaction:    persistCompaction,
+			ContextWindow:        contextWindow,
+			AutoCompactThreshold: cfg.AutoCompactThreshold,
+		})
+		output := finalAssistantText(ag.Messages()[recovery.OutputStart:])
+		// Message and usage callbacks persist ordinary turns incrementally. A
+		// compacted turn still needs one atomic replacement checkpoint so the
+		// durable transcript cannot mix generations.
+		if recovery.Compacted || ag.OnMessageAppended == nil {
+			if persistErr := persistWorkerTranscript(c, ag, sess, recovery.OutputStart, recovery.Compacted, baseline); persistErr != nil {
+				if err != nil {
+					err = errors.Join(err, persistErr)
+				} else {
+					err = persistErr
+				}
+			}
 		}
 		if sessionErr := sessionPersistence.err(); err == nil && sessionErr != nil {
 			err = sessionErr
 		}
 
-		output := finalAssistantText(ag.Messages()[start:])
 		resultStatus := "succeeded"
 		if err != nil {
 			if errors.Is(err, context.Canceled) {
@@ -541,15 +577,57 @@ func canonicalWorkerEvent(typ string) string {
 
 const subagentContextLimitMessage = "request exceeds the model context window; narrow the task or reduce gathered context"
 
+func loadSubagentWorkerConfig() (Config, error) {
+	cfg, err := LoadConfig()
+	if err != nil {
+		return Config{}, fmt.Errorf("load subagent worker config: %w", err)
+	}
+	return cfg, nil
+}
+
+// workerTranscriptState is restored when an atomic post-compaction checkpoint
+// cannot be persisted.
+type workerTranscriptState struct {
+	messages []provider.Message
+	cost     provider.Usage
+	lastTurn provider.Usage
+}
+
+func persistWorkerTranscript(ctx context.Context, ag *core.Agent, sess *core.Session, from int, compacted bool, baseline workerTranscriptState) error {
+	if sess == nil || ag == nil {
+		return nil
+	}
+	if !compacted {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if err := WriteNewTranscript(ag, sess, from); err != nil {
+			return fmt.Errorf("persist subagent transcript: %w", err)
+		}
+		return nil
+	}
+
+	rollback := func() {
+		ag.SetMessages(baseline.messages)
+		ag.SeedCost(baseline.cost)
+		ag.SeedLastTurnUsage(baseline.lastTurn)
+	}
+	if err := ctx.Err(); err != nil {
+		rollback()
+		return err
+	}
+	if err := sess.AppendCompactionWithUsage(ag.Messages(), ag.Cost()); err != nil {
+		rollback()
+		return fmt.Errorf("persist compacted subagent transcript: %w", err)
+	}
+	return nil
+}
+
 // promptWithContextRecovery preserves the worker's existing helper boundary
-// while delegating its one-shot overflow recovery to modes. The returned index
-// is the first message to include in the result or append after a persisted
-// compaction checkpoint.
-func promptWithContextRecovery(ctx context.Context, ag *core.Agent, prompt string, sink func(core.AgentEvent), persistCompaction func([]provider.Message) error) (outputStart int, err error) {
-	result, err := modes.PromptWithContextRecovery(ctx, ag, prompt, nil, sink, modes.ContextRecoveryOptions{
-		PersistCompaction: persistCompaction,
-	})
-	return result.OutputStart, err
+// while delegating proactive compaction and one-shot overflow recovery to
+// modes. The result includes both the output index and compaction state.
+func promptWithContextRecovery(ctx context.Context, ag *core.Agent, prompt string, sink func(core.AgentEvent), options modes.ContextRecoveryOptions) (modes.ContextRecoveryResult, error) {
+	return modes.PromptWithContextRecovery(ctx, ag, prompt, nil, sink, options)
 }
 
 func finalAssistantText(messages []provider.Message) string {

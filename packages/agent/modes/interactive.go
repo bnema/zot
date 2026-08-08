@@ -4483,7 +4483,7 @@ func (i *Interactive) openSettingsDialog() {
 		{value: "90", label: "90%", desc: "retain more history before compacting"},
 		{value: "95", label: "95%", desc: "retain most history before compacting"},
 	}
-	autoCompactThreshold := normalizeAutoCompactThreshold(i.cfg.AutoCompactThreshold)
+	autoCompactThreshold := NormalizeAutoCompactThreshold(i.cfg.AutoCompactThreshold)
 	autoCompactChoice := 0
 	for idx, opt := range autoCompactOptions {
 		if opt.value == strconv.Itoa(autoCompactThreshold) {
@@ -4751,7 +4751,7 @@ func (i *Interactive) applyAutoCompactThresholdSetting(value string) {
 	if err != nil {
 		return
 	}
-	threshold = normalizeAutoCompactThreshold(&threshold)
+	threshold = NormalizeAutoCompactThreshold(&threshold)
 	if store, ok := i.cfg.SettingsStore.(autoCompactThresholdSettingsStore); ok {
 		if err := store.SetAutoCompactThreshold(threshold); err != nil {
 			i.mu.Lock()
@@ -7917,9 +7917,11 @@ func autoCompactNoteLine(th tui.Theme, msg string) string {
 	return "  " + th.FGColor(th.Warning, "⚠ "+msg)
 }
 
-const defaultAutoCompactThreshold = 85
-
-func normalizeAutoCompactThreshold(threshold *int) int {
+// NormalizeAutoCompactThreshold applies the persisted auto-compaction
+// setting's supported values and default. It is exported so non-interactive
+// hosts can share the interactive mode's exact configuration semantics.
+func NormalizeAutoCompactThreshold(threshold *int) int {
+	const defaultAutoCompactThreshold = 85
 	if threshold == nil {
 		return defaultAutoCompactThreshold
 	}
@@ -7931,7 +7933,9 @@ func normalizeAutoCompactThreshold(threshold *int) int {
 	}
 }
 
-func shouldAutoCompact(inputTokens, contextWindow, thresholdPercent int) bool {
+// ShouldAutoCompact reports whether the latest request context reached the
+// configured percentage of the model's advertised context window.
+func ShouldAutoCompact(inputTokens, contextWindow, thresholdPercent int) bool {
 	if inputTokens <= 0 || contextWindow <= 0 || thresholdPercent <= 0 {
 		return false
 	}
@@ -8081,8 +8085,8 @@ func (i *Interactive) shouldAutoCompactLocked() bool {
 	if err != nil || m.ContextWindow <= 0 {
 		return false
 	}
-	threshold := normalizeAutoCompactThreshold(i.cfg.AutoCompactThreshold)
-	return shouldAutoCompact(i.lastCtxInput, m.ContextWindow, threshold)
+	threshold := NormalizeAutoCompactThreshold(i.cfg.AutoCompactThreshold)
+	return ShouldAutoCompact(i.lastCtxInput, m.ContextWindow, threshold)
 }
 
 func eventAffectsPresentation(ev core.AgentEvent) bool {
@@ -9510,7 +9514,10 @@ func (i *Interactive) applySessionTreeTarget(target sessionTreeTarget, turnNo in
 			i.setSessionTreeError("tree: read selection: " + err.Error())
 			return
 		}
-		_ = sess.Close()
+		if err := sess.Close(); err != nil {
+			i.setSessionTreeError("tree: close selection: " + err.Error())
+			return
+		}
 		msgs = current
 	}
 	selection, err := sessionTreeSelection(msgs, target)

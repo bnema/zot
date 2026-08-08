@@ -753,6 +753,9 @@ func TestResolveOpenRouterPreservesSavedRoutedModelID(t *testing.T) {
 	if r.MaxOutput != 64000 {
 		t.Fatalf("MaxOutput = %d, want synthetic gateway default 64000", r.MaxOutput)
 	}
+	if r.ContextWindow != 1_000_000 || r.NewAgent().ContextWindow != 1_000_000 {
+		t.Fatalf("resolved/agent context window = %d/%d, want synthetic gateway metadata", r.ContextWindow, r.NewAgent().ContextWindow)
+	}
 }
 
 func TestResolveGatewayPlainUnknownModelFallsBack(t *testing.T) {
@@ -864,6 +867,9 @@ func TestResolveLlamaCPPUsesRouterInferenceURL(t *testing.T) {
 	if r.Credential != "local" || !r.HasCredential() {
 		t.Fatalf("credential = %q", r.Credential)
 	}
+	if r.ContextWindow != 128000 || r.NewAgent().ContextWindow != 128000 {
+		t.Fatalf("resolved/agent context window = %d/%d, want synthesized local metadata", r.ContextWindow, r.NewAgent().ContextWindow)
+	}
 	if got := r.NewClient().Name(); got != provider.LlamaCPPProviderID {
 		t.Fatalf("client name = %q, want %q", got, provider.LlamaCPPProviderID)
 	}
@@ -896,7 +902,7 @@ func TestResolveCustomProviderModelBaseURLBeatsProviderBaseURL(t *testing.T) {
 				"baseUrl": "https://provider.example.com/v1",
 				"api": "openai",
 				"models": [
-					{"id": "fast", "baseUrl": "https://model.example.com/v1"}
+					{"id": "fast", "baseUrl": "https://model.example.com/v1", "contextWindow": 65536}
 				]
 			}
 		}
@@ -917,6 +923,9 @@ func TestResolveCustomProviderModelBaseURLBeatsProviderBaseURL(t *testing.T) {
 	}
 	if r.BaseURL != "https://model.example.com/v1" {
 		t.Fatalf("BaseURL = %q, want model-level baseUrl", r.BaseURL)
+	}
+	if r.ContextWindow != 65536 || r.NewAgent().ContextWindow != 65536 {
+		t.Fatalf("resolved/agent context window = %d/%d, want retained user-model metadata", r.ContextWindow, r.NewAgent().ContextWindow)
 	}
 }
 

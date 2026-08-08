@@ -31,6 +31,11 @@ type Agent struct {
 	// rejects it for providers that do not support that contract.
 	FastMode bool
 
+	// ContextWindow is the effective input context capacity retained from
+	// model resolution. Hosts use it for proactive compaction even when the
+	// model was synthesized for an open-catalog provider.
+	ContextWindow int
+
 	// MaxTokens caps the model's output tokens per turn. Zero leaves
 	// the field unset on the provider request, letting each provider
 	// apply its own default (which can be conservative, e.g. Bedrock
@@ -340,6 +345,12 @@ func (a *Agent) Cost() provider.Usage {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	return a.cost.Total
+}
+
+func (a *Agent) addUsage(usage provider.Usage) provider.Usage {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.cost.Add(usage)
 }
 
 // SeedCost sets the cumulative usage as a baseline before the first
@@ -745,7 +756,7 @@ func (a *Agent) oneTurn(ctx context.Context, sink func(AgentEvent), turnContext 
 		case provider.EventToolEnd:
 			sink(EvToolUseEnd{ID: e.ID})
 		case provider.EventUsage:
-			cum := a.cost.Add(e.Usage)
+			cum := a.addUsage(e.Usage)
 			sink(EvUsage{Usage: e.Usage, Cumulative: cum})
 			if a.OnUsage != nil {
 				a.OnUsage(cum)

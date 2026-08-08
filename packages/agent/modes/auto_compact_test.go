@@ -28,8 +28,8 @@ func TestNormalizeAutoCompactThreshold(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := normalizeAutoCompactThreshold(tt.value); got != tt.want {
-				t.Fatalf("normalizeAutoCompactThreshold(%v) = %d, want %d", tt.value, got, tt.want)
+			if got := NormalizeAutoCompactThreshold(tt.value); got != tt.want {
+				t.Fatalf("NormalizeAutoCompactThreshold(%v) = %d, want %d", tt.value, got, tt.want)
 			}
 		})
 	}
@@ -353,8 +353,8 @@ func TestShouldAutoCompactUsesConfiguredThreshold(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := shouldAutoCompact(tt.used, tt.window, tt.threshold); got != tt.want {
-				t.Fatalf("shouldAutoCompact(%d, %d, %d) = %t, want %t", tt.used, tt.window, tt.threshold, got, tt.want)
+			if got := ShouldAutoCompact(tt.used, tt.window, tt.threshold); got != tt.want {
+				t.Fatalf("ShouldAutoCompact(%d, %d, %d) = %t, want %t", tt.used, tt.window, tt.threshold, got, tt.want)
 			}
 		})
 	}

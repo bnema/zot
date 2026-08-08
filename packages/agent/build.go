@@ -45,6 +45,11 @@ type Resolved struct {
 	MaxSteps     int
 	Sandbox      *tools.Sandbox
 
+	// ContextWindow and MaxOutput retain the effective model metadata,
+	// including metadata synthesized for valid open-catalog local and routed
+	// models that provider.FindModel cannot rediscover later.
+	ContextWindow int
+
 	// MaxOutput is the resolved model's maximum output-token budget
 	// (from the catalog). Passed to the agent so each turn requests
 	// the model's full output capacity instead of the provider's
@@ -684,11 +689,13 @@ func Resolve(args Args, requireCred bool) (Resolved, error) {
 	if err != nil {
 		if cfg, ok := provider.CustomProviders()[provName]; ok {
 			resolvedModel = provider.Model{
-				Provider:    provName,
-				ID:          model,
-				DisplayName: model,
-				BaseURL:     cfg.BaseURL,
-				Source:      "user",
+				Provider:      provName,
+				ID:            model,
+				DisplayName:   model,
+				ContextWindow: 128000,
+				MaxOutput:     16384,
+				BaseURL:       cfg.BaseURL,
+				Source:        "user",
 			}
 			err = nil
 		}
@@ -924,6 +931,7 @@ func Resolve(args Args, requireCred bool) (Resolved, error) {
 		ToolSummary:      summaries,
 		SystemPrompt:     sys,
 		MaxSteps:         max,
+		ContextWindow:    resolvedModel.ContextWindow,
 		MaxOutput:        resolvedModel.MaxOutput,
 		Sandbox:          sandbox,
 		SkillTool:        skillTool,
@@ -1245,6 +1253,7 @@ func (r *Resolved) UseSandbox(s *tools.Sandbox) {
 func (r Resolved) NewAgent() *core.Agent {
 	a := core.NewAgent(r.NewClient(), r.Model, r.SystemPrompt, r.ToolRegistry)
 	a.MaxSteps = r.MaxSteps
+	a.ContextWindow = r.ContextWindow
 	a.MaxTokens = r.MaxOutput
 	a.Reasoning = r.Reasoning
 	a.Temperature = r.Temperature

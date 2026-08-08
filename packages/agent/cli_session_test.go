@@ -347,3 +347,63 @@ func TestPrepareSessionResumeHonorsExplicitProviderModelFields(t *testing.T) {
 		})
 	}
 }
+
+func TestWriteNewTranscriptTracksPartialAppend(t *testing.T) {
+	sess, err := core.NewSession(t.TempDir(), "cwd", "provider", "model", "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := provider.Message{
+		Role:    provider.RoleUser,
+		Content: []provider.Content{provider.TextBlock{Text: "first"}},
+	}
+	invalid := provider.Message{
+		Role: provider.RoleAssistant,
+		Content: []provider.Content{provider.ToolCallBlock{
+			ID:        "call-1",
+			Name:      "tool",
+			Arguments: json.RawMessage("{"),
+		}},
+	}
+	ag := core.NewAgent(nil, "model", "", nil)
+	ag.SetMessages([]provider.Message{first, invalid})
+	next, err := writeNewTranscriptLocked(ag, sess, 0)
+	if err == nil {
+		t.Fatal("writeNewTranscriptLocked succeeded with invalid message")
+	}
+	if next != 1 {
+		t.Fatalf("next persisted message index = %d, want 1", next)
+	}
+
+	second := provider.Message{
+		Role:    provider.RoleAssistant,
+		Content: []provider.Content{provider.ToolCallBlock{ID: "call-1", Name: "tool", Arguments: json.RawMessage(`{}`)}},
+	}
+	third := provider.Message{
+		Role:    provider.RoleTool,
+		Content: []provider.Content{provider.ToolResultBlock{CallID: "call-1", Content: []provider.Content{provider.TextBlock{Text: "done"}}}},
+	}
+	ag.SetMessages([]provider.Message{first, second, third})
+	next, err = writeNewTranscriptLocked(ag, sess, next)
+	if err != nil {
+		t.Fatalf("retry transcript: %v", err)
+	}
+	if next != 3 {
+		t.Fatalf("next persisted message index after retry = %d, want 3", next)
+	}
+	if err := sess.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	reopened, messages, err := core.OpenSession(sess.Path)
+	if err != nil {
+		t.Fatalf("reopen session: %v", err)
+	}
+	t.Cleanup(func() { _ = reopened.Close() })
+	if len(messages) != 3 {
+		t.Fatalf("replayed message count = %d, want 3", len(messages))
+	}
+	if repaired := provider.RepairOrphanedToolResults(messages); len(repaired) != len(messages) {
+		t.Fatalf("replayed transcript lost tool pairing: %#v", messages)
+	}
+}
