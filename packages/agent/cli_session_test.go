@@ -40,7 +40,7 @@ func TestOpenOrCreateSessionResumesByUUIDAcrossCWDAndAgentStores(t *testing.T) {
 	}
 
 	ag := core.NewAgent(nil, "model", "", nil)
-	got, err := openOrCreateSession(Args{
+	got, err := openOrCreateSession(context.Background(), Args{
 		CWD:             otherCWD,
 		Resume:          true,
 		ResumeSessionID: id,
@@ -75,7 +75,7 @@ func TestOpenOrCreateSessionResumesByUUIDAcrossCWDAndAgentStores(t *testing.T) {
 	}
 
 	namedAgent := core.NewAgent(nil, "model", "", nil)
-	namedGot, err := openOrCreateSession(Args{
+	namedGot, err := openOrCreateSession(context.Background(), Args{
 		CWD:             otherCWD,
 		Resume:          true,
 		ResumeSessionID: namedID,
@@ -131,13 +131,66 @@ func TestResumeHintSuppressesEmptyAndArbitrarySessions(t *testing.T) {
 	}
 }
 
+func TestResumeHintSuppressesPersistedEmptyExplicitUUIDSession(t *testing.T) {
+	root := t.TempDir()
+	cwd := t.TempDir()
+	otherCWD := t.TempDir()
+	t.Setenv("ZUT_HOME", root)
+
+	dir := core.SessionsDir(root, cwd)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	id := uuid.NewString()
+	metaLine := struct {
+		Type string           `json:"type"`
+		Meta core.SessionMeta `json:"meta"`
+	}{
+		Type: "meta",
+		Meta: core.SessionMeta{
+			ID:       id,
+			CWD:      cwd,
+			Provider: "provider",
+			Model:    "model",
+			Started:  time.Now().UTC(),
+			Version:  "test",
+		},
+	}
+	data, err := json.Marshal(metaLine)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "persisted-empty.jsonl")
+	if err := os.WriteFile(path, append(data, '\n'), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	sess, err := openOrCreateSession(context.Background(), Args{
+		CWD:             otherCWD,
+		Resume:          true,
+		ResumeSessionID: id,
+	}, Resolved{Provider: "provider", Model: "model"}, core.NewAgent(nil, "model", "", nil), "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sess == nil || sess.Path != path {
+		t.Fatalf("resumed persisted empty session = %#v, want path %q", sess, path)
+	}
+	if got := resumableSessionID(root, sess); got != "" {
+		t.Fatalf("persisted empty session hint ID = %q, want empty", got)
+	}
+	if err := sess.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestOpenOrCreateSessionUnknownUUIDDoesNotCreateSession(t *testing.T) {
 	root := t.TempDir()
 	cwd := t.TempDir()
 	t.Setenv("ZUT_HOME", root)
 	id := uuid.NewString()
 
-	_, err := openOrCreateSession(Args{
+	_, err := openOrCreateSession(context.Background(), Args{
 		CWD:             cwd,
 		Resume:          true,
 		ResumeSessionID: id,
@@ -164,7 +217,7 @@ func TestOpenOrCreateSessionUUIDLookupReturnsMetadataErrors(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, err := openOrCreateSession(Args{
+	_, err := openOrCreateSession(context.Background(), Args{
 		CWD:             cwd,
 		Resume:          true,
 		ResumeSessionID: uuid.NewString(),

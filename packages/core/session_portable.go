@@ -3,6 +3,7 @@ package core
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -803,6 +804,13 @@ func linkSessionTreeNodes(nodes map[string]*TreeNode, order []string) []*TreeNod
 // small projection; full snapshot validation remains the responsibility of
 // resume, export, branching, and tree preflight callers.
 func scanSessionMeta(path string) (meta SessionMeta, err error) {
+	return scanSessionMetaContext(context.Background(), path)
+}
+
+func scanSessionMetaContext(ctx context.Context, path string) (meta SessionMeta, err error) {
+	if err := contextErr(ctx); err != nil {
+		return SessionMeta{}, err
+	}
 	f, err := os.Open(path)
 	if err != nil {
 		return SessionMeta{}, err
@@ -810,7 +818,7 @@ func scanSessionMeta(path string) (meta SessionMeta, err error) {
 	defer f.Close()
 
 	var sawMeta bool
-	err = forEachStrictJSONLLine(f, func(line []byte, lineNo int) error {
+	err = forEachStrictJSONLLineContext(ctx, f, func(line []byte, lineNo int) error {
 		var head sessionLineHead
 		if err := json.Unmarshal(line, &head); err != nil {
 			return fmt.Errorf("line %d: invalid JSON: %w", lineNo, err)
@@ -886,7 +894,7 @@ func FindSessionByID(root, cwd, id string) string {
 // session stores, independent of cwd. A nil error and empty path mean no
 // matching session was found. Read, storage, metadata, and duplicate-ID
 // failures are returned to the caller instead of being reported as a miss.
-func FindManagedSessionByID(root, id string) (string, error) {
+func FindManagedSessionByID(ctx context.Context, root, id string) (string, error) {
 	if strings.TrimSpace(root) == "" {
 		return "", errors.New("find managed session: root is empty")
 	}
@@ -910,9 +918,15 @@ func FindManagedSessionByID(root, id string) (string, error) {
 
 	var matches []string
 	for _, store := range stores {
-		if err := collectManagedSessionMatches(store, id, &matches); err != nil {
+		if err := contextErr(ctx); err != nil {
 			return "", err
 		}
+		if err := collectManagedSessionMatches(ctx, store, id, &matches); err != nil {
+			return "", err
+		}
+	}
+	if err := contextErr(ctx); err != nil {
+		return "", err
 	}
 	if len(matches) == 0 {
 		return "", nil
@@ -923,7 +937,10 @@ func FindManagedSessionByID(root, id string) (string, error) {
 	return matches[0], nil
 }
 
-func collectManagedSessionMatches(root, id string, matches *[]string) error {
+func collectManagedSessionMatches(ctx context.Context, root, id string, matches *[]string) error {
+	if err := contextErr(ctx); err != nil {
+		return err
+	}
 	dir := filepath.Join(root, "sessions")
 	entries, err := os.ReadDir(dir)
 	if errors.Is(err, os.ErrNotExist) {
@@ -933,6 +950,9 @@ func collectManagedSessionMatches(root, id string, matches *[]string) error {
 		return fmt.Errorf("find managed session: read %q: %w", dir, err)
 	}
 	for _, bucket := range entries {
+		if err := contextErr(ctx); err != nil {
+			return err
+		}
 		if !bucket.IsDir() || bucket.Name() == "agents" || !isSessionBucketName(bucket.Name()) {
 			continue
 		}
@@ -942,11 +962,14 @@ func collectManagedSessionMatches(root, id string, matches *[]string) error {
 			return fmt.Errorf("find managed session: read %q: %w", bucketPath, err)
 		}
 		for _, file := range files {
+			if err := contextErr(ctx); err != nil {
+				return err
+			}
 			if file.IsDir() || !strings.HasSuffix(file.Name(), ".jsonl") {
 				continue
 			}
 			path := filepath.Join(bucketPath, file.Name())
-			meta, err := scanSessionMeta(path)
+			meta, err := scanSessionMetaContext(ctx, path)
 			if err != nil {
 				return fmt.Errorf("find managed session: read metadata %q: %w", path, err)
 			}

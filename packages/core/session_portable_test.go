@@ -1,7 +1,9 @@
 package core
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -27,7 +29,7 @@ func TestFindManagedSessionByIDStrictScopesAllManagedStoresAndReturnsReadErrors(
 		t.Fatal(err)
 	}
 
-	got, err := FindManagedSessionByID(root, session.ID)
+	got, err := FindManagedSessionByID(context.Background(), root, session.ID)
 	if err != nil {
 		t.Fatalf("FindManagedSessionByID: %v", err)
 	}
@@ -39,10 +41,19 @@ func TestFindManagedSessionByIDStrictScopesAllManagedStoresAndReturnsReadErrors(
 	if err := os.WriteFile(badPath, []byte("not json\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := FindManagedSessionByID(root, "missing"); err == nil {
+	if _, err := FindManagedSessionByID(context.Background(), root, "missing"); err == nil {
 		t.Fatal("malformed managed metadata was reported as not found")
 	} else if !strings.Contains(err.Error(), "metadata") {
 		t.Fatalf("malformed metadata error = %v, want metadata context", err)
+	}
+}
+
+func TestFindManagedSessionByIDHonorsCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	if _, err := FindManagedSessionByID(ctx, t.TempDir(), "session-id"); !errors.Is(err, context.Canceled) {
+		t.Fatalf("FindManagedSessionByID error = %v, want context.Canceled", err)
 	}
 }
 

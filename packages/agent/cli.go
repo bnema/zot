@@ -899,7 +899,7 @@ func runPrintMode(ctx context.Context, args Args, version string) error {
 		}
 	}()
 	wireNonInteractiveAgentExtHooks(ctx, ag, extMgr)
-	sess, err := openOrCreateSession(args, r, ag, version)
+	sess, err := openOrCreateSession(ctx, args, r, ag, version)
 	if err != nil {
 		return err
 	}
@@ -972,7 +972,7 @@ func runStreamMode(ctx context.Context, args Args, version string) error {
 		}
 	}()
 	wireNonInteractiveAgentExtHooks(ctx, ag, extMgr)
-	sess, err := openOrCreateSession(args, r, ag, version)
+	sess, err := openOrCreateSession(ctx, args, r, ag, version)
 	if err != nil {
 		return err
 	}
@@ -1084,7 +1084,7 @@ func runJSONMode(ctx context.Context, args Args, version string) error {
 		}
 	}()
 	wireNonInteractiveAgentExtHooks(ctx, ag, extMgr)
-	sess, err := openOrCreateSession(args, r, ag, version)
+	sess, err := openOrCreateSession(ctx, args, r, ag, version)
 	if err != nil {
 		return err
 	}
@@ -1716,7 +1716,7 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 	var sessionTitlePending bool
 	if !args.NoSess && ag != nil {
 		var sessErr error
-		sess, sessErr = openOrCreateSession(args, r, ag, version)
+		sess, sessErr = openOrCreateSession(ctx, args, r, ag, version)
 		if sessErr != nil {
 			return sessErr
 		}
@@ -2599,8 +2599,12 @@ func resumableSessionID(root string, sess *core.Session) string {
 	if sess == nil || sess.ID == "" || sess.Path == "" {
 		return ""
 	}
-	path, err := core.FindManagedSessionByID(root, sess.ID)
+	path, err := core.FindManagedSessionByID(context.Background(), root, sess.ID)
 	if err != nil || !sameSessionPath(path, sess.Path) {
+		return ""
+	}
+	snapshot, err := core.ReadSessionSnapshot(path)
+	if err != nil || len(snapshot.Messages) == 0 {
 		return ""
 	}
 	return sess.ID
@@ -2628,7 +2632,7 @@ func agentSessionsRoot(root string, args Args) string {
 
 // openOrCreateSession returns a session for the run. sess may be nil
 // with a nil error if session persistence is disabled.
-func openOrCreateSession(args Args, r Resolved, ag *core.Agent, version string) (*core.Session, error) {
+func openOrCreateSession(ctx context.Context, args Args, r Resolved, ag *core.Agent, version string) (*core.Session, error) {
 	if args.NoSess {
 		return nil, nil
 	}
@@ -2667,7 +2671,7 @@ func openOrCreateSession(args Args, r Resolved, ag *core.Agent, version string) 
 		}
 	case args.Resume:
 		if args.ResumeSessionID != "" {
-			picked, lookupErr := core.FindManagedSessionByID(ZutHome(), args.ResumeSessionID)
+			picked, lookupErr := core.FindManagedSessionByID(ctx, ZutHome(), args.ResumeSessionID)
 			if lookupErr != nil {
 				return nil, lookupErr
 			}

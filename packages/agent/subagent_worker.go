@@ -70,7 +70,7 @@ func runSubagentWorkerMode(ctx context.Context, args Args, version string) error
 		}
 	}()
 	wireNonInteractiveAgentExtHooks(ctx, ag, extMgr)
-	sess, err := openOrCreateSession(args, r, ag, version)
+	sess, err := openOrCreateSession(ctx, args, r, ag, version)
 	if err != nil {
 		return err
 	}
