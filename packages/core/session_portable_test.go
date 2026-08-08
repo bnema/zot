@@ -1,7 +1,9 @@
 package core
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -9,6 +11,51 @@ import (
 
 	"github.com/bnema/zut/packages/provider"
 )
+
+func TestFindManagedSessionByIDStrictScopesAllManagedStoresAndReturnsReadErrors(t *testing.T) {
+	root := t.TempDir()
+	cwd := t.TempDir()
+	session, err := NewSession(root, cwd, "provider", "model", "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := session.AppendMessage(provider.Message{
+		Role:    provider.RoleUser,
+		Content: []provider.Content{provider.TextBlock{Text: "managed"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := session.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := FindManagedSessionByID(context.Background(), root, session.ID)
+	if err != nil {
+		t.Fatalf("FindManagedSessionByID: %v", err)
+	}
+	if got != session.Path {
+		t.Fatalf("managed session path = %q, want %q", got, session.Path)
+	}
+
+	badPath := filepath.Join(SessionsDir(root, cwd), "bad.jsonl")
+	if err := os.WriteFile(badPath, []byte("not json\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := FindManagedSessionByID(context.Background(), root, "missing"); err == nil {
+		t.Fatal("malformed managed metadata was reported as not found")
+	} else if !strings.Contains(err.Error(), "metadata") {
+		t.Fatalf("malformed metadata error = %v, want metadata context", err)
+	}
+}
+
+func TestFindManagedSessionByIDHonorsCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	if _, err := FindManagedSessionByID(ctx, t.TempDir(), "session-id"); !errors.Is(err, context.Canceled) {
+		t.Fatalf("FindManagedSessionByID error = %v, want context.Canceled", err)
+	}
+}
 
 // TestSessionExportImportRoundTrip writes a few messages to a live
 // session, exports it, imports the export under a different cwd,

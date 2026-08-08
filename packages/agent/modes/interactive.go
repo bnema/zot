@@ -667,6 +667,7 @@ type Interactive struct {
 	cumUsage               provider.Usage
 	lastCtxInput           int // input_tokens of the most recent turn — approximates current context size
 	busy                   bool
+	ctrlCExit              bool
 	activity               agentActivity
 	subagentActivityActive bool
 	pendingIdleWork        []func()
@@ -1006,6 +1007,21 @@ func NewInteractive(cfg InteractiveConfig) *Interactive {
 	}
 	i.applyAutoSubagentsTool()
 	return i
+}
+
+// ExitedViaCtrlC reports whether the last Run returned because the user
+// deliberately exited with Ctrl+C.
+func (i *Interactive) ExitedViaCtrlC() bool {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	return i.ctrlCExit
+}
+
+// markCtrlCExit records that the current Run is ending via Ctrl+C.
+func (i *Interactive) markCtrlCExit() {
+	i.mu.Lock()
+	i.ctrlCExit = true
+	i.mu.Unlock()
 }
 
 // Run blocks until the user quits.
@@ -3176,6 +3192,7 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 		loadingSession := i.sessionLoading
 		i.mu.Unlock()
 		if loadingSession {
+			i.markCtrlCExit()
 			return true
 		}
 		// While busy: do NOT cancel the turn. ctrl+c during a
@@ -3188,6 +3205,7 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 		// ctrlCExitWindow quits.
 		if i.busy {
 			if i.ctrlCExitArmed() {
+				i.markCtrlCExit()
 				return true
 			}
 			i.mu.Lock()
@@ -3223,6 +3241,7 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 			return false
 		}
 		if i.ctrlCExitArmed() {
+			i.markCtrlCExit()
 			return true
 		}
 		i.mu.Lock()
