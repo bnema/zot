@@ -1342,10 +1342,9 @@ func (i *Interactive) requestRendererTheme(theme tui.Theme) {
 
 func (i *Interactive) invalidate() {
 	i.renderRevision.Add(1)
-	if scheduler := i.renderScheduler.Load(); scheduler != nil {
-		scheduler.request(false, false)
-		return
-	}
+	// Keep ordinary state changes on the main-loop throttle. The scheduler
+	// owns terminal output, but scheduling it here would bypass
+	// redrawMinInterval and paint every intermediate tool-event frame.
 	select {
 	case i.dirty <- struct{}{}:
 	default:
