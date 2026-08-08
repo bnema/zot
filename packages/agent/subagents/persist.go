@@ -678,6 +678,10 @@ func replayTranscriptIntoAgent(a *Agent, evs []Event) {
 
 func replayEventTranscript(a *Agent, ev Event) {
 	switch ev.Type {
+	case "message.delta":
+		if delta, _ := ev.Data["delta"].(string); delta != "" {
+			a.appendAssistantDelta(delta)
+		}
 	case "assistant_message", "user_message":
 		var text []string
 		if c, ok := ev.Data["content"].([]any); ok {

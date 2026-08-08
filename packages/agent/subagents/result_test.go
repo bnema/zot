@@ -269,21 +269,25 @@ func checkCaptureFailureResult(t *testing.T, agent *Agent, stateDir string) {
 
 func TestEnsureResultReconcilesChildStatusWithRunnerError(t *testing.T) {
 	tests := []struct {
-		name      string
-		status    Status
-		runErr    error
-		wantState TurnStatus
+		name       string
+		status     Status
+		runErr     error
+		wantState  TurnStatus
+		wantCode   string
+		wantOutput string
 	}{
-		{name: "runner failure", status: StatusFailed, runErr: errors.New("runner failed"), wantState: ResultFailed},
-		{name: "runner cancellation", status: StatusFailed, runErr: context.Canceled, wantState: ResultCanceled},
-		{name: "killed", status: StatusKilled, runErr: context.Canceled, wantState: ResultCanceled},
+		{name: "runner failure", status: StatusFailed, runErr: errors.New("runner failed"), wantState: ResultFailed, wantCode: "runner_failed"},
+		{name: "runner cancellation", status: StatusFailed, runErr: context.Canceled, wantState: ResultCanceled, wantCode: "runner_failed"},
+		{name: "deadline preserves recovery guidance", status: StatusFailed, runErr: context.DeadlineExceeded, wantState: ResultFailed, wantCode: "deadline_exceeded", wantOutput: "partial answer"},
+		{name: "killed", status: StatusKilled, runErr: context.Canceled, wantState: ResultCanceled, wantCode: "runner_failed"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			stateDir := t.TempDir()
 			agent := &Agent{
-				ID:       "agent-1",
-				stateDir: stateDir,
+				ID:            "agent-1",
+				stateDir:      stateDir,
+				lastAssistant: tt.wantOutput,
 				result: &TurnResult{
 					AgentID: "agent-1", TurnID: "turn-1", Status: ResultSucceeded,
 				},
@@ -297,12 +301,24 @@ func TestEnsureResultReconcilesChildStatusWithRunnerError(t *testing.T) {
 			if result.Error == nil {
 				t.Fatal("runner error was not recorded")
 			}
+			if result.Error.Code != tt.wantCode {
+				t.Fatalf("result error code = %q, want %q", result.Error.Code, tt.wantCode)
+			}
+			if result.Output != tt.wantOutput {
+				t.Fatalf("result output = %q, want %q", result.Output, tt.wantOutput)
+			}
 			durable, err := readTurnResult(stateDir)
 			if err != nil {
 				t.Fatal(err)
 			}
 			if durable.Status != tt.wantState {
 				t.Fatalf("durable result status = %q, want %q", durable.Status, tt.wantState)
+			}
+			if durable.Output != tt.wantOutput {
+				t.Fatalf("durable result output = %q, want %q", durable.Output, tt.wantOutput)
+			}
+			if durable.Error == nil || durable.Error.Code != tt.wantCode {
+				t.Fatalf("durable result error = %#v, want code %q", durable.Error, tt.wantCode)
 			}
 		})
 	}

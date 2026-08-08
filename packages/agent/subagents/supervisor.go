@@ -155,7 +155,11 @@ func New(cfg Config) *Supervisor {
 	}
 	if cfg.NewRunner == nil {
 		cfg.NewRunner = func(a *Agent) Runner {
-			return &execRunner{agent: a, resolveCredential: cfg.ResolveCredential}
+			return &execRunner{
+				agent:             a,
+				resolveCredential: cfg.ResolveCredential,
+				GracePeriod:       cfg.Policy.CancelGracePeriod,
+			}
 		}
 	}
 	cfg.Policy.normalize()
@@ -1129,6 +1133,7 @@ func (a *Agent) Snapshot() AgentSnapshot {
 	status := a.status
 	activity := a.activity
 	lastAssistant := a.lastAssistant
+	streamingOutputTruncated := a.streamingAssistantTruncated
 	finished := a.finished
 	a.mu.Unlock()
 
@@ -1143,7 +1148,7 @@ func (a *Agent) Snapshot() AgentSnapshot {
 	resultRef := a.resultRef
 	patchRef := a.patchRef
 	changedFiles := append([]string(nil), a.changedFiles...)
-	outputTruncated := a.outputTruncated
+	outputTruncated := a.outputTruncated || streamingOutputTruncated
 	a.lifecycleMu.Unlock()
 	return AgentSnapshot{
 		ID: a.ID, Task: a.Task, Dir: a.Dir,
@@ -1208,6 +1213,7 @@ func (s agentSink) Transcript(chunk string) {
 }
 func (s agentSink) userMessage(text string)      { s.a.appendUserMessage(text) }
 func (s agentSink) assistantMessage(text string) { s.a.appendAssistantMessage(text) }
+func (s agentSink) assistantDelta(text string)   { s.a.appendAssistantDelta(text) }
 
 func truncate(s string, n int) string {
 	runes := []rune(s)

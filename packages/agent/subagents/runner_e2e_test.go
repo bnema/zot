@@ -12,25 +12,177 @@ import (
 	"time"
 )
 
-// TestRunnerEndToEndWithStubChild is the integration test for the
-// new daemon-mode runner. It compiles the stubchild binary in
-// testdata/cmd/stubchild, points an execRunner at it, and drives
-// a Supervisor through one Spawn + one SendUserTurn + Stop cycle.
-//
-// What this proves:
-//
-//   - The default argv shape (subagentWorkerArgs) is one the child can
-//     actually parse — locks the shape against silent breakage.
-//   - The stdout JSONL parser ingests events and writes them to the
-//     durable log.
-//   - applyEventToSink turns events into Activity / Transcript
-//     updates the dashboard reads.
-//   - The supervisor inbox dials the child's socket and a follow-up
-//     line round-trips back as a user_message event.
-//   - Stop closes the inbox AND cancels the child's context so the
-//     stub exits cleanly.
-//
-// The test is skipped on platforms without unix sockets (Windows).
+type notifyingAgentSink struct {
+	agentSink
+	deltas chan<- struct{}
+}
+
+func (s notifyingAgentSink) assistantDelta(text string) {
+	s.agentSink.assistantDelta(text)
+	select {
+	case s.deltas <- struct{}{}:
+	default:
+	}
+}
+
+type controlledDeadlineContext struct{ done chan struct{} }
+
+func (c *controlledDeadlineContext) Deadline() (time.Time, bool) {
+	return time.Now().Add(time.Hour), true
+}
+func (c *controlledDeadlineContext) Done() <-chan struct{} { return c.done }
+func (c *controlledDeadlineContext) Err() error {
+	select {
+	case <-c.done:
+		return context.DeadlineExceeded
+	default:
+		return nil
+	}
+}
+func (c *controlledDeadlineContext) Value(any) any { return nil }
+func (c *controlledDeadlineContext) expire() {
+	select {
+	case <-c.done:
+	default:
+		close(c.done)
+	}
+}
+
+// TestExecRunnerDeadlineGracefullyStopsWorkerAndPreservesStreamedOutput
+// verifies that deadline expiry shuts a worker down through its inbox rather
+// than killing it before its terminal events can be recorded.
+func TestExecRunnerDeadlineGracefullyStopsWorkerAndPreservesStreamedOutput(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("unix sockets not supported")
+	}
+	if testing.Short() {
+		t.Skip("skip end-to-end runner test in -short mode")
+	}
+
+	exe := buildStubChild(t)
+	t.Setenv("ZUT_STUB_PROTOCOL", "1")
+	t.Setenv("ZUT_STUB_BLOCK_INITIAL", "1")
+
+	root := t.TempDir()
+	a := &Agent{
+		ID:           "deadline-test",
+		Task:         "long-running task",
+		Dir:          root,
+		SessionPath:  filepath.Join(root, "session.jsonl"),
+		InboxPath:    filepath.Join(root, "inbox.sock"),
+		EventLogPath: filepath.Join(root, "events.jsonl"),
+	}
+	a.inbox = NewInbox(a.InboxPath)
+	t.Cleanup(func() { _ = a.inbox.Close() })
+
+	r := &execRunner{
+		agent:       a,
+		Command:     subagentWorkerArgs(subagentWorkerArgsOpts{Exe: exe, Dir: a.Dir, SessionPath: a.SessionPath, InboxPath: a.InboxPath, Task: a.Task}),
+		GracePeriod: time.Second,
+	}
+	ctx := &controlledDeadlineContext{done: make(chan struct{})}
+	defer ctx.expire()
+	deltas := make(chan struct{}, 1)
+	runDone := make(chan error, 1)
+	go func() { runDone <- r.Run(ctx, notifyingAgentSink{agentSink: agentSink{a: a}, deltas: deltas}) }()
+	select {
+	case <-deltas:
+	case <-time.After(time.Second):
+		t.Fatal("worker did not emit its initial delta")
+	}
+	ctx.expire()
+	select {
+	case err := <-runDone:
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("Run error = %v, want context deadline exceeded", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Run did not return after deadline expiry")
+	}
+
+	events, err := ReadEventLog(a.EventLogPath)
+	if err != nil {
+		t.Fatalf("ReadEventLog: %v", err)
+	}
+	var sawDelta, sawGracefulTurnEnd bool
+	for _, event := range events {
+		if event.Type == "message.delta" && event.Data["delta"] == "partial answer" {
+			sawDelta = true
+		}
+		if event.Type == "turn_end" && event.Data["stop"] == "cancelled" {
+			sawGracefulTurnEnd = true
+		}
+	}
+	if !sawDelta || !sawGracefulTurnEnd {
+		t.Fatalf("deadline did not preserve a graceful partial turn: %s", formatEvents(events))
+	}
+
+	snapshot := a.Snapshot()
+	if snapshot.LastAssistant != "partial answer" {
+		t.Fatalf("live partial output = %q, want %q", snapshot.LastAssistant, "partial answer")
+	}
+	replayed := &Agent{}
+	for _, event := range events {
+		replayEventTranscript(replayed, event)
+	}
+	if snapshot := replayed.Snapshot(); snapshot.LastAssistant != "partial answer" {
+		t.Fatalf("replayed partial output = %q, want %q", snapshot.LastAssistant, "partial answer")
+	}
+}
+
+func TestExecRunnerCancelsBlockedWorker(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("unix sockets not supported")
+	}
+	if testing.Short() {
+		t.Skip("skip end-to-end runner test in -short mode")
+	}
+
+	exe := buildStubChild(t)
+	t.Setenv("ZUT_STUB_PROTOCOL", "1")
+	t.Setenv("ZUT_STUB_BLOCK_INITIAL", "1")
+
+	root := t.TempDir()
+	a := &Agent{
+		ID:           "cancel-test",
+		Task:         "blocked task",
+		Dir:          root,
+		SessionPath:  filepath.Join(root, "session.jsonl"),
+		InboxPath:    filepath.Join(root, "inbox.sock"),
+		EventLogPath: filepath.Join(root, "events.jsonl"),
+	}
+	a.inbox = NewInbox(a.InboxPath)
+	t.Cleanup(func() { _ = a.inbox.Close() })
+
+	r := &execRunner{
+		agent:   a,
+		Command: subagentWorkerArgs(subagentWorkerArgsOpts{Exe: exe, Dir: a.Dir, SessionPath: a.SessionPath, InboxPath: a.InboxPath, Task: a.Task}),
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	deltas := make(chan struct{}, 1)
+	runDone := make(chan error, 1)
+	go func() { runDone <- r.Run(ctx, notifyingAgentSink{agentSink: agentSink{a: a}, deltas: deltas}) }()
+
+	select {
+	case <-deltas:
+	case <-time.After(time.Second):
+		t.Fatal("worker did not emit its initial delta")
+	}
+	cancel()
+	select {
+	case err := <-runDone:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("Run error = %v, want context canceled", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Run did not return after context cancellation")
+	}
+}
+
+// TestRunnerEndToEndWithStubChild drives the daemon-mode runner through an
+// initial turn, a follow-up, and a graceful stop using the stub child. It is
+// skipped on platforms without Unix sockets.
 func TestRunnerEndToEndWithStubChild(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("unix sockets not supported")

@@ -116,16 +116,20 @@ type Agent struct {
 	// Supervisor.Spawn so callers do not need to manage the socket directly.
 	inbox *Inbox
 
-	mu               sync.Mutex
-	status           Status
-	activity         string
-	transcript       []string
-	lastAssistant    string
-	finished         time.Time
-	lastErr          error
-	transcriptLoaded bool
-	legacyEventState bool
-	transcriptMu     sync.Mutex
+	mu                          sync.Mutex
+	status                      Status
+	activity                    string
+	transcript                  []string
+	lastAssistant               string
+	streamingAssistantText      string
+	streamingAssistantTruncated bool
+	streamingAssistantStart     int
+	streamingAssistantLines     int
+	finished                    time.Time
+	lastErr                     error
+	transcriptLoaded            bool
+	legacyEventState            bool
+	transcriptMu                sync.Mutex
 
 	lifecycleMu      sync.Mutex
 	processState     ProcessState
@@ -449,17 +453,100 @@ func (a *Agent) appendUserMessage(text string) {
 }
 
 func (a *Agent) appendAssistantMessage(text string) {
-	a.appendTranscriptLocked(text, "", true)
-}
-
-func (a *Agent) appendTranscriptLocked(chunk, linePrefix string, assistant bool) {
-	message := chunk
-	chunk = strings.TrimRight(chunk, "\n")
-	if chunk == "" {
+	if text == "" {
 		return
 	}
 	a.mu.Lock()
-	for _, line := range strings.Split(chunk, "\n") {
+	if a.streamingAssistantText != "" {
+		a.replaceStreamingAssistantLocked(text)
+		a.clearStreamingAssistantLocked()
+	} else {
+		a.appendTranscriptLinesLocked(text, "", true)
+		a.boundTranscriptLocked()
+	}
+	a.mu.Unlock()
+	a.markActivity(time.Now())
+}
+
+// appendAssistantDelta exposes an in-progress assistant response in the
+// dashboard without duplicating it when the final assistant_message arrives.
+// The JSONL event log remains the durable source; this maintains its live and
+// replayed in-memory projection.
+func (a *Agent) appendAssistantDelta(text string) {
+	if text == "" {
+		return
+	}
+	a.mu.Lock()
+	if !a.streamingAssistantTruncated {
+		value := a.streamingAssistantText + text
+		byteCap, lineCap := a.outputLimits()
+		a.streamingAssistantText = boundInlineText(value, byteCap, lineCap)
+		a.streamingAssistantTruncated = a.streamingAssistantText != value
+	}
+	a.replaceStreamingAssistantLocked(a.streamingAssistantText)
+	a.mu.Unlock()
+	a.markActivity(time.Now())
+}
+
+func (a *Agent) appendTranscriptLocked(chunk, linePrefix string, assistant bool) {
+	if strings.TrimRight(chunk, "\n") == "" {
+		return
+	}
+	a.mu.Lock()
+	a.appendTranscriptLinesLocked(chunk, linePrefix, assistant)
+	a.boundTranscriptLocked()
+	a.mu.Unlock()
+	a.markActivity(time.Now())
+}
+
+func (a *Agent) replaceStreamingAssistantLocked(text string) {
+	a.removeStreamingAssistantLocked()
+	a.streamingAssistantStart = len(a.transcript)
+	a.streamingAssistantLines = a.appendTranscriptLinesLocked(text, "", true)
+	a.boundTranscriptLocked()
+}
+
+func (a *Agent) removeStreamingAssistantLocked() {
+	if a.streamingAssistantLines == 0 {
+		return
+	}
+	start := a.streamingAssistantStart
+	if start < 0 {
+		start = 0
+	}
+	if start > len(a.transcript) {
+		start = len(a.transcript)
+	}
+	end := start + a.streamingAssistantLines
+	if end > len(a.transcript) {
+		end = len(a.transcript)
+	}
+	for _, line := range a.transcript[start:end] {
+		a.outputBytes -= len(line) + 1
+		a.outputLines--
+	}
+	a.transcript = append(a.transcript[:start], a.transcript[end:]...)
+	a.streamingAssistantLines = 0
+	if a.outputLines == 0 {
+		a.outputBytes = 0
+	}
+}
+
+func (a *Agent) clearStreamingAssistantLocked() {
+	a.streamingAssistantText = ""
+	a.streamingAssistantTruncated = false
+	a.streamingAssistantStart = 0
+	a.streamingAssistantLines = 0
+}
+
+func (a *Agent) appendTranscriptLinesLocked(chunk, linePrefix string, assistant bool) int {
+	message := chunk
+	chunk = strings.TrimRight(chunk, "\n")
+	if chunk == "" {
+		return 0
+	}
+	lines := strings.Split(chunk, "\n")
+	for _, line := range lines {
 		line = linePrefix + line
 		a.transcript = append(a.transcript, line)
 		a.outputBytes += len(line) + 1
@@ -468,35 +555,42 @@ func (a *Agent) appendTranscriptLocked(chunk, linePrefix string, assistant bool)
 	if assistant {
 		a.lastAssistant = boundInlineText(message, a.maxOutputBytes, a.maxOutputLines)
 	}
-	// Bound the inline dashboard copy. The durable event log and session
-	// remain available through the logical history reference.
-	lineCap := a.maxOutputLines
-	if lineCap <= 0 {
-		lineCap = 2_000
-	}
-	byteCap := a.maxOutputBytes
+	return len(lines)
+}
+
+func (a *Agent) outputLimits() (byteCap, lineCap int) {
+	byteCap = a.maxOutputBytes
 	if byteCap <= 0 {
 		byteCap = 500_000
 	}
-	for a.outputLines > lineCap {
-		line := a.transcript[0]
-		a.transcript = a.transcript[1:]
-		a.outputBytes -= len(line) + 1
-		a.outputLines--
-		a.outputTruncated = true
+	lineCap = a.maxOutputLines
+	if lineCap <= 0 {
+		lineCap = 2_000
 	}
-	for a.outputLines > 0 && a.outputBytes > byteCap {
+	return byteCap, lineCap
+}
+
+func (a *Agent) boundTranscriptLocked() {
+	// Bound the inline dashboard copy. The durable event log and session
+	// remain available through the logical history reference.
+	byteCap, lineCap := a.outputLimits()
+	for a.outputLines > lineCap || (a.outputLines > 0 && a.outputBytes > byteCap) {
 		line := a.transcript[0]
 		a.transcript = a.transcript[1:]
 		a.outputBytes -= len(line) + 1
 		a.outputLines--
+		if a.streamingAssistantLines > 0 {
+			if a.streamingAssistantStart > 0 {
+				a.streamingAssistantStart--
+			} else {
+				a.streamingAssistantLines--
+			}
+		}
 		a.outputTruncated = true
 	}
 	if a.outputLines == 0 {
 		a.outputBytes = 0
 	}
-	a.mu.Unlock()
-	a.markActivity(time.Now())
 }
 
 // newAgentID returns a short, mostly-collision-free identifier of the
