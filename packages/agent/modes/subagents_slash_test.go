@@ -290,20 +290,20 @@ func TestRunSupervisorWaitReportsCompletionBeforeCancellation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	watcherDone := make(chan struct{})
+	iv.subagentsWaitWatcherDone = func() { close(watcherDone) }
 	iv.runSubagents(context.Background(), []string{"wait", a.ID})
-	deadline := time.After(time.Second)
-	for {
-		iv.mu.Lock()
-		status := iv.statusOK
-		iv.mu.Unlock()
-		if status == "completed "+a.ID {
-			return
-		}
-		select {
-		case <-deadline:
-			t.Fatalf("wait did not report completion; status = %q", status)
-		case <-time.After(time.Millisecond):
-		}
+	select {
+	case <-watcherDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for wait watcher to report completion")
+	}
+
+	iv.mu.Lock()
+	status := iv.statusOK
+	iv.mu.Unlock()
+	if status != "completed "+a.ID {
+		t.Fatalf("wait completion status = %q; want %q", status, "completed "+a.ID)
 	}
 }
 
