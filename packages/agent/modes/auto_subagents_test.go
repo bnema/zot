@@ -158,8 +158,11 @@ func TestTrackStoppedSubagentWorkerDeliversTerminalUpdate(t *testing.T) {
 	if !strings.Contains(update, "task: investigate the stuck worker") {
 		t.Fatalf("stop update missing task: %q", update)
 	}
-	if !strings.Contains(update, "status: killed") {
-		t.Fatalf("stop update missing killed status: %q", update)
+	if !strings.Contains(update, "status: cancelled") {
+		t.Fatalf("stop update missing cancellation status: %q", update)
+	}
+	if !strings.Contains(update, "subagent stopped by request") || strings.Contains(update, "context canceled") {
+		t.Fatalf("stop update missing attributed cancellation: %q", update)
 	}
 }
 

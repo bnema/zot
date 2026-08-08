@@ -814,6 +814,7 @@ func (f *Supervisor) stop(ctx context.Context, id string, origin ShutdownOrigin)
 		pid := a.ProcessPIDValue()
 		a.mu.Unlock()
 		f.mu.Unlock()
+		a.setShutdownOrigin(origin)
 		// The detached worker may take the full grace period to exit. Do not
 		// serialize unrelated supervisor operations for that entire wait.
 		f.operationMu.Unlock()
@@ -832,6 +833,7 @@ func (f *Supervisor) stop(ctx context.Context, id string, origin ShutdownOrigin)
 	}
 	a.mu.Unlock()
 	f.mu.Unlock()
+	a.setShutdownOrigin(origin)
 	f.operationMu.Unlock()
 	a.setTurnState(TurnCanceling, a.CurrentTurnID())
 
