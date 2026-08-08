@@ -351,6 +351,16 @@ func closeAgentLSP(ag *core.Agent) {
 	}
 }
 
+func joinSessionCloseError(err error, sess *core.Session) error {
+	if sess == nil {
+		return err
+	}
+	if closeErr := sess.Close(); closeErr != nil {
+		return errors.Join(err, fmt.Errorf("close session: %w", closeErr))
+	}
+	return err
+}
+
 func closeResolvedLSP(r Resolved) {
 	_ = tools.CloseLSPManagers(r.ToolRegistry)
 }
@@ -443,7 +453,7 @@ func prepareSessionResumeWithOptions(path string, current *core.Agent, currentPr
 	keepSession := false
 	defer func() {
 		if !keepSession {
-			_ = sess.Close()
+			err = joinSessionCloseError(err, sess)
 		}
 	}()
 
@@ -571,15 +581,16 @@ func applySessionResume(sess *core.Session, ag *core.Agent, currentProvider, cur
 	}
 	candidate, err := prepareSessionResumeWithOptions(sess.Path, ag, currentProvider, currentModel, explicitProvider, explicitModel, buildAgentFor)
 	if err != nil {
-		_ = sess.Close()
-		return sessionResumeCandidate{}, err
+		return sessionResumeCandidate{}, joinSessionCloseError(err, sess)
 	}
 	if !candidate.rebuilt {
 		candidate.agent.SetMessages(candidate.messages)
 		candidate.agent.SeedCost(candidate.cumulative)
 		candidate.agent.SeedLastTurnUsage(candidate.lastTurn)
 	}
-	_ = sess.Close()
+	if closeErr := sess.Close(); closeErr != nil {
+		return sessionResumeCandidate{}, errors.Join(fmt.Errorf("close session: %w", closeErr), joinSessionCloseError(nil, candidate.session))
+	}
 	return candidate, nil
 }
 
@@ -879,7 +890,7 @@ func writePrintStats(path, providerID, model string, usage provider.Usage, elaps
 	return nil
 }
 
-func runPrintMode(ctx context.Context, args Args, version string) error {
+func runPrintMode(ctx context.Context, args Args, version string) (runErr error) {
 	if args.NoYolo {
 		fmt.Fprintln(os.Stderr, "warning: --no-yolo has no effect in print mode (no interactive prompt available); tools will run without confirmation")
 	}
@@ -911,7 +922,7 @@ func runPrintMode(ctx context.Context, args Args, version string) error {
 		}
 		r.Provider, r.Model = providerName, model
 		ag.OnToolResult = func(_ string, result core.ToolResult) { persistExtensionToolResult(extMgr, sess, result) }
-		defer sess.Close()
+		defer func() { runErr = joinSessionCloseError(runErr, sess) }()
 	}
 	announceSession(extMgr, sess)
 
@@ -957,7 +968,7 @@ func runPrintMode(ctx context.Context, args Args, version string) error {
 	return nil
 }
 
-func runStreamMode(ctx context.Context, args Args, version string) error {
+func runStreamMode(ctx context.Context, args Args, version string) (runErr error) {
 	if args.NoYolo {
 		fmt.Fprintln(os.Stderr, "warning: --no-yolo has no effect in stream mode (no interactive prompt available); tools will run without confirmation")
 	}
@@ -989,7 +1000,7 @@ func runStreamMode(ctx context.Context, args Args, version string) error {
 		}
 		r.Provider, r.Model = providerName, model
 		ag.OnToolResult = func(_ string, result core.ToolResult) { persistExtensionToolResult(extMgr, sess, result) }
-		defer sess.Close()
+		defer func() { runErr = joinSessionCloseError(runErr, sess) }()
 	}
 	announceSession(extMgr, sess)
 
@@ -1074,7 +1085,7 @@ func newStreamTextSink(out io.Writer) (func(core.AgentEvent), func()) {
 	return sink, finish
 }
 
-func runJSONMode(ctx context.Context, args Args, version string) error {
+func runJSONMode(ctx context.Context, args Args, version string) (runErr error) {
 	if args.NoYolo {
 		fmt.Fprintln(os.Stderr, "warning: --no-yolo has no effect in json mode (no interactive prompt available); tools will run without confirmation")
 	}
@@ -1106,7 +1117,7 @@ func runJSONMode(ctx context.Context, args Args, version string) error {
 		}
 		r.Provider, r.Model = providerName, model
 		ag.OnToolResult = func(_ string, result core.ToolResult) { persistExtensionToolResult(extMgr, sess, result) }
-		defer sess.Close()
+		defer func() { runErr = joinSessionCloseError(runErr, sess) }()
 	}
 	announceSession(extMgr, sess)
 
@@ -1142,10 +1153,12 @@ func runJSONMode(ctx context.Context, args Args, version string) error {
 		transcriptStart = recovery.OutputStart
 	}
 	if persistErr := WriteNewTranscript(ag, sess, transcriptStart); persistErr != nil {
+		finalErr := persistErr
 		if err != nil {
-			return errors.Join(err, persistErr)
+			finalErr = errors.Join(err, persistErr)
 		}
-		return persistErr
+		_ = enc.Encode(map[string]any{"type": "error", "message": finalErr.Error()})
+		return finalErr
 	}
 	return err
 }
@@ -1328,7 +1341,7 @@ func subagentPolicyFromConfig(cfg SubagentsConfig) subagents.SubagentPolicy {
 	}
 }
 
-func runInteractive(ctx context.Context, args Args, version string) error {
+func runInteractive(ctx context.Context, args Args, version string) (runErr error) {
 	initialCfg, _ := LoadConfig()
 	// Resolve WITHOUT requiring credentials.
 	r, err := Resolve(args, false)
@@ -1762,9 +1775,7 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 	defer func() {
 		persistMu.Lock()
 		defer persistMu.Unlock()
-		if sess != nil {
-			sess.Close()
-		}
+		runErr = joinSessionCloseError(runErr, sess)
 	}()
 
 	// persistMessage is the per-message hook bound to the agent. It
@@ -1875,7 +1886,7 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 
 	// loadSession replaces the current session with the one at path and
 	// hands its messages to the agent. Used by the /sessions picker.
-	loadSession := func(path string) error {
+	loadSession := func(path string) (loadErr error) {
 		// Hold the transition lock from the pre-flush through the commit.
 		// Persistence callbacks take the read side, so an active session
 		// cannot be snapshotted before its lazy writes land or overwritten by
@@ -1896,9 +1907,11 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 		// than the public callback, which would acquire the read lock held
 		// by this transition.
 		if oldSess != nil {
-			if err := writeNewTranscriptLocked(currentAg, oldSess, sessBaselineMsgs); err != nil {
+			next, flushErr := writeNewTranscriptLocked(currentAg, oldSess, sessBaselineMsgs)
+			sessBaselineMsgs = next
+			if flushErr != nil {
 				persistMu.Unlock()
-				return fmt.Errorf("flush current session: %w", err)
+				return fmt.Errorf("flush current session: %w", flushErr)
 			}
 		}
 		currentMessageCount := len(currentAg.Messages())
@@ -1916,7 +1929,7 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 		committed := false
 		defer func() {
 			if !committed {
-				_ = candidate.session.Close()
+				loadErr = joinSessionCloseError(loadErr, candidate.session)
 			}
 		}()
 
@@ -1940,8 +1953,9 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 			return fmt.Errorf("session changed while loading; please try again")
 		}
 		newStates := copyExtensionStates(candidate.session.ExtensionState)
+		var oldCloseErr error
 		if oldSess != nil {
-			_ = oldSess.Close()
+			oldCloseErr = oldSess.Close()
 		}
 		sess = candidate.session
 		sessionTitlePending = candidate.session != nil && candidate.session.Meta.Parent != "" && candidate.session.Title == "" && candidate.fullMessageCount <= candidate.session.Meta.ForkPoint
@@ -1982,6 +1996,9 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 			extMgr.EmitSessionEvent("session_forked", sessionContext(candidate.session), newStates)
 		}
 		extMgr.EmitSessionEvent("session_switched", sessionContext(candidate.session), newStates)
+		if oldCloseErr != nil {
+			return fmt.Errorf("close current session: %w", oldCloseErr)
+		}
 		return nil
 	}
 
@@ -2132,15 +2149,18 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 		// Commit only after every fallible operation has succeeded. Close
 		// the old session last so rollback never has to resurrect it.
 		var newStates map[string]json.RawMessage
+		var oldCloseErr error
 		persistMu.Lock()
 		if sess != nil {
-			if err := writeNewTranscriptLocked(currentAg, sess, sessBaselineMsgs); err != nil {
+			next, flushErr := writeNewTranscriptLocked(currentAg, sess, sessBaselineMsgs)
+			sessBaselineMsgs = next
+			if flushErr != nil {
 				persistMu.Unlock()
-				_ = newSess.Close()
+				rollbackErr := joinSessionCloseError(fmt.Errorf("flush current session: %w", flushErr), newSess)
 				rollback()
-				return fmt.Errorf("flush current session: %w", err)
+				return rollbackErr
 			}
-			_ = sess.Close()
+			oldCloseErr = sess.Close()
 		}
 		sess = newSess
 		if newSess != nil {
@@ -2170,6 +2190,9 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 		}
 		if newSess != nil {
 			extMgr.EmitSessionEvent("session_opened", sessionContext(newSess), newStates)
+		}
+		if oldCloseErr != nil {
+			return fmt.Errorf("close current session: %w", oldCloseErr)
 		}
 		return nil
 	}
@@ -2447,11 +2470,12 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 			if sess == nil {
 				return
 			}
-			if err := writeNewTranscriptLocked(currentAg, sess, sessBaselineMsgs); err != nil {
-				iv.ReportError(fmt.Errorf("flush session: %w", err))
+			next, flushErr := writeNewTranscriptLocked(currentAg, sess, sessBaselineMsgs)
+			sessBaselineMsgs = next
+			if flushErr != nil {
+				iv.ReportError(fmt.Errorf("flush session: %w", flushErr))
 				return
 			}
-			sessBaselineMsgs = len(currentAg.Messages())
 		},
 		SessionTransition: newSessionTransition(&sessionTransitionMu),
 		Extensions:        extMgr,
@@ -2570,12 +2594,14 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 		if finalAg != nil {
 			persistMu.Lock()
 			if sess != nil {
-				if err := writeNewTranscriptLocked(finalAg, sess, sessBaselineMsgs); err != nil {
-					fmt.Fprintf(os.Stderr, "flush session: %v\n", err)
-				} else {
-					sessBaselineMsgs = len(finalAg.Messages())
+				next, flushErr := writeNewTranscriptLocked(finalAg, sess, sessBaselineMsgs)
+				sessBaselineMsgs = next
+				if flushErr != nil {
+					fmt.Fprintf(os.Stderr, "flush session: %v\n", flushErr)
 				}
-				_ = sess.Close()
+				if closeErr := sess.Close(); closeErr != nil {
+					fmt.Fprintf(os.Stderr, "close session: %v\n", closeErr)
+				}
 				sess = nil
 			}
 			persistMu.Unlock()
@@ -2596,16 +2622,16 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 		os.Exit(0)
 	}()
 
-	runErr := iv.Run(ctx)
+	runErr = iv.Run(ctx)
 
 	// Flush final transcript to session (only if we had / ended up with an agent).
 	if finalAg := iv.Agent(); finalAg != nil {
 		persistMu.Lock()
 		if sess != nil {
-			if err := writeNewTranscriptLocked(finalAg, sess, sessBaselineMsgs); err != nil {
-				runErr = errors.Join(runErr, fmt.Errorf("flush session: %w", err))
-			} else {
-				sessBaselineMsgs = len(finalAg.Messages())
+			next, flushErr := writeNewTranscriptLocked(finalAg, sess, sessBaselineMsgs)
+			sessBaselineMsgs = next
+			if flushErr != nil {
+				runErr = errors.Join(runErr, fmt.Errorf("flush session: %w", flushErr))
 			}
 		}
 		persistMu.Unlock()
@@ -2704,28 +2730,34 @@ func pickSession(root, cwd string) (string, error) {
 // the persistMu (non-interactive print/json modes which run a single
 // turn under their own goroutine).
 func WriteNewTranscript(ag *core.Agent, sess *core.Session, from int) error {
-	return writeNewTranscriptLocked(ag, sess, from)
+	_, err := writeNewTranscriptLocked(ag, sess, from)
+	return err
 }
 
 // writeNewTranscriptLocked is the same as WriteNewTranscript. The
 // suffix marks that interactive callers must hold persistMu when
 // invoking it so concurrent appends from the agent loop don't race
 // with this catch-up flush.
-func writeNewTranscriptLocked(ag *core.Agent, sess *core.Session, from int) error {
+func writeNewTranscriptLocked(ag *core.Agent, sess *core.Session, from int) (next int, err error) {
+	next = from
 	if sess == nil || ag == nil {
-		return nil
+		return next, nil
 	}
 	msgs := ag.Messages()
 	for i := from; i < len(msgs); i++ {
 		if err := sess.AppendMessage(msgs[i]); err != nil {
-			return fmt.Errorf("append transcript message %d: %w", i, err)
+			return next, fmt.Errorf("append transcript message %d: %w", i, err)
 		}
+		next = i + 1
 	}
 	cum := ag.Cost()
 	if err := sess.AppendUsage(cum, cum); err != nil {
-		return fmt.Errorf("append transcript usage: %w", err)
+		return next, fmt.Errorf("append transcript usage: %w", err)
 	}
-	return nil
+	if err := sess.Flush(); err != nil {
+		return next, fmt.Errorf("flush transcript: %w", err)
+	}
+	return next, nil
 }
 
 func readAllStdin() (string, error) {

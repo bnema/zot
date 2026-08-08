@@ -205,7 +205,7 @@ func botLogs(spec *botSpec, rawTail []string) error {
 }
 
 // botRun starts the polling loop in the foreground. Ctrl+C stops it.
-func botRun(spec *botSpec, rawTail []string, version string) error {
+func botRun(spec *botSpec, rawTail []string, version string) (runErr error) {
 	// Parse only a small subset of flags relevant to bot run. We reuse
 	// the main args parser so --provider/--model/--cwd/--api-key/--reasoning
 	// behave the same as in the tui.
@@ -252,7 +252,7 @@ func botRun(spec *botSpec, rawTail []string, version string) error {
 			agent.OnTranscriptCompacted = func(msgs []provider.Message) {
 				_ = sess.AppendCompaction(msgs)
 			}
-			defer sess.Close()
+			defer func() { runErr = joinSessionCloseError(runErr, sess) }()
 		} else {
 			fmt.Fprintln(os.Stderr, "session:", serr)
 		}

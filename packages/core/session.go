@@ -1327,6 +1327,14 @@ func (s *Session) AppendExtensionState(extension string, state json.RawMessage) 
 	return nil
 }
 
+// Flush writes buffered session data to the append handle.
+func (s *Session) Flush() error {
+	if s == nil {
+		return nil
+	}
+	return s.buf.Flush()
+}
+
 // Close flushes and closes the session file. If the session was
 // freshly created in this process and never had any messages
 // appended (the user opened zut, looked around, and exited without
@@ -1336,7 +1344,7 @@ func (s *Session) Close() error {
 	if s == nil {
 		return nil
 	}
-	flushErr := s.buf.Flush()
+	flushErr := s.Flush()
 	closeErr := s.writer.Close()
 	if s.freshFile && s.messagesAppended == 0 && len(s.ExtensionState) == 0 && len(s.Meta.CompactHandoff) == 0 {
 		// Best-effort cleanup. We deliberately don't propagate the

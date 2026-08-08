@@ -120,11 +120,14 @@ func TestPromptWithContextRecoveryCompactsAndContinues(t *testing.T) {
 		{Role: provider.RoleAssistant, Content: []provider.Content{provider.TextBlock{Text: "four"}}},
 	})
 
-	outputStart, err := promptWithContextRecovery(context.Background(), agent, "finish the task", nil, modes.ContextRecoveryOptions{})
+	recovery, err := promptWithContextRecovery(context.Background(), agent, "finish the task", nil, modes.ContextRecoveryOptions{})
 	if err != nil {
 		t.Fatalf("promptWithContextRecovery returned %v", err)
 	}
-	if got := finalAssistantText(agent.Messages()[outputStart:]); got != "recovered" {
+	if !recovery.Compacted {
+		t.Fatal("promptWithContextRecovery did not report compaction")
+	}
+	if got := finalAssistantText(agent.Messages()[recovery.OutputStart:]); got != "recovered" {
 		t.Fatalf("final assistant text = %q, want recovered", got)
 	}
 
@@ -245,7 +248,7 @@ func TestPromptWithContextRecoveryRetainsPromptWhenPersistenceFails(t *testing.T
 	agent := core.NewAgent(client, "test-model", "", nil)
 	agent.SetMessages(history)
 
-	outputStart, err := promptWithContextRecovery(context.Background(), agent, "finish the task", nil, modes.ContextRecoveryOptions{
+	recovery, err := promptWithContextRecovery(context.Background(), agent, "finish the task", nil, modes.ContextRecoveryOptions{
 		PersistCompaction: func([]provider.Message) error { return errors.New("persist failed") },
 	})
 	if err == nil || !strings.Contains(err.Error(), "persist compacted transcript") {
@@ -254,7 +257,7 @@ func TestPromptWithContextRecoveryRetainsPromptWhenPersistenceFails(t *testing.T
 	if got := workerRequestMessageTextCount(agent.Messages(), "prior context"); got != 1 || workerRequestMessageTextCount(agent.Messages(), "finish the task") != 1 {
 		t.Fatalf("agent transcript lost the pending task after persistence failure: %#v", agent.Messages())
 	}
-	if err := WriteNewTranscript(agent, session, outputStart); err != nil {
+	if err := WriteNewTranscript(agent, session, recovery.OutputStart); err != nil {
 		t.Fatalf("persist transcript: %v", err)
 	}
 	if err := session.Close(); err != nil {
@@ -300,13 +303,13 @@ func TestPromptWithContextRecoveryPersistsCompaction(t *testing.T) {
 
 	agent := core.NewAgent(client, "test-model", "", nil)
 	agent.SetMessages(history)
-	outputStart, err := promptWithContextRecovery(context.Background(), agent, "finish the task", nil, modes.ContextRecoveryOptions{
+	recovery, err := promptWithContextRecovery(context.Background(), agent, "finish the task", nil, modes.ContextRecoveryOptions{
 		PersistCompaction: session.AppendCompaction,
 	})
 	if err != nil {
 		t.Fatalf("promptWithContextRecovery returned %v", err)
 	}
-	if err := WriteNewTranscript(agent, session, outputStart); err != nil {
+	if err := WriteNewTranscript(agent, session, recovery.OutputStart); err != nil {
 		t.Fatalf("persist transcript: %v", err)
 	}
 	if err := session.Close(); err != nil {
@@ -368,14 +371,14 @@ func TestWorkerUsesConfiguredAutoCompactionThreshold(t *testing.T) {
 		{Role: provider.RoleAssistant, Content: []provider.Content{provider.TextBlock{Text: "answer"}}},
 	})
 	agent.SeedLastTurnUsage(provider.Usage{CacheReadTokens: 75})
-	start, err := promptWithContextRecovery(context.Background(), agent, "finish exact task", nil, modes.ContextRecoveryOptions{
+	recovery, err := promptWithContextRecovery(context.Background(), agent, "finish exact task", nil, modes.ContextRecoveryOptions{
 		ContextWindow:        100,
 		AutoCompactThreshold: cfg.AutoCompactThreshold,
 	})
 	if err != nil {
 		t.Fatalf("promptWithContextRecovery: %v", err)
 	}
-	if got := finalAssistantText(agent.Messages()[start:]); got != "continued same task" {
+	if got := finalAssistantText(agent.Messages()[recovery.OutputStart:]); got != "continued same task" {
 		t.Fatalf("continued output = %q", got)
 	}
 	client.mu.Lock()
@@ -410,6 +413,10 @@ func (c *subagentSummaryUsageClient) Stream(_ context.Context, req provider.Requ
 		if strings.Contains(req.System, "context summarization assistant") {
 			events <- provider.EventUsage{Usage: provider.Usage{InputTokens: 3, OutputTokens: 1, CostUSD: 0.03}}
 			events <- provider.EventTextDelta{Delta: "worker summary"}
+			events <- provider.EventDone{Stop: provider.StopEnd, Message: provider.Message{
+				Role:    provider.RoleAssistant,
+				Content: []provider.Content{provider.TextBlock{Text: "worker summary"}},
+			}}
 			return
 		}
 		events <- provider.EventUsage{Usage: provider.Usage{InputTokens: 5, OutputTokens: 2, CostUSD: 0.05}}
@@ -443,20 +450,20 @@ func TestPersistWorkerSummaryUsageReopensWithCumulativeUsage(t *testing.T) {
 	agent.SetMessages(history)
 	agent.SeedCost(baseline)
 	agent.SeedLastTurnUsage(provider.Usage{CacheReadTokens: 90})
-	outputStart, err := promptWithContextRecovery(context.Background(), agent, "continue task", nil, modes.ContextRecoveryOptions{
+	recovery, err := promptWithContextRecovery(context.Background(), agent, "continue task", nil, modes.ContextRecoveryOptions{
 		ContextWindow: 100,
 	})
 	if err != nil {
 		t.Fatalf("promptWithContextRecovery: %v", err)
 	}
-	if outputStart != len(history) {
-		t.Fatalf("compaction output start = %d, want %d", outputStart, len(history))
+	if recovery.OutputStart != len(history) || !recovery.Compacted {
+		t.Fatalf("compaction recovery = %+v, want output start %d and compacted", recovery, len(history))
 	}
 	expected := provider.Usage{InputTokens: 18, OutputTokens: 5, CostUSD: 0.18}
 	if !reflect.DeepEqual(agent.Cost(), expected) {
 		t.Fatalf("worker cumulative usage = %#v, want %#v", agent.Cost(), expected)
 	}
-	if err := persistWorkerTranscript(context.Background(), agent, session, outputStart, true, workerTranscriptState{messages: history, cost: baseline}); err != nil {
+	if err := persistWorkerTranscript(context.Background(), agent, session, recovery.OutputStart, recovery.Compacted, workerTranscriptState{messages: history, cost: baseline}); err != nil {
 		t.Fatalf("persistWorkerTranscript: %v", err)
 	}
 	if err := session.Close(); err != nil {

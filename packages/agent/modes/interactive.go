@@ -9532,7 +9532,10 @@ func (i *Interactive) applySessionTreeTarget(target sessionTreeTarget, turnNo in
 			i.setSessionTreeError("tree: read selection: " + err.Error())
 			return
 		}
-		_ = sess.Close()
+		if err := sess.Close(); err != nil {
+			i.setSessionTreeError("tree: close selection: " + err.Error())
+			return
+		}
 		msgs = current
 	}
 	selection, err := sessionTreeSelection(msgs, target)

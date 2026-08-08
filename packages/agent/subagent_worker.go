@@ -36,7 +36,7 @@ import (
 // production; tests use the stubchild binary under
 // packages/agent/subagents/testdata/cmd/stubchild instead of the real model
 // loop.
-func runSubagentWorkerMode(ctx context.Context, args Args, version string) error {
+func runSubagentWorkerMode(ctx context.Context, args Args, version string) (runErr error) {
 	if args.SubagentWorker == "" {
 		return fmt.Errorf("--subagent-worker requires a socket path")
 	}
@@ -86,7 +86,7 @@ func runSubagentWorkerMode(ctx context.Context, args Args, version string) error
 		}
 		r.Provider, r.Model = providerName, model
 		ag.OnToolResult = func(_ string, result core.ToolResult) { persistExtensionToolResult(extMgr, sess, result) }
-		defer sess.Close()
+		defer func() { runErr = joinSessionCloseError(runErr, sess) }()
 	}
 	announceSession(extMgr, sess)
 
@@ -218,26 +218,21 @@ func runSubagentWorkerMode(ctx context.Context, args Args, version string) error
 			cost:     ag.Cost(),
 			lastTurn: ag.LastTurnUsage(),
 		}
-		compacted := false
 		var persistCompaction func([]provider.Message) error
 		if sess != nil {
 			// Buffer the checkpoint until the continued turn completes. The final
 			// transcript and cumulative usage are then persisted in one JSONL row.
 			persistCompaction = func([]provider.Message) error {
-				if err := c.Err(); err != nil {
-					return err
-				}
-				compacted = true
-				return nil
+				return c.Err()
 			}
 		}
-		start, err := promptWithContextRecovery(c, ag, prompt, sink, modes.ContextRecoveryOptions{
+		recovery, err := promptWithContextRecovery(c, ag, prompt, sink, modes.ContextRecoveryOptions{
 			PersistCompaction:    persistCompaction,
 			ContextWindow:        contextWindow,
 			AutoCompactThreshold: cfg.AutoCompactThreshold,
 		})
-		output := finalAssistantText(ag.Messages()[start:])
-		if persistErr := persistWorkerTranscript(c, ag, sess, start, compacted, baseline); persistErr != nil {
+		output := finalAssistantText(ag.Messages()[recovery.OutputStart:])
+		if persistErr := persistWorkerTranscript(c, ag, sess, recovery.OutputStart, recovery.Compacted, baseline); persistErr != nil {
 			if err != nil {
 				err = errors.Join(err, persistErr)
 			} else {
@@ -520,10 +515,9 @@ func persistWorkerTranscript(ctx context.Context, ag *core.Agent, sess *core.Ses
 
 // promptWithContextRecovery preserves the worker's existing helper boundary
 // while delegating proactive compaction and one-shot overflow recovery to
-// modes. The returned index is the first message to include in the result.
-func promptWithContextRecovery(ctx context.Context, ag *core.Agent, prompt string, sink func(core.AgentEvent), options modes.ContextRecoveryOptions) (outputStart int, err error) {
-	result, err := modes.PromptWithContextRecovery(ctx, ag, prompt, nil, sink, options)
-	return result.OutputStart, err
+// modes. The result includes both the output index and compaction state.
+func promptWithContextRecovery(ctx context.Context, ag *core.Agent, prompt string, sink func(core.AgentEvent), options modes.ContextRecoveryOptions) (modes.ContextRecoveryResult, error) {
+	return modes.PromptWithContextRecovery(ctx, ag, prompt, nil, sink, options)
 }
 
 func finalAssistantText(messages []provider.Message) string {

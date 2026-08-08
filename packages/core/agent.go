@@ -347,6 +347,12 @@ func (a *Agent) Cost() provider.Usage {
 	return a.cost.Total
 }
 
+func (a *Agent) addUsage(usage provider.Usage) provider.Usage {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.cost.Add(usage)
+}
+
 // SeedCost sets the cumulative usage as a baseline before the first
 // turn runs. Used when transferring state from another agent (model
 // or provider switch) so the running cost meter doesn't reset to 0.
@@ -750,7 +756,7 @@ func (a *Agent) oneTurn(ctx context.Context, sink func(AgentEvent), turnContext 
 		case provider.EventToolEnd:
 			sink(EvToolUseEnd{ID: e.ID})
 		case provider.EventUsage:
-			cum := a.cost.Add(e.Usage)
+			cum := a.addUsage(e.Usage)
 			sink(EvUsage{Usage: e.Usage, Cumulative: cum})
 			if a.OnUsage != nil {
 				a.OnUsage(cum)

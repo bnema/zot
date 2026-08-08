@@ -12,6 +12,7 @@ type compactLifecycleClient struct {
 	hadLifecycle bool
 	req          provider.Request
 	summary      string
+	usage        []provider.Usage
 }
 
 func (c *compactLifecycleClient) Name() string { return "compact-lifecycle" }
@@ -26,14 +27,62 @@ func (c *compactLifecycleClient) Stream(_ context.Context, req provider.Request)
 	if summary == "" {
 		summary = "summary"
 	}
-	out := make(chan provider.Event, 2)
+	out := make(chan provider.Event, 2+len(c.usage))
 	out <- provider.EventTextDelta{Delta: summary}
+	for _, usage := range c.usage {
+		out <- provider.EventUsage{Usage: usage}
+	}
 	out <- provider.EventDone{Stop: provider.StopEnd, Message: provider.Message{
 		Role:    provider.RoleAssistant,
 		Content: []provider.Content{provider.TextBlock{Text: summary}},
 	}}
 	close(out)
 	return out, nil
+}
+
+func TestCompactWithEventsAccumulatesAndPersistsUsage(t *testing.T) {
+	client := &compactLifecycleClient{usage: []provider.Usage{{InputTokens: 2}, {OutputTokens: 3, CostUSD: 0.25}}}
+	agent := NewAgent(client, "compact-model", "system", Registry{})
+	agent.SetMessages([]provider.Message{{
+		Role:    provider.RoleUser,
+		Content: []provider.Content{provider.TextBlock{Text: "source"}},
+	}})
+	root := t.TempDir()
+	sess, err := NewSession(root, t.TempDir(), "provider", "compact-model", "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = sess.Close() })
+	agent.OnUsage = func(cumulative provider.Usage) {
+		if err := sess.AppendUsage(cumulative, cumulative); err != nil {
+			t.Fatalf("persist usage: %v", err)
+		}
+	}
+	var events []AgentEvent
+	if _, err := agent.CompactWithEvents(context.Background(), 0, func(event AgentEvent) {
+		events = append(events, event)
+	}); err != nil {
+		t.Fatalf("CompactWithEvents: %v", err)
+	}
+	if got, want := agent.Cost(), (provider.Usage{InputTokens: 2, OutputTokens: 3, CostUSD: 0.25}); got != want {
+		t.Fatalf("agent cost = %+v, want %+v", got, want)
+	}
+	cum, _, err := SessionUsageDetail(sess.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cum != agent.Cost() {
+		t.Fatalf("persisted cumulative usage = %+v, want %+v", cum, agent.Cost())
+	}
+	var cumulative []provider.Usage
+	for _, event := range events {
+		if usage, ok := event.(EvUsage); ok {
+			cumulative = append(cumulative, usage.Cumulative)
+		}
+	}
+	if len(cumulative) != 2 || cumulative[0].InputTokens != 2 || cumulative[1] != agent.Cost() {
+		t.Fatalf("usage event cumulative values = %+v, want first input=2 and final=%+v", cumulative, agent.Cost())
+	}
 }
 
 func TestCompactWithEventsEmitsRequestLifecycle(t *testing.T) {

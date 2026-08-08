@@ -111,7 +111,7 @@ func (a *Agent) compact(ctx context.Context, keepTail int, textSink func(delta s
 				eventSink(EvTextDelta{Delta: e.Delta})
 			}
 		case provider.EventUsage:
-			cum := a.cost.Add(e.Usage)
+			cum := a.addUsage(e.Usage)
 			if eventSink != nil {
 				eventSink(EvUsage{Usage: e.Usage, Cumulative: cum})
 			}
