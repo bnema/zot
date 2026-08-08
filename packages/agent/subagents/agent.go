@@ -445,11 +445,11 @@ func (a *Agent) setActivity(msg string) {
 }
 
 func (a *Agent) appendTranscript(chunk string) {
-	a.appendTranscriptLocked(chunk, "", false)
+	a.appendTranscriptChunk(chunk, "", false)
 }
 
 func (a *Agent) appendUserMessage(text string) {
-	a.appendTranscriptLocked(text, "user: ", false)
+	a.appendTranscriptChunk(text, "user: ", false)
 }
 
 func (a *Agent) appendAssistantMessage(text string) {
@@ -488,7 +488,7 @@ func (a *Agent) appendAssistantDelta(text string) {
 	a.markActivity(time.Now())
 }
 
-func (a *Agent) appendTranscriptLocked(chunk, linePrefix string, assistant bool) {
+func (a *Agent) appendTranscriptChunk(chunk, linePrefix string, assistant bool) {
 	if strings.TrimRight(chunk, "\n") == "" {
 		return
 	}
@@ -497,6 +497,12 @@ func (a *Agent) appendTranscriptLocked(chunk, linePrefix string, assistant bool)
 	a.boundTranscriptLocked()
 	a.mu.Unlock()
 	a.markActivity(time.Now())
+}
+
+func (a *Agent) resetStreamingAssistant() {
+	a.mu.Lock()
+	a.clearStreamingAssistantLocked()
+	a.mu.Unlock()
 }
 
 func (a *Agent) replaceStreamingAssistantLocked(text string) {

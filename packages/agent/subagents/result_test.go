@@ -272,6 +272,7 @@ func TestEnsureResultReconcilesChildStatusWithRunnerError(t *testing.T) {
 		name       string
 		status     Status
 		runErr     error
+		childCode  string
 		wantState  TurnStatus
 		wantCode   string
 		wantOutput string
@@ -279,17 +280,24 @@ func TestEnsureResultReconcilesChildStatusWithRunnerError(t *testing.T) {
 		{name: "runner failure", status: StatusFailed, runErr: errors.New("runner failed"), wantState: ResultFailed, wantCode: "runner_failed"},
 		{name: "runner cancellation", status: StatusFailed, runErr: context.Canceled, wantState: ResultCanceled, wantCode: "runner_failed"},
 		{name: "deadline preserves recovery guidance", status: StatusFailed, runErr: context.DeadlineExceeded, wantState: ResultFailed, wantCode: "deadline_exceeded", wantOutput: "partial answer"},
+		{name: "deadline overrides child error", status: StatusFailed, runErr: context.DeadlineExceeded, childCode: "context_limit", wantState: ResultFailed, wantCode: "deadline_exceeded", wantOutput: "partial answer"},
 		{name: "killed", status: StatusKilled, runErr: context.Canceled, wantState: ResultCanceled, wantCode: "runner_failed"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			stateDir := t.TempDir()
+			childStatus := ResultSucceeded
+			var childError *ResultError
+			if tt.childCode != "" {
+				childStatus = ResultFailed
+				childError = &ResultError{Code: tt.childCode, Message: "child error"}
+			}
 			agent := &Agent{
 				ID:            "agent-1",
 				stateDir:      stateDir,
 				lastAssistant: tt.wantOutput,
 				result: &TurnResult{
-					AgentID: "agent-1", TurnID: "turn-1", Status: ResultSucceeded,
+					AgentID: "agent-1", TurnID: "turn-1", Status: childStatus, Error: childError,
 				},
 			}
 			supervisor := &Supervisor{}
@@ -321,5 +329,23 @@ func TestEnsureResultReconcilesChildStatusWithRunnerError(t *testing.T) {
 				t.Fatalf("durable result error = %#v, want code %q", durable.Error, tt.wantCode)
 			}
 		})
+	}
+}
+
+func TestEnsureResultDoesNotBackfillSuccessfulEmptyOutput(t *testing.T) {
+	stateDir := t.TempDir()
+	agent := &Agent{
+		ID:            "agent-1",
+		stateDir:      stateDir,
+		lastAssistant: "streamed text",
+		result: &TurnResult{
+			AgentID: "agent-1", TurnID: "turn-1", Status: ResultSucceeded,
+		},
+	}
+
+	(&Supervisor{}).ensureResult(agent, StatusDone, nil)
+
+	if result := agent.Result(); result == nil || result.Output != "" {
+		t.Fatalf("successful result = %#v, want intentionally empty output", result)
 	}
 }

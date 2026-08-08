@@ -112,6 +112,50 @@ func TestMessageDeltaBoundsLiveProjection(t *testing.T) {
 	if !snapshot.OutputTruncated {
 		t.Fatal("snapshot did not expose truncated streamed output")
 	}
+
+	events := []Event{
+		NewEvent(EventMessageDelta, map[string]any{"delta": "first partial"}),
+		NewEvent("turn_end", map[string]any{"stop": "cancelled"}),
+		NewEvent(EventMessageDelta, map[string]any{"delta": "second partial"}),
+	}
+	want := "first partial\nsecond partial"
+	assertProjection := func(t *testing.T, agent *Agent) {
+		t.Helper()
+		if got := strings.Join(agent.Transcript(), "\n"); got != want {
+			t.Fatalf("transcript = %q, want %q", got, want)
+		}
+		agent.mu.Lock()
+		truncated := agent.streamingAssistantTruncated
+		agent.mu.Unlock()
+		if truncated {
+			t.Fatal("fresh second-turn stream was incorrectly truncated")
+		}
+	}
+
+	live := &Agent{maxOutputBytes: 100, maxOutputLines: 100, transcriptLoaded: true}
+	for _, event := range events {
+		applyEventToSink(event, agentSink{a: live})
+	}
+	assertProjection(t, live)
+
+	replayed := &Agent{maxOutputBytes: 100, maxOutputLines: 100, transcriptLoaded: true}
+	replayTranscriptIntoAgent(replayed, events)
+	assertProjection(t, replayed)
+
+	legacy := &Agent{maxOutputBytes: 100, maxOutputLines: 100, transcriptLoaded: true}
+	replayEventsIntoAgent(legacy, events)
+	assertProjection(t, legacy)
+
+	truncatedTurn := &Agent{maxOutputBytes: 16, maxOutputLines: 100, transcriptLoaded: true}
+	applyEventToSink(NewEvent(EventMessageDelta, map[string]any{"delta": strings.Repeat("x", 64)}), agentSink{a: truncatedTurn})
+	applyEventToSink(NewEvent("turn_end", map[string]any{"stop": "cancelled"}), agentSink{a: truncatedTurn})
+	truncatedTurn.mu.Lock()
+	streamText := truncatedTurn.streamingAssistantText
+	streamTruncated := truncatedTurn.streamingAssistantTruncated
+	truncatedTurn.mu.Unlock()
+	if streamText != "" || streamTruncated {
+		t.Fatalf("stream state after turn boundary = (%q, %v), want empty and not truncated", streamText, streamTruncated)
+	}
 }
 
 func TestWorkerEnvironmentRedactsProviderSecrets(t *testing.T) {

@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -478,7 +479,7 @@ func (r *execRunner) Run(ctx context.Context, sink Sink) error {
 	}
 	if ctxErr := ctx.Err(); ctxErr != nil {
 		reason := "cancelled"
-		if ctxErr == context.DeadlineExceeded {
+		if errors.Is(ctxErr, context.DeadlineExceeded) {
 			reason = "deadline"
 		}
 		appendLog(NewEvent("agent_stopped", map[string]any{"reason": reason}))
@@ -511,7 +512,7 @@ func (r *execRunner) stopOnContextDone(ctx context.Context, cmd *exec.Cmd, runne
 		return
 	case <-ctx.Done():
 	}
-	if ctx.Err() != context.DeadlineExceeded {
+	if !errors.Is(ctx.Err(), context.DeadlineExceeded) {
 		if cmd.Cancel != nil {
 			_ = cmd.Cancel()
 			return
@@ -765,6 +766,15 @@ func notifyPromptTurnEnd(a *Agent, ev Event) {
 	go fn(int(step), errMsg)
 }
 
+func isAssistantStreamBoundary(eventType string) bool {
+	switch eventType {
+	case EventTurnStarted, "turn_start", EventTurnResult, "turn_result", EventTurnFailed, "turn_failed", "turn_end":
+		return true
+	default:
+		return false
+	}
+}
+
 // applyEventToSink translates an Event into Sink updates. Only a
 // few event types are interpreted; the rest still land in the
 // durable log via the caller.
@@ -775,6 +785,14 @@ func applyEventToSink(ev Event, sink Sink) {
 	}
 	type streamingSink interface {
 		assistantDelta(string)
+	}
+	type streamResetSink interface {
+		resetStreamingAssistant()
+	}
+	if isAssistantStreamBoundary(ev.Type) {
+		if streaming, ok := sink.(streamResetSink); ok {
+			streaming.resetStreamingAssistant()
+		}
 	}
 	appendMessage := func(text string, assistant bool) {
 		if text == "" {

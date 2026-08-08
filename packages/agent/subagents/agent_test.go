@@ -1,6 +1,9 @@
 package subagents
 
-import "testing"
+import (
+	"sync"
+	"testing"
+)
 
 func TestAgentAttemptValueAndTranscriptAccounting(t *testing.T) {
 	a := &Agent{maxOutputBytes: 6, maxOutputLines: 10}
@@ -45,5 +48,32 @@ func TestAgentTranscriptLineCapAccounting(t *testing.T) {
 	}
 	if a.outputBytes != len("two")+1+len("three")+1 || a.outputLines != 2 {
 		t.Fatalf("line-cap accounting = (%d bytes, %d lines), want (10, 2)", a.outputBytes, a.outputLines)
+	}
+}
+
+func TestAgentSnapshotConcurrentTranscriptTruncation(t *testing.T) {
+	a := &Agent{maxOutputBytes: 8, maxOutputLines: 1}
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		<-start
+		for range 10_000 {
+			a.appendTranscript("overflow")
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		<-start
+		for range 10_000 {
+			_ = a.Snapshot()
+		}
+	}()
+	close(start)
+	wg.Wait()
+
+	if !a.Snapshot().OutputTruncated {
+		t.Fatal("snapshot did not report transcript truncation")
 	}
 }

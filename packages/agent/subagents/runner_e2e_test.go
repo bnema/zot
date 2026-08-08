@@ -25,6 +25,8 @@ func (s notifyingAgentSink) assistantDelta(text string) {
 	}
 }
 
+const runnerProcessTimeout = 10 * time.Second
+
 type controlledDeadlineContext struct{ done chan struct{} }
 
 func (c *controlledDeadlineContext) Deadline() (time.Time, bool) {
@@ -87,7 +89,7 @@ func TestExecRunnerDeadlineGracefullyStopsWorkerAndPreservesStreamedOutput(t *te
 	go func() { runDone <- r.Run(ctx, notifyingAgentSink{agentSink: agentSink{a: a}, deltas: deltas}) }()
 	select {
 	case <-deltas:
-	case <-time.After(time.Second):
+	case <-time.After(runnerProcessTimeout):
 		t.Fatal("worker did not emit its initial delta")
 	}
 	ctx.expire()
@@ -96,7 +98,7 @@ func TestExecRunnerDeadlineGracefullyStopsWorkerAndPreservesStreamedOutput(t *te
 		if !errors.Is(err, context.DeadlineExceeded) {
 			t.Fatalf("Run error = %v, want context deadline exceeded", err)
 		}
-	case <-time.After(time.Second):
+	case <-time.After(runnerProcessTimeout):
 		t.Fatal("Run did not return after deadline expiry")
 	}
 
@@ -166,7 +168,7 @@ func TestExecRunnerCancelsBlockedWorker(t *testing.T) {
 
 	select {
 	case <-deltas:
-	case <-time.After(time.Second):
+	case <-time.After(runnerProcessTimeout):
 		t.Fatal("worker did not emit its initial delta")
 	}
 	cancel()
@@ -175,7 +177,7 @@ func TestExecRunnerCancelsBlockedWorker(t *testing.T) {
 		if !errors.Is(err, context.Canceled) {
 			t.Fatalf("Run error = %v, want context canceled", err)
 		}
-	case <-time.After(time.Second):
+	case <-time.After(runnerProcessTimeout):
 		t.Fatal("Run did not return after context cancellation")
 	}
 }

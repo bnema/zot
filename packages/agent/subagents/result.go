@@ -471,11 +471,12 @@ func (f *Supervisor) ensureResult(a *Agent, status Status, runErr error) {
 			result = nil
 		}
 	}
-	if result != nil && result.Output == "" && partialOutput != "" {
-		// A canceled worker turn may emit its terminal result before its
-		// provider turns accumulated text into a final assistant message.
+	if result != nil && result.Output == "" && partialOutput != "" &&
+		(result.Status == ResultFailed || result.Status == ResultCanceled || status == StatusFailed || status == StatusKilled) {
+		// A canceled or failed worker turn may emit its terminal result before
+		// its provider turns accumulated text into a final assistant message.
 		// The event stream has already projected that text onto the Agent, so
-		// retain it in the durable result rather than returning an empty timeout.
+		// retain it in the durable result rather than returning an empty failure.
 		result.Output = partialOutput
 	}
 	if result == nil {
@@ -521,10 +522,10 @@ func (f *Supervisor) ensureResult(a *Agent, status Status, runErr error) {
 			result.Status = ResultFailed
 		}
 		if errors.Is(runErr, context.DeadlineExceeded) {
-			// The worker was asked to stop cleanly before its process group was
-			// force-killed. Any streamed output received before that point remains
-			// in this result and HistoryRef(agentID), even when the worker's own
-			// cancellation result arrived before the parent classified the deadline.
+			// The parent deadline is authoritative for terminal categorization, so
+			// it intentionally overrides any child result error, including
+			// context_limit. The worker was first asked to stop cleanly, and any
+			// streamed output remains in this result and HistoryRef(agentID).
 			message := "subagent deadline exceeded; inspect history for received output"
 			if result.Output != "" {
 				message = "subagent deadline exceeded; partial output is preserved in the result and history"
