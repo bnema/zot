@@ -882,6 +882,94 @@ func FindSessionByID(root, cwd, id string) string {
 	return ""
 }
 
+// FindManagedSessionByID looks up a session UUID across zut's managed
+// session stores, independent of cwd. A nil error and empty path mean no
+// matching session was found. Read, storage, metadata, and duplicate-ID
+// failures are returned to the caller instead of being reported as a miss.
+func FindManagedSessionByID(root, id string) (string, error) {
+	if strings.TrimSpace(root) == "" {
+		return "", errors.New("find managed session: root is empty")
+	}
+	if strings.TrimSpace(id) == "" {
+		return "", errors.New("find managed session: id is empty")
+	}
+
+	stores := []string{root}
+	agentsDir := filepath.Join(root, "sessions", "agents")
+	agents, err := os.ReadDir(agentsDir)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return "", fmt.Errorf("find managed session: read agent stores: %w", err)
+	}
+	if err == nil {
+		for _, entry := range agents {
+			if entry.IsDir() {
+				stores = append(stores, filepath.Join(agentsDir, entry.Name()))
+			}
+		}
+	}
+
+	var matches []string
+	for _, store := range stores {
+		if err := collectManagedSessionMatches(store, id, &matches); err != nil {
+			return "", err
+		}
+	}
+	if len(matches) == 0 {
+		return "", nil
+	}
+	if len(matches) > 1 {
+		return "", fmt.Errorf("find managed session: UUID %q is ambiguous", id)
+	}
+	return matches[0], nil
+}
+
+func collectManagedSessionMatches(root, id string, matches *[]string) error {
+	dir := filepath.Join(root, "sessions")
+	entries, err := os.ReadDir(dir)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("find managed session: read %q: %w", dir, err)
+	}
+	for _, bucket := range entries {
+		if !bucket.IsDir() || bucket.Name() == "agents" || !isSessionBucketName(bucket.Name()) {
+			continue
+		}
+		bucketPath := filepath.Join(dir, bucket.Name())
+		files, err := os.ReadDir(bucketPath)
+		if err != nil {
+			return fmt.Errorf("find managed session: read %q: %w", bucketPath, err)
+		}
+		for _, file := range files {
+			if file.IsDir() || !strings.HasSuffix(file.Name(), ".jsonl") {
+				continue
+			}
+			path := filepath.Join(bucketPath, file.Name())
+			meta, err := scanSessionMeta(path)
+			if err != nil {
+				return fmt.Errorf("find managed session: read metadata %q: %w", path, err)
+			}
+			if meta.ID == id {
+				*matches = append(*matches, path)
+			}
+		}
+	}
+	return nil
+}
+
+func isSessionBucketName(name string) bool {
+	if len(name) != 16 {
+		return false
+	}
+	for _, r := range name {
+		if !(r >= '0' && r <= '9' || r >= 'a' && r <= 'f') {
+			return false
+		}
+	}
+	return true
+}
+
 // firstUserPrompt scans forward from the current source position
 // looking for the first user-role message and returns its text.
 // Used to build a humane export filename. Uses Reader instead of

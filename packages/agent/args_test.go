@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/bnema/zut/packages/agent/subagents"
+	"github.com/google/uuid"
 )
 
 func TestParseArgsSubagentAndReasoning(t *testing.T) {
@@ -23,6 +24,34 @@ func TestParseArgsNoLSP(t *testing.T) {
 	}
 	if !args.NoLSP {
 		t.Fatal("--no-lsp did not disable LSP")
+	}
+}
+
+func TestParseArgsResumeOptionalSessionID(t *testing.T) {
+	id := uuid.New()
+
+	picker, err := ParseArgs([]string{"--resume"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !picker.Resume || picker.ResumeSessionID != "" || picker.Prompt != "" {
+		t.Fatalf("no-argument resume = %#v, want picker behavior", picker)
+	}
+
+	args, err := ParseArgs([]string{"--resume", id.String(), "continue this"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !args.Resume || args.ResumeSessionID != id.String() || args.Prompt != "continue this" {
+		t.Fatalf("resume UUID args = %#v", args)
+	}
+
+	prompt, err := ParseArgs([]string{"--resume", "not-a-session-id"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if prompt.ResumeSessionID != "" || prompt.Prompt != "not-a-session-id" {
+		t.Fatalf("non-UUID resume argument = %#v, want existing prompt behavior", prompt)
 	}
 }
 

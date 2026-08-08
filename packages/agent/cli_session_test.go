@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -13,7 +15,175 @@ import (
 	"github.com/bnema/zut/packages/agent/modes"
 	"github.com/bnema/zut/packages/core"
 	"github.com/bnema/zut/packages/provider"
+	"github.com/google/uuid"
 )
+
+func TestOpenOrCreateSessionResumesByUUIDAcrossCWDAndAgentStores(t *testing.T) {
+	root := t.TempDir()
+	cwd := t.TempDir()
+	otherCWD := t.TempDir()
+	t.Setenv("ZUT_HOME", root)
+
+	session, err := core.NewSession(root, cwd, "provider", "model", "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := session.AppendMessage(provider.Message{
+		Role:    provider.RoleUser,
+		Content: []provider.Content{provider.TextBlock{Text: "resume me"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	id := session.ID
+	if err := session.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	ag := core.NewAgent(nil, "model", "", nil)
+	got, err := openOrCreateSession(Args{
+		CWD:             otherCWD,
+		Resume:          true,
+		ResumeSessionID: id,
+	}, Resolved{Provider: "provider", Model: "model"}, ag, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got == nil || got.ID != id || got.Meta.CWD != cwd {
+		t.Fatalf("resumed session = %#v, want id=%q cwd=%q", got, id, cwd)
+	}
+	if got := firstMessageText(ag.Messages()); got != "resume me" {
+		t.Fatalf("resumed message = %q, want resume me", got)
+	}
+	if err := got.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	namedRoot := filepath.Join(root, "sessions", "agents", "demo")
+	named, err := core.NewSession(namedRoot, cwd, "provider", "model", "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := named.AppendMessage(provider.Message{
+		Role:    provider.RoleUser,
+		Content: []provider.Content{provider.TextBlock{Text: "named resume me"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	namedID := named.ID
+	if err := named.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	namedAgent := core.NewAgent(nil, "model", "", nil)
+	namedGot, err := openOrCreateSession(Args{
+		CWD:             otherCWD,
+		Resume:          true,
+		ResumeSessionID: namedID,
+	}, Resolved{Provider: "provider", Model: "model"}, namedAgent, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if namedGot == nil || namedGot.ID != namedID || namedGot.Path != named.Path {
+		t.Fatalf("named resumed session = %#v, want path %q", namedGot, named.Path)
+	}
+	if got := firstMessageText(namedAgent.Messages()); got != "named resume me" {
+		t.Fatalf("named resumed message = %q, want named resume me", got)
+	}
+	if err := namedGot.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestResumeHintSuppressesEmptyAndArbitrarySessions(t *testing.T) {
+	root := t.TempDir()
+	cwd := t.TempDir()
+
+	empty, err := core.NewSession(root, cwd, "provider", "model", "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := empty.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(empty.Path); !os.IsNotExist(err) {
+		t.Fatalf("empty session stat error = %v, want deleted", err)
+	}
+	if got := resumableSessionID(root, empty); got != "" {
+		t.Fatalf("empty session hint ID = %q, want empty", got)
+	}
+
+	arbitraryPath := filepath.Join(t.TempDir(), "session.jsonl")
+	arbitrary, err := core.NewSessionAtPath(arbitraryPath, cwd, "provider", "model", "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := arbitrary.AppendMessage(provider.Message{
+		Role:    provider.RoleUser,
+		Content: []provider.Content{provider.TextBlock{Text: "arbitrary"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := arbitrary.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if got := resumableSessionID(root, arbitrary); got != "" {
+		t.Fatalf("arbitrary session hint ID = %q, want empty", got)
+	}
+}
+
+func TestOpenOrCreateSessionUnknownUUIDDoesNotCreateSession(t *testing.T) {
+	root := t.TempDir()
+	cwd := t.TempDir()
+	t.Setenv("ZUT_HOME", root)
+	id := uuid.NewString()
+
+	_, err := openOrCreateSession(Args{
+		CWD:             cwd,
+		Resume:          true,
+		ResumeSessionID: id,
+	}, Resolved{Provider: "provider", Model: "model"}, core.NewAgent(nil, "model", "", nil), "test")
+	if err == nil {
+		t.Fatal("unknown UUID resume unexpectedly succeeded")
+	}
+	if !strings.Contains(err.Error(), id) {
+		t.Fatalf("unknown UUID error = %v, want session ID", err)
+	}
+	if sessions := core.ListSessions(root, cwd); len(sessions) != 0 {
+		t.Fatalf("unknown UUID created sessions: %v", sessions)
+	}
+}
+
+func TestOpenOrCreateSessionUUIDLookupReturnsMetadataErrors(t *testing.T) {
+	root := t.TempDir()
+	cwd := t.TempDir()
+	t.Setenv("ZUT_HOME", root)
+	if err := os.MkdirAll(core.SessionsDir(root, cwd), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(core.SessionsDir(root, cwd), "bad.jsonl"), []byte("not json\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := openOrCreateSession(Args{
+		CWD:             cwd,
+		Resume:          true,
+		ResumeSessionID: uuid.NewString(),
+	}, Resolved{Provider: "provider", Model: "model"}, core.NewAgent(nil, "model", "", nil), "test")
+	if err == nil {
+		t.Fatal("malformed UUID lookup unexpectedly succeeded")
+	}
+	if !strings.Contains(err.Error(), "metadata") || strings.Contains(err.Error(), "not found") {
+		t.Fatalf("malformed UUID lookup error = %v, want strict metadata error", err)
+	}
+}
+
+func TestResumeSessionHint(t *testing.T) {
+	id := uuid.NewString()
+	want := "Resume this session with: zut --resume " + id + "\n"
+	if got := resumeSessionHint(id); got != want {
+		t.Fatalf("resume hint = %q, want %q", got, want)
+	}
+}
 
 func TestTrimMessagesForResumeCarriesDeferredToolActivation(t *testing.T) {
 	msgs := make([]provider.Message, 0, 101)

@@ -194,6 +194,7 @@ zut -p --stats stats.json "task" # print final text and write generation stats
 zut --json "refactor main.go"    # newline-delimited json events, exit
 zut --continue                   # resume the most recent session for this cwd
 zut --resume                     # pick a session to resume
+zut --resume <UUID>              # resume a persisted session by UUID
 zut --list-models                # show supported models
 zut --help
 ```
@@ -214,7 +215,7 @@ Print-mode stats contain `provider`, `model`, `prompt_tokens`, `reasoning_tokens
 | `--reasoning off\|minimum\|low\|medium\|high\|xhigh\|max` | Set the reasoning level on supported models (default: off). `max` is a separate opt-in tier above `xhigh`. |
 | `--stats <path>` | With `-p`/`--print`, write generation statistics as JSON. |
 | `-c`, `--continue` | Resume the latest session for this cwd. |
-| `-r`, `--resume` | Pick a session to resume. |
+| `-r`, `--resume [UUID]` | Pick a session to resume, or resume a persisted session by UUID. |
 | `--session <path>` | Resume a specific session file. |
 | `--no-session` | Don't read or write session files. |
 | `--cwd <path>` | Use `<path>` as the working directory. |

@@ -10,6 +10,23 @@ import (
 	"github.com/bnema/zut/packages/tui"
 )
 
+func TestInteractiveCtrlCExitMarker(t *testing.T) {
+	i := NewInteractive(InteractiveConfig{})
+	key := tui.Key{Kind: tui.KeyCtrlC}
+	if i.handleKey(context.Background(), key) {
+		t.Fatal("first Ctrl+C exited interactive mode")
+	}
+	if i.ExitedViaCtrlC() {
+		t.Fatal("first Ctrl+C marked an exit")
+	}
+	if !i.handleKey(context.Background(), key) {
+		t.Fatal("second Ctrl+C did not exit interactive mode")
+	}
+	if !i.ExitedViaCtrlC() {
+		t.Fatal("Ctrl+C exit was not marked")
+	}
+}
+
 func TestDoubleEscapeTrackerWindowAndReset(t *testing.T) {
 	base := time.Unix(100, 0)
 	var tracker doubleEscapeTracker

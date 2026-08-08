@@ -9,6 +9,7 @@ import (
 	"github.com/bnema/zut/packages/agent/subagents"
 	"github.com/bnema/zut/packages/agent/tools"
 	"github.com/bnema/zut/packages/tui"
+	"github.com/google/uuid"
 	"golang.org/x/term"
 )
 
@@ -57,10 +58,11 @@ type Args struct {
 	// survive a parent config change.
 	FastModeSet bool
 
-	Continue bool
-	Resume   bool
-	Session  string
-	NoSess   bool
+	Continue        bool
+	Resume          bool
+	ResumeSessionID string
+	Session         string
+	NoSess          bool
 
 	CWD     string
 	NoTools bool
@@ -195,6 +197,12 @@ func ParseArgs(in []string) (Args, error) {
 			a.Continue = true
 		case "-r", "--resume":
 			a.Resume = true
+			if i+1 < len(in) {
+				if id, err := uuid.Parse(in[i+1]); err == nil {
+					a.ResumeSessionID = id.String()
+					i++
+				}
+			}
 		case "--no-session":
 			a.NoSess = true
 		case "--no-tools":
@@ -510,7 +518,7 @@ func PrintHelp(version string) {
 		row{"--system-prompt TEXT", "replace the default system prompt"},
 		row{"--append-system-prompt TEXT", "append to the system prompt (repeatable)"},
 		row{"-c, --continue", "continue the most recent session for this cwd"},
-		row{"-r, --resume", "pick a session to resume"},
+		row{"-r, --resume [UUID]", "pick a session, or resume the persisted UUID"},
 		row{"--session PATH", "resume a specific session file"},
 		row{"--no-session", "do not read or write a session file"},
 	)

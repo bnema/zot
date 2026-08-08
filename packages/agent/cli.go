@@ -1744,6 +1744,20 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 		}
 	}
 	announceSession(extMgr, sess)
+	// Print the hint after the session close defer below and all terminal/TUI
+	// cleanup defers. Close removes a fresh empty session, so only a session
+	// that remains discoverable through the hinted command gets a hint.
+	defer func() {
+		if !iv.ExitedViaCtrlC() {
+			return
+		}
+		persistMu.Lock()
+		current := sess
+		persistMu.Unlock()
+		if resumeID := resumableSessionID(ZutHome(), current); resumeID != "" {
+			fmt.Print(resumeSessionHint(resumeID))
+		}
+	}()
 	defer func() {
 		persistMu.Lock()
 		defer persistMu.Unlock()
@@ -2581,6 +2595,30 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 	return runErr
 }
 
+func resumableSessionID(root string, sess *core.Session) string {
+	if sess == nil || sess.ID == "" || sess.Path == "" {
+		return ""
+	}
+	path, err := core.FindManagedSessionByID(root, sess.ID)
+	if err != nil || !sameSessionPath(path, sess.Path) {
+		return ""
+	}
+	return sess.ID
+}
+
+func sameSessionPath(left, right string) bool {
+	leftAbs, leftErr := filepath.Abs(left)
+	rightAbs, rightErr := filepath.Abs(right)
+	if leftErr == nil && rightErr == nil {
+		return filepath.Clean(leftAbs) == filepath.Clean(rightAbs)
+	}
+	return filepath.Clean(left) == filepath.Clean(right)
+}
+
+func resumeSessionHint(id string) string {
+	return fmt.Sprintf("Resume this session with: zut --resume %s\n", id)
+}
+
 func agentSessionsRoot(root string, args Args) string {
 	if args.AgentName == "" {
 		return root
@@ -2595,10 +2633,13 @@ func openOrCreateSession(args Args, r Resolved, ag *core.Agent, version string) 
 		return nil, nil
 	}
 	// Sweep meta-only files left over from older zut versions (and from
-	// any session that crashed before its first AppendMessage). Cheap;
-	// reads the first few bytes of each file in the cwd's session dir.
+	// any session that crashed before its first AppendMessage) for the
+	// cwd-scoped picker paths. Explicit UUID lookup stays strict so it
+	// can report metadata failures instead of turning them into misses.
 	sessionsRoot := agentSessionsRoot(ZutHome(), args)
-	core.PruneEmptySessions(sessionsRoot, args.CWD)
+	if args.ResumeSessionID == "" {
+		core.PruneEmptySessions(sessionsRoot, args.CWD)
+	}
 	var (
 		s    *core.Session
 		msgs []provider.Message
@@ -2625,6 +2666,17 @@ func openOrCreateSession(args Args, r Resolved, ag *core.Agent, version string) 
 			s, msgs, err = core.OpenSession(latest)
 		}
 	case args.Resume:
+		if args.ResumeSessionID != "" {
+			picked, lookupErr := core.FindManagedSessionByID(ZutHome(), args.ResumeSessionID)
+			if lookupErr != nil {
+				return nil, lookupErr
+			}
+			if picked == "" {
+				return nil, fmt.Errorf("session %q not found", args.ResumeSessionID)
+			}
+			s, msgs, err = core.OpenSession(picked)
+			break
+		}
 		picked, perr := pickSession(sessionsRoot, args.CWD)
 		if perr != nil {
 			return nil, perr
