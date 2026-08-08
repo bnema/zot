@@ -254,7 +254,7 @@ func (configSettingsStore) SetTheme(name string) error {
 
 // AutoSubagentsEnabled reads whether the interactive primary agent runs in
 // strict orchestrator mode. The canonical subagent tools remain available for
-// explicit user requests when this setting is disabled.
+// user-requested delegation and skill-mandated workflows when disabled.
 func AutoSubagentsEnabled() bool {
 	cfg, err := LoadConfig()
 	if err != nil {
@@ -278,7 +278,7 @@ When workers finish, use the host update's agent ID, status, task, optional erro
 
 // OnDemandSubagentsSystemAddendum keeps the canonical subagent tools
 // available without enabling proactive primary-agent orchestration.
-const OnDemandSubagentsSystemAddendum = `Subagent tools are available for explicit user requests. Use them only when the user explicitly requests delegation. Do not proactively delegate or switch into an orchestrator role; otherwise perform the work yourself.`
+const OnDemandSubagentsSystemAddendum = `Subagent tools are available when the user asks you to delegate or an active skill workflow requires delegation. Use them only in those cases. Do not delegate proactively or switch into an orchestrator role; otherwise perform the work yourself.`
 
 // AutoSubagentsDelegationUnavailableAddendum explains why the strict
 // orchestrator contract still applies when launch-time policy withholds the

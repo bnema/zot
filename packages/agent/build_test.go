@@ -501,8 +501,13 @@ func TestResolveOmitsAutoSubagentsOrchestratorContractWhenDisabled(t *testing.T)
 			t.Fatalf("disabled system prompt contains auto-subagents contract %q:\n%s", unwanted, r.SystemPrompt)
 		}
 	}
-	if !strings.Contains(r.SystemPrompt, "only when the user explicitly requests delegation") {
-		t.Fatalf("disabled system prompt does not limit subagent use to explicit user requests:\n%s", r.SystemPrompt)
+	for _, required := range []string{
+		"user asks you to delegate",
+		"active skill workflow requires delegation",
+	} {
+		if !strings.Contains(r.SystemPrompt, required) {
+			t.Fatalf("disabled system prompt omits permitted delegation path %q:\n%s", required, r.SystemPrompt)
+		}
 	}
 }
 
