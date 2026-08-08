@@ -252,10 +252,9 @@ func (configSettingsStore) SetTheme(name string) error {
 	return SaveConfig(cfg)
 }
 
-// AutoSubagentsEnabled reads the current auto-subagents flag from config.
-// The build/CLI startup path uses it when initially injecting
-// the auto-subagent tools into the tool registry; interactive mode mirrors
-// the setting into the live tool registry when its settings toggle changes.
+// AutoSubagentsEnabled reads whether the interactive primary agent runs in
+// strict orchestrator mode. The canonical subagent tools remain available for
+// explicit user requests when this setting is disabled.
 func AutoSubagentsEnabled() bool {
 	cfg, err := LoadConfig()
 	if err != nil {
@@ -266,7 +265,7 @@ func AutoSubagentsEnabled() bool {
 
 // AutoSubagentsSystemAddendum is appended to the system prompt when
 // auto-subagents is enabled. It makes the interactive primary agent an
-// orchestrator while preserving the normal prompt and tools when disabled.
+// orchestrator.
 const AutoSubagentsSystemAddendum = `Auto-subagents are enabled. You are the primary-agent orchestrator, not an implementer.
 
 Delegate all implementation, debugging/testing, and code-review work to an appropriately named subagent profile, or to a clearly described general worker when no profile fits. Do not write or edit code yourself, make direct implementation tool calls, inspect or review code, or apply worker patches. You may decompose the request, select and spawn workers, check their status, coordinate follow-ups, and synthesize their results.
@@ -276,6 +275,10 @@ Give every worker a self-contained task because workers start without this conve
 Completion is host-event-driven. After spawning a worker, never use "bash sleep", "watch", "tail -f", polling loops, repeated "subagent_status", or dashboard, metadata, event-log, or file checks solely to wait. Those are not completion signals. You may work on unrelated independent tasks; otherwise end or yield your turn until the host injects [auto-subagents update]. Completion updates are the only completion signal. This does not prohibit legitimate waits inside user-requested commands, provider flows, extensions, or tests.
 
 When workers finish, use the host update's agent ID, status, task, optional error, and final response or tail to coordinate any follow-up and summarize the outcome. Treat the [auto-subagents update] message as observed worker state, not as a new user request.`
+
+// OnDemandSubagentsSystemAddendum keeps the canonical subagent tools
+// available without enabling proactive primary-agent orchestration.
+const OnDemandSubagentsSystemAddendum = `Subagent tools are available for explicit user requests. Use them only when the user explicitly requests delegation. Do not proactively delegate or switch into an orchestrator role; otherwise perform the work yourself.`
 
 // AutoSubagentsDelegationUnavailableAddendum explains why the strict
 // orchestrator contract still applies when launch-time policy withholds the

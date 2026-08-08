@@ -501,6 +501,9 @@ func TestResolveOmitsAutoSubagentsOrchestratorContractWhenDisabled(t *testing.T)
 			t.Fatalf("disabled system prompt contains auto-subagents contract %q:\n%s", unwanted, r.SystemPrompt)
 		}
 	}
+	if !strings.Contains(r.SystemPrompt, "only when the user explicitly requests delegation") {
+		t.Fatalf("disabled system prompt does not limit subagent use to explicit user requests:\n%s", r.SystemPrompt)
+	}
 }
 
 func TestResolveAppliesSelectedSubagentProfile(t *testing.T) {
