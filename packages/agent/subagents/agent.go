@@ -163,6 +163,7 @@ type Agent struct {
 	updatedAt        time.Time
 	lastActivity     time.Time
 	result           *TurnResult
+	shutdownOrigin   ShutdownOrigin
 	resultRef        string
 	patchRef         string
 	changedFiles     []string
@@ -408,6 +409,19 @@ func (a *Agent) setResult(result *TurnResult) {
 	a.result = cloneTurnResult(result)
 	a.updatedAt = time.Now()
 	a.lifecycleMu.Unlock()
+}
+
+func (a *Agent) setShutdownOrigin(origin ShutdownOrigin) {
+	a.lifecycleMu.Lock()
+	a.shutdownOrigin = origin.Sanitized()
+	a.updatedAt = time.Now()
+	a.lifecycleMu.Unlock()
+}
+
+func (a *Agent) shutdownOriginValue() ShutdownOrigin {
+	a.lifecycleMu.Lock()
+	defer a.lifecycleMu.Unlock()
+	return a.shutdownOrigin
 }
 
 // Transcript returns a copy of the running transcript. Detached agents
