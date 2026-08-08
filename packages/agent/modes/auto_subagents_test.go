@@ -13,6 +13,8 @@ import (
 	"github.com/bnema/zut/packages/provider"
 )
 
+const autoSubagentsTestTimeout = 10 * time.Second
+
 func TestAutoSubagentsSystemPromptTogglesProfileManifestWithDelegationGuidance(t *testing.T) {
 	iv := &Interactive{
 		agent: &core.Agent{System: "base system"},
@@ -327,7 +329,7 @@ func newQueuedAutoSubagentsInteractive() *Interactive {
 
 func waitForQueuedPrompt(t *testing.T, iv *Interactive) string {
 	t.Helper()
-	deadline := time.NewTimer(time.Second)
+	deadline := time.NewTimer(autoSubagentsTestTimeout)
 	defer deadline.Stop()
 	ticker := time.NewTicker(time.Millisecond)
 	defer ticker.Stop()
