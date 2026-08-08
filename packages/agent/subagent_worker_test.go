@@ -12,12 +12,52 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/bnema/zut/packages/agent/modes"
 	"github.com/bnema/zut/packages/agent/subagents"
 	"github.com/bnema/zut/packages/core"
 	"github.com/bnema/zut/packages/provider"
 )
+
+func TestSubagentTurnContextResetsDeadlineAndHonorsShutdown(t *testing.T) {
+	expired, stopExpired := subagentTurnContext(context.Background(), time.Nanosecond)
+	defer stopExpired()
+	<-expired.Done()
+	if !errors.Is(expired.Err(), context.DeadlineExceeded) {
+		t.Fatalf("expired turn error = %v, want context deadline exceeded", expired.Err())
+	}
+
+	parent, stopParent := context.WithCancel(context.Background())
+	first, stopFirst := subagentTurnContext(parent, time.Hour)
+	if _, ok := first.Deadline(); !ok {
+		t.Fatal("active turn context has no deadline")
+	}
+	stopFirst()
+	if !errors.Is(first.Err(), context.Canceled) {
+		t.Fatalf("first turn error = %v, want context canceled", first.Err())
+	}
+
+	second, stopSecond := subagentTurnContext(parent, time.Hour)
+	defer stopSecond()
+	select {
+	case <-second.Done():
+		t.Fatalf("new turn inherited previous turn cancellation: %v", second.Err())
+	default:
+	}
+	stopParent()
+	<-second.Done()
+	if !errors.Is(second.Err(), context.Canceled) {
+		t.Fatalf("shutdown error = %v, want context canceled", second.Err())
+	}
+}
+
+func TestResultErrorPayloadClassifiesTurnDeadline(t *testing.T) {
+	payload := resultErrorPayload(context.DeadlineExceeded)
+	if payload["code"] != "deadline_exceeded" {
+		t.Fatalf("deadline error code = %v, want deadline_exceeded", payload["code"])
+	}
+}
 
 func TestShutdownExitPayloadIncludesOnlyKnownOrigin(t *testing.T) {
 	payload := shutdownExitPayload(subagents.ShutdownOriginSession)

@@ -180,15 +180,12 @@ func New(cfg Config) *Supervisor {
 }
 
 // workerContext derives a child worker context from the supervisor lifetime.
-// A positive timeout limits the worker lifetime; otherwise it is cancellable
-// only when the supervisor shuts down or the agent is stopped.
-func (f *Supervisor) workerContext(timeout time.Duration) (context.Context, context.CancelFunc) {
+// Turn timeouts are enforced by the worker while a delegated turn is active;
+// the process remains cancellable while idle so it can accept follow-ups.
+func (f *Supervisor) workerContext() (context.Context, context.CancelFunc) {
 	base := f.lifetimeCtx
 	if base == nil {
 		base = context.Background()
-	}
-	if timeout > 0 {
-		return context.WithTimeout(base, timeout)
 	}
 	return context.WithCancel(base)
 }
@@ -489,7 +486,7 @@ func (f *Supervisor) SpawnReq(ctx context.Context, req SpawnRequest) (*Agent, er
 	if timeout <= 0 {
 		timeout = f.cfg.Policy.DefaultTimeout
 	}
-	runCtx, cancel := f.workerContext(timeout)
+	runCtx, cancel := f.workerContext()
 	tools := append([]string(nil), req.Tools...)
 	if len(tools) == 0 && len(f.cfg.Policy.AllowedTools) > 0 {
 		tools = append([]string(nil), f.cfg.Policy.AllowedTools...)

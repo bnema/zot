@@ -80,6 +80,7 @@ type subagentWorkerArgsOpts struct {
 	FastModeSet     bool
 	Subagent        string
 	MaxTurns        int
+	TurnTimeout     time.Duration
 	LifetimeTurns   int
 	RunTurns        int
 	CountersSet     bool
@@ -118,6 +119,7 @@ func defaultChildArgs(exe string, a *Agent, sessionPath, inboxPath string) []str
 		FastModeSet:     true,
 		Subagent:        a.Subagent,
 		MaxTurns:        a.MaxTurns,
+		TurnTimeout:     a.Timeout,
 		LifetimeTurns:   a.LifetimeTurnsValue(),
 		RunTurns:        a.CurrentRunTurnsValue(),
 		CountersSet:     true,
@@ -163,6 +165,9 @@ func subagentWorkerArgs(opts subagentWorkerArgsOpts) []string {
 	}
 	if opts.MaxTurns > 0 {
 		args = append(args, "--max-turns", fmt.Sprint(opts.MaxTurns))
+	}
+	if opts.TurnTimeout > 0 {
+		args = append(args, "--subagent-turn-timeout", opts.TurnTimeout.String())
 	}
 	if opts.CountersSet {
 		args = append(args,

@@ -45,6 +45,33 @@ func TestUnqualifiedModelID(t *testing.T) {
 	}
 }
 
+func TestSpawnTimeoutDoesNotLimitResumableWorkerLifetime(t *testing.T) {
+	observedDeadline := make(chan bool, 1)
+	f := newTestSupervisor(t, func(a *Agent) Runner {
+		return RunnerFunc(func(ctx context.Context, _ Sink) error {
+			_, hasDeadline := ctx.Deadline()
+			observedDeadline <- hasDeadline
+			<-ctx.Done()
+			return ctx.Err()
+		})
+	})
+	a, err := f.SpawnReq(context.Background(), SpawnRequest{
+		Task:    "remain resumable",
+		Timeout: time.Minute,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hasDeadline := <-observedDeadline; hasDeadline {
+		t.Fatal("worker lifetime context has a deadline; turn timeout must not expire an idle resumable worker")
+	}
+	if a.Timeout != time.Minute {
+		t.Fatalf("agent timeout = %s, want %s", a.Timeout, time.Minute)
+	}
+	f.StopAll()
+	a.Wait()
+}
+
 func TestSpawnRunsAndCompletes(t *testing.T) {
 	ran := make(chan string, 1)
 	f := newTestSupervisor(t, func(a *Agent) Runner {

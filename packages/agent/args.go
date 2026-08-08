@@ -5,6 +5,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/bnema/zut/packages/agent/subagents"
 	"github.com/bnema/zut/packages/agent/tools"
@@ -143,6 +144,9 @@ type Args struct {
 
 	// SubagentMaxTurns limits message turns in one worker run.
 	SubagentMaxTurns int
+	// SubagentTurnTimeout limits each active delegated turn while leaving the
+	// worker process alive between turns for explicit follow-ups.
+	SubagentTurnTimeout time.Duration
 	// SubagentLifetimeTurns and SubagentRunTurns are supervisor-provided
 	// counters used to resume a worker without losing observability or its
 	// current-run budget. They are internal worker flags, not user policy.
@@ -384,6 +388,16 @@ func ParseArgs(in []string) (Args, error) {
 				return a, fmt.Errorf("--max-turns must be a positive integer")
 			}
 			a.SubagentMaxTurns = n
+		case "--subagent-turn-timeout":
+			v, err := want(&i, arg)
+			if err != nil {
+				return a, err
+			}
+			timeout, err := time.ParseDuration(v)
+			if err != nil || timeout <= 0 {
+				return a, fmt.Errorf("--subagent-turn-timeout must be a positive duration")
+			}
+			a.SubagentTurnTimeout = timeout
 		case "--subagent-lifetime-turns":
 			v, err := want(&i, arg)
 			if err != nil {

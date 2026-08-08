@@ -1159,7 +1159,7 @@ func (f *Supervisor) resume(ctx context.Context, id string, resuming bool, resum
 	if timeout <= 0 {
 		timeout = f.cfg.Policy.DefaultTimeout
 	}
-	runCtx, cancel := f.workerContext(timeout)
+	runCtx, cancel := f.workerContext()
 	a := &Agent{
 		ID:                m.ID,
 		Task:              m.Task,

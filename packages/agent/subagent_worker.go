@@ -86,6 +86,13 @@ func (b *workerTurnBudget) start(maxTurns int, newRun bool) (step, lifetime, cur
 	return b.sequence, b.lifetime, b.current, true
 }
 
+func subagentTurnContext(parent context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
+	if timeout > 0 {
+		return context.WithTimeout(parent, timeout)
+	}
+	return context.WithCancel(parent)
+}
+
 func runSubagentWorkerMode(ctx context.Context, args Args, version string) (runErr error) {
 	if args.SubagentWorker == "" {
 		return fmt.Errorf("--subagent-worker requires a socket path")
@@ -277,7 +284,7 @@ func runSubagentWorkerMode(ctx context.Context, args Args, version string) (runE
 			return
 		}
 		turnID := fmt.Sprintf("turn-%d", step)
-		c, cancel := context.WithCancel(ctx)
+		c, cancel := subagentTurnContext(ctx, args.SubagentTurnTimeout)
 		cancelFn = cancel
 		mu.Unlock()
 
@@ -724,6 +731,9 @@ func resultErrorPayload(err error) map[string]any {
 	}
 	if provider.IsContextOverflowError(err) {
 		return map[string]any{"code": "context_limit", "message": subagentContextLimitMessage}
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return map[string]any{"code": "deadline_exceeded", "message": "subagent turn deadline exceeded; partial output is preserved in the result and history"}
 	}
 	return map[string]any{"code": "turn_failed", "message": truncateForLog(err.Error(), 500)}
 }

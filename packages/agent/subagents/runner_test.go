@@ -301,6 +301,7 @@ func TestSubagentWorkerArgs(t *testing.T) {
 		Task:        "do the thing",
 		Reasoning:   "high",
 		Subagent:    "reviewer",
+		TurnTimeout: 15 * time.Minute,
 	})
 	if len(args) < 7 {
 		t.Fatalf("argv unexpectedly short: %v", args)
@@ -315,11 +316,12 @@ func TestSubagentWorkerArgs(t *testing.T) {
 	}
 
 	mustHave := map[string]string{
-		"--subagent-worker": "/tmp/state/in.sock",
-		"--session":         "/tmp/state/session.json",
-		"--cwd":             "/tmp/worktree",
-		"--reasoning":       "high",
-		"--subagent":        "reviewer",
+		"--subagent-worker":       "/tmp/state/in.sock",
+		"--session":               "/tmp/state/session.json",
+		"--cwd":                   "/tmp/worktree",
+		"--reasoning":             "high",
+		"--subagent":              "reviewer",
+		"--subagent-turn-timeout": "15m0s",
 	}
 	for flag, value := range mustHave {
 		i := indexOf(args, flag)
@@ -444,6 +446,7 @@ func TestDefaultChildArgsPropagatesProviderConnectionSettings(t *testing.T) {
 		Dir:         "/work",
 		BaseURL:     "https://gateway.example.test/v1",
 		InsecureTLS: true,
+		Timeout:     15 * time.Minute,
 	}
 	args := defaultChildArgs("/zut", a, "/state/session.json", "/state/inbox.sock")
 	if i := indexOf(args, "--base-url"); i < 0 || safeAt(args, i+1) != a.BaseURL {
@@ -451,6 +454,9 @@ func TestDefaultChildArgsPropagatesProviderConnectionSettings(t *testing.T) {
 	}
 	if !containsArg(args, "--insecure") {
 		t.Fatalf("argv = %v, want Agent.InsecureTLS propagated", args)
+	}
+	if i := indexOf(args, "--subagent-turn-timeout"); i < 0 || safeAt(args, i+1) != a.Timeout.String() {
+		t.Fatalf("argv = %v, want Agent.Timeout propagated per turn", args)
 	}
 }
 
