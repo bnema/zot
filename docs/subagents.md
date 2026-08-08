@@ -85,17 +85,18 @@ This profile metadata is a tool-selection boundary, not a general network sandbo
 
 Completion is host-event-driven. After spawning, never use `bash sleep`, `watch`, `tail -f`, polling loops, repeated `subagent_status`, or dashboard, metadata, event-log, or file checks solely to wait; those are not completion signals. The primary may work on unrelated independent tasks, but otherwise must end or yield its turn until the host injects `[auto-subagents update]`. Completion updates are the only completion signal. Legitimate waits inside user-requested commands, provider flows, extensions, or tests are not prohibited.
 
-A per-spawn reasoning override is also accepted:
+Per-spawn reasoning and fast-mode overrides are also accepted:
 
 ```json
 {
   "task": "Implement the parser change and add regression tests.",
   "agent": "implementer",
-  "reasoning": "high"
+  "reasoning": "high",
+  "fast_mode": true
 }
 ```
 
-`thinking` is accepted as an alias for `reasoning`. If neither is supplied, the child inherits the host reasoning level for an unnamed spawn, or the profile's `thinking` value for a named spawn.
+`thinking` is accepted as an alias for `reasoning`. If neither is supplied, the child inherits the host reasoning level for an unnamed spawn, or the profile's `thinking` value for a named spawn. An explicit `fast_mode` value takes precedence over the selected profile and host setting; omit it to inherit them.
 
 The interactive command also supports the same selection explicitly:
 
@@ -104,7 +105,7 @@ The interactive command also supports the same selection explicitly:
 /subagents new --agent implementer --reasoning high Implement the parser change
 ```
 
-Shared mode preserves the historical host working directory, so workers there must be coordinated to avoid conflicting edits and to sequence dependent tasks. For parallel coding, pass `isolation:"worktree"` to `subagent_spawn`; zut creates a detached Git worktree and captures changed files and a patch without merging automatically. In orchestrator mode, assign any worktree patch integration to a worker rather than applying it in the primary session. Named profiles change the child's instructions and configuration; they are not a security sandbox. A profile's `systemPromptMode` controls its own body relative to the built-in identity; globally appended instructions, including enabled Ponytail coding guidance, remain present. Child credentials are transferred over stdin rather than argv or persisted metadata, and the active provider endpoint/TLS setting is inherited only when the child uses that provider. Fast mode is inherited by default. A profile with `fastMode: false` opts out, while `fastMode: true` enables fast mode even when the host setting is off; the `subagent_spawn` result warns the parent session when this override occurs. Child providers that do not yet support fast mode return an unsupported-provider error instead of silently ignoring an enabled setting.
+Shared mode preserves the historical host working directory, so workers there must be coordinated to avoid conflicting edits and to sequence dependent tasks. For parallel coding, pass `isolation:"worktree"` to `subagent_spawn`; zut creates a detached Git worktree and captures changed files and a patch without merging automatically. In orchestrator mode, assign any worktree patch integration to a worker rather than applying it in the primary session. Named profiles change the child's instructions and configuration; they are not a security sandbox. A profile's `systemPromptMode` controls its own body relative to the built-in identity; globally appended instructions, including enabled Ponytail coding guidance, remain present. Child credentials are transferred over stdin rather than argv or persisted metadata, and the active provider endpoint/TLS setting is inherited only when the child uses that provider. Fast mode is inherited by default. An explicit `fast_mode` spawn argument has highest precedence. Otherwise, a profile with `fastMode: false` opts out, while `fastMode: true` enables fast mode even when the host setting is off; the `subagent_spawn` result warns the parent session when this profile override occurs. Child providers that do not yet support fast mode return an unsupported-provider error instead of silently ignoring an enabled setting.
 
 ## Lifecycle, results, and recovery
 
