@@ -1496,23 +1496,17 @@ func runInteractive(ctx context.Context, args Args, version string) (runErr erro
 		return findSubagentProfile(r.CWD, name)
 	}
 
-	// Inject the auto-subagent tools only when /settings -> auto-subagents
-	// is currently enabled. Registering them unconditionally leaves the model
-	// trying to call them (and getting a polite error) even when the user has
-	// switched the feature off. The /settings toggle live-mutates the running
-	// agent's registry separately so flipping the flag mid-session takes effect
-	// on the next turn.
+	// Register the canonical subagent tools whenever launch-time policy permits
+	// them. The auto-subagents setting controls strict orchestration guidance,
+	// not explicit user-requested delegation.
 	injectSubagentTools := func(reg core.Registry) core.Registry {
 		if reg == nil || subagentsMgr == nil || !autoSubagentsAnyToolAllowed(args) {
-			return reg
-		}
-		if !AutoSubagentsEnabled() {
 			return reg
 		}
 		if autoSubagentsToolAllowed(args) {
 			canonical := &tools.SubagentSpawnTool{
 				Supervisor: subagentsMgr,
-				Enabled:    AutoSubagentsEnabled,
+				Enabled:    func() bool { return true },
 				DefaultModel: func() string {
 					persistMu.Lock()
 					defer persistMu.Unlock()
@@ -1532,14 +1526,14 @@ func runInteractive(ctx context.Context, args Args, version string) (runErr erro
 		if autoSubagentsStatusToolAllowed(args) {
 			statusTool := &tools.SubagentStatusTool{
 				Supervisor: subagentsMgr,
-				Enabled:    AutoSubagentsEnabled,
+				Enabled:    func() bool { return true },
 			}
 			reg[statusTool.Name()] = statusTool
 		}
 		if autoSubagentsStopToolAllowed(args) {
 			stopTool := &tools.SubagentStopTool{
 				Supervisor:      subagentsMgr,
-				Enabled:         AutoSubagentsEnabled,
+				Enabled:         func() bool { return true },
 				OnStopRequested: onStopRequestedSupervisor,
 			}
 			reg[stopTool.Name()] = stopTool
@@ -1547,7 +1541,7 @@ func runInteractive(ctx context.Context, args Args, version string) (runErr erro
 		if autoSubagentsResumeToolAllowed(args) {
 			resumeTool := &tools.SubagentResumeTool{
 				Supervisor: subagentsMgr,
-				Enabled:    AutoSubagentsEnabled,
+				Enabled:    func() bool { return true },
 				OnResumed:  onResumedSupervisor,
 			}
 			reg[resumeTool.Name()] = resumeTool
@@ -2341,30 +2335,31 @@ func runInteractive(ctx context.Context, args Args, version string) (runErr erro
 			autoSubagentsStopToolAllowedForSession,
 			autoSubagentsResumeToolAllowedForSession,
 		),
-		SubagentsSystemAddendum:   subagentsAddendum,
-		SettingsStore:             configSettingsStore{},
-		Model:                     r.Model,
-		Provider:                  r.Provider,
-		AuthMethod:                r.AuthMethod,
-		BaseURL:                   r.BaseURL,
-		Reasoning:                 r.Reasoning,
-		SystemPrompt:              r.SystemPrompt,
-		Tools:                     r.ToolRegistry,
-		MaxSteps:                  r.MaxSteps,
-		CWD:                       r.CWD,
-		StartupAgentName:          args.AgentName,
-		StartupContextPaths:       instructionContextPaths(r.ContextFiles),
-		StartupExtensionNames:     startupExtensionNames(extMgr.All()),
-		StartupExtensionErrors:    startupExtensionErrors,
-		StartupSkillNames:         startupSkillNames(startupSkills),
-		ShowInstructionsAtStartup: initialCfg.ShowInstructionsAtStartup,
-		ZutHome:                   ZutHome(),
-		SessionsRoot:              agentSessionsRoot(ZutHome(), args),
-		Version:                   version,
-		UpdateInfoChan:            updateCh,
-		Sandbox:                   sharedSandbox,
-		Agent:                     ag,
-		InitialCompactHandoff:     currentCompactHandoff(),
+		OnDemandSubagentsSystemAddendum: OnDemandSubagentsSystemAddendum,
+		SubagentsSystemAddendum:         subagentsAddendum,
+		SettingsStore:                   configSettingsStore{},
+		Model:                           r.Model,
+		Provider:                        r.Provider,
+		AuthMethod:                      r.AuthMethod,
+		BaseURL:                         r.BaseURL,
+		Reasoning:                       r.Reasoning,
+		SystemPrompt:                    r.SystemPrompt,
+		Tools:                           r.ToolRegistry,
+		MaxSteps:                        r.MaxSteps,
+		CWD:                             r.CWD,
+		StartupAgentName:                args.AgentName,
+		StartupContextPaths:             instructionContextPaths(r.ContextFiles),
+		StartupExtensionNames:           startupExtensionNames(extMgr.All()),
+		StartupExtensionErrors:          startupExtensionErrors,
+		StartupSkillNames:               startupSkillNames(startupSkills),
+		ShowInstructionsAtStartup:       initialCfg.ShowInstructionsAtStartup,
+		ZutHome:                         ZutHome(),
+		SessionsRoot:                    agentSessionsRoot(ZutHome(), args),
+		Version:                         version,
+		UpdateInfoChan:                  updateCh,
+		Sandbox:                         sharedSandbox,
+		Agent:                           ag,
+		InitialCompactHandoff:           currentCompactHandoff(),
 		InitialSessionTitle: func() string {
 			if sess == nil || sessionTitlePending {
 				return ""

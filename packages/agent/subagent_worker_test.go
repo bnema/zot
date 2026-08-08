@@ -857,3 +857,49 @@ func TestSupervisorEmitterStdoutShapeMatchesSupervisorParser(t *testing.T) {
 		t.Errorf("payload step field missing or wrong: %v", object["payload"])
 	}
 }
+
+func TestInitialTurnNumberIgnoresNestedProviderTurns(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "events.jsonl")
+	log, err := subagents.OpenEventLog(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := log.Append(subagents.NewEvent(subagents.EventTurnStarted, map[string]any{
+		"step": float64(1), "lifetime_turns": 1, "current_run_turns": 1,
+	})); err != nil {
+		t.Fatal(err)
+	}
+	if err := log.Append(subagents.NewEvent(subagents.EventTurnStarted, map[string]any{
+		"step": float64(99), "nested_turn": true,
+	})); err != nil {
+		t.Fatal(err)
+	}
+	if err := log.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if got := initialTurnNumber(path); got != 1 {
+		t.Fatalf("initial turn number = %d, want 1", got)
+	}
+}
+
+func TestWorkerTurnBudgetFreshAllowanceOnlyForExplicitRun(t *testing.T) {
+	var budget workerTurnBudget
+
+	if _, lifetime, current, admitted := budget.start(2, false); !admitted || lifetime != 1 || current != 1 {
+		t.Fatalf("first turn = (%d, %d, %v), want (1, 1, true)", lifetime, current, admitted)
+	}
+	// Provider retries, model loops, and compaction stay inside the admitted
+	// turn and therefore do not call start or consume another allowance.
+	if budget.lifetime != 1 || budget.current != 1 {
+		t.Fatalf("nested work changed budget to (lifetime=%d, current=%d)", budget.lifetime, budget.current)
+	}
+	if _, lifetime, current, admitted := budget.start(2, false); !admitted || lifetime != 2 || current != 2 {
+		t.Fatalf("second turn = (%d, %d, %v), want (2, 2, true)", lifetime, current, admitted)
+	}
+	if _, lifetime, current, admitted := budget.start(2, false); admitted || lifetime != 2 || current != 2 {
+		t.Fatalf("exhausted turn = (%d, %d, %v), want (2, 2, false)", lifetime, current, admitted)
+	}
+	if _, lifetime, current, admitted := budget.start(2, true); !admitted || lifetime != 3 || current != 1 {
+		t.Fatalf("explicit resumed turn = (%d, %d, %v), want (3, 1, true)", lifetime, current, admitted)
+	}
+}

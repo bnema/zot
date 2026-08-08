@@ -34,15 +34,17 @@ type subagentStatusResponse struct {
 }
 
 type subagentStatusEntry struct {
-	ID           string                `json:"agent_id"`
-	State        string                `json:"state"`
-	ProcessState string                `json:"process_state"`
-	TurnState    string                `json:"turn_state"`
-	StartedAt    time.Time             `json:"started_at"`
-	UpdatedAt    time.Time             `json:"updated_at"`
-	FinishedAt   *time.Time            `json:"finished_at,omitempty"`
-	TaskSummary  string                `json:"task_summary,omitempty"`
-	Result       *subagentStatusResult `json:"result,omitempty"`
+	ID              string                `json:"agent_id"`
+	State           string                `json:"state"`
+	ProcessState    string                `json:"process_state"`
+	TurnState       string                `json:"turn_state"`
+	LifetimeTurns   int                   `json:"lifetime_turns"`
+	CurrentRunTurns int                   `json:"current_run_turns"`
+	StartedAt       time.Time             `json:"started_at"`
+	UpdatedAt       time.Time             `json:"updated_at"`
+	FinishedAt      *time.Time            `json:"finished_at,omitempty"`
+	TaskSummary     string                `json:"task_summary,omitempty"`
+	Result          *subagentStatusResult `json:"result,omitempty"`
 }
 
 type subagentStatusResult struct {
@@ -84,7 +86,7 @@ func (t *SubagentStatusTool) Execute(ctx context.Context, raw json.RawMessage, _
 		return protocolToolError(prefix + ": subagent supervisor not available in this mode")
 	}
 	if t.Enabled == nil || !t.Enabled() {
-		return protocolToolError(prefix + ": auto-subagents is disabled. Ask the user to enable it from /settings before querying workers.")
+		return protocolToolError(prefix + ": subagent status is unavailable in this mode")
 	}
 
 	var args subagentStatusArgs
@@ -132,13 +134,15 @@ func findSubagentStatusSnapshot(snapshots []subagents.AgentSnapshot, id string) 
 
 func publicSubagentStatus(snapshot subagents.AgentSnapshot) subagentStatusEntry {
 	entry := subagentStatusEntry{
-		ID:           snapshot.ID,
-		State:        publicSubagentState(snapshot),
-		ProcessState: string(snapshot.ProcessState),
-		TurnState:    string(snapshot.TurnState),
-		StartedAt:    snapshot.Started,
-		UpdatedAt:    snapshot.UpdatedAt,
-		TaskSummary:  summarizeSubagentTask(snapshot.Task),
+		ID:              snapshot.ID,
+		State:           publicSubagentState(snapshot),
+		ProcessState:    string(snapshot.ProcessState),
+		TurnState:       string(snapshot.TurnState),
+		LifetimeTurns:   snapshot.LifetimeTurns,
+		CurrentRunTurns: snapshot.CurrentRunTurns,
+		StartedAt:       snapshot.Started,
+		UpdatedAt:       snapshot.UpdatedAt,
+		TaskSummary:     summarizeSubagentTask(snapshot.Task),
 	}
 	if !snapshot.Finished.IsZero() {
 		finished := snapshot.Finished

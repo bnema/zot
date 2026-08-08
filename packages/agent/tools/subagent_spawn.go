@@ -18,18 +18,16 @@ import (
 // turn continues uninterrupted. The user can monitor / chat with the
 // spawned agent via /subagents.
 //
-// Gated by the auto_subagents_enabled config flag at call time so a user
-// can flip it off mid-session and the next call refuses cleanly
-// without re-registering the tool.
+// Available when the host's launch-time tool policy permits delegation. The
+// primary-agent prompt decides whether delegation is proactive or only on an
+// explicit user request.
 type SubagentSpawnTool struct {
-	// Supervisor is the supervisor used to spawn agents. Nil means
-	// "auto-subagents not available in this mode" and the tool always
-	// errors.
+	// Supervisor is the supervisor used to spawn agents. Nil means subagents
+	// are unavailable in this mode and the tool always errors.
 	Supervisor *subagents.Supervisor
 
-	// Enabled reads the live config flag. Lets users toggle from
-	// /settings without rebuilding the agent. When nil, the tool
-	// is treated as disabled.
+	// Enabled reports whether the host currently exposes this tool. When nil,
+	// the tool is treated as disabled.
 	Enabled func() bool
 
 	// DefaultModel and DefaultProvider return the host agent's resolved
@@ -131,7 +129,7 @@ func (t *SubagentSpawnTool) Execute(ctx context.Context, raw json.RawMessage, pr
 		return protocolToolError(prefix + ": subagent supervisor not available in this mode")
 	}
 	if t.Enabled == nil || !t.Enabled() {
-		return protocolToolError(prefix + ": auto-subagents is disabled. Ask the user to enable it from /settings before delegating sub-tasks.")
+		return protocolToolError(prefix + ": subagent delegation is unavailable in this mode")
 	}
 	var a subagentSpawnArgs
 	if err := json.Unmarshal(raw, &a); err != nil {

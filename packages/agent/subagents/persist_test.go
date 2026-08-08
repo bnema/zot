@@ -14,6 +14,34 @@ import (
 	"time"
 )
 
+func TestWriteAgentMetaSerializesConcurrentSnapshots(t *testing.T) {
+	stateDir := t.TempDir()
+	a := &Agent{ID: "concurrent-meta", Task: "retain queued prompts", stateDir: stateDir}
+	var wg sync.WaitGroup
+	for i := 0; i < 32; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			a.setTurnCounts(i, i/2)
+			a.queueResumePrompt("prompt", time.Now())
+			if err := writeAgentMeta(stateDir, a); err != nil {
+				t.Errorf("write metadata: %v", err)
+			}
+		}(i)
+	}
+	wg.Wait()
+	if _, err := readAgentMeta(stateDir); err != nil {
+		t.Fatalf("final metadata is not a complete JSON snapshot: %v", err)
+	}
+	matches, err := filepath.Glob(filepath.Join(stateDir, ".meta.json.tmp-*"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(matches) != 0 {
+		t.Fatalf("temporary metadata files remain: %v", matches)
+	}
+}
+
 // TestSpawnWritesMetaJSON asserts the durability contract: every
 // successful Spawn leaves a meta.json on disk with the agent's
 // identity bits. Without this, Reload on the next zut launch can't
@@ -662,7 +690,7 @@ func TestReloadClearsResumePromptAcknowledgedInEventLog(t *testing.T) {
 		EventLogPath:   filepath.Join(stateDir, "events.jsonl"),
 		SessionPath:    filepath.Join(stateDir, "session.json"),
 		ResumePrompt:   "I applied your review. What do you think now?",
-		ResumePromptAt: time.Now(),
+		ResumePromptAt: time.Now().Add(-time.Second),
 	}
 	data, err := json.Marshal(m)
 	if err != nil {
@@ -673,6 +701,9 @@ func TestReloadClearsResumePromptAcknowledgedInEventLog(t *testing.T) {
 	}
 	log, err := OpenEventLog(m.EventLogPath)
 	if err != nil {
+		t.Fatal(err)
+	}
+	if err := log.Append(NewEvent("user_message", map[string]any{"content": []any{map[string]any{"type": "text", "text": m.ResumePrompt}}})); err != nil {
 		t.Fatal(err)
 	}
 	if err := log.Append(NewEvent(EventTurnStarted, map[string]any{"step": float64(1)})); err != nil {

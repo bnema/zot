@@ -65,6 +65,34 @@ func TestLatestFrameSchedulerKeepsNewestRequest(t *testing.T) {
 	}
 }
 
+func TestToolEventBurstUsesThrottledInvalidationPath(t *testing.T) {
+	scheduler := newLatestFrameScheduler()
+	i := &Interactive{
+		dirty:     make(chan struct{}, 1),
+		toolCalls: make(map[string]*tui.ToolCallView),
+		toolGate:  make(map[string]int),
+	}
+	i.renderScheduler.Store(scheduler)
+
+	i.handleEventForPresentation(core.EvToolUseStart{ID: "call", Name: "bash"})
+	i.handleEventForPresentation(core.EvToolUseArgs{ID: "call", Delta: `{"command":"pwd"}`})
+	i.handleEventForPresentation(core.EvToolUseEnd{ID: "call"})
+
+	if got := len(scheduler.wake); got != 0 {
+		t.Fatalf("tool events bypassed the main-loop redraw throttle: %d direct request", got)
+	}
+	select {
+	case <-i.dirty:
+	default:
+		t.Fatal("tool events did not wake the throttled redraw path")
+	}
+	select {
+	case <-i.dirty:
+		t.Fatal("tool event burst queued more than one throttled redraw")
+	default:
+	}
+}
+
 func TestStableChatCacheTracksViewInvalidation(t *testing.T) {
 	i := &Interactive{
 		view: &tui.View{

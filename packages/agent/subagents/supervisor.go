@@ -155,7 +155,11 @@ func New(cfg Config) *Supervisor {
 	}
 	if cfg.NewRunner == nil {
 		cfg.NewRunner = func(a *Agent) Runner {
-			return &execRunner{agent: a, resolveCredential: cfg.ResolveCredential}
+			return &execRunner{
+				agent:             a,
+				resolveCredential: cfg.ResolveCredential,
+				GracePeriod:       cfg.Policy.CancelGracePeriod,
+			}
 		}
 	}
 	cfg.Policy.normalize()
@@ -543,6 +547,7 @@ func (f *Supervisor) SpawnReq(ctx context.Context, req SpawnRequest) (*Agent, er
 	}
 	a.ctx, a.cancel = runCtx, cancel
 	a.persistFn = f.persistAgent
+	a.setOnTurnIdle(func() { f.dispatchQueuedResumeWithTimeout(a) })
 	a.workspaceCleanup = func() error { return workspace.Cleanup(context.Background()) }
 	a.workspaceCapture = func() (WorkspaceCapture, error) { return workspace.Capture(context.Background()) }
 	a.runner = f.cfg.NewRunner(a)
@@ -1075,6 +1080,8 @@ type AgentSnapshot struct {
 	ProcessState    ProcessState
 	TurnState       TurnState
 	CurrentTurnID   string
+	LifetimeTurns   int
+	CurrentRunTurns int
 	Attempt         int
 	Activity        string
 	Started         time.Time
@@ -1129,6 +1136,7 @@ func (a *Agent) Snapshot() AgentSnapshot {
 	status := a.status
 	activity := a.activity
 	lastAssistant := a.lastAssistant
+	outputTruncated := a.outputTruncated || a.streamingAssistantTruncated
 	finished := a.finished
 	a.mu.Unlock()
 
@@ -1136,6 +1144,8 @@ func (a *Agent) Snapshot() AgentSnapshot {
 	processState := a.processState
 	turnState := a.turnState
 	currentTurnID := a.currentTurnID
+	lifetimeTurns := a.LifetimeTurns
+	currentRunTurns := a.CurrentRunTurns
 	attempt := a.Attempt
 	lastActivity := a.lastActivity
 	updatedAt := a.updatedAt
@@ -1143,12 +1153,11 @@ func (a *Agent) Snapshot() AgentSnapshot {
 	resultRef := a.resultRef
 	patchRef := a.patchRef
 	changedFiles := append([]string(nil), a.changedFiles...)
-	outputTruncated := a.outputTruncated
 	a.lifecycleMu.Unlock()
 	return AgentSnapshot{
 		ID: a.ID, Task: a.Task, Dir: a.Dir,
 		Status: status, ProcessState: processState, TurnState: turnState,
-		CurrentTurnID: currentTurnID, Attempt: attempt, Activity: activity,
+		CurrentTurnID: currentTurnID, LifetimeTurns: lifetimeTurns, CurrentRunTurns: currentRunTurns, Attempt: attempt, Activity: activity,
 		Started: a.Started, Finished: finished, CreatedAt: a.Started, UpdatedAt: updatedAt, LastActivity: lastActivity,
 		Err: errStr, Tail: tail, Lines: lines,
 		LastAssistant: lastAssistant, Result: result, ResultRef: resultRef,
@@ -1208,6 +1217,8 @@ func (s agentSink) Transcript(chunk string) {
 }
 func (s agentSink) userMessage(text string)      { s.a.appendUserMessage(text) }
 func (s agentSink) assistantMessage(text string) { s.a.appendAssistantMessage(text) }
+func (s agentSink) assistantDelta(text string)   { s.a.appendAssistantDelta(text) }
+func (s agentSink) resetStreamingAssistant()     { s.a.resetStreamingAssistant() }
 
 func truncate(s string, n int) string {
 	runes := []rune(s)

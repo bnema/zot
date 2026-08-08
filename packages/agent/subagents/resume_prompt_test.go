@@ -2,11 +2,150 @@ package subagents
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"runtime"
 	"testing"
 	"time"
 )
+
+func TestResumeWithPromptQueuesFollowUpsForActiveWorker(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("subagent inbox transport uses Unix-domain sockets")
+	}
+
+	root := shortSocketDir(t)
+	ready := make(chan struct{}, 1)
+	commands := make(chan Envelope, 2)
+	f := New(Config{
+		Root: root, RepoRoot: root,
+		NewRunner: func(a *Agent) Runner {
+			return RunnerFunc(func(ctx context.Context, _ Sink) error {
+				listener, err := Listen(a.InboxPath)
+				if err != nil {
+					return err
+				}
+				defer listener.Close()
+				a.setProcessState(ProcessAlive)
+				a.setTurnState(TurnRunning, "turn-1")
+				ready <- struct{}{}
+				for {
+					select {
+					case <-ctx.Done():
+						return ctx.Err()
+					case line, ok := <-listener.Lines():
+						if !ok {
+							return nil
+						}
+						command, err := ParseCommand(line)
+						if err != nil {
+							return err
+						}
+						if command.Type == CommandAgentShutdown {
+							return nil
+						}
+						commands <- command
+					}
+				}
+			})
+		},
+	})
+	defer f.StopAll()
+
+	a, err := f.Spawn(context.Background(), "review the implementation")
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-ready:
+	case <-time.After(time.Second):
+		t.Fatal("active worker did not open its inbox")
+	}
+	canceled, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := f.ResumeWithPrompt(canceled, a.ID, "must not be accepted"); !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled active follow-up error = %v, want context canceled", err)
+	}
+
+	const (
+		firstFollowUp  = "Check the parser behavior."
+		secondFollowUp = "Then check the error handling."
+	)
+	if _, err := f.ResumeWithPrompt(context.Background(), a.ID, firstFollowUp); err != nil {
+		t.Fatalf("queue first active follow-up: %v", err)
+	}
+	if _, err := f.ResumeWithPrompt(context.Background(), a.ID, secondFollowUp); err != nil {
+		t.Fatalf("queue second active follow-up: %v", err)
+	}
+	select {
+	case command := <-commands:
+		t.Fatalf("active follow-up was delivered before idle: %v", command.Type)
+	default:
+	}
+
+	persisted, err := readAgentMeta(filepath.Join(root, "agents", a.ID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if persisted.ResumePrompt != "" || len(persisted.ResumeQueue) != 2 {
+		t.Fatalf("active follow-ups persisted as prompt %q queue %d, want empty prompt and queue 2", persisted.ResumePrompt, len(persisted.ResumeQueue))
+	}
+	if firstID, secondID := persisted.ResumeQueue[0].CommandID, persisted.ResumeQueue[1].CommandID; firstID == "" || secondID == "" || firstID == secondID {
+		t.Fatalf("queued follow-up command IDs = %q, %q; want distinct non-empty IDs", firstID, secondID)
+	}
+
+	if err := updateAgentFromEvent(a, NewEvent(EventAgentIdle, map[string]any{"turn_id": "turn-1"})); err != nil {
+		t.Fatalf("apply first idle event: %v", err)
+	}
+	select {
+	case command := <-commands:
+		var payload TurnStartPayload
+		if command.Type != CommandTurnStart || command.DecodePayload(&payload) != nil || payload.Prompt != firstFollowUp {
+			t.Fatalf("first idle delivery = type %q prompt %q, want turn start %q", command.Type, payload.Prompt, firstFollowUp)
+		}
+		if !payload.NewRun {
+			t.Fatal("first queued follow-up did not request a fresh run budget")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("first active follow-up was not delivered at idle")
+	}
+	if got := a.TurnState(); got != TurnQueued {
+		t.Fatalf("turn state after first queued delivery = %s, want %s", got, TurnQueued)
+	}
+
+	if err := updateAgentFromEvent(a, NewEvent(EventTurnStarted, map[string]any{
+		"turn_id": "turn-2", "step": float64(2), "lifetime_turns": 2, "current_run_turns": 1,
+	})); err != nil {
+		t.Fatalf("apply second turn started event: %v", err)
+	}
+	if err := updateAgentFromEvent(a, NewEvent(EventAgentIdle, map[string]any{"turn_id": "turn-2"})); err != nil {
+		t.Fatalf("apply second idle event: %v", err)
+	}
+	select {
+	case command := <-commands:
+		var payload TurnStartPayload
+		if command.Type != CommandTurnStart || command.DecodePayload(&payload) != nil || payload.Prompt != secondFollowUp {
+			t.Fatalf("second idle delivery = type %q prompt %q, want turn start %q", command.Type, payload.Prompt, secondFollowUp)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("second active follow-up was not delivered at the next idle turn")
+	}
+
+	persisted, err = readAgentMeta(filepath.Join(root, "agents", a.ID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if persisted.ResumePrompt != secondFollowUp || len(persisted.ResumeQueue) != 0 {
+		t.Fatalf("second follow-up persistence = prompt %q queue %d, want prompt %q and empty queue", persisted.ResumePrompt, len(persisted.ResumeQueue), secondFollowUp)
+	}
+	if persisted.ResumePromptID == "" {
+		t.Fatal("promoted follow-up lost its command ID")
+	}
+	if err := f.Stop(a.ID); err != nil {
+		t.Fatal(err)
+	}
+	a.Wait()
+}
 
 func TestResumeWithPromptDeliversFollowUpToIdleWorker(t *testing.T) {
 	if runtime.GOOS == "windows" {
@@ -60,6 +199,7 @@ func TestResumeWithPromptDeliversFollowUpToIdleWorker(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("idle worker did not open its inbox")
 	}
+	a.setTurnCounts(4, 2)
 
 	const followUp = "I applied your review. What do you think now?"
 	continued, err := f.ResumeWithPrompt(context.Background(), a.ID, followUp)
@@ -71,6 +211,12 @@ func TestResumeWithPromptDeliversFollowUpToIdleWorker(t *testing.T) {
 	}
 	if got := a.TurnState(); got != TurnQueued {
 		t.Fatalf("turn state after sending follow-up = %s, want %s", got, TurnQueued)
+	}
+	if got := a.CurrentRunTurnsValue(); got != 0 {
+		t.Fatalf("current-run turns after explicit resume = %d, want 0 before turn starts", got)
+	}
+	if got := a.LifetimeTurnsValue(); got != 4 {
+		t.Fatalf("lifetime turns after explicit resume = %d, want 4", got)
 	}
 	if _, err := f.ResumeWithPrompt(context.Background(), a.ID, "duplicate follow-up"); err == nil {
 		t.Fatal("second follow-up succeeded while the first was queued")
@@ -86,6 +232,9 @@ func TestResumeWithPromptDeliversFollowUpToIdleWorker(t *testing.T) {
 		}
 		if payload.Prompt != followUp {
 			t.Fatalf("follow-up prompt = %q, want %q", payload.Prompt, followUp)
+		}
+		if !payload.NewRun {
+			t.Fatal("idle follow-up did not request a fresh run budget")
 		}
 	case <-time.After(time.Second):
 		t.Fatal("idle worker did not receive the follow-up")

@@ -58,6 +58,106 @@ func TestCredentialStdinHelperProcess(t *testing.T) {
 	os.Exit(0)
 }
 
+// TestMessageDeltaStreamsAndReplaysWithoutDuplicatingFinalMessage verifies
+// that the durable event stream has the same visible result while live and
+// after history replay.
+func TestMessageDeltaStreamsAndReplaysWithoutDuplicatingFinalMessage(t *testing.T) {
+	events := []Event{
+		NewEvent("message.delta", map[string]any{"delta": "partial "}),
+		NewEvent("message.delta", map[string]any{"delta": "answer"}),
+		NewEvent("assistant_message", map[string]any{"content": []any{
+			map[string]any{"type": "text", "text": "partial answer"},
+		}}),
+	}
+
+	live := &Agent{transcriptLoaded: true}
+	for _, event := range events {
+		applyEventToSink(event, agentSink{a: live})
+	}
+	if got := strings.Join(live.Transcript(), "\n"); got != "partial answer" {
+		t.Fatalf("live transcript = %q, want final assistant message once", got)
+	}
+	if got := live.Snapshot().LastAssistant; got != "partial answer" {
+		t.Fatalf("live assistant output = %q, want %q", got, "partial answer")
+	}
+
+	replayed := &Agent{transcriptLoaded: true}
+	for _, event := range events {
+		replayEventTranscript(replayed, event)
+	}
+	if got := strings.Join(replayed.Transcript(), "\n"); got != "partial answer" {
+		t.Fatalf("replayed transcript = %q, want final assistant message once", got)
+	}
+}
+
+func TestMessageDeltaBoundsLiveProjection(t *testing.T) {
+	a := &Agent{maxOutputBytes: 32, maxOutputLines: 100, transcriptLoaded: true}
+	applyEventToSink(NewEvent("message.delta", map[string]any{"delta": strings.Repeat("x", 64)}), agentSink{a: a})
+	applyEventToSink(NewEvent("message.delta", map[string]any{"delta": "discarded"}), agentSink{a: a})
+
+	a.mu.Lock()
+	streamed := a.streamingAssistantText
+	truncated := a.streamingAssistantTruncated
+	a.mu.Unlock()
+	if !truncated {
+		t.Fatal("streamed output was not marked truncated")
+	}
+	if got := len([]byte(streamed)); got > 32 {
+		t.Fatalf("streamed output length = %d, want at most 32", got)
+	}
+	snapshot := a.Snapshot()
+	if got := snapshot.LastAssistant; got != streamed {
+		t.Fatalf("live assistant output = %q, want bounded stream %q", got, streamed)
+	}
+	if !snapshot.OutputTruncated {
+		t.Fatal("snapshot did not expose truncated streamed output")
+	}
+
+	events := []Event{
+		NewEvent(EventMessageDelta, map[string]any{"delta": "first partial"}),
+		NewEvent("turn_end", map[string]any{"stop": "cancelled"}),
+		NewEvent(EventMessageDelta, map[string]any{"delta": "second partial"}),
+	}
+	want := "first partial\nsecond partial"
+	assertProjection := func(t *testing.T, agent *Agent) {
+		t.Helper()
+		if got := strings.Join(agent.Transcript(), "\n"); got != want {
+			t.Fatalf("transcript = %q, want %q", got, want)
+		}
+		agent.mu.Lock()
+		truncated := agent.streamingAssistantTruncated
+		agent.mu.Unlock()
+		if truncated {
+			t.Fatal("fresh second-turn stream was incorrectly truncated")
+		}
+	}
+
+	live := &Agent{maxOutputBytes: 100, maxOutputLines: 100, transcriptLoaded: true}
+	for _, event := range events {
+		applyEventToSink(event, agentSink{a: live})
+	}
+	assertProjection(t, live)
+
+	replayed := &Agent{maxOutputBytes: 100, maxOutputLines: 100, transcriptLoaded: true}
+	replayTranscriptIntoAgent(replayed, events)
+	assertProjection(t, replayed)
+
+	legacy := &Agent{maxOutputBytes: 100, maxOutputLines: 100, transcriptLoaded: true}
+	replayEventsIntoAgent(legacy, events)
+	assertProjection(t, legacy)
+
+	truncatedTurn := &Agent{maxOutputBytes: 16, maxOutputLines: 100, transcriptLoaded: true}
+	applyEventToSink(NewEvent(EventMessageDelta, map[string]any{"delta": strings.Repeat("x", 64)}), agentSink{a: truncatedTurn})
+	applyEventToSink(NewEvent("turn_end", map[string]any{"stop": "cancelled"}), agentSink{a: truncatedTurn})
+	truncatedTurn.mu.Lock()
+	streamText := truncatedTurn.streamingAssistantText
+	streamTruncated := truncatedTurn.streamingAssistantTruncated
+	truncatedTurn.mu.Unlock()
+	if streamText != "" || streamTruncated {
+		t.Fatalf("stream state after turn boundary = (%q, %v), want empty and not truncated", streamText, streamTruncated)
+	}
+}
+
 func TestWorkerEnvironmentRedactsProviderSecrets(t *testing.T) {
 	t.Setenv("OPENAI_API_KEY", "openai-secret")
 	t.Setenv("CUSTOM_PROVIDER_API_KEY", "custom-secret")
@@ -383,11 +483,69 @@ func TestDefaultChildArgsResumeUsesFollowUpPrompt(t *testing.T) {
 	}
 }
 
+func TestReadyDoesNotMarkInitialDelegatedTurnIdle(t *testing.T) {
+	a := &Agent{Task: "initial delegated task"}
+	a.setTurnState(TurnQueued, "")
+
+	if err := updateAgentFromEvent(a, NewEvent(EventAgentReady, map[string]any{"lifetime_turns": 0, "current_run_turns": 0})); err != nil {
+		t.Fatal(err)
+	}
+	if got := a.TurnState(); got != TurnQueued {
+		t.Fatalf("ready changed turn state to %s, want %s", got, TurnQueued)
+	}
+	if err := updateAgentFromEvent(a, NewEvent(EventTurnStarted, map[string]any{
+		"turn_id":           "turn-1",
+		"lifetime_turns":    1,
+		"current_run_turns": 1,
+	})); err != nil {
+		t.Fatal(err)
+	}
+	if got := a.TurnState(); got != TurnRunning {
+		t.Fatalf("turn.started changed turn state to %s, want %s", got, TurnRunning)
+	}
+}
+
+func TestUpdateAgentFromEventIgnoresStaleRejectedFollowUp(t *testing.T) {
+	a := &Agent{}
+	a.setResumePrompt("current prompt", time.Now())
+	if err := updateAgentFromEvent(a, NewEvent("error", map[string]any{
+		"code": "turn_rejected", "reason": "busy", "command_id": "stale-command",
+	})); err != nil {
+		t.Fatal(err)
+	}
+	if prompt, _ := a.ResumePromptInfo(); prompt != "current prompt" {
+		t.Fatalf("stale rejection changed active prompt to %q", prompt)
+	}
+}
+
+func TestUpdateAgentFromEventRecoversRejectedFollowUp(t *testing.T) {
+	a := &Agent{}
+	a.setResumePrompt("retry me", time.Now())
+	a.setTurnState(TurnQueued, "turn-1")
+	if err := updateAgentFromEvent(a, NewEvent("error", map[string]any{
+		"code":       "turn_rejected",
+		"reason":     "busy",
+		"command_id": a.resumePromptCommandID(),
+	})); err != nil {
+		t.Fatal(err)
+	}
+	if got := a.TurnState(); got != TurnIdle {
+		t.Fatalf("rejected turn state = %s, want %s", got, TurnIdle)
+	}
+	if prompt, _ := a.ResumePromptInfo(); prompt != "" {
+		t.Fatalf("rejected prompt remained active: %q", prompt)
+	}
+	queued := a.resumePromptQueueSnapshot()
+	if len(queued) != 1 || queued[0].Prompt != "retry me" {
+		t.Fatalf("rejected prompt queue = %+v, want retry me", queued)
+	}
+}
+
 func TestUpdateAgentFromEventIgnoresProviderToolLoopTurnEnd(t *testing.T) {
 	a := &Agent{}
 	a.setTurnState(TurnRunning, "turn-1")
 	persisted := 0
-	a.persistFn = func(*Agent) { persisted++ }
+	a.persistFn = func(*Agent) error { persisted++; return nil }
 
 	updateAgentFromEvent(a, NewEvent("turn_end", map[string]any{"stop": "tool_use"}))
 
@@ -405,7 +563,7 @@ func TestUpdateAgentFromEventIgnoresProviderToolLoopTurnEnd(t *testing.T) {
 func TestUpdateAgentFromEventPersistsTerminalTurnEndWithStep(t *testing.T) {
 	a := &Agent{}
 	persisted := 0
-	a.persistFn = func(*Agent) { persisted++ }
+	a.persistFn = func(*Agent) error { persisted++; return nil }
 
 	updateAgentFromEvent(a, NewEvent("turn_end", map[string]any{"step": float64(2), "error": "boom"}))
 
@@ -478,6 +636,114 @@ func TestSetOnTurnEndReplaysPendingNoticesInArrivalOrder(t *testing.T) {
 		if got[i] != want[i] {
 			t.Errorf("replayed notice %d = %+v, want %+v", i, got[i], want[i])
 		}
+	}
+}
+
+func TestUpdateAgentFromEventDoesNotCountProviderTurnStarts(t *testing.T) {
+	a := &Agent{}
+	a.setTurnCounts(4, 2)
+	a.setTurnState(TurnRunning, "turn-1")
+	persisted := 0
+	a.persistFn = func(*Agent) error { persisted++; return nil }
+
+	updateAgentFromEvent(a, NewEvent(EventTurnStarted, map[string]any{"step": float64(7), "nested_turn": true}))
+
+	if got := a.LifetimeTurnsValue(); got != 4 {
+		t.Fatalf("lifetime turns = %d, want 4", got)
+	}
+	if got := a.CurrentRunTurnsValue(); got != 2 {
+		t.Fatalf("current-run turns = %d, want 2", got)
+	}
+	if got := a.TurnState(); got != TurnRunning {
+		t.Fatalf("turn state = %s, want %s", got, TurnRunning)
+	}
+	if persisted != 0 {
+		t.Fatalf("provider turn start persisted %d times, want 0", persisted)
+	}
+}
+
+func TestUpdateAgentFromEventPersistsCanonicalTurnCounters(t *testing.T) {
+	stateDir := t.TempDir()
+	a := &Agent{ID: "counter-agent", stateDir: stateDir}
+	a.persistFn = func(agent *Agent) error {
+		if err := writeAgentMeta(stateDir, agent); err != nil {
+			t.Errorf("write agent metadata: %v", err)
+			return err
+		}
+		return nil
+	}
+
+	updateAgentFromEvent(a, NewEvent(EventTurnStarted, map[string]any{
+		"turn_id":           "turn-3",
+		"lifetime_turns":    3,
+		"current_run_turns": 1,
+	}))
+
+	meta, err := readAgentMeta(stateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if meta.LifetimeTurns != 3 || meta.CurrentRunTurns != 1 {
+		t.Fatalf("persisted counters = (%d, %d), want (3, 1)", meta.LifetimeTurns, meta.CurrentRunTurns)
+	}
+	if got := a.Snapshot(); got.LifetimeTurns != 3 || got.CurrentRunTurns != 1 {
+		t.Fatalf("snapshot counters = (%d, %d), want (3, 1)", got.LifetimeTurns, got.CurrentRunTurns)
+	}
+}
+
+func TestRecordPersistenceErrorPreservesFirstFailure(t *testing.T) {
+	a := &Agent{}
+	a.recordPersistenceError(fmt.Errorf("first failure"))
+	a.recordPersistenceError(fmt.Errorf("later failure"))
+	if got := a.Snapshot().Err; !strings.Contains(got, "first failure") || strings.Contains(got, "later failure") {
+		t.Fatalf("recorded persistence error = %q, want only first failure", got)
+	}
+}
+
+func TestRestoreResumePromptPreservesCommandIdentity(t *testing.T) {
+	a := &Agent{}
+	a.setResumePrompt("old prompt", time.Now())
+	oldID := a.resumePromptCommandID()
+	previous := a.setResumePrompt("new prompt", time.Now())
+	a.restoreResumePrompt(previous)
+	if got := a.resumePromptCommandID(); got != oldID {
+		t.Fatalf("restored command ID = %q, want %q", got, oldID)
+	}
+}
+
+func TestEventMatchesPendingResumeRejectsIdentityLessRejection(t *testing.T) {
+	a := &Agent{resumePromptID: "command-1"}
+	if eventMatchesPendingResume(a, Event{Type: "error", Data: map[string]any{"code": "turn_rejected"}}) {
+		t.Fatal("identity-less turn rejection matched a pending prompt")
+	}
+	if !eventMatchesPendingResume(a, Event{Type: EventTurnStarted, Data: map[string]any{}}) {
+		t.Fatal("identity-less legacy turn.started did not match a pending prompt")
+	}
+	if !eventMatchesPendingResume(a, Event{Type: "error", Data: map[string]any{"code": "turn_rejected", "command_id": "command-1"}}) {
+		t.Fatal("matching turn rejection did not match a pending prompt")
+	}
+}
+
+func TestEventCounterRejectsNegativeFractionalAndOverflowValues(t *testing.T) {
+	cases := []struct {
+		name  string
+		value any
+		ok    bool
+	}{
+		{name: "valid integer", value: float64(3), ok: true},
+		{name: "negative integer", value: int64(-1)},
+		{name: "fractional float", value: 1.5},
+		{name: "negative float", value: -1.0},
+		{name: "fractional json number", value: json.Number("1.5")},
+		{name: "overflow float", value: float64(^uint(0) >> 1)},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := eventCounter(map[string]any{"counter": tc.value}, "counter")
+			if ok != tc.ok {
+				t.Fatalf("eventCounter ok = %t, want %t (value %v, got %d)", ok, tc.ok, tc.value, got)
+			}
+		})
 	}
 }
 

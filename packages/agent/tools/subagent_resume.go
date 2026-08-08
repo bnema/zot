@@ -10,10 +10,12 @@ import (
 	"github.com/bnema/zut/packages/core"
 )
 
-// SubagentResumeTool gives a completed or stopped sub-agent a follow-up turn
-// while preserving its existing session context. For an idle live worker, the
-// follow-up is delivered directly. For a terminal worker, the supervisor
-// restarts the retained session with the follow-up as its initial turn.
+// SubagentResumeTool gives a sub-agent a follow-up turn while preserving its
+// existing session context. Every explicit follow-up starts a fresh max_turns
+// budget. For an idle live worker, the follow-up is delivered directly; for an
+// active live worker, it is queued for the next available message turn; for a
+// terminal worker, the supervisor restarts the retained session with the
+// follow-up as its initial turn.
 type SubagentResumeTool struct {
 	Supervisor *subagents.Supervisor
 	Enabled    func() bool
@@ -48,7 +50,7 @@ const subagentResumeSchema = `{
 func (t *SubagentResumeTool) Name() string { return "subagent_resume" }
 
 func (t *SubagentResumeTool) Description() string {
-	return "Send a follow-up to an idle sub-agent, or restart a stopped one with its prior session context preserved."
+	return "Continue a sub-agent with a fresh turn budget and its retained session; deliver immediately when idle, queue while active, or restart a stopped worker."
 }
 
 func (t *SubagentResumeTool) Schema() json.RawMessage {
@@ -68,7 +70,7 @@ func (t *SubagentResumeTool) Execute(ctx context.Context, raw json.RawMessage, _
 		return protocolToolError(prefix + ": subagent supervisor not available in this mode")
 	}
 	if t.Enabled == nil || !t.Enabled() {
-		return protocolToolError(prefix + ": auto-subagents is disabled. Ask the user to enable it from /settings before managing workers.")
+		return protocolToolError(prefix + ": subagent management is unavailable in this mode")
 	}
 
 	var args subagentResumeArgs

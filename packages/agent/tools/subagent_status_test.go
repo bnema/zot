@@ -39,6 +39,28 @@ func (r statusTestRunner) Run(ctx context.Context, sink subagents.Sink) error {
 	}
 }
 
+func TestSubagentStatusIncludesTurnCounters(t *testing.T) {
+	entry := publicSubagentStatus(subagents.AgentSnapshot{
+		ID:              "counter-agent",
+		LifetimeTurns:   7,
+		CurrentRunTurns: 2,
+	})
+	if entry.LifetimeTurns != 7 || entry.CurrentRunTurns != 2 {
+		t.Fatalf("status counters = (%d, %d), want (7, 2)", entry.LifetimeTurns, entry.CurrentRunTurns)
+	}
+	encoded, err := json.Marshal(entry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fields map[string]any
+	if err := json.Unmarshal(encoded, &fields); err != nil {
+		t.Fatal(err)
+	}
+	if fields["lifetime_turns"] != float64(7) || fields["current_run_turns"] != float64(2) {
+		t.Fatalf("encoded status counters = %#v", fields)
+	}
+}
+
 func TestSubagentStatusSchemaHasOptionalAgentID(t *testing.T) {
 	var schema struct {
 		Type       string `json:"type"`

@@ -443,6 +443,9 @@ func (f *Supervisor) ensureResult(a *Agent, status Status, runErr error) {
 		return
 	}
 	attempt := a.AttemptValue()
+	a.mu.Lock()
+	partialOutput := a.lastAssistant
+	a.mu.Unlock()
 	result := a.Result()
 	if result != nil {
 		if err := validateTurnResultAgent(result, a.ID); err != nil {
@@ -468,14 +471,20 @@ func (f *Supervisor) ensureResult(a *Agent, status Status, runErr error) {
 			result = nil
 		}
 	}
+	if result != nil && result.Output == "" && partialOutput != "" &&
+		(result.Status == ResultFailed || result.Status == ResultCanceled || status == StatusFailed || status == StatusKilled) {
+		// A canceled or failed worker turn may emit its terminal result before
+		// its provider turns accumulated text into a final assistant message.
+		// The event stream has already projected that text onto the Agent, so
+		// retain it in the durable result rather than returning an empty failure.
+		result.Output = partialOutput
+	}
 	if result == nil {
 		turnID := a.CurrentTurnID()
 		if turnID == "" {
 			turnID = fmt.Sprintf("turn-%d", attempt)
 		}
-		a.mu.Lock()
-		output := a.lastAssistant
-		a.mu.Unlock()
+		output := partialOutput
 		resultStatus := ResultSucceeded
 		switch {
 		case status == StatusFailed && errors.Is(runErr, context.Canceled):
@@ -512,7 +521,20 @@ func (f *Supervisor) ensureResult(a *Agent, status Status, runErr error) {
 		} else {
 			result.Status = ResultFailed
 		}
-		if result.Error == nil {
+		if errors.Is(runErr, context.DeadlineExceeded) {
+			// The parent deadline is authoritative for terminal categorization, so
+			// it intentionally overrides any child result error, including
+			// context_limit. The worker was first asked to stop cleanly, and any
+			// streamed output remains in this result and HistoryRef(agentID).
+			message := "subagent deadline exceeded; inspect history for received output"
+			if result.Output != "" {
+				message = "subagent deadline exceeded; partial output is preserved in the result and history"
+			}
+			result.Error = &ResultError{
+				Code:    "deadline_exceeded",
+				Message: message,
+			}
+		} else if result.Error == nil {
 			result.Error = &ResultError{Code: "runner_failed", Message: truncate(runErr.Error(), 500)}
 		}
 	}

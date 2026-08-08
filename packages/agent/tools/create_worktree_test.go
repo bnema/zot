@@ -431,6 +431,76 @@ func TestExecuteCreateWorktreePlanRollsBackBootstrapConfigOnIgnoreFailure(t *tes
 	}
 }
 
+func TestCreateWorktreeAcceptsViableGitignoreEntries(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git is required")
+	}
+	for _, test := range []struct {
+		name  string
+		entry string
+	}{
+		{name: "root-anchored", entry: worktreesIgnoreEntry},
+		{name: "unanchored", entry: worktreesUnanchoredIgnoreEntry},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			repo := initWorktreeTestRepo(t)
+			ignorePath := filepath.Join(repo, ".gitignore")
+			before := []byte(test.entry + "\n")
+			if err := os.WriteFile(ignorePath, before, 0o644); err != nil {
+				t.Fatal(err)
+			}
+			tool := newCreateWorktreeTestTool(repo)
+			args := mustJSON(t, map[string]string{
+				"branch":         "feature/" + test.name + "-ignore",
+				"bootstrap_root": defaultWorktreeRoot,
+			})
+
+			result, err := tool.Execute(context.Background(), args, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			text := result.Content[0].(provider.TextBlock).Text
+			if !strings.Contains(text, ".gitignore: already ignores .worktrees/") {
+				t.Fatalf("result did not recognize existing ignore entry:\n%s", text)
+			}
+			ignore, err := os.ReadFile(ignorePath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(ignore) != string(before) {
+				t.Fatalf(".gitignore changed from %q to %q", before, ignore)
+			}
+		})
+	}
+}
+
+func TestNewWorktreesIgnoreUpdateRejectsLookalikeEntries(t *testing.T) {
+	for _, entry := range []string{
+		"!.worktrees/\n",
+		"nested/.worktrees/\n",
+		"#.worktrees/\n",
+		".worktrees-other/\n",
+	} {
+		t.Run(strings.TrimSpace(entry), func(t *testing.T) {
+			ignorePath := filepath.Join(t.TempDir(), ".gitignore")
+			if err := os.WriteFile(ignorePath, []byte(entry), 0o644); err != nil {
+				t.Fatal(err)
+			}
+
+			update, err := newWorktreesIgnoreUpdate(ignorePath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !update.changed {
+				t.Fatalf("entry %q was treated as ignoring the root .worktrees directory", strings.TrimSpace(entry))
+			}
+			if got, want := string(update.after), entry+worktreesIgnoreEntry+"\n"; got != want {
+				t.Fatalf("updated .gitignore = %q, want %q", got, want)
+			}
+		})
+	}
+}
+
 func TestCreateWorktreePreservesGitignoreLineEndings(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git is required")
