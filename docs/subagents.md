@@ -127,7 +127,7 @@ subagent://<id>/patch
 
 `events.jsonl` is appended as the worker emits events, including partial `message.delta` output. The dashboard and `subagent://<id>/history` replay those deltas, so output received before a worker finishes remains recoverable rather than waiting for a final assistant message.
 
-When a subagent deadline expires, the supervisor requests worker shutdown and allows the configured grace period for the worker to cancel its turn and write its session and result. The terminal result remains a failure with error code `deadline_exceeded`, preserves any output already received, and directs the caller to its history. If the worker does not stop during that grace period, the supervisor forcefully cancels it to preserve the timeout limit.
+A subagent timeout applies to each active delegated turn. When the deadline expires, the worker cancels that turn, writes a failed result with error code `deadline_exceeded`, preserves any output already received, and remains idle so an explicit follow-up can resume its session. Idle time does not consume the next turn's timeout, and each resumed turn receives a fresh deadline. Process shutdown still allows the configured grace period for the worker to write its session and result before forceful cancellation.
 
 Use `/subagents resume-session <id>` to continue the existing session without replaying its original task. Use `/subagents restart-task <id>` only when intentionally starting the stored task again. Cancellation requests graceful shutdown first, then forcefully cancels after the configured grace period.
 

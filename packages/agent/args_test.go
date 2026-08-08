@@ -2,6 +2,7 @@ package agent
 
 import (
 	"testing"
+	"time"
 
 	"github.com/bnema/zut/packages/agent/subagents"
 	"github.com/google/uuid"
@@ -14,6 +15,22 @@ func TestParseArgsSubagentAndReasoning(t *testing.T) {
 	}
 	if args.Mode != ModeSubagentWorker || args.Subagent != "reviewer" || args.Reasoning != "high" || args.Prompt != "task" {
 		t.Fatalf("parsed args = mode=%q subagent=%q reasoning=%q prompt=%q", args.Mode, args.Subagent, args.Reasoning, args.Prompt)
+	}
+}
+
+func TestParseArgsSubagentTurnTimeout(t *testing.T) {
+	args, err := ParseArgs([]string{"--subagent-worker", "/tmp/in.sock", "--subagent-turn-timeout", "15m"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if args.SubagentTurnTimeout != 15*time.Minute {
+		t.Fatalf("turn timeout = %s, want %s", args.SubagentTurnTimeout, 15*time.Minute)
+	}
+
+	for _, value := range []string{"0s", "-1s", "invalid"} {
+		if _, err := ParseArgs([]string{"--subagent-worker", "/tmp/in.sock", "--subagent-turn-timeout", value}); err == nil {
+			t.Errorf("timeout %q unexpectedly accepted", value)
+		}
 	}
 }
 
