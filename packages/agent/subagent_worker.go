@@ -36,6 +36,56 @@ import (
 // production; tests use the stubchild binary under
 // packages/agent/subagents/testdata/cmd/stubchild instead of the real model
 // loop.
+// workerTurnBudget is deliberately independent of the model loop: one
+// admitted message turn consumes one current-run and lifetime turn, while
+// retries, compaction, and provider/tool loops remain inside that turn.
+type workerTurnBudget struct {
+	sequence int
+	lifetime int
+	current  int
+}
+
+type sessionPersistenceState struct {
+	mu       sync.Mutex
+	errValue error
+}
+
+func (s *sessionPersistenceState) record(err error) {
+	if err == nil {
+		return
+	}
+	s.mu.Lock()
+	if s.errValue == nil {
+		s.errValue = err
+	}
+	s.mu.Unlock()
+}
+
+func (s *sessionPersistenceState) failed() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.errValue != nil
+}
+
+func (s *sessionPersistenceState) err() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.errValue
+}
+
+func (b *workerTurnBudget) start(maxTurns int, newRun bool) (step, lifetime, current int, admitted bool) {
+	if newRun {
+		b.current = 0
+	}
+	b.sequence++
+	if maxTurns > 0 && b.current >= maxTurns {
+		return b.sequence, b.lifetime, b.current, false
+	}
+	b.lifetime++
+	b.current++
+	return b.sequence, b.lifetime, b.current, true
+}
+
 func runSubagentWorkerMode(ctx context.Context, args Args, version string) error {
 	if args.SubagentWorker == "" {
 		return fmt.Errorf("--subagent-worker requires a socket path")
@@ -74,6 +124,7 @@ func runSubagentWorkerMode(ctx context.Context, args Args, version string) error
 	if err != nil {
 		return err
 	}
+	var sessionPersistence sessionPersistenceState
 	if sess != nil {
 		var providerName, model string
 		sess, ag, providerName, model, err = applyInitialSessionResume(ctx, args, r, extMgr, sess, ag)
@@ -82,6 +133,18 @@ func runSubagentWorkerMode(ctx context.Context, args Args, version string) error
 		}
 		r.Provider, r.Model = providerName, model
 		ag.OnToolResult = func(_ string, result core.ToolResult) { persistExtensionToolResult(extMgr, sess, result) }
+		// A prompt is acknowledged by the supervisor only after this callback
+		// has appended and synced the matching user message. This closes the
+		// crash window between accepting a follow-up and writing session.json.
+		ag.OnMessageAppended = func(message provider.Message) {
+			if err := sess.AppendMessage(message); err != nil {
+				sessionPersistence.record(err)
+				return
+			}
+			if err := sess.Sync(); err != nil {
+				sessionPersistence.record(err)
+			}
+		}
 		defer sess.Close()
 	}
 	announceSession(extMgr, sess)
@@ -113,9 +176,12 @@ func runSubagentWorkerMode(ctx context.Context, args Args, version string) error
 	em := newSubagentEmitter(os.Stdout, logMirror)
 	em.setProtocolIdentity(os.Getenv("ZUT_SUBAGENT_AGENT_ID"))
 	em.emit("agent.ready", map[string]any{
-		"version": version,
-		"cwd":     r.CWD,
-		"model":   r.Model,
+		"version":           version,
+		"cwd":               r.CWD,
+		"model":             r.Model,
+		"lifetime_turns":    args.SubagentLifetimeTurns,
+		"current_run_turns": args.SubagentRunTurns,
+		"max_turns":         args.SubagentMaxTurns,
 	})
 
 	// Heartbeats make a live-but-detached child distinguishable from a
@@ -145,63 +211,82 @@ func runSubagentWorkerMode(ctx context.Context, args Args, version string) error
 	// Keep a per-turn cancel so the "cancel" inbox message can interrupt
 	// an in-flight turn without tearing down the whole daemon.
 	var (
-		mu           sync.Mutex
-		cancelFn     context.CancelFunc
-		busyTurn     bool
-		turnNo       = initialTurnNumber(os.Getenv("ZUT_SUBAGENT_EVENT_LOG"))
+		mu       sync.Mutex
+		cancelFn context.CancelFunc
+		busyTurn bool
+		budget   = workerTurnBudget{
+			sequence: initialTurnNumber(os.Getenv("ZUT_SUBAGENT_EVENT_LOG")),
+			lifetime: args.SubagentLifetimeTurns,
+			current:  args.SubagentRunTurns,
+		}
 		turnWG       sync.WaitGroup
 		closing      bool
+		turnPending  bool
+		seenCommands = make(map[string]struct{})
 		shutdown     = make(chan struct{})
 		shutdownOnce sync.Once
 	)
 	maxOutputBytes, maxOutputLines := workerOutputLimits()
 
-	runOne := func(prompt string) {
+	runOne := func(prompt string, newRun bool, commandID string) {
 		mu.Lock()
 		// launchTurn admits the goroutine to turnWG before it starts so
 		// shutdown can join it. A shutdown can win the scheduling race
 		// after that admission but before this goroutine acquires mu; in
 		// that case do not start a new Prompt after waitForActiveTurn has
 		// declared the worker closing.
-		if closing {
+		if closing || busyTurn {
 			mu.Unlock()
-			return
-		}
-		if args.SubagentMaxTurns > 0 && turnNo >= args.SubagentMaxTurns {
-			// Consume a unique rejected attempt so repeated prompts after
-			// the limit cannot reuse the same turn id in the event log.
-			turnNo++
-			step := turnNo
-			mu.Unlock()
-			turnID := fmt.Sprintf("turn-%d", step)
-			errPayload := map[string]any{"code": "max_turns", "message": "maximum subagent turns reached"}
-			em.emit("turn.result", map[string]any{"status": "failed", "turn_id": turnID, "error": errPayload})
-			em.emit("turn.failed", map[string]any{"turn_id": turnID, "error": errPayload})
-			em.emit("turn_end", map[string]any{"step": step, "turn_id": turnID, "error": errPayload["message"]})
-			em.emit("agent.idle", map[string]any{"turn_id": turnID})
-			return
-		}
-		if busyTurn {
-			// Drop concurrent turns rather than queuing. The
-			// supervisor protocol assumes one outstanding turn per
-			// agent; if a user really wants to interrupt and start
-			// another, they should send "cancel" first.
-			mu.Unlock()
-			em.emit("error", map[string]any{"message": "agent busy; send 'cancel' first"})
+			em.emit("error", map[string]any{"code": "turn_rejected", "reason": "busy", "command_id": commandID, "message": "worker is busy"})
 			return
 		}
 		busyTurn = true
-		turnNo++
-		step := turnNo
+		turnPending = false
+		step, lifetime, currentRun, admitted := budget.start(args.SubagentMaxTurns, newRun)
+		if !admitted {
+			busyTurn = false
+			mu.Unlock()
+			turnID := fmt.Sprintf("turn-%d", step)
+			errPayload := map[string]any{"code": "turn_rejected", "reason": "max_turns", "command_id": commandID, "message": "maximum subagent turns reached"}
+			em.emit("error", errPayload)
+			em.emit("turn.result", map[string]any{"status": "failed", "turn_id": turnID, "error": errPayload})
+			em.emit("turn.failed", map[string]any{"turn_id": turnID, "error": errPayload})
+			em.emit("turn_end", map[string]any{"step": step, "turn_id": turnID, "error": errPayload["message"]})
+			// Max-turn rejection ends the current run, but the worker remains
+			// alive and can accept a queued follow-up as a fresh run.
+			em.emit("agent.idle", map[string]any{
+				"turn_id":           turnID,
+				"lifetime_turns":    lifetime,
+				"current_run_turns": currentRun,
+			})
+			return
+		}
+		turnID := fmt.Sprintf("turn-%d", step)
 		c, cancel := context.WithCancel(ctx)
 		cancelFn = cancel
 		mu.Unlock()
 
-		turnID := fmt.Sprintf("turn-%d", step)
-		em.emit("turn.started", map[string]any{"step": step, "turn_id": turnID})
-
+		turnStarted := false
 		sink := func(ev core.AgentEvent) {
-			em.emit(ev.Type(), subagentEventData(ev))
+			data := subagentEventData(ev)
+			if ev.Type() == "user_message" && !turnStarted {
+				// Prompt invokes OnMessageAppended before delivering this sink
+				// event, so the session row is durable before the lifecycle
+				// acknowledgement is written.
+				em.emit(ev.Type(), data)
+				if !sessionPersistence.failed() {
+					em.emit("turn.started", map[string]any{"step": step, "turn_id": turnID, "command_id": commandID, "lifetime_turns": lifetime, "current_run_turns": currentRun})
+					turnStarted = true
+				}
+				return
+			}
+			if ev.Type() == "turn_start" {
+				// A provider/model-loop turn is nested inside the one delegated
+				// message turn admitted above. Mark it on the wire so the
+				// supervisor cannot mistake it for a new worker turn.
+				data["nested_turn"] = true
+			}
+			em.emit(ev.Type(), data)
 		}
 
 		var persistCompaction func([]provider.Message) error
@@ -209,7 +294,12 @@ func runSubagentWorkerMode(ctx context.Context, args Args, version string) error
 			persistCompaction = sess.AppendCompaction
 		}
 		start, err := promptWithContextRecovery(c, ag, prompt, sink, persistCompaction)
-		WriteNewTranscript(ag, sess, start)
+		if sess != nil && ag.OnMessageAppended == nil {
+			WriteNewTranscript(ag, sess, start)
+		}
+		if sessionErr := sessionPersistence.err(); err == nil && sessionErr != nil {
+			err = sessionErr
+		}
 
 		output := finalAssistantText(ag.Messages()[start:])
 		resultStatus := "succeeded"
@@ -245,24 +335,26 @@ func runSubagentWorkerMode(ctx context.Context, args Args, version string) error
 		// The supervisor treats agent.idle as permission to start a follow-up.
 		// Publish it only after the busy gate has opened, otherwise a manager
 		// can send a turn that the inbox loop drops as still busy.
-		em.emit("agent.idle", map[string]any{"turn_id": turnID})
+		em.emit("agent.idle", map[string]any{"turn_id": turnID, "lifetime_turns": lifetime, "current_run_turns": currentRun})
 	}
 
-	launchTurn := func(prompt string) {
+	launchTurn := func(prompt string, newRun bool, commandID string) bool {
 		mu.Lock()
-		if closing {
+		if closing || busyTurn || turnPending {
 			mu.Unlock()
-			return
+			em.emit("error", map[string]any{"code": "turn_rejected", "reason": "busy", "command_id": commandID, "message": "worker is busy"})
+			return false
 		}
-		// Register the goroutine before launching it. Shutdown can then
-		// close the gate and wait for every turn that was admitted, even
-		// if runOne has not acquired mu and set busyTurn yet.
+		// Reserve the worker before launching the goroutine. A second command
+		// cannot be accepted in the gap before runOne acquires mu.
+		turnPending = true
 		turnWG.Add(1)
 		mu.Unlock()
 		go func() {
 			defer turnWG.Done()
-			runOne(prompt)
+			runOne(prompt, newRun, commandID)
 		}()
+		return true
 	}
 
 	waitForActiveTurn := func(cancel bool) {
@@ -287,7 +379,7 @@ func runSubagentWorkerMode(ctx context.Context, args Args, version string) error
 	// "starts working" the moment it boots, matching what users
 	// expect from `/subagents new <task>`.
 	if args.Prompt != "" {
-		launchTurn(args.Prompt)
+		launchTurn(args.Prompt, false, "")
 	}
 
 	// Inbox loop: one supervisor message at a time. We don't spawn
@@ -333,10 +425,20 @@ func runSubagentWorkerMode(ctx context.Context, args Args, version string) error
 			case subagents.CommandTurnStart:
 				var payload subagents.TurnStartPayload
 				if err := command.DecodePayload(&payload); err != nil {
-					em.emit("error", map[string]any{"message": "invalid turn.start payload"})
+					em.emit("error", map[string]any{"code": "turn_rejected", "reason": "invalid_payload", "command_id": command.MessageID, "message": "invalid turn.start payload"})
 					continue
 				}
-				launchTurn(payload.Prompt)
+				mu.Lock()
+				_, duplicate := seenCommands[command.MessageID]
+				mu.Unlock()
+				if duplicate && command.MessageID != "" {
+					continue
+				}
+				if launchTurn(payload.Prompt, payload.NewRun, command.MessageID) && command.MessageID != "" {
+					mu.Lock()
+					seenCommands[command.MessageID] = struct{}{}
+					mu.Unlock()
+				}
 			default:
 				// Unknown commands are rejected rather than interpreted as
 				// child-originated control requests.
@@ -555,6 +657,9 @@ func initialTurnNumber(path string) int {
 	}
 	maxStep := 0
 	for _, ev := range events {
+		if !subagents.IsDelegatedTurnStart(ev) {
+			continue
+		}
 		if step, ok := ev.Data["step"].(float64); ok && int(step) > maxStep {
 			maxStep = int(step)
 		}

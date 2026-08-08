@@ -127,6 +127,32 @@ func (c *blockingWriteConn) Close() error {
 	return c.Conn.Close()
 }
 
+type cancelAfterWriteConn struct {
+	net.Conn
+	cancel context.CancelFunc
+}
+
+func (c *cancelAfterWriteConn) Write(data []byte) (int, error) {
+	c.cancel()
+	return len(data), nil
+}
+
+type partialWriteConn struct {
+	net.Conn
+	withError bool
+}
+
+func (c *partialWriteConn) Write(data []byte) (int, error) {
+	written := len(data) / 2
+	if written == 0 {
+		written = 1
+	}
+	if c.withError {
+		return written, errors.New("partial write")
+	}
+	return written, nil
+}
+
 type notifyingContext struct {
 	context.Context
 	doneCalled chan struct{}
@@ -136,6 +162,40 @@ type notifyingContext struct {
 func (c *notifyingContext) Done() <-chan struct{} {
 	c.once.Do(func() { close(c.doneCalled) })
 	return c.Context.Done()
+}
+
+func TestInboxSendContextTreatsCompleteWriteBeforeCancellationAsDelivered(t *testing.T) {
+	local, remote := net.Pipe()
+	defer remote.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	inbox := NewInbox("unused")
+	inbox.conn = &cancelAfterWriteConn{Conn: local, cancel: cancel}
+	defer inbox.Close()
+
+	if err := inbox.sendBytesContext(ctx, []byte("follow-up\n")); err != nil {
+		t.Fatalf("complete write after cancellation = %v, want success", err)
+	}
+}
+
+func TestInboxSendContextTreatsPartialWritesAsUnknownDelivery(t *testing.T) {
+	for _, withError := range []bool{false, true} {
+		name := "short write"
+		if withError {
+			name = "partial write error"
+		}
+		t.Run(name, func(t *testing.T) {
+			local, remote := net.Pipe()
+			defer remote.Close()
+			inbox := NewInbox("unused")
+			inbox.conn = &partialWriteConn{Conn: local, withError: withError}
+			defer inbox.Close()
+
+			err := inbox.sendBytesContext(context.Background(), []byte("follow-up\n"))
+			if !errors.Is(err, ErrDeliveryUnknown) {
+				t.Fatalf("partial write error = %v, want ErrDeliveryUnknown", err)
+			}
+		})
+	}
 }
 
 func TestInboxSendContextCancelsBlockedWrite(t *testing.T) {

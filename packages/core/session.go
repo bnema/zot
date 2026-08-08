@@ -1166,6 +1166,19 @@ func (s *Session) AppendMessage(m provider.Message) error {
 	return nil
 }
 
+// Sync flushes the session file's bytes through the filesystem. Interactive
+// hosts use this at acknowledgement boundaries where a crash must not make a
+// prompt look accepted before its user message is recoverable.
+func (s *Session) Sync() error {
+	if s == nil || s.writer == nil {
+		return nil
+	}
+	if err := s.buf.Flush(); err != nil {
+		return err
+	}
+	return s.writer.Sync()
+}
+
 // AppendCompaction writes a checkpoint that replaces all earlier
 // transcript rows when the session is resumed. The old rows remain in
 // the JSONL file for audit/export, while loaders use the latest
