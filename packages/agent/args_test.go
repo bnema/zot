@@ -39,6 +39,8 @@ func TestValidateOrchestrationArgs(t *testing.T) {
 		{name: "profile", args: Args{Mode: ModePrint, Orchestrate: true, Subagent: "reviewer"}, want: "--subagent profiles"},
 		{name: "stats", args: Args{Mode: ModePrint, Orchestrate: true, StatsPath: "stats.json"}, want: "--stats"},
 		{name: "packaged", args: Args{Mode: ModePrint, Orchestrate: true, PermissionSet: &tools.PermissionSet{}}, want: "packaged"},
+		{name: "packaged agent name", args: Args{Mode: ModePrint, Orchestrate: true, AgentName: "bundled"}, want: "packaged"},
+		{name: "packaged agent data dir", args: Args{Mode: ModePrint, Orchestrate: true, AgentDataDir: "/tmp/agent-data"}, want: "packaged"},
 		{name: "missing spawn", args: Args{Mode: ModePrint, Orchestrate: true, ToolsSet: true, Tools: []string{"read"}}, want: "subagent_spawn"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

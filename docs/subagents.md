@@ -62,7 +62,7 @@ The parent CLI's `--provider`, `--model`, and `--reasoning` values are inherited
 zut -p --orchestrate --provider openai --model gpt-5 --reasoning high "delegate the implementation and synthesize the result"
 ```
 
-The parent runs completion-driven waves rather than polling. Configured concurrency and per-parent concurrency limits, queue and turn deadlines, maximum turns/output, and the graceful cancellation/shutdown period apply. Cancellation propagates to the parent and workers through the supervisor; partial worker evidence remains available when the worker reports it.
+The parent runs completion-driven waves rather than polling, with at most 32 follow-up waves per invocation. Configured concurrency and per-parent concurrency limits, queue and turn deadlines, maximum turns/output, and the graceful cancellation/shutdown period apply. Cancellation propagates to the parent and workers through the supervisor; partial worker evidence remains available when the worker reports it.
 
 Output follows the selected existing mode. Print writes only the final synthesis. Stream renders every parent turn on stdout and keeps tool diagnostics on stderr. JSON retains every event from every parent turn as parseable JSONL; completion reports are injected as ordinary `user_message` events, and a failed primary or handoff produces one terminal JSON error object rather than a host log.
 

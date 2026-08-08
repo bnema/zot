@@ -15,6 +15,13 @@ type fakeCompletionBatches struct {
 	waits   int
 }
 
+type endlessCompletionBatches struct{ waits int }
+
+func (f *endlessCompletionBatches) WaitIdle(context.Context) ([]subagents.Completion, error) {
+	f.waits++
+	return []subagents.Completion{{AgentID: "worker", Status: "completed"}}, nil
+}
+
 func (f *fakeCompletionBatches) WaitIdle(context.Context) ([]subagents.Completion, error) {
 	index := f.waits
 	f.waits++
@@ -67,6 +74,21 @@ func TestRunHeadlessContinuationBatchesFailuresAndSecondWave(t *testing.T) {
 	}
 	if tracker.waits != 3 {
 		t.Fatalf("wait count=%d, want completion batches followed by empty terminal batch", tracker.waits)
+	}
+}
+
+func TestRunHeadlessContinuationStopsAtWaveLimit(t *testing.T) {
+	tracker := &endlessCompletionBatches{}
+	calls := 0
+	got, err := runHeadlessContinuation(context.Background(), tracker, "initial", func(context.Context, string) (string, error) {
+		calls++
+		return "synthesis", nil
+	})
+	if err == nil || !strings.Contains(err.Error(), "maximum of 32 completion waves") {
+		t.Fatalf("error = %v, want wave-limit error", err)
+	}
+	if got != "synthesis" || calls != maxHeadlessCompletionWaves || tracker.waits != maxHeadlessCompletionWaves+1 {
+		t.Fatalf("result=%q calls=%d waits=%d", got, calls, tracker.waits)
 	}
 }
 

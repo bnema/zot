@@ -863,10 +863,12 @@ func Resolve(args Args, requireCred bool) (Resolved, error) {
 		// Headless orchestration owns its prompt contract rather than inheriting
 		// the interactive setting. Discover and append the compact manifest once;
 		// child profile bodies remain private to the selected child.
-		homeDir, _ := os.UserHomeDir()
-		profiles, _ := subagents.Discover(args.CWD, homeDir)
-		if subagentsAddendum := subagents.SystemPromptAddendum(profiles); subagentsAddendum != "" {
-			append_ = append(append_, subagentsAddendum)
+		if autoSubagentsToolAllowed(args) {
+			homeDir, _ := os.UserHomeDir()
+			profiles, _ := subagents.Discover(args.CWD, homeDir)
+			if subagentsAddendum := subagents.SystemPromptAddendum(profiles); subagentsAddendum != "" {
+				append_ = append(append_, subagentsAddendum)
+			}
 		}
 		append_ = append(append_, AutoSubagentsSystemAddendumFor(
 			autoSubagentsToolAllowed(args),

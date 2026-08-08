@@ -1488,19 +1488,30 @@ func runInteractive(ctx context.Context, args Args, version string) (runErr erro
 		WebSearchGuard:  webSearchGuard,
 		ActiveProvider:  activeProviderForSubagents,
 		ActiveModel:     activeModelForSubagents,
-		ActiveReasoning: func() string { return r.Reasoning },
 		OnSpawned:       onSpawnedSupervisor,
 		OnResumed:       onResumedSupervisor,
 		BeforeResumed:   onBeforeResumedSupervisor,
 		OnStopRequested: onStopRequestedSupervisor,
 	})
 	subagentsMgr = runtime.Supervisor()
+	reloadDone := make(chan struct{})
+	var reloadErrs []error
 	if subagentsMgr != nil {
 		// Replaying historical event logs can take seconds. Populate the
 		// detached-agent dashboard without blocking the first interactive paint.
-		go func() { _, _ = subagentsMgr.Reload() }()
+		go func() {
+			_, reloadErrs = subagentsMgr.Reload()
+			close(reloadDone)
+		}()
+	} else {
+		close(reloadDone)
 	}
-	defer func() { _ = runtime.Close(context.Background()) }()
+	defer func() {
+		// Reload may attach detached workers, so let it finish before shutdown
+		// snapshots the supervisor's worker set.
+		<-reloadDone
+		_ = closeSubagentRuntimeFresh(runtime)
+	}()
 
 	prepareInteractiveRegistry := runtime.PrepareRegistry
 	prepareResolvedInteractiveRegistry := runtime.PrepareResolvedRegistry
@@ -2285,6 +2296,7 @@ func runInteractive(ctx context.Context, args Args, version string) (runErr erro
 		AuthMethod:                      r.AuthMethod,
 		BaseURL:                         r.BaseURL,
 		Reasoning:                       r.Reasoning,
+		OnReasoningChanged:              runtime.SetReasoning,
 		SystemPrompt:                    r.SystemPrompt,
 		Tools:                           r.ToolRegistry,
 		MaxSteps:                        r.MaxSteps,
@@ -2495,6 +2507,14 @@ func runInteractive(ctx context.Context, args Args, version string) (runErr erro
 		},
 	})
 	extHooks.attachInteractive(iv)
+	go func() {
+		<-reloadDone
+		for _, reloadErr := range reloadErrs {
+			if reloadErr != nil {
+				iv.ReportError(fmt.Errorf("reload subagents: %w", reloadErr))
+			}
+		}
+	}()
 
 	// Bind the interactive TUI as the Confirmer. We deferred this
 	// until now because the gate is constructed before the TUI
@@ -2546,8 +2566,9 @@ func runInteractive(ctx context.Context, args Args, version string) (runErr erro
 		closeAgentLSP(finalAg)
 		closeResolvedLSP(r)
 		// Stop supervised workers before exiting. os.Exit skips deferred
-		// cleanup, so close the shared runtime explicitly on a TERM or HUP.
-		_ = runtime.Close(context.Background())
+		// cleanup, so wait for reload and close the shared runtime explicitly.
+		<-reloadDone
+		_ = closeSubagentRuntimeFresh(runtime)
 		// Exit cleanly. Re-raising the signal would skip os.Exit's
 		// at-exit hooks; explicit exit is fine because we've already
 		// flushed the only at-risk state (the session file) and stopped

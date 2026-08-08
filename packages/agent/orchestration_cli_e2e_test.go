@@ -18,6 +18,22 @@ import (
 	"time"
 )
 
+var (
+	orchestrationBuildOnce   sync.Once
+	orchestrationBuildDir    string
+	orchestrationBuildBinary string
+	orchestrationBuildOutput []byte
+	orchestrationBuildErr    error
+)
+
+func TestMain(m *testing.M) {
+	code := m.Run()
+	if orchestrationBuildDir != "" {
+		_ = os.RemoveAll(orchestrationBuildDir)
+	}
+	os.Exit(code)
+}
+
 func TestOrchestratedCLITwoDelegationWavesAcrossHeadlessModes(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("signal and subprocess semantics differ on Windows")
@@ -82,7 +98,7 @@ func TestOrchestratedCLICancellation(t *testing.T) {
 		t.Skip("skip CLI orchestration end-to-end test in -short mode")
 	}
 	binary := buildOrchestrationCLI(t)
-	server, workerReady, releaseWorker := newCancellationProvider(t)
+	server, workerReady, releaseWorker := newCancellationProvider()
 	defer server.Close()
 	defer close(releaseWorker)
 
@@ -142,7 +158,7 @@ func TestOrchestratedCLIParentFailure(t *testing.T) {
 	binary := buildOrchestrationCLI(t)
 
 	t.Run("failure-jsonl", func(t *testing.T) {
-		server := newFailingProvider(t)
+		server := newFailingProvider()
 		defer server.Close()
 		cmd := exec.Command(binary, "--orchestrate", "--json", "--provider", "openai", "--model", "gpt-5", "--base-url", server.URL, "--api-key", "test-key", "fail")
 		cmd.Env = orchestrationCLIEnv(binary, t.TempDir())
@@ -226,7 +242,7 @@ func (p *twoWaveProvider) serveHTTP(w http.ResponseWriter, r *http.Request) {
 	writeText(w, fmt.Sprintf("worker result %d", worker))
 }
 
-func newCancellationProvider(t *testing.T) (*httptest.Server, <-chan struct{}, chan<- struct{}) {
+func newCancellationProvider() (*httptest.Server, <-chan struct{}, chan<- struct{}) {
 	workerReady := make(chan struct{})
 	releaseWorker := make(chan struct{})
 	var once sync.Once
@@ -250,7 +266,7 @@ func newCancellationProvider(t *testing.T) (*httptest.Server, <-chan struct{}, c
 	return server, workerReady, releaseWorker
 }
 
-func newFailingProvider(t *testing.T) *httptest.Server {
+func newFailingProvider() *httptest.Server {
 	var mu sync.Mutex
 	parentCalls := 0
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -388,18 +404,27 @@ func assertJSONOrchestrationWaves(t *testing.T, events []map[string]any) {
 }
 
 func orchestrationCLIEnv(binary, home string) []string {
+	// Restrict PATH so spawned workers resolve the same freshly built test
+	// binary instead of any installed zut executable on the host.
 	return append(os.Environ(), "ZUT_HOME="+home, "PATH="+filepath.Dir(binary))
 }
 
 func buildOrchestrationCLI(t *testing.T) string {
 	t.Helper()
-	out := filepath.Join(t.TempDir(), "zut")
-	root := filepath.Join("..", "..")
-	cmd := exec.Command("go", "build", "-o", out, "./cmd/zut")
-	cmd.Dir = root
-	cmd.Env = append(os.Environ(), "CGO_ENABLED=0")
-	if output, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("build zut: %v\n%s", err, output)
+	orchestrationBuildOnce.Do(func() {
+		orchestrationBuildDir, orchestrationBuildErr = os.MkdirTemp("", "zut-orchestration-cli-")
+		if orchestrationBuildErr != nil {
+			return
+		}
+		orchestrationBuildBinary = filepath.Join(orchestrationBuildDir, "zut")
+		root := filepath.Join("..", "..")
+		cmd := exec.Command("go", "build", "-o", orchestrationBuildBinary, "./cmd/zut")
+		cmd.Dir = root
+		cmd.Env = append(os.Environ(), "CGO_ENABLED=0")
+		orchestrationBuildOutput, orchestrationBuildErr = cmd.CombinedOutput()
+	})
+	if orchestrationBuildErr != nil {
+		t.Fatalf("build zut: %v\n%s", orchestrationBuildErr, orchestrationBuildOutput)
 	}
-	return out
+	return orchestrationBuildBinary
 }

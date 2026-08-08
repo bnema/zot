@@ -288,6 +288,12 @@ func TestCompletionDeliveryHoldBatchesFastAndLateRegistrations(t *testing.T) {
 	if !strings.Contains(update, "task: first task") || !strings.Contains(update, "task: second task") {
 		t.Fatalf("batched update omitted one task: %q", update)
 	}
+	iv.mu.Lock()
+	queued := len(iv.queued)
+	iv.mu.Unlock()
+	if queued != 1 {
+		t.Fatalf("queued updates = %d; want exactly one batched update", queued)
+	}
 }
 
 func TestCompleteSupervisorWatchReportsTurnOutcomeOnce(t *testing.T) {

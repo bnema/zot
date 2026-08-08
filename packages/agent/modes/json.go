@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"sync"
 
 	"github.com/bnema/zut/packages/core"
 	"github.com/bnema/zut/packages/provider"
@@ -24,8 +25,11 @@ func RunJSON(ctx context.Context, ag *core.Agent, prompt string, images []provid
 // a successful checkpoint.
 func RunJSONWithContextRecovery(ctx context.Context, ag *core.Agent, prompt string, images []provider.ImageBlock, out io.Writer, persistCompaction func([]provider.Message) error) (ContextRecoveryResult, error) {
 	enc := json.NewEncoder(out)
+	var writeMu sync.Mutex
 	var writeErr error
 	write := func(v any) {
+		writeMu.Lock()
+		defer writeMu.Unlock()
 		if writeErr == nil {
 			writeErr = enc.Encode(v)
 		}
@@ -47,7 +51,10 @@ func RunJSONWithContextRecovery(ctx context.Context, ag *core.Agent, prompt stri
 	if runErr != nil {
 		write(map[string]any{"type": "error", "message": runErr.Error()})
 	}
-	return recovery, errors.Join(runErr, writeErr)
+	writeMu.Lock()
+	outputErr := writeErr
+	writeMu.Unlock()
+	return recovery, errors.Join(runErr, outputErr)
 }
 
 // EventToJSON converts an AgentEvent to a JSON-friendly map. The on-wire

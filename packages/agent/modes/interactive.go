@@ -345,6 +345,9 @@ type InteractiveConfig struct {
 	// It should update config.json and (if there's an active session)
 	// write a new meta row so resume picks up the same model.
 	PersistModel func(providerName, model string)
+	// OnReasoningChanged updates host-owned runtime defaults after the setting
+	// has been persisted successfully.
+	OnReasoningChanged func(level string)
 
 	// InitialSessionTitle is the persisted title of the session loaded before
 	// the TUI starts. It is shown in the terminal without another model call.
@@ -920,8 +923,7 @@ func NewInteractive(cfg InteractiveConfig) *Interactive {
 		startupSkillNames = append(startupSkillNames, cfg.StartupSkillNames...)
 	}
 	i := &Interactive{
-		cfg:               cfg,
-		completionTracker: subagents.NewCompletionTracker(),
+		cfg: cfg,
 		view: &tui.View{
 			Theme:                 cfg.Theme,
 			ImageProto:            effectiveImageProtocol(cfg.InlineImagesEnabled),
@@ -5632,6 +5634,9 @@ func (i *Interactive) applyReasoningSetting(level string) {
 			return
 		}
 	}
+	if i.cfg.OnReasoningChanged != nil {
+		i.cfg.OnReasoningChanged(level)
+	}
 	i.mu.Lock()
 	if i.agent != nil {
 		i.agent.Reasoning = level
@@ -8750,6 +8755,8 @@ func (i *Interactive) trackSubagentWorker(a *subagents.Agent, task string, follo
 }
 
 func (i *Interactive) ensureCompletionTracker() *subagents.CompletionTracker {
+	// Tests and lightweight embedders may construct Interactive with a struct
+	// literal instead of NewInteractive, so retain this lazy fallback.
 	i.completionDeliveryMu.Lock()
 	defer i.completionDeliveryMu.Unlock()
 	if i.completionTracker == nil {
@@ -8766,6 +8773,7 @@ func (i *Interactive) requestCompletionDelivery() {
 	if i == nil {
 		return
 	}
+	i.ensureCompletionTracker()
 	i.completionDeliveryMu.Lock()
 	i.completionDeliveryRequest = true
 	if i.completionDeliveryRunning || i.completionDeliveryHolds != 0 {

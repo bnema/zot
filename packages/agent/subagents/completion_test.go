@@ -22,6 +22,7 @@ func newCompletionTestAgent(id, task string, status Status) *Agent {
 
 func TestCompletionTrackerTurnEndCompletesLongLivedWorker(t *testing.T) {
 	agent := newCompletionTestAgent("worker-1", "original task", StatusRunning)
+	t.Cleanup(func() { close(agent.done) })
 	tracker := NewCompletionTracker()
 	tracker.TrackTurn(agent, "ignored task", false)
 
@@ -46,8 +47,6 @@ func TestCompletionTrackerTurnEndCompletesLongLivedWorker(t *testing.T) {
 	if tracker.Pending() != 0 {
 		t.Fatalf("pending = %d, want 0", tracker.Pending())
 	}
-
-	close(agent.done)
 }
 
 func TestCompletionTrackerStartupAndProcessFailuresUseExitPath(t *testing.T) {
@@ -363,15 +362,18 @@ func TestFormatCompletionUpdateBoundsFieldsAndPreservesEvidence(t *testing.T) {
 		t.Fatalf("update instructs the parent to poll: %q", update)
 	}
 
-	taskLine := strings.Split(update, "\n")[3]
-	if got := len([]rune(strings.TrimPrefix(taskLine, "   task: "))); got != 240 {
-		t.Fatalf("formatted task length = %d, want 240", got)
-	}
+	taskLine := ""
 	errorLine := ""
 	for _, line := range strings.Split(update, "\n") {
+		if strings.HasPrefix(line, "   task: ") {
+			taskLine = strings.TrimPrefix(line, "   task: ")
+		}
 		if strings.HasPrefix(line, "   error: ") {
 			errorLine = strings.TrimPrefix(line, "   error: ")
 		}
+	}
+	if got := len([]rune(taskLine)); got != 240 {
+		t.Fatalf("formatted task length = %d, want 240", got)
 	}
 	if got := len([]rune(errorLine)); got != 240 {
 		t.Fatalf("formatted error length = %d, want 240", got)

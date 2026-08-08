@@ -811,8 +811,10 @@ func (f *Supervisor) ResumeWithPrompt(ctx context.Context, id, prompt string) (*
 // ResumeWithPromptBefore is ResumeWithPrompt with a pre-delivery hook. The
 // hook runs after the target Agent is known but before a queued or direct
 // follow-up is made deliverable. For a restarted worker it runs after the new
-// Agent is built and before its runner is scheduled. A non-nil cleanup is
-// called when the operation is rejected before delivery.
+// Agent is built and before its runner is scheduled. For queued and direct
+// delivery, the hook runs while operationMu is held and must not block or call
+// back into Supervisor methods. A non-nil cleanup is called when the operation
+// is rejected before delivery.
 func (f *Supervisor) ResumeWithPromptBefore(ctx context.Context, id, prompt string, before func(*Agent, string) func()) (*Agent, error) {
 	if ctx == nil {
 		ctx = context.Background()
@@ -1287,7 +1289,9 @@ func (f *Supervisor) resumeWithHook(ctx context.Context, id string, resuming boo
 	// has not reached its first event yet. Register the turn before the
 	// scheduler can start the worker and emit a fast turn_end.
 	if before != nil && resumePrompt != "" {
-		before(a, resumePrompt)
+		// No rejecting operation remains before scheduling, so there is no path
+		// that needs the hook's rollback after this point.
+		_ = before(a, resumePrompt)
 	}
 	f.armQueueTimeout(a)
 	f.schedule()

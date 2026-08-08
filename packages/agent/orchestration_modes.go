@@ -190,6 +190,9 @@ func newOrchestratedRuntime(ctx context.Context, args Args, r Resolved, cfg Conf
 		tracker.TrackTurn(a, task, false)
 	}
 	onResumed := func(a *subagents.Agent, prompt string) {
+		// BeforeResumed normally owns future-turn registration. Keep this
+		// fallback for direct runtime callers that do not install the pre-hook;
+		// SubagentResumeTool suppresses it when BeforeResumed accepted delivery.
 		tracker.TrackTurn(a, prompt, true)
 	}
 	onBeforeResumed := func(a *subagents.Agent, prompt string) func() {

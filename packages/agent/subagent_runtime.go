@@ -43,8 +43,9 @@ type subagentRuntime struct {
 	beforeResumed   func(*subagents.Agent, string) func()
 	onStopRequested func(*subagents.Agent)
 
-	closeMu sync.Mutex
-	closed  bool
+	settingsMu sync.RWMutex
+	closeMu    sync.Mutex
+	closed     bool
 }
 
 type subagentRuntimeConfiguration struct {
@@ -114,13 +115,25 @@ func newSubagentRuntime(cfg subagentRuntimeConfig) *subagentRuntime {
 		onStopRequested: cfg.OnStopRequested,
 	}
 	if rt.activeProvider == nil {
-		rt.activeProvider = func() string { return rt.provider }
+		rt.activeProvider = func() string {
+			rt.settingsMu.RLock()
+			defer rt.settingsMu.RUnlock()
+			return rt.provider
+		}
 	}
 	if rt.activeModel == nil {
-		rt.activeModel = func() string { return rt.model }
+		rt.activeModel = func() string {
+			rt.settingsMu.RLock()
+			defer rt.settingsMu.RUnlock()
+			return rt.model
+		}
 	}
 	if rt.activeReasoning == nil {
-		rt.activeReasoning = func() string { return rt.reasoning }
+		rt.activeReasoning = func() string {
+			rt.settingsMu.RLock()
+			defer rt.settingsMu.RUnlock()
+			return rt.reasoning
+		}
 	}
 	if rt.apiKey != "" {
 		// A launch-time API key belongs to the provider selected at startup. It
@@ -179,7 +192,18 @@ func (rt *subagentRuntime) SetModel(model string) {
 	if rt == nil {
 		return
 	}
+	rt.settingsMu.Lock()
 	rt.model = strings.TrimSpace(model)
+	rt.settingsMu.Unlock()
+}
+
+func (rt *subagentRuntime) SetReasoning(reasoning string) {
+	if rt == nil {
+		return
+	}
+	rt.settingsMu.Lock()
+	rt.reasoning = strings.TrimSpace(reasoning)
+	rt.settingsMu.Unlock()
 }
 
 func (rt *subagentRuntime) currentReasoning() string {
@@ -193,9 +217,12 @@ func (rt *subagentRuntime) SetProvider(providerID string) {
 	if rt == nil {
 		return
 	}
-	rt.provider = strings.TrimSpace(providerID)
+	providerID = strings.TrimSpace(providerID)
+	rt.settingsMu.Lock()
+	rt.provider = providerID
+	rt.settingsMu.Unlock()
 	if rt.supervisor != nil {
-		rt.supervisor.SetProvider(rt.provider)
+		rt.supervisor.SetProvider(providerID)
 	}
 }
 
@@ -203,10 +230,13 @@ func (rt *subagentRuntime) SetProviderSettings(baseURL string, insecureTLS bool)
 	if rt == nil {
 		return
 	}
-	rt.baseURL = strings.TrimSpace(baseURL)
+	baseURL = strings.TrimSpace(baseURL)
+	rt.settingsMu.Lock()
+	rt.baseURL = baseURL
 	rt.insecureTLS = insecureTLS
+	rt.settingsMu.Unlock()
 	if rt.supervisor != nil {
-		rt.supervisor.SetProviderSettings(rt.baseURL, rt.insecureTLS)
+		rt.supervisor.SetProviderSettings(baseURL, insecureTLS)
 	}
 }
 
@@ -214,7 +244,9 @@ func (rt *subagentRuntime) SetFastMode(fastMode bool) {
 	if rt == nil {
 		return
 	}
+	rt.settingsMu.Lock()
 	rt.fastMode = fastMode
+	rt.settingsMu.Unlock()
 	if rt.supervisor != nil {
 		rt.supervisor.SetFastMode(fastMode)
 	}
@@ -224,7 +256,9 @@ func (rt *subagentRuntime) SetRepoRoot(repoRoot string) {
 	if rt == nil {
 		return
 	}
+	rt.settingsMu.Lock()
 	rt.repoRoot = repoRoot
+	rt.settingsMu.Unlock()
 	if rt.supervisor != nil {
 		rt.supervisor.SetRepoRoot(repoRoot)
 	}
@@ -237,6 +271,8 @@ func (rt *subagentRuntime) snapshotConfiguration() subagentRuntimeConfiguration 
 	if rt == nil {
 		return subagentRuntimeConfiguration{}
 	}
+	rt.settingsMu.RLock()
+	defer rt.settingsMu.RUnlock()
 	return subagentRuntimeConfiguration{
 		provider:        rt.provider,
 		model:           rt.model,
@@ -252,12 +288,22 @@ func (rt *subagentRuntime) restoreConfiguration(snapshot subagentRuntimeConfigur
 	if rt == nil {
 		return
 	}
-	rt.SetProvider(snapshot.provider)
-	rt.SetModel(snapshot.model)
-	rt.SetProviderSettings(snapshot.baseURL, snapshot.insecureTLS)
-	rt.SetFastMode(snapshot.fastMode)
-	rt.SetRepoRoot(snapshot.repoRoot)
-	rt.SetWebSearchPolicy(snapshot.webSearchPolicy)
+	rt.settingsMu.Lock()
+	rt.provider = snapshot.provider
+	rt.model = snapshot.model
+	rt.baseURL = snapshot.baseURL
+	rt.insecureTLS = snapshot.insecureTLS
+	rt.fastMode = snapshot.fastMode
+	rt.repoRoot = snapshot.repoRoot
+	rt.webSearchPolicy = snapshot.webSearchPolicy
+	rt.settingsMu.Unlock()
+	if rt.supervisor != nil {
+		rt.supervisor.SetProvider(snapshot.provider)
+		rt.supervisor.SetProviderSettings(snapshot.baseURL, snapshot.insecureTLS)
+		rt.supervisor.SetFastMode(snapshot.fastMode)
+		rt.supervisor.SetRepoRoot(snapshot.repoRoot)
+		rt.supervisor.SetWebSearchPolicy(snapshot.webSearchPolicy)
+	}
 }
 
 func (rt *subagentRuntime) SetActiveSession(sessionID string) {
@@ -270,7 +316,9 @@ func (rt *subagentRuntime) SetWebSearchPolicy(policy subagents.WebSearchPolicy) 
 	if rt == nil {
 		return
 	}
+	rt.settingsMu.Lock()
 	rt.webSearchPolicy = policy
+	rt.settingsMu.Unlock()
 	if rt.supervisor != nil {
 		rt.supervisor.SetWebSearchPolicy(policy)
 	}
@@ -307,7 +355,10 @@ func (rt *subagentRuntime) resolveSubagent(name string) (*subagents.Profile, err
 	if rt == nil {
 		return nil, nil
 	}
-	return findSubagentProfile(rt.repoRoot, name)
+	rt.settingsMu.RLock()
+	repoRoot := rt.repoRoot
+	rt.settingsMu.RUnlock()
+	return findSubagentProfile(repoRoot, name)
 }
 
 // InjectTools adds the canonical manager tools allowed by the host launch

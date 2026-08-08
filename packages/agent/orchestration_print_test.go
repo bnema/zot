@@ -2,9 +2,6 @@ package agent
 
 import (
 	"context"
-	"io"
-	"net/http"
-	"net/http/httptest"
 	"os"
 	"strings"
 	"testing"
@@ -13,39 +10,24 @@ import (
 func TestRunOrchestratedPrintEmitsOnlyFinalAnswer(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("ZUT_HOME", home)
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("content-type", "text/event-stream")
-		_, _ = io.WriteString(w, "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"final answer\"},\"finish_reason\":\"stop\"}]}\n\n")
-		_, _ = io.WriteString(w, "data: [DONE]\n\n")
-	}))
+	server := orchestratedModeTestServer("final answer")
 	defer server.Close()
 
-	oldStdout := os.Stdout
-	reader, writer, err := os.Pipe()
-	if err != nil {
-		t.Fatal(err)
-	}
-	os.Stdout = writer
-	runErr := runOrchestratedPrintMode(context.Background(), Args{
-		Mode:        ModePrint,
-		Orchestrate: true,
-		Provider:    "openai",
-		Model:       "gpt-5",
-		BaseURL:     server.URL,
-		APIKey:      "test-key",
-		Prompt:      "say hello",
-	}, "test")
-	_ = writer.Close()
-	os.Stdout = oldStdout
-	output, readErr := io.ReadAll(reader)
-	_ = reader.Close()
+	output, runErr := captureTestStdout(t, func() error {
+		return runOrchestratedPrintMode(context.Background(), Args{
+			Mode:        ModePrint,
+			Orchestrate: true,
+			Provider:    "openai",
+			Model:       "gpt-5",
+			BaseURL:     server.URL,
+			APIKey:      "test-key",
+			Prompt:      "say hello",
+		}, "test")
+	})
 	if runErr != nil {
 		t.Fatalf("runOrchestratedPrintMode error: %v", runErr)
 	}
-	if readErr != nil {
-		t.Fatal(readErr)
-	}
-	if got := string(output); got != "final answer\n" {
+	if got := output; got != "final answer\n" {
 		t.Fatalf("stdout = %q, want final answer only", got)
 	}
 }

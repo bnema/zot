@@ -133,6 +133,40 @@ func TestSubagentRuntimeOwnsSupervisorConfigurationAndResolution(t *testing.T) {
 	}
 }
 
+func TestSubagentRuntimeConfigurationConcurrentAccess(t *testing.T) {
+	cfg := newRuntimeTestConfig(t.TempDir(), t.TempDir(), func(*subagents.Agent) subagents.Runner {
+		return &runtimeTestRunner{}
+	})
+	rt := newSubagentRuntime(cfg)
+	defer func() { _ = rt.Close(context.Background()) }()
+	repoRoot := t.TempDir()
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		for index := 0; index < 100; index++ {
+			rt.SetProvider("provider")
+			rt.SetModel("model")
+			rt.SetReasoning("medium")
+			rt.SetProviderSettings("https://provider.example/v1", index%2 == 0)
+			rt.SetFastMode(index%2 == 0)
+			rt.SetRepoRoot(repoRoot)
+			rt.SetWebSearchPolicy(subagents.WebSearchDeny)
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		for index := 0; index < 100; index++ {
+			_ = rt.currentProvider()
+			_ = rt.currentModel()
+			_ = rt.currentReasoning()
+			_ = rt.snapshotConfiguration()
+		}
+	}()
+	wg.Wait()
+}
+
 func TestSubagentRuntimeResolvedWebSearchPolicyRefreshesSupervisor(t *testing.T) {
 	var captured []*subagents.Agent
 	cfg := newRuntimeTestConfig(t.TempDir(), t.TempDir(), func(a *subagents.Agent) subagents.Runner {
@@ -349,16 +383,15 @@ func TestSubagentRuntimeInjectedSpawnProfileInheritsAndOverridesFrontmatter(t *t
 	t.Setenv("ZUT_AGENT_PROFILES", profilesDir)
 
 	var captured []*subagents.Agent
-	liveReasoning := "high"
 	cfg := newRuntimeTestConfig(t.TempDir(), cwd, func(a *subagents.Agent) subagents.Runner {
 		captured = append(captured, a)
 		return &runtimeTestRunner{}
 	})
-	cfg.ActiveReasoning = func() string { return liveReasoning }
+	cfg.Reasoning = "high"
 	rt := newSubagentRuntime(cfg)
-	// Change the host callback after runtime construction. A child without a
-	// profile override must observe this new live value.
-	liveReasoning = "medium"
+	// Change the host-owned setting after runtime construction. A child without
+	// a profile override must observe this new live value.
+	rt.SetReasoning("medium")
 	defer func() { _ = rt.Close(context.Background()) }()
 	spawn := rt.InjectTools(core.NewRegistry())["subagent_spawn"]
 

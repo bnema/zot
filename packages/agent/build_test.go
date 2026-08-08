@@ -361,10 +361,10 @@ func TestResolveOrchestratedParentPromptScopesManifestAndContract(t *testing.T) 
 		t.Fatal(err)
 	}
 	if got := strings.Count(parent.SystemPrompt, "[subagents_list]"); got != 1 {
-		t.Fatalf("parent profile manifest count = %d, want 1\\n%s", got, parent.SystemPrompt)
+		t.Fatalf("parent profile manifest count = %d, want 1\n%s", got, parent.SystemPrompt)
 	}
 	if !strings.Contains(parent.SystemPrompt, "primary-agent orchestrator") {
-		t.Fatalf("parent prompt omitted strict orchestrator contract:\\n%s", parent.SystemPrompt)
+		t.Fatalf("parent prompt omitted strict orchestrator contract:\n%s", parent.SystemPrompt)
 	}
 
 	child, err := Resolve(Args{CWD: project, Mode: ModePrint, Orchestrate: true, Subagent: "reviewer"}, false)
@@ -372,10 +372,10 @@ func TestResolveOrchestratedParentPromptScopesManifestAndContract(t *testing.T) 
 		t.Fatal(err)
 	}
 	if strings.Contains(child.SystemPrompt, "primary-agent orchestrator") || strings.Contains(child.SystemPrompt, "[subagents_list]") {
-		t.Fatalf("selected child inherited parent orchestration instructions:\\n%s", child.SystemPrompt)
+		t.Fatalf("selected child inherited parent orchestration instructions:\n%s", child.SystemPrompt)
 	}
 	if !strings.Contains(child.SystemPrompt, "Review only.") {
-		t.Fatalf("selected child profile prompt missing:\\n%s", child.SystemPrompt)
+		t.Fatalf("selected child profile prompt missing:\n%s", child.SystemPrompt)
 	}
 }
 
@@ -466,6 +466,7 @@ func TestResolveKeepsStrictContractButOmitsProfilesWhenSpawnIsUnavailable(t *tes
 		{name: "read allowlist", args: Args{CWD: project, Tools: []string{"read"}, ToolsSet: true}},
 		{name: "status allowlist", args: Args{CWD: project, Tools: []string{"subagent_status"}, ToolsSet: true}},
 		{name: "permission set", args: Args{CWD: project, PermissionSet: &tools.PermissionSet{}}},
+		{name: "headless orchestration", args: Args{CWD: project, Mode: ModePrint, Orchestrate: true, NoTools: true}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
